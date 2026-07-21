@@ -46,7 +46,7 @@ test_that("invalid creates and opens error cleanly", {
                "not an mov region handle")
 })
 
-test_that("producer GC unlinks the name; live consumers keep reading", {
+test_that("producer GC releases the name; live consumers keep reading", {
   xp <- .Call(mov:::mov_region_create, 4096)
   nm <- .Call(mov:::mov_region_name, xp)
   .Call(mov:::mov_poke, xp, 0, as.raw(42))
@@ -54,8 +54,18 @@ test_that("producer GC unlinks the name; live consumers keep reading", {
 
   rm(xp)
   gc()
-  expect_error(.Call(mov:::mov_region_open, nm, FALSE), "cannot open")
+  # the consumer's mapping survives the producer's GC on every platform
   expect_identical(.Call(mov:::mov_peek, ro, 0, 1), as.raw(42))
+
+  if (.Platform$OS.type != "windows") {
+    # POSIX: the producer's finalizer unlinked the name immediately
+    expect_error(.Call(mov:::mov_region_open, nm, FALSE), "cannot open")
+  }
+  # Windows kernel objects have no unlink step — the name lives until the
+  # last handle (here the consumer's) closes; POSIX is already unlinked
+  rm(ro)
+  gc()
+  expect_error(.Call(mov:::mov_region_open, nm, FALSE), "cannot open")
 })
 
 test_that("clean child exit runs the session-exit finalizers", {
