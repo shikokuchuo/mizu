@@ -19,7 +19,7 @@ test_that("a worker killed mid-task fails exactly that task", {
   expect_true(wait_until(any(mov_pool_dump(p)$workers$in_flight != -1L)))
   d <- mov_pool_dump(p)
   claimant <- which(d$workers$in_flight != -1L)
-  tools::pskill(d$workers$pid[claimant], tools::SIGKILL)
+  kill_hard(d$workers$pid[claimant])
 
   # the listener's callback reap runs off the R thread: DIED appears and
   # the empty-dequed slot frees without this process calling anything
@@ -38,7 +38,7 @@ test_that("a worker killed while parked frees its slot for respawn", {
   skip_if_no_child_mov()
   p <- mov_pool(n_workers = 1L, max_workers = 1L)
   expect_true(wait_until(mov_pool_status(p)$parked == 1L))
-  tools::pskill(mov_pool_dump(p)$workers$pid[1L], tools::SIGKILL)
+  kill_hard(mov_pool_dump(p)$workers$pid[1L])
   expect_true(wait_until(mov_pool_status(p)$workers == "free"))
   # elastic respawn reclaims the reaped slot
   expect_identical(mov_spawn_workers(p, 1L), 0L)
@@ -57,7 +57,7 @@ test_that("collect's backstop probe reaps with no listener registered", {
   expect_true(wait_until(mov_pool_status(ctrl)$workers == "live"))
   t <- mov_submit(ctrl, Sys.sleep(30))
   expect_true(wait_until(mov_pool_dump(ctrl)$workers$in_flight[1L] != -1L))
-  tools::pskill(mov_pool_dump(ctrl)$workers$pid[1L], tools::SIGKILL)
+  kill_hard(mov_pool_dump(ctrl)$workers$pid[1L])
   err <- tryCatch(mov_collect(t, timeout = 10), error = identity)
   expect_s3_class(err, "error")
   expect_match(conditionMessage(err), "worker died")
@@ -83,7 +83,7 @@ test_that("a dead worker's queued deque work is consumed in place", {
   }))
   dm <- mov_pool_dump(p)
   victim <- which(dm$workers$bottom - dm$workers$top == 3)
-  tools::pskill(dm$workers$pid[victim], tools::SIGKILL)
+  kill_hard(dm$workers$pid[victim])
 
   # the survivor drains the orphaned REAPING deque through ordinary steals
   expect_true(wait_until(length(dir(d)) == 3L, timeout = 15))
@@ -137,7 +137,7 @@ test_that("the stop sweep reaps a killed submitter's published results", {
   ', .Call(mov:::mov_pool_suffix, p), deparse(f)))
   expect_true(wait_for_file(f, timeout = 30))
   expect_true(wait_until(mov_pool_status(p)$tasks[["ok"]] == 1L))
-  tools::pskill(as.integer(readLines(f)[1L]), tools::SIGKILL)
+  kill_hard(as.integer(readLines(f)[1L]))
   # nothing rides on submitter death until the teardown sweep frees its
   # slots and releases the producing worker's keeper
   expect_true(mov_pool_stop(p, timeout = 10))
@@ -156,11 +156,11 @@ test_that("a killed controller's worker tears the orphan pool down", {
   expect_true(wait_for_file(f, timeout = 30))
   expect_true(wait_until(length(readLines(f)) == 2L))
   pids <- as.integer(readLines(f))
-  expect_true(isTRUE(tools::pskill(pids[2L], 0L)))   # worker alive
-  tools::pskill(pids[1L], tools::SIGKILL)            # controller dies
+  expect_true(pid_alive(pids[2L]))                   # worker alive
+  kill_hard(pids[1L])                                # controller dies
   # the worker's owner watch fires; it acquires the owner lock, broadcasts
   # shutdown, cleans up, and exits — no process is leaked
-  expect_true(wait_until(!isTRUE(tools::pskill(pids[2L], 0L)), timeout = 15))
+  expect_true(wait_until(!pid_alive(pids[2L]), timeout = 15))
 })
 
 test_that("retire frees the slot; the pool keeps working and respawns", {
@@ -187,9 +187,9 @@ test_that("a retiree lingers as the anchor for its uncollected result", {
   expect_true(wait_until(mov_pool_status(p)$workers == "free"))
   # slot released, but the process anchors the uncollected result
   Sys.sleep(2)
-  expect_true(isTRUE(tools::pskill(pid, 0L)))
+  expect_true(pid_alive(pid))
   expect_identical(mov_collect(t, timeout = 10), as.integer(pid))
   # the keeper drop ends the lame-duck loop on its next beat
-  expect_true(wait_until(!isTRUE(tools::pskill(pid, 0L)), timeout = 15))
+  expect_true(wait_until(!pid_alive(pid), timeout = 15))
   expect_true(mov_pool_stop(p, timeout = 10))
 })

@@ -10,6 +10,28 @@ wait_for_file <- function(path, timeout = 10) {
   TRUE
 }
 
+# Hard-kill a process: no handlers, no finalizers. tools::SIGKILL is NA on
+# Windows (the signal is undefined there), and pskill ignores the signal
+# value anyway — any non-NA signal is TerminateProcess — so SIGTERM gives
+# SIGKILL semantics on Windows.
+kill_hard <- function(pid)
+  tools::pskill(pid, if (is.na(tools::SIGKILL)) tools::SIGTERM else
+    tools::SIGKILL)
+
+# Liveness probe for a raw pid. pskill(pid, 0) is the POSIX probe, but on
+# Windows pskill ignores the signal value, so probing with 0 would
+# terminate the process — ask tasklist instead.
+pid_alive <- function(pid) {
+  pid <- as.integer(pid)
+  if (.Platform$OS.type == "windows") {
+    out <- suppressWarnings(system2(
+      "tasklist", c("/FI", sprintf('"PID eq %d"', pid), "/NH", "/FO", "CSV"),
+      stdout = TRUE, stderr = FALSE))
+    return(any(grepl(sprintf('","%d","', pid), out, fixed = TRUE)))
+  }
+  isTRUE(tools::pskill(pid, 0L))
+}
+
 # Re-evaluate `expr` in the caller's frame until truthy or the deadline passes
 wait_until <- function(expr, timeout = 10) {
   q <- substitute(expr)

@@ -1560,8 +1560,9 @@ static int pool_any_work(mov_pool *p) {
    thread, concurrently with whatever the handle's own thread is doing, so
    nothing here touches scratch, keeper vectors, or the scan rotation.
    Holding the slot's liveness lock is the reap grant; every store is
-   CAS-guarded or idempotent, so concurrent or repeated reaps (a kept-fd
-   re-acquire of a lock the process already holds succeeds) are harmless. */
+   CAS-guarded or idempotent, so concurrent or repeated reaps are harmless
+   (a kept-fd flock re-acquire succeeds and re-runs the reap; a LockFileEx
+   re-acquire reads HELD and skips — the holding prober's reap suffices). */
 
 /* Fail the dead worker's announced in-flight task, unpark every waiter its
    orphaned deque names (their help scans then steal from it), and either
