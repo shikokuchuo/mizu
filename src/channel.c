@@ -11,6 +11,12 @@
 #include "mov.h"
 #include <R_ext/Utils.h>
 
+/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
+   R, where ATTRIB() was still the sanctioned spelling. */
+#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
+#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
+#endif
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
