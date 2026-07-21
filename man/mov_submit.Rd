@@ -10,7 +10,8 @@ mov_submit(pool, expr, ..., .timeout = Inf)
 mov_collect(task, timeout = Inf)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mov_pool]{mov_pool()}} or \code{\link[=mov_pool_attach]{mov_pool_attach()}}.}
+\item{pool}{a pool handle from \code{\link[=mov_pool]{mov_pool()}} or \code{\link[=mov_pool_attach]{mov_pool_attach()}} — or,
+inside a task, the worker's own handle bound as \code{pool}.}
 
 \item{expr}{an expression, captured unevaluated. It sees only the
 arguments in \code{...} (plus the worker's global environment); packages
@@ -50,6 +51,16 @@ than stalling. Collection returns the \code{mov_timeout} sentinel (class
 \code{c("mov_timeout", "mov_condition")}) if no result arrives within
 \code{timeout}. A task whose handle was cancelled (or whose pool was stopped)
 raises an error on collect.
+
+Task expressions see their evaluating worker's own handle as \code{pool}
+(beneath the arguments in \code{...}), so tasks can submit nested subtasks:
+\code{mov_submit(pool, ...)} inside a task pushes onto the worker's own
+work-stealing deque — no ring, no wait; a full deque runs the subtask
+inline instead. A worker blocked in \code{mov_collect()} on a nested handle
+helps rather than sleeps: it executes work from its own deque (and
+steals from peers) until the awaited result publishes, so nested
+fan-outs run at fork/join cost and never deadlock the pool. Nested
+submission claims a submitter slot for the worker on first use.
 
 A handle can be collected exactly once: the result slot is released to
 the pool as the value is returned. Dropping an uncollected handle to the

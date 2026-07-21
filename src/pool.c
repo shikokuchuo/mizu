@@ -47,6 +47,7 @@ typedef struct mov_pool_s {
   int pk_ok;
 
   intptr_t live_self;            /* our held lock (worker / submitter slot) */
+  intptr_t live_sub;             /* a worker's nested-submitter slot lock */
   intptr_t live_owner;           /* kept fd on the owner file; 0 = not open */
   intptr_t *live_all;            /* controller: kept probe fds, wk then sub */
   char livedir[1024];
@@ -61,6 +62,7 @@ typedef struct mov_pool_s {
   uint32_t scan_start;           /* rotating ring-scan start */
   uint64_t claims;               /* fairness-tick counter (% 61) */
   uint64_t rng;                  /* xorshift state for victim selection */
+  int help_depth;                /* nested-collect help recursion depth */
   struct mov_rk_s { uint32_t idx; uint64_t seq; } *rk;
   uint32_t rk_n, rk_cap;
 
@@ -257,6 +259,10 @@ static void pool_release(mov_pool *p) {
     mov_live_close(p->live_self);
     p->live_self = 0;
   }
+  if (p->live_sub != 0) {
+    mov_live_close(p->live_sub);
+    p->live_sub = 0;
+  }
   if (p->live_owner != 0) {
     mov_live_close(p->live_owner);
     p->live_owner = 0;
@@ -342,9 +348,11 @@ static void mov_pool_finalizer(SEXP xp) {
 
 /* prot layout: [0] keepers — the submitter's task keepers (length rs_count)
    or the worker's result keepers (length result_slots); [1] the host unlink
-   extptr (controller only). */
+   extptr (controller only); [2] a worker's nested-submit task keepers
+   (length rs_count, allocated when the worker claims a submitter slot);
+   [3] the worker's evaluator closure (mov_pool_set_eval). */
 static SEXP pool_make_handle(mov_pool *p, SEXP keepers, SEXP host_ptr) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 2));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 4));
   SET_VECTOR_ELT(prot, 0, keepers);
   SET_VECTOR_ELT(prot, 1, host_ptr);
   SEXP xp = PROTECT(R_MakeExternalPtr(p, mov_pool_tag, prot));
@@ -352,6 +360,34 @@ static SEXP pool_make_handle(mov_pool *p, SEXP keepers, SEXP host_ptr) {
   Rf_setAttrib(xp, R_ClassSymbol, mov_class_pool);
   UNPROTECT(2);
   return xp;
+}
+
+/* The submitter's task-keeper table: prot[0] on submitter handles, prot[2]
+   on worker handles (nested submits). */
+static SEXP pool_task_keepers(mov_pool *p, SEXP xp) {
+  return VECTOR_ELT(R_ExternalPtrProtected(xp),
+                    p->role == MOV_ROLE_WORKER ? 2 : 0);
+}
+
+/* Registers the worker's evaluator closure — worker_evalfn(h) on the R
+   side, which binds the handle as `pool` beneath every task's arguments.
+   Stashed on the handle so nested submit's inline-execute fallback and
+   collect's help mode can run tasks outside mov_pool_step. */
+SEXP mov_pool_set_eval(SEXP xp, SEXP fn) {
+  mov_pool *p = pool_get(xp);
+  if (p->role != MOV_ROLE_WORKER)
+    Rf_error("mov: not a worker handle");
+  if (TYPEOF(fn) != CLOSXP)
+    Rf_error("mov: expected an eval function");
+  SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 3, fn);
+  return R_NilValue;
+}
+
+static SEXP pool_eval_fun(SEXP xp) {
+  SEXP fn = VECTOR_ELT(R_ExternalPtrProtected(xp), 3);
+  if (TYPEOF(fn) != CLOSXP)
+    Rf_error("mov: no evaluator registered on this worker handle");
+  return fn;
 }
 
 // Create (controller) -----------------------------------------------------------------
@@ -607,6 +643,48 @@ static void pool_watch_owner(mov_pool *p, mov_parker *own_pk) {
              (unsigned long long) p->hdr.owner_pid);
 }
 
+/* Lock-first claim of a FREE submitter slot, mirroring the worker join: a
+   dead submitter is recognisable by its free liveness lock regardless of
+   which side of the CAS it died on. Fills the slot's identity fields, sets
+   p->sub_slot, and returns the held lock through *lock_out. Shared by
+   mov_pool_attach and a worker's first nested submit. */
+static void pool_claim_sub_slot(mov_pool *p, intptr_t *lock_out) {
+  char path[1024];
+  uint32_t per = p->hdr.result_slots / p->hdr.max_submitters;
+  for (uint32_t j = 0; j < p->hdr.max_submitters; j++) {
+    if (atomic_load_explicit(&p->sub[j].status, memory_order_acquire) !=
+        MOV_SUB_FREE)
+      continue;
+    if (pool_live_path(p, path, sizeof(path), "sub", j) != 0)
+      Rf_error("mov: liveness file path too long");
+    intptr_t h;
+    if (mov_live_open(path, &h) != 0) continue;
+    if (mov_live_try(h) != MOV_LIVE_ACQUIRED) {
+      mov_live_close(h);
+      continue;                    /* another claimant beat us */
+    }
+    int32_t expected = MOV_SUB_FREE;
+    if (!atomic_compare_exchange_strong_explicit(&p->sub[j].status, &expected,
+                                                 MOV_SUB_LIVE,
+                                                 memory_order_seq_cst,
+                                                 memory_order_relaxed)) {
+      mov_live_close(h);           /* stale FREE reading */
+      continue;
+    }
+    *lock_out = h;
+    p->sub_slot = (int) j;
+    break;
+  }
+  if (p->sub_slot < 0)
+    Rf_error("mov: submitter registry full");
+
+  mov_sub_slot *me = &p->sub[p->sub_slot];
+  me->pid = (int64_t) p->self_pid;
+  me->rs_start = (uint32_t) p->sub_slot * per;
+  me->rs_count = per;
+  mov_live_ident(*lock_out, &me->live_dev, &me->live_ino);
+}
+
 // Worker join --------------------------------------------------------------------------
 
 SEXP mov_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
@@ -731,43 +809,7 @@ SEXP mov_pool_attach_call(SEXP suffix_sexp) {
   p->role = MOV_ROLE_SUBMITTER;
   pool_owner_check(p);
 
-  /* Lock-first slot claim, mirroring the worker join: a dead submitter is
-     recognisable by its free liveness lock regardless of which side of the
-     CAS it died on. */
-  char path[1024];
-  uint32_t per = p->hdr.result_slots / p->hdr.max_submitters;
-  for (uint32_t j = 0; j < p->hdr.max_submitters; j++) {
-    if (atomic_load_explicit(&p->sub[j].status, memory_order_acquire) !=
-        MOV_SUB_FREE)
-      continue;
-    if (pool_live_path(p, path, sizeof(path), "sub", j) != 0)
-      Rf_error("mov: liveness file path too long");
-    intptr_t h;
-    if (mov_live_open(path, &h) != 0) continue;
-    if (mov_live_try(h) != MOV_LIVE_ACQUIRED) {
-      mov_live_close(h);
-      continue;                    /* another claimant beat us */
-    }
-    int32_t expected = MOV_SUB_FREE;
-    if (!atomic_compare_exchange_strong_explicit(&p->sub[j].status, &expected,
-                                                 MOV_SUB_LIVE,
-                                                 memory_order_seq_cst,
-                                                 memory_order_relaxed)) {
-      mov_live_close(h);           /* stale FREE reading */
-      continue;
-    }
-    p->live_self = h;
-    p->sub_slot = (int) j;
-    break;
-  }
-  if (p->sub_slot < 0)
-    Rf_error("mov: submitter registry full");
-
-  mov_sub_slot *me = &p->sub[p->sub_slot];
-  me->pid = (int64_t) p->self_pid;
-  me->rs_start = (uint32_t) p->sub_slot * per;
-  me->rs_count = per;
-  mov_live_ident(p->live_self, &me->live_dev, &me->live_ino);
+  pool_claim_sub_slot(p, &p->live_self);
 
   if (pool_parkers_attach(p, 0) != 0)
     Rf_error("mov: cannot attach pool parkers");
@@ -912,68 +954,133 @@ static void mov_task_finalizer(SEXP xp) {
   R_ClearExternalPtr(xp);
 }
 
-SEXP mov_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
-  mov_pool *p = pool_get(xp);
-  if (p->sub_slot < 0)
-    Rf_error("mov: not a submitter handle");
-  if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
-    Rf_error("mov: pool stopped");
-  SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
+/* Result slot from the submitter's own subrange. Reusing a FREE slot drops
+   its previous task keeper — the lazy backstop — by overwrite at commit. */
+static uint32_t pool_alloc_rs(mov_pool *p) {
   mov_sub_slot *me = &p->sub[p->sub_slot];
-
-  unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
-  if (!pool_ring_space_wait(p, ring_head(ring), Rf_asReal(timeout)))
-    Rf_error("mov: submission timed out (injection ring full)");
-
-  /* Result slot from our own subrange. Reusing a FREE slot drops its
-     previous task keeper — the lazy backstop — by overwrite below. */
-  uint32_t local = UINT32_MAX;
   for (uint32_t k = 0; k < me->rs_count; k++) {
     uint32_t cand = (p->rs_cursor + k) % me->rs_count;
-    mov_rs_hdr *rs = pool_rs(p, me->rs_start + cand);
-    if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
-        MOV_RS_FREE) {
-      local = cand;
-      break;
-    }
+    if (atomic_load_explicit(&pool_rs(p, me->rs_start + cand)->status,
+                             memory_order_acquire) == MOV_RS_FREE)
+      return cand;
   }
-  if (local == UINT32_MAX)
-    Rf_error("mov: result slots exhausted — collect or cancel outstanding "
-             "tasks first");
-  uint32_t rs_index = me->rs_start + local;
-  mov_rs_hdr *rs = pool_rs(p, rs_index);
+  Rf_error("mov: result slots exhausted — collect or cancel outstanding "
+           "tasks first");
+}
 
-  /* Everything that can longjmp — payload staging (a possible region
-     create) and handle allocation — runs before any observable mutation:
-     an error here leaves the entry unpublished and the slot FREE. The
-     handle carries the sequence about to be installed, so until the bump
-     below it is simply stale. */
-  unsigned char *e = ring_entry(p, ring, (uint64_t) p->inj_ltail);
-  mov_entry_hdr *eh = (mov_entry_hdr *) e;
-  SEXP keep = PROTECT(mov_payload_stage(&eh->ph, e + sizeof(mov_entry_hdr),
-                                        p->inline_entry, payload));
+/* The handle carries the sequence about to be installed at commit, so
+   until the bump it is simply stale. */
+static SEXP pool_make_task(mov_pool *p, SEXP xp, uint32_t rs_index) {
   mov_task *t = malloc(sizeof(*t));
   if (t == NULL) Rf_error("mov: allocation failure");
   t->idx = rs_index;
-  t->seq = atomic_load_explicit(&rs->sequence, memory_order_relaxed) + 1;
+  t->seq = atomic_load_explicit(&pool_rs(p, rs_index)->sequence,
+                                memory_order_relaxed) + 1;
   SEXP txp = PROTECT(R_MakeExternalPtr(t, mov_task_tag, xp));
   R_RegisterCFinalizerEx(txp, mov_task_finalizer, TRUE);
   Rf_setAttrib(txp, R_ClassSymbol, mov_class_task);
+  UNPROTECT(1);
+  return txp;
+}
 
-  /* Pin unconditionally — whether a stream carries hook-emitted mori
-     identifiers is not knowable without inspecting it — until collect
-     observes OK/ERR or the slot is reused. */
+/* Commit point: pin the task keeper — unconditionally, since whether a
+   stream carries hook-emitted mori identifiers is not knowable without
+   inspecting it — install the sequence, and open the slot as PENDING.
+   Everything that can longjmp ran before this. */
+static void pool_commit_rs(mov_pool *p, SEXP keepers, uint32_t local,
+                           SEXP keep, mov_rs_hdr *rs) {
   SET_VECTOR_ELT(keepers, (R_xlen_t) local, keep);
   p->rs_cursor = local + 1;
   atomic_fetch_add_explicit(&rs->sequence, 1, memory_order_relaxed);
   atomic_store_explicit(&rs->waiter_slot, -1, memory_order_relaxed);
   atomic_store_explicit(&rs->worker_slot, -1, memory_order_relaxed);
   atomic_store_explicit(&rs->status, MOV_RS_PENDING, memory_order_release);
+}
 
+static void pool_fill_entry(mov_pool *p, mov_entry_hdr *eh,
+                            uint32_t rs_index) {
   eh->task_id = ((uint64_t) p->sub_slot << 48) | ++p->task_counter;
   eh->rs_index = rs_index;
   eh->submitter_slot = (uint16_t) p->sub_slot;
   eh->pad = 0;
+}
+
+static void pool_execute(mov_pool *p, SEXP xp);
+static void pool_announce(mov_pool *p);
+
+/* Worker-side nested submit: the local-deque push. The worker becomes a
+   submitter on first use — same keeper-table discipline, keyed by its own
+   subrange, claimed lazily so pools that never nest spend no submitter
+   slots on workers. The entry is staged directly into the worker's own
+   deque slot and published by the bottom store; a full deque executes the
+   task inline instead (work-first), so nested submit never blocks. */
+static SEXP pool_submit_nested(mov_pool *p, SEXP xp, SEXP payload) {
+  if (p->wk_slot < 0)
+    Rf_error("mov: not a worker handle");
+  SEXP prot = R_ExternalPtrProtected(xp);
+  if (p->sub_slot < 0) {
+    pool_claim_sub_slot(p, &p->live_sub);
+    SET_VECTOR_ELT(prot, 2, Rf_allocVector(VECSXP,
+      (R_xlen_t) p->sub[p->sub_slot].rs_count));
+  }
+  SEXP keepers = VECTOR_ELT(prot, 2);
+  uint32_t local = pool_alloc_rs(p);
+  uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
+  mov_rs_hdr *rs = pool_rs(p, rs_index);
+
+  mov_wk_slot *w = &p->wk[p->wk_slot];
+  int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_relaxed);
+  int64_t t = atomic_load_explicit(&w->deque_top, memory_order_acquire);
+  int inline_exec = b - t >= (int64_t) w->deque_cap;
+  unsigned char *e = inline_exec ? p->scratch : deque_entry_at(p, w, b);
+  mov_entry_hdr *eh = (mov_entry_hdr *) e;
+
+  /* everything that can longjmp — staging, handle allocation, the
+     evaluator lookup the inline path needs — runs before any observable
+     mutation: an error leaves the entry unpublished and the slot FREE */
+  if (inline_exec) (void) pool_eval_fun(xp);
+  SEXP keep = PROTECT(mov_payload_stage(&eh->ph, e + sizeof(mov_entry_hdr),
+                                        p->inline_entry, payload));
+  SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
+  pool_commit_rs(p, keepers, local, keep, rs);
+  pool_fill_entry(p, eh, rs_index);
+  if (!inline_exec) {
+    atomic_store_explicit(&w->deque_bottom, b + 1, memory_order_release);
+    if (b <= t) pool_wake_one_worker(p);   /* empty -> non-empty */
+  } else {
+    pool_announce(p);
+    pool_execute(p, xp);
+  }
+  UNPROTECT(2);
+  return txp;
+}
+
+SEXP mov_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
+  mov_pool *p = pool_get(xp);
+  if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
+    Rf_error("mov: pool stopped");
+  if (p->role == MOV_ROLE_WORKER)
+    return pool_submit_nested(p, xp, payload);
+  if (p->sub_slot < 0)
+    Rf_error("mov: not a submitter handle");
+  SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
+
+  unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
+  if (!pool_ring_space_wait(p, ring_head(ring), Rf_asReal(timeout)))
+    Rf_error("mov: submission timed out (injection ring full)");
+
+  uint32_t local = pool_alloc_rs(p);
+  uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
+  mov_rs_hdr *rs = pool_rs(p, rs_index);
+
+  /* staging and handle allocation can longjmp: nothing observable yet */
+  unsigned char *e = ring_entry(p, ring, (uint64_t) p->inj_ltail);
+  mov_entry_hdr *eh = (mov_entry_hdr *) e;
+  SEXP keep = PROTECT(mov_payload_stage(&eh->ph, e + sizeof(mov_entry_hdr),
+                                        p->inline_entry, payload));
+  SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
+  pool_commit_rs(p, keepers, local, keep, rs);
+  pool_fill_entry(p, eh, rs_index);
   p->inj_ltail++;
   atomic_store_explicit(ring_tail(ring), p->inj_ltail, memory_order_release);
   uint64_t bit = 1ull << p->sub_slot;
@@ -1203,12 +1310,16 @@ static uint64_t pool_rng(mov_pool *p) {   /* xorshift64 */
 }
 
 #define MOV_STEAL_ROUNDS 4
+#define MOV_HELP_DEPTH_LIMIT 32
 
-/* Random victim among LIVE and REAPING slots, one attempt per victim,
-   bounded rounds; EMPTY and ABORT alike move to the next victim. Exhausting
-   the rounds falls through to the injection scan and then the pre-park
-   spin + announce-then-rescan, which is what makes a missed steal safe. */
-static int pool_steal(mov_pool *p) {
+/* Random victim, one attempt per victim, bounded rounds; EMPTY and ABORT
+   alike move to the next victim. Victims are LIVE and REAPING slots — or
+   REAPING only for a help-mode collector at its depth limit, since live
+   peers' deques have a guaranteed executor (their owner) while ownerless
+   work does not. Exhausting the rounds falls through to the caller's next
+   tier (injection scan, then the pre-park spin + announce-then-rescan),
+   which is what makes a missed steal safe. */
+static int pool_steal_any(mov_pool *p, int reaping_only) {
   uint32_t mw = p->hdr.max_workers;
   if (mw <= 1) return 0;
   for (int r = 0; r < MOV_STEAL_ROUNDS; r++) {
@@ -1218,11 +1329,16 @@ static int pool_steal(mov_pool *p) {
       if ((int) i == p->wk_slot) continue;
       int32_t st = atomic_load_explicit(&p->wk[i].status,
                                         memory_order_acquire);
-      if (st != MOV_WK_LIVE && st != MOV_WK_REAPING) continue;
+      if (st != MOV_WK_REAPING && (reaping_only || st != MOV_WK_LIVE))
+        continue;
       if (pool_steal_from(p, i) == MOV_STEAL_GOT) return 1;
     }
   }
   return 0;
+}
+
+static int pool_steal(mov_pool *p) {
+  return pool_steal_any(p, 0);
 }
 
 /* The fairness tick's full scan: every injection ring unfiltered by the
@@ -1288,10 +1404,18 @@ static int pool_any_work(mov_pool *p) {
   return any;
 }
 
-static void pool_execute(mov_pool *p, SEXP keepers, SEXP eval_fun) {
+/* Executes the claimed, announced entry in scratch and publishes into its
+   result slot. Reentrant: help-mode and nested-submit execution recurse
+   through here from inside Rf_eval, and every claim path reuses scratch —
+   so everything needed from the entry and the announce is copied out
+   before the eval. */
+static void pool_execute(mov_pool *p, SEXP xp) {
+  SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
+  SEXP eval_fun = pool_eval_fun(xp);
   mov_wk_slot *me = &p->wk[p->wk_slot];
   mov_entry_hdr *eh = (mov_entry_hdr *) p->scratch;
-  mov_rs_hdr *rs = pool_rs(p, eh->rs_index);
+  uint32_t rs_index = eh->rs_index;
+  mov_rs_hdr *rs = pool_rs(p, rs_index);
   uint64_t seq = atomic_load_explicit(&me->in_flight_seq,
                                       memory_order_relaxed);
   atomic_store_explicit(&rs->worker_slot, p->wk_slot, memory_order_relaxed);
@@ -1312,9 +1436,10 @@ static void pool_execute(mov_pool *p, SEXP keepers, SEXP eval_fun) {
   SEXP pl = PROTECT(mov_payload_read(&eh->ph,
                                      p->scratch + sizeof(mov_entry_hdr),
                                      p->inline_entry));
-  /* worker_eval returns list(ok, value-or-condition); user errors are caught
-     there, so an error out of this eval is infrastructure failure and
-     propagates to worker_main */
+  /* scratch (and eh with it) is dead from here: the eval below may claim
+     into it. worker_evalfn returns list(ok, value-or-condition); user
+     errors are caught there, so an error out of this eval is
+     infrastructure failure and propagates to worker_main */
   SEXP call = PROTECT(Rf_lang2(eval_fun, pl));
   SEXP res = PROTECT(Rf_eval(call, R_GlobalEnv));
   int ok = Rf_asLogical(VECTOR_ELT(res, 0)) == TRUE;
@@ -1333,8 +1458,8 @@ static void pool_execute(mov_pool *p, SEXP keepers, SEXP eval_fun) {
                                               ok ? MOV_RS_OK : MOV_RS_ERR,
                                               memory_order_seq_cst,
                                               memory_order_acquire)) {
-    SET_VECTOR_ELT(keepers, (R_xlen_t) eh->rs_index, keep);
-    pool_rk_add(p, eh->rs_index, seq);
+    SET_VECTOR_ELT(keepers, (R_xlen_t) rs_index, keep);
+    pool_rk_add(p, rs_index, seq);
     pool_unpark_result_waiter(p, rs);
   } else {
     /* cancelled while we ran: drop the result, return the slot */
@@ -1351,13 +1476,14 @@ static void pool_execute(mov_pool *p, SEXP keepers, SEXP eval_fun) {
 /* One worker-loop iteration: reap keepers, check flags, claim + execute one
    task or park. Returns 1 after executing a task, 0 on timeout / spurious
    wake, -1 on shutdown or owner death. The R-level worker_main loops over
-   this; the in-process test harness single-steps it. */
-SEXP mov_pool_step(SEXP xp, SEXP timeout, SEXP eval_fun) {
+   this; the in-process test harness single-steps it. The evaluator comes
+   from the handle (mov_pool_set_eval), checked up front so a claim can
+   never outrun a missing evaluator. */
+SEXP mov_pool_step(SEXP xp, SEXP timeout) {
   mov_pool *p = pool_get(xp);
   if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
     Rf_error("mov: not a worker handle");
-  if (TYPEOF(eval_fun) != CLOSXP)
-    Rf_error("mov: expected an eval function");
+  (void) pool_eval_fun(xp);
   SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
   mov_wk_slot *me = &p->wk[p->wk_slot];
   uint64_t my_bit = 1ull << p->wk_slot;
@@ -1378,7 +1504,7 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout, SEXP eval_fun) {
       return Rf_ScalarInteger(-1);
 
     if (pool_next_task(p)) {
-      pool_execute(p, keepers, eval_fun);
+      pool_execute(p, xp);
       return Rf_ScalarInteger(1);
     }
 
@@ -1495,6 +1621,29 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
       Rf_error("mov: task handle already collected or invalidated");
     st = atomic_load_explicit(&rs->status, memory_order_acquire);
     if (st != MOV_RS_PENDING) break;
+
+    /* Help mode: a worker blocked on its own subtree must make progress
+       on runnable work, not park — N workers simultaneously parked in
+       nested collects would deadlock the pool. The awaited task is on this
+       worker's own deque bottom, claimed by a peer (progress either way),
+       or on a dead worker's orphaned deque; help covers own pops and
+       steals, and deliberately excludes the submitter injection rings. At
+       the depth limit only ownerless work remains eligible (own bottom +
+       REAPING deques): live peers' deques have a guaranteed executor, so
+       excluding them there bounds C-stack growth without a hang — every
+       chain of waiting collectors bottoms out in a worker executing. */
+    if (p->role == MOV_ROLE_WORKER && p->wk_slot >= 0) {
+      int got = pool_deque_pop(p);
+      if (!got)
+        got = pool_steal_any(p, p->help_depth >= MOV_HELP_DEPTH_LIMIT);
+      if (got) {
+        p->help_depth++;
+        pool_execute(p, pool_xp);
+        p->help_depth--;
+        continue;
+      }
+    }
+
     if (timeout_s <= 0) return mov_sent_timeout;
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = mov_now() + timeout_s;
@@ -1535,7 +1684,7 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
     if (t->idx >= p->sub[p->sub_slot].rs_start &&
         t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count)
-      SET_VECTOR_ELT(VECTOR_ELT(R_ExternalPtrProtected(pool_xp), 0),
+      SET_VECTOR_ELT(pool_task_keepers(p, pool_xp),
                      (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start),
                      R_NilValue);
     int32_t expected = st;
@@ -1682,6 +1831,109 @@ SEXP mov_pool_status_call(SEXP xp) {
 
   SET_VECTOR_ELT(out, 13, Rf_ScalarLogical(
     (int) atomic_load_explicit(p->shutdown, memory_order_acquire)));
+  UNPROTECT(1);
+  return out;
+}
+
+/* Read-only region snapshot for debugging distributed state: per-slot
+   registry detail, the three hot masks unpacked per slot, and every
+   non-FREE result slot. States can move between the count pass and the
+   fill pass; short rows are padded with NA and trimmed on the R side. */
+SEXP mov_pool_dump_call(SEXP xp) {
+  mov_pool *p = pool_get(xp);
+  uint32_t mw = p->hdr.max_workers, ms = p->hdr.max_submitters;
+  const char *names[] = {"name", "shutdown", "workers", "submitters",
+                         "tasks", ""};
+  SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
+  SET_VECTOR_ELT(out, 0, Rf_mkString(p->shm.name));
+  SET_VECTOR_ELT(out, 1, Rf_ScalarLogical(
+    (int) atomic_load_explicit(p->shutdown, memory_order_acquire)));
+
+  const char *wnames[] = {"status", "pid", "park_state", "parked", "top",
+                          "bottom", "in_flight", ""};
+  SEXP wk = Rf_mkNamed(VECSXP, wnames);
+  SET_VECTOR_ELT(out, 2, wk);
+  for (int f = 0; f < 7; f++)
+    SET_VECTOR_ELT(wk, f, Rf_allocVector(
+      f == 1 || f == 4 || f == 5 ? REALSXP :
+      f == 3 ? LGLSXP : INTSXP, (R_xlen_t) mw));
+  uint64_t parked = atomic_load_explicit(p->parked_workers,
+                                         memory_order_acquire);
+  for (uint32_t i = 0; i < mw; i++) {
+    mov_wk_slot *w = &p->wk[i];
+    INTEGER(VECTOR_ELT(wk, 0))[i] =
+      (int) atomic_load_explicit(&w->status, memory_order_acquire);
+    REAL(VECTOR_ELT(wk, 1))[i] = (double) w->pid;
+    INTEGER(VECTOR_ELT(wk, 2))[i] =
+      (int) atomic_load_explicit(&w->park_state, memory_order_acquire);
+    LOGICAL(VECTOR_ELT(wk, 3))[i] = (parked >> i) & 1;
+    REAL(VECTOR_ELT(wk, 4))[i] = (double)
+      atomic_load_explicit(&w->deque_top, memory_order_acquire);
+    REAL(VECTOR_ELT(wk, 5))[i] = (double)
+      atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
+    INTEGER(VECTOR_ELT(wk, 6))[i] =
+      (int) atomic_load_explicit(&w->in_flight_rs, memory_order_acquire);
+  }
+
+  const char *snames[] = {"status", "pid", "rs_start", "rs_count", "queued",
+                          "ready", "full_waiter", ""};
+  SEXP sb = Rf_mkNamed(VECSXP, snames);
+  SET_VECTOR_ELT(out, 3, sb);
+  for (int f = 0; f < 7; f++)
+    SET_VECTOR_ELT(sb, f, Rf_allocVector(
+      f == 1 || f == 4 ? REALSXP :
+      f == 5 || f == 6 ? LGLSXP : INTSXP, (R_xlen_t) ms));
+  uint64_t ready = atomic_load_explicit(p->inj_ready, memory_order_acquire);
+  uint64_t full = atomic_load_explicit(p->full_waiters,
+                                       memory_order_acquire);
+  for (uint32_t j = 0; j < ms; j++) {
+    mov_sub_slot *s = &p->sub[j];
+    unsigned char *ring = pool_ring(p, j);
+    INTEGER(VECTOR_ELT(sb, 0))[j] =
+      (int) atomic_load_explicit(&s->status, memory_order_acquire);
+    REAL(VECTOR_ELT(sb, 1))[j] = (double) s->pid;
+    INTEGER(VECTOR_ELT(sb, 2))[j] = (int) s->rs_start;
+    INTEGER(VECTOR_ELT(sb, 3))[j] = (int) s->rs_count;
+    REAL(VECTOR_ELT(sb, 4))[j] = (double)
+      (atomic_load_explicit(ring_tail(ring), memory_order_acquire) -
+       atomic_load_explicit(ring_head(ring), memory_order_acquire));
+    LOGICAL(VECTOR_ELT(sb, 5))[j] = (ready >> j) & 1;
+    LOGICAL(VECTOR_ELT(sb, 6))[j] = (full >> j) & 1;
+  }
+
+  uint32_t n = 0;
+  for (uint32_t r = 0; r < p->hdr.result_slots; r++)
+    n += atomic_load_explicit(&pool_rs(p, r)->status,
+                              memory_order_acquire) != MOV_RS_FREE;
+  const char *tnames[] = {"slot", "status", "sequence", "worker", "waiter",
+                          ""};
+  SEXP tk = Rf_mkNamed(VECSXP, tnames);
+  SET_VECTOR_ELT(out, 4, tk);
+  for (int f = 0; f < 5; f++)
+    SET_VECTOR_ELT(tk, f, Rf_allocVector(f == 2 ? REALSXP : INTSXP,
+                                         (R_xlen_t) n));
+  uint32_t m = 0;
+  for (uint32_t r = 0; r < p->hdr.result_slots && m < n; r++) {
+    mov_rs_hdr *rs = pool_rs(p, r);
+    int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
+    if (st == MOV_RS_FREE) continue;
+    INTEGER(VECTOR_ELT(tk, 0))[m] = (int) r;
+    INTEGER(VECTOR_ELT(tk, 1))[m] = (int) st;
+    REAL(VECTOR_ELT(tk, 2))[m] = (double)
+      atomic_load_explicit(&rs->sequence, memory_order_relaxed);
+    INTEGER(VECTOR_ELT(tk, 3))[m] =
+      (int) atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
+    INTEGER(VECTOR_ELT(tk, 4))[m] =
+      (int) atomic_load_explicit(&rs->waiter_slot, memory_order_acquire);
+    m++;
+  }
+  for (; m < n; m++) {
+    INTEGER(VECTOR_ELT(tk, 0))[m] = NA_INTEGER;
+    INTEGER(VECTOR_ELT(tk, 1))[m] = NA_INTEGER;
+    REAL(VECTOR_ELT(tk, 2))[m] = NA_REAL;
+    INTEGER(VECTOR_ELT(tk, 3))[m] = NA_INTEGER;
+    INTEGER(VECTOR_ELT(tk, 4))[m] = NA_INTEGER;
+  }
   UNPROTECT(1);
   return out;
 }

@@ -7,7 +7,8 @@
 mov_pool_status(pool)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mov_pool]{mov_pool()}} or \code{\link[=mov_pool_attach]{mov_pool_attach()}}.}
+\item{pool}{a pool handle from \code{\link[=mov_pool]{mov_pool()}} or \code{\link[=mov_pool_attach]{mov_pool_attach()}} — or,
+inside a task, the worker's own handle bound as \code{pool}.}
 }
 \value{
 A list with elements \code{name}, \code{role}, \code{max_workers},

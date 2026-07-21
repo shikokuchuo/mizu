@@ -7,7 +7,8 @@
 mov_pool_stop(pool, timeout = 5)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mov_pool]{mov_pool()}} or \code{\link[=mov_pool_attach]{mov_pool_attach()}}.}
+\item{pool}{a pool handle from \code{\link[=mov_pool]{mov_pool()}} or \code{\link[=mov_pool_attach]{mov_pool_attach()}} — or,
+inside a task, the worker's own handle bound as \code{pool}.}
 
 \item{timeout}{seconds to wait for workers' clean exit.}
 }

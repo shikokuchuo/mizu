@@ -123,12 +123,23 @@ mov_pool_attach <- function(name) {
 #' `timeout`. A task whose handle was cancelled (or whose pool was stopped)
 #' raises an error on collect.
 #'
+#' Task expressions see their evaluating worker's own handle as `pool`
+#' (beneath the arguments in `...`), so tasks can submit nested subtasks:
+#' `mov_submit(pool, ...)` inside a task pushes onto the worker's own
+#' work-stealing deque — no ring, no wait; a full deque runs the subtask
+#' inline instead. A worker blocked in `mov_collect()` on a nested handle
+#' helps rather than sleeps: it executes work from its own deque (and
+#' steals from peers) until the awaited result publishes, so nested
+#' fan-outs run at fork/join cost and never deadlock the pool. Nested
+#' submission claims a submitter slot for the worker on first use.
+#'
 #' A handle can be collected exactly once: the result slot is released to
 #' the pool as the value is returned. Dropping an uncollected handle to the
 #' garbage collector cancels a still-queued task and discards a published
 #' result.
 #'
-#' @param pool a pool handle from [mov_pool()] or [mov_pool_attach()].
+#' @param pool a pool handle from [mov_pool()] or [mov_pool_attach()] — or,
+#'   inside a task, the worker's own handle bound as `pool`.
 #' @param expr an expression, captured unevaluated. It sees only the
 #'   arguments in `...` (plus the worker's global environment); packages
 #'   must be loaded by the expression itself.
@@ -228,6 +239,43 @@ mov_pool_status <- function(pool) {
   st
 }
 
+#' Dump a Pool's Distributed State
+#'
+#' A read-only debugging snapshot of the entire pool region, one level
+#' deeper than [mov_pool_status()]: per-slot registry detail, the park /
+#' ready / back-pressure masks unpacked per slot, and every occupied result
+#' slot. State is distributed across processes and execution is
+#' non-deterministic, so this is the first tool to reach for when a pool
+#' hangs. The scan takes no locks and can race in-flight transitions;
+#' each field is a consistent single read, rows need not be mutually
+#' consistent.
+#'
+#' @inheritParams mov_submit
+#'
+#' @return A list with elements `name`, `shutdown`, `workers` (data frame:
+#'   slot, status, pid, park_state, parked, deque `top` / `bottom`, and the
+#'   in-flight result slot), `submitters` (data frame: slot, status, pid,
+#'   result-slot subrange, queued injection entries, ready and
+#'   full-waiter mask bits), and `tasks` (data frame of occupied result
+#'   slots: slot, status, sequence, executing worker, parked waiter).
+#'
+#' @export
+mov_pool_dump <- function(pool) {
+  d <- .Call(mov_pool_dump_call, pool)
+  w <- d$workers
+  w$status <- c("free", "claiming", "live", "leaving",
+                "reaping")[w$status + 1L]
+  w$park_state <- c("running", "idle", "parked", "waking")[w$park_state + 1L]
+  d$workers <- data.frame(slot = seq_along(w$status) - 1L, w)
+  s <- d$submitters
+  s$status <- c("free", "live", "reaping")[s$status + 1L]
+  d$submitters <- data.frame(slot = seq_along(s$status) - 1L, s)
+  tk <- lapply(d$tasks, `[`, !is.na(d$tasks$slot))
+  tk$status <- c("free", "pending", "ok", "err", "cancel")[tk$status + 1L]
+  d$tasks <- data.frame(tk)
+  d
+}
+
 # Worker entry point: invoked as `Rscript -e 'mov:::worker_main("<suffix>",
 # <slot>)'` by the launcher. Rebuilds the region name from the compiled-in
 # prefix plus the argv suffix, attaches writable, validates the header,
@@ -239,10 +287,11 @@ mov_pool_status <- function(pool) {
 worker_main <- function(suffix, slot) {
   if (!"package:mov" %in% search()) attachNamespace("mov")
   h <- .Call(mov_pool_worker_join, suffix, slot)
+  .Call(mov_pool_set_eval, h, worker_evalfn(h))
   status <- 0L
   tryCatch(
     repeat {
-      if (.Call(mov_pool_step, h, 3600, worker_eval) < 0L) break
+      if (.Call(mov_pool_step, h, 3600) < 0L) break
     },
     error = function(e) {
       cat("mov worker error: ", conditionMessage(e), "\n", sep = "",
@@ -254,12 +303,18 @@ worker_main <- function(suffix, slot) {
   quit(save = "no", status = status)
 }
 
-# Evaluates one task payload — list(expr, named args) — in a fresh
-# environment over the worker's global environment. User errors are caught
-# and published as ERR results; anything escaping this function is
+# Builds the worker's evaluator: one task payload — list(expr, named args)
+# — evaluated in a fresh environment whose parent binds the worker's own
+# handle as `pool`, which is what worker-side nested submit closes over
+# (arguments shadow it if a task names one `pool`). User errors are caught
+# and published as ERR results; anything escaping the evaluator is
 # infrastructure failure and takes the worker down.
-worker_eval <- function(payload) {
-  env <- list2env(payload[[2L]], parent = globalenv())
-  tryCatch(list(TRUE, eval(payload[[1L]], env)),
-           error = function(e) list(FALSE, e))
+worker_evalfn <- function(h) {
+  base <- new.env(parent = globalenv())
+  base[["pool"]] <- h
+  function(payload) {
+    env <- list2env(payload[[2L]], parent = base)
+    tryCatch(list(TRUE, eval(payload[[1L]], env)),
+             error = function(e) list(FALSE, e))
+  }
 }

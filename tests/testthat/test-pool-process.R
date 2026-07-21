@@ -140,6 +140,23 @@ test_that("repeated submit/collect cycles park and wake without loss", {
   expect_true(mov_pool_stop(p, timeout = 10))
 })
 
+test_that("nested fan-out runs with help mode and stealing live", {
+  skip_if_no_child_mov()
+  p <- mov_pool(n_workers = 2L)
+  # the outer worker pushes eight subtasks and help-pops from its bottom
+  # while the second worker steals from its top
+  t <- mov_submit(p, {
+    subs <- lapply(1:8, function(i)
+      mov_submit(pool, {
+        Sys.sleep(0.05)
+        i * 2L
+      }, i = i))
+    sum(vapply(subs, function(s) mov_collect(s, timeout = 30), integer(1)))
+  })
+  expect_identical(mov_collect(t, timeout = 30), 72L)
+  expect_true(mov_pool_stop(p, timeout = 10))
+})
+
 test_that("a full ring parks the submitter until a worker's pop wakes it", {
   skip_if_no_child_mov()
   p <- mov_pool(injection_cap = 4L, result_slots = 256L)

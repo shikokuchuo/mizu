@@ -85,14 +85,17 @@ pool_pair <- function(workers = 1L, max_submitters = 8L, injection_cap = 64L,
   ctrl <- .Call(mov:::mov_pool_create, workers, max_submitters, injection_cap,
                 per_worker_cap, result_slots, slot_size, tempdir())
   suffix <- .Call(mov:::mov_pool_suffix, ctrl)
-  wks <- lapply(seq_len(workers) - 1L, function(slot)
-    .Call(mov:::mov_pool_worker_join, suffix, slot))
+  wks <- lapply(seq_len(workers) - 1L, function(slot) {
+    wk <- .Call(mov:::mov_pool_worker_join, suffix, slot)
+    .Call(mov:::mov_pool_set_eval, wk, mov:::worker_evalfn(wk))
+    wk
+  })
   list(ctrl = ctrl, wk = wks[[1L]], wks = wks)
 }
 
 # One worker-loop iteration: 1 = executed a task, 0 = none, -1 = shutdown
 pool_step <- function(p, timeout = 0, wk = p$wk)
-  .Call(mov:::mov_pool_step, wk, timeout, mov:::worker_eval)
+  .Call(mov:::mov_pool_step, wk, timeout)
 
 # Test-only: move up to n queued injection entries onto the worker's own
 # deque (the stand-in for Phase 3's nested submit)
