@@ -77,6 +77,7 @@ SEXP mov_pool_leave(SEXP);
 SEXP mov_pool_attach_call(SEXP);
 SEXP mov_pool_submit(SEXP, SEXP, SEXP);
 SEXP mov_pool_step(SEXP, SEXP, SEXP);
+SEXP mov_pool_deque_pull(SEXP, SEXP);
 SEXP mov_pool_collect(SEXP, SEXP);
 SEXP mov_pool_cancel(SEXP);
 SEXP mov_pool_stop_call(SEXP, SEXP);
@@ -129,6 +130,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mov_pool_attach_call",      (DL_FUNC) &mov_pool_attach_call,      1},
   {"mov_pool_submit",           (DL_FUNC) &mov_pool_submit,           3},
   {"mov_pool_step",             (DL_FUNC) &mov_pool_step,             3},
+  {"mov_pool_deque_pull",       (DL_FUNC) &mov_pool_deque_pull,       2},
   {"mov_pool_collect",          (DL_FUNC) &mov_pool_collect,          2},
   {"mov_pool_cancel",           (DL_FUNC) &mov_pool_cancel,           1},
   {"mov_pool_stop_call",        (DL_FUNC) &mov_pool_stop_call,        2},

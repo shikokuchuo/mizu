@@ -24,8 +24,10 @@ test_that("mov_pool_create validates its parameters", {
                "result_slots must be")
 })
 
-test_that("the R-level constructor enforces the Phase 1 single worker", {
-  expect_error(mov_pool(n_workers = 2L), "exactly one worker")
+test_that("the R-level constructor validates the worker count", {
+  expect_error(mov_pool(n_workers = 0L), "at least 1")
+  expect_error(mov_pool(n_workers = 2L, max_workers = 1L),
+               "exceeds max_workers")
 })
 
 test_that("a fresh pool reports its layout and registry state", {

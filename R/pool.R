@@ -3,9 +3,10 @@
 #' Creates a shared-memory task pool — per-submitter injection rings feeding
 #' worker processes, with results published through a slot pool — and spawns
 #' its worker processes. Submission is an SHM ring write plus at most one
-#' directed wake: no dispatcher process is in the loop. Phase 1 supports a
-#' single worker; the region is laid out for `max_workers` so later phases
-#' add capacity without a new wire format.
+#' directed wake: no dispatcher process is in the loop. Each worker owns a
+#' work-stealing deque; idle workers steal from busy peers and consume the
+#' injection rings, with a fairness tick bounding external-submission
+#' latency on a saturated pool.
 #'
 #' The pool's lifetime is bound to the creating process, which holds
 #' submitter slot 0 of the returned handle: use it directly with
@@ -18,15 +19,15 @@
 #' short identifier wire form via mori's own hooks and maps zero-copy on the
 #' other side.
 #'
-#' @param n_workers number of worker processes to spawn. Phase 1 supports
-#'   exactly one.
+#' @param n_workers number of worker processes to spawn, at most
+#'   `max_workers`.
 #' @param max_workers worker registry capacity (at most 64).
 #' @param max_submitters submitter registry capacity (at most 64). Each
 #'   submitter owns its own injection ring and an equal share of
 #'   `result_slots`.
 #' @param injection_cap entries per submitter injection ring; a power of two.
-#' @param per_worker_cap entries per worker deque; a power of two. Laid out
-#'   now, consumed by the Phase 2 stealing tier.
+#' @param per_worker_cap entries per worker work-stealing deque; a power of
+#'   two.
 #' @param result_slots total result slots, partitioned equally across
 #'   submitter slots; rounded up to a multiple of `max_submitters`. Bounds
 #'   each submitter's outstanding (uncollected) tasks.
@@ -65,9 +66,11 @@ mov_pool <- function(n_workers = 1L, max_workers = n_workers,
                      slot_size = 256L, launcher = NULL, stdout = "",
                      stderr = "", liveness_dir = tempdir(),
                      startup_timeout = 10) {
-  if (!identical(as.integer(n_workers), 1L))
-    stop("mov: Phase 1 pools support exactly one worker; multi-worker ",
-         "pools arrive with the stealing tier", call. = FALSE)
+  n_workers <- as.integer(n_workers)
+  if (is.na(n_workers) || n_workers < 1L)
+    stop("mov: n_workers must be at least 1", call. = FALSE)
+  if (n_workers > as.integer(max_workers))
+    stop("mov: n_workers exceeds max_workers", call. = FALSE)
   p <- .Call(mov_pool_create, max_workers, max_submitters, injection_cap,
              per_worker_cap, result_slots, slot_size, liveness_dir)
   suffix <- .Call(mov_pool_suffix, p)
@@ -212,7 +215,8 @@ mov_pool_stop <- function(pool, timeout = 5) {
 #'   `max_submitters`, `injection_cap`, `result_slots`, `slot_size`,
 #'   `workers` (per-slot states), `parked`, `submitters` (per-slot states),
 #'   `injection` (entries queued and unclaimed), `tasks` (result slots by
-#'   state: pending / ok / err / cancel), and `shutdown`.
+#'   state: pending / ok / err / cancel), `deque` (per-worker deque
+#'   depths), and `shutdown`.
 #'
 #' @export
 mov_pool_status <- function(pool) {
@@ -229,9 +233,9 @@ mov_pool_status <- function(pool) {
 # prefix plus the argv suffix, attaches writable, validates the header,
 # claims its host-assigned slot (liveness lock before status CAS), points
 # its death listener at the owner, and unparks the creator on reaching
-# LIVE. The loop then lives in mov_pool_step: injection consumption only in
-# Phase 1, parked indefinitely when idle, returning negative on shutdown or
-# owner death.
+# LIVE. The loop then lives in mov_pool_step: one claim in tier order
+# (fairness tick, own deque, steal, injection) per task, parked indefinitely
+# when idle, returning negative on shutdown or owner death.
 worker_main <- function(suffix, slot) {
   if (!"package:mov" %in% search()) attachNamespace("mov")
   h <- .Call(mov_pool_worker_join, suffix, slot)

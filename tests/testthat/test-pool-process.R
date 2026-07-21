@@ -110,3 +110,44 @@ test_that("stop cancels a pending task and the worker exits cleanly", {
   expect_true(mov_pool_stop(p, timeout = 10))
   expect_error(mov_collect(t2, timeout = 5), "pool handle is closed")
 })
+
+test_that("a second worker picks up tasks while the first is busy", {
+  skip_if_no_child_mov()
+  p <- mov_pool(n_workers = 2L)
+  expect_identical(mov_pool_status(p)$workers, c("live", "live"))
+  slow <- mov_submit(p, {
+    Sys.sleep(1)
+    Sys.getpid()
+  })
+  Sys.sleep(0.2)
+  quick <- lapply(1:5, function(i) mov_submit(p, Sys.getpid()))
+  pids <- vapply(quick, mov_collect, integer(1), timeout = 30)
+  expect_identical(length(unique(c(pids, mov_collect(slow, timeout = 30)))),
+                   2L)
+  expect_true(mov_pool_stop(p, timeout = 10))
+})
+
+test_that("repeated submit/collect cycles park and wake without loss", {
+  skip_if_no_child_mov()
+  p <- mov_pool(n_workers = 2L)
+  # an idle pool parks both workers; each cycle below is a fresh wake —
+  # a lost wake in the handshake surfaces as a collect timeout
+  expect_true(wait_until(mov_pool_status(p)$parked == 2L))
+  for (i in 1:50) {
+    t <- mov_submit(p, x + 1L, x = i)
+    expect_identical(mov_collect(t, timeout = 10), i + 1L)
+  }
+  expect_true(mov_pool_stop(p, timeout = 10))
+})
+
+test_that("a full ring parks the submitter until a worker's pop wakes it", {
+  skip_if_no_child_mov()
+  p <- mov_pool(injection_cap = 4L, result_slots = 256L)
+  # 32 submissions through a 4-slot ring: most block on full_waiters and
+  # are woken directly by the consuming worker
+  tasks <- lapply(1:32, function(i) mov_submit(p, i * 2L, i = i,
+                                               .timeout = 30))
+  vals <- vapply(tasks, mov_collect, integer(1), timeout = 30)
+  expect_identical(vals, (1:32) * 2L)
+  expect_true(mov_pool_stop(p, timeout = 10))
+})

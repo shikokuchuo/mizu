@@ -242,9 +242,8 @@ int mov_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino);
 /* One pool SHM region: header, worker + submitter registries, injection tier
    metadata, per-submitter injection rings, per-worker deques, result slot
    pool, control block, liveness-dir string. The structs below are the wire
-   format; every section is 64-byte aligned. Phase 1 implements injection
-   consumption by a single worker — the deque space and fields are laid out
-   now so later phases add capability without moving anything. */
+   format; every section is 64-byte aligned and the layout is fixed from
+   Phase 1 so later phases add capability without moving anything. */
 
 #define MOV_POOL_MAGIC  0x4D4F5650u   /* "MOVP" */
 

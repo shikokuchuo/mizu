@@ -1,14 +1,19 @@
-/* Part II pool, Phase 1: per-submitter injection rings + a single worker +
-   result slots, over one pool SHM region mapped read-write by every
-   participant. External submissions are SPSC-published into the submitting
-   slot's own ring and consumed by workers with the copy-then-CAS claim that
-   Phase 2's stealing will share — both sides crash-atomic, with no claim
-   state a mid-operation death can wedge. Results publish through a CAS'd
-   status word per slot; payload lifetime is bridged by keepers on both
-   sides of every queue (submitter task keepers released at collect or slot
-   reuse; worker result keepers released when the slot leaves OK/ERR). The
-   region layout is the SHM-layout table in ipc-plan.md; the registry and
-   slot structs in mov.h are its wire format. */
+/* Part II pool, Phases 1 + 2: per-submitter injection rings, multiple
+   workers with Chase-Lev deques and stealing, and result slots, over one
+   pool SHM region mapped read-write by every participant. External
+   submissions are SPSC-published into the submitting slot's own ring;
+   workers consume them — and steal from each other's deques — with the
+   same copy-then-CAS claim: both sides crash-atomic, with no claim state a
+   mid-operation death can wedge. A worker looks for work in tier order
+   (fairness tick, own deque bottom, random-victim steal, injection scan)
+   and parks through the announce-then-rescan handshake, which is the sole
+   guarantee against lost wakeups — there is no watchdog behind it. Results
+   publish through a CAS'd status word per slot; payload lifetime is
+   bridged by keepers on both sides of every queue (submitter task keepers
+   released at collect or slot reuse; worker result keepers released when
+   the slot leaves OK/ERR). The region layout is the SHM-layout table in
+   ipc-plan.md; the registry and slot structs in mov.h are its wire
+   format. */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -54,6 +59,8 @@ typedef struct mov_pool_s {
   /* worker-local */
   unsigned char *scratch;        /* slot-sized claim copy buffer */
   uint32_t scan_start;           /* rotating ring-scan start */
+  uint64_t claims;               /* fairness-tick counter (% 61) */
+  uint64_t rng;                  /* xorshift state for victim selection */
   struct mov_rk_s { uint32_t idx; uint64_t seq; } *rk;
   uint32_t rk_n, rk_cap;
 
@@ -137,6 +144,16 @@ static unsigned char *ring_entry(mov_pool *p, unsigned char *r, uint64_t i) {
 
 static mov_rs_hdr *pool_rs(mov_pool *p, uint32_t idx) {
   return (mov_rs_hdr *) (p->results + (size_t) idx * p->hdr.slot);
+}
+
+static unsigned char *deque_entry_at(mov_pool *p, mov_wk_slot *w, int64_t i) {
+  return p->base + w->deque_buf_off +
+    ((uint64_t) i & ((uint64_t) w->deque_cap - 1)) * p->hdr.slot;
+}
+
+static int deque_nonempty(mov_wk_slot *w) {
+  return atomic_load_explicit(&w->deque_top, memory_order_acquire) <
+    atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
 }
 
 static const char *pool_hdr_validate(const void *region, size_t region_size,
@@ -420,7 +437,7 @@ SEXP mov_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   pool_wire(p);
 
   /* Host-assigned worker-slot geometry, written once before any spawn. The
-     deque space is laid out now (Phase 2 consumes it); a fresh region is
+     deque space feeds the stealing tier; a fresh region is
      zero-filled, so every status word starts FREE and every index at 0. */
   size_t deques_off = (size_t) (p->rings - b) +
     (size_t) h.max_submitters * pool_ring_bytes(&h);
@@ -567,7 +584,7 @@ static mov_pool *pool_open_common(const char *suffix, SEXP *xp_out,
 }
 
 /* Open the owner liveness file and keep the fd. A successful non-blocking
-   acquire means the previous holder is dead — Phase 1 has no orphan-teardown
+   acquire means the previous holder is dead — Phase 2 has no orphan-teardown
    acquirer, so the probe simply refuses the join (closing the handle releases
    the momentarily-held lock). */
 static void pool_owner_check(mov_pool *p) {
@@ -633,6 +650,9 @@ SEXP mov_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
     Rf_error("mov: cannot attach pool parkers");
   p->scratch = malloc(p->hdr.slot);
   if (p->scratch == NULL) Rf_error("mov: allocation failure");
+  p->rng = ((uint64_t) p->self_pid * 0x9E3779B97F4A7C15ull) ^
+    ((uint64_t) (mov_now() * 1e9)) ^ ((uint64_t) slot << 32);
+  if (p->rng == 0) p->rng = 1;
   pool_watch_owner(p, pool_wk_pk(p, slot));
 
   expected = MOV_WK_CLAIMING;
@@ -645,10 +665,15 @@ SEXP mov_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
   return xp;
 }
 
-/* Clean worker exit. Phase 1 workers have no deque entries, so LEAVING
-   collapses straight to FREE; kept results are abandoned because the only
-   Phase 1 exits are shutdown and owner death, both of which cancel or orphan
-   every outstanding collect anyway. */
+static void pool_unpark_result_waiter(mov_pool *p, mov_rs_hdr *rs);
+static void pool_wake_one_worker(mov_pool *p);
+static int pool_reaping_free(mov_pool *p, mov_wk_slot *w);
+
+/* Clean worker exit. A nonempty deque is never drained anywhere: it
+   becomes an ordinary steal target while the slot reads REAPING, and the
+   observer of the drained deque returns the slot to FREE. Kept results are
+   abandoned: the Phase 2 exits are shutdown and owner death, both of which
+   cancel or orphan every outstanding collect anyway. */
 SEXP mov_pool_leave(SEXP xp) {
   mov_pool *p = pool_peek(xp);
   if (p == NULL) return R_NilValue;
@@ -662,11 +687,34 @@ SEXP mov_pool_leave(SEXP xp) {
                                               MOV_WK_LEAVING,
                                               memory_order_seq_cst,
                                               memory_order_relaxed)) {
-    expected = MOV_WK_LEAVING;
-    atomic_compare_exchange_strong_explicit(&me->status, &expected,
-                                            MOV_WK_FREE,
-                                            memory_order_seq_cst,
-                                            memory_order_relaxed);
+    /* walk the deque read-only, unparking each entry's result waiter;
+       thieves may be advancing top concurrently — a wake for an
+       already-stolen entry is a spurious wake, absorbed by the re-check */
+    int64_t t = atomic_load_explicit(&me->deque_top, memory_order_acquire);
+    int64_t b = atomic_load_explicit(&me->deque_bottom,
+                                     memory_order_acquire);
+    for (int64_t i = t; i < b; i++) {
+      mov_entry_hdr *eh = (mov_entry_hdr *) deque_entry_at(p, me, i);
+      if (eh->rs_index < p->hdr.result_slots)
+        pool_unpark_result_waiter(p, pool_rs(p, eh->rs_index));
+    }
+    if (atomic_load_explicit(&me->deque_top, memory_order_acquire) >= b) {
+      expected = MOV_WK_LEAVING;
+      atomic_compare_exchange_strong_explicit(&me->status, &expected,
+                                              MOV_WK_FREE,
+                                              memory_order_seq_cst,
+                                              memory_order_relaxed);
+    } else {
+      expected = MOV_WK_LEAVING;
+      atomic_compare_exchange_strong_explicit(&me->status, &expected,
+                                              MOV_WK_REAPING,
+                                              memory_order_seq_cst,
+                                              memory_order_relaxed);
+      /* a thief that emptied the deque while we still read LEAVING saw
+         nothing to free: re-check now that REAPING is published */
+      if (!pool_reaping_free(p, me))
+        pool_wake_one_worker(p);
+    }
   }
   pool_release(p);   /* closes the liveness fd: the lock releases */
   return R_NilValue;
@@ -975,13 +1023,40 @@ static void pool_rk_add(mov_pool *p, uint32_t idx, uint64_t seq) {
   p->rk_n++;
 }
 
-/* Copy-then-CAS claim over the ready-mask-gated ring scan. The mask is a
-   fast-path hint only: a stale clear bit is repaired by the pre-park full
-   rescan, so it costs one trip to the park path, never a lost task. */
-static int pool_try_claim(mov_pool *p) {
-  uint64_t ready = atomic_load_explicit(p->inj_ready, memory_order_acquire);
-  if (ready == 0) return 0;
+/* Announce-before-claim: a worker dying after a claim CAS but before
+   recording the task would otherwise vanish it. Recorded from the entry
+   copied into scratch, before any claim (ring-head CAS, deque-bottom
+   commit, or steal CAS) is attempted; plain stores suffice — the only
+   reader is a post-mortem reaper serialized by the liveness lock. */
+static void pool_announce(mov_pool *p) {
+  mov_entry_hdr *eh = (mov_entry_hdr *) p->scratch;
+  if (eh->rs_index >= p->hdr.result_slots)
+    Rf_error("mov: corrupt pool entry");
   mov_wk_slot *me = &p->wk[p->wk_slot];
+  atomic_store_explicit(&me->in_flight_rs, (int32_t) eh->rs_index,
+                        memory_order_relaxed);
+  atomic_store_explicit(&me->in_flight_seq,
+                        atomic_load_explicit(&pool_rs(p, eh->rs_index)->
+                                             sequence,
+                                             memory_order_relaxed),
+                        memory_order_relaxed);
+}
+
+static void pool_announce_clear(mov_pool *p) {
+  atomic_store_explicit(&p->wk[p->wk_slot].in_flight_rs, -1,
+                        memory_order_relaxed);
+}
+
+/* Copy-then-CAS claim over the ring scan, ready-mask-gated on the fast
+   path (use_mask) and unfiltered on the fairness tick. The mask is a hint
+   only: a stale clear bit is repaired by the pre-park full rescan, so it
+   costs one trip to the park path, never a lost task. */
+static int pool_claim_rings(mov_pool *p, int use_mask) {
+  uint64_t ready = ~0ull;
+  if (use_mask) {
+    ready = atomic_load_explicit(p->inj_ready, memory_order_acquire);
+    if (ready == 0) return 0;
+  }
   uint32_t ms = p->hdr.max_submitters;
   uint32_t start = p->scan_start;
   for (uint32_t k = 0; k < ms; k++) {
@@ -995,27 +1070,18 @@ static int pool_try_claim(mov_pool *p) {
       if (head >= tail) {
         /* clear, then re-check: the producer's OR follows its tail publish,
            so a publish racing the clear is caught and the bit restored */
-        atomic_fetch_and_explicit(p->inj_ready, ~(1ull << s),
-                                  memory_order_seq_cst);
-        if (atomic_load_explicit(tl, memory_order_acquire) >
-            atomic_load_explicit(hd, memory_order_acquire))
-          atomic_fetch_or_explicit(p->inj_ready, 1ull << s,
-                                   memory_order_seq_cst);
+        if (use_mask) {
+          atomic_fetch_and_explicit(p->inj_ready, ~(1ull << s),
+                                    memory_order_seq_cst);
+          if (atomic_load_explicit(tl, memory_order_acquire) >
+              atomic_load_explicit(hd, memory_order_acquire))
+            atomic_fetch_or_explicit(p->inj_ready, 1ull << s,
+                                     memory_order_seq_cst);
+        }
         break;
       }
       memcpy(p->scratch, ring_entry(p, ring, (uint64_t) head), p->hdr.slot);
-      mov_entry_hdr *eh = (mov_entry_hdr *) p->scratch;
-      if (eh->rs_index >= p->hdr.result_slots)
-        Rf_error("mov: corrupt pool entry");
-      /* announce-before-claim: a worker dying after the claim CAS but before
-         recording the task would otherwise vanish it */
-      atomic_store_explicit(&me->in_flight_rs, (int32_t) eh->rs_index,
-                            memory_order_relaxed);
-      atomic_store_explicit(&me->in_flight_seq,
-                            atomic_load_explicit(&pool_rs(p, eh->rs_index)->
-                                                 sequence,
-                                                 memory_order_relaxed),
-                            memory_order_relaxed);
+      pool_announce(p);
       if (atomic_compare_exchange_strong_explicit(hd, &head, head + 1,
                                                   memory_order_seq_cst,
                                                   memory_order_relaxed)) {
@@ -1030,15 +1096,177 @@ static int pool_try_claim(mov_pool *p) {
         }
         return 1;
       }
-      atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
+      pool_announce_clear(p);
       /* lost the claim race to another worker: retry this ring */
     }
   }
   return 0;
 }
 
-/* Unfiltered work check for the pre-park rescan; repairs a stale-clear
-   ready bit as it goes. */
+// Deques and stealing ---------------------------------------------------------------------
+
+/* Owner push at the bottom. Entry bytes are written before the release
+   store of bottom, which is what publishes them to thieves. The full check
+   loads top fresh: the steal path's stale-copy argument (a slot is
+   overwritten only after top advanced past it, failing the thief's CAS)
+   relies on the owner never lapping an unadvanced top. */
+static int pool_deque_push(mov_pool *p, const unsigned char *entry) {
+  mov_wk_slot *me = &p->wk[p->wk_slot];
+  int64_t b = atomic_load_explicit(&me->deque_bottom, memory_order_relaxed);
+  int64_t t = atomic_load_explicit(&me->deque_top, memory_order_acquire);
+  if (b - t >= (int64_t) me->deque_cap) return 0;
+  memcpy(deque_entry_at(p, me, b), entry, p->hdr.slot);
+  atomic_store_explicit(&me->deque_bottom, b + 1, memory_order_release);
+  return 1;
+}
+
+/* Chase-Lev take (Le et al. orderings): decrement bottom, seq_cst fence,
+   load top; the last element resolves the owner-vs-thief race by CAS on
+   top. The entry is copied and announced before the claim can commit —
+   only the owner writes the buffer, so the pre-decrement copy is stable —
+   and the announce is cleared on the lost race. */
+static int pool_deque_pop(mov_pool *p) {
+  mov_wk_slot *me = &p->wk[p->wk_slot];
+  int64_t b = atomic_load_explicit(&me->deque_bottom, memory_order_relaxed);
+  int64_t t = atomic_load_explicit(&me->deque_top, memory_order_acquire);
+  if (t >= b) return 0;
+  b--;
+  memcpy(p->scratch, deque_entry_at(p, me, b), p->hdr.slot);
+  pool_announce(p);
+  atomic_store_explicit(&me->deque_bottom, b, memory_order_relaxed);
+  atomic_thread_fence(memory_order_seq_cst);
+  t = atomic_load_explicit(&me->deque_top, memory_order_relaxed);
+  if (t < b) return 1;                       /* not the last: ours outright */
+  int got = 0;
+  if (t == b)                                /* last element: race thieves */
+    got = atomic_compare_exchange_strong_explicit(&me->deque_top, &t, t + 1,
+                                                  memory_order_seq_cst,
+                                                  memory_order_relaxed);
+  atomic_store_explicit(&me->deque_bottom, b + 1, memory_order_relaxed);
+  if (!got) pool_announce_clear(p);
+  return got;
+}
+
+enum { MOV_STEAL_EMPTY = 0, MOV_STEAL_GOT, MOV_STEAL_ABORT };
+
+/* Attempt REAPING -> FREE. Conclusive only with top/bottom re-loaded after
+   the status acquire (an earlier bottom read may predate the leaver's final
+   writes): for an orphaned deque bottom is static and top monotonic, so
+   top >= bottom then means truly drained, and any observer may free the
+   slot — which closes the race where a thief empties the deque while the
+   owner still reads LEAVING. Returns 1 when the deque is drained. */
+static int pool_reaping_free(mov_pool *p, mov_wk_slot *w) {
+  if (deque_nonempty(w)) return 0;
+  int32_t expected = MOV_WK_REAPING;
+  atomic_compare_exchange_strong_explicit(&w->status, &expected, MOV_WK_FREE,
+                                          memory_order_seq_cst,
+                                          memory_order_relaxed);
+  return 1;
+}
+
+/* Chase-Lev steal: copy the entry at top, then CAS top to claim it; only
+   the CAS publishes the theft, so a lost race or a torn copy from the
+   owner lapping the buffer is discarded unobserved. An orphaned (REAPING)
+   deque is consumed through this same path; whoever observes it drained
+   returns the slot to FREE. */
+static int pool_steal_from(mov_pool *p, uint32_t v) {
+  mov_wk_slot *w = &p->wk[v];
+  int64_t t = atomic_load_explicit(&w->deque_top, memory_order_acquire);
+  atomic_thread_fence(memory_order_seq_cst);
+  int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
+  if (t >= b) {
+    if (atomic_load_explicit(&w->status, memory_order_acquire) ==
+        MOV_WK_REAPING && !pool_reaping_free(p, w))
+      return MOV_STEAL_ABORT;   /* orphaned and nonempty after all: retry */
+    return MOV_STEAL_EMPTY;
+  }
+  memcpy(p->scratch, deque_entry_at(p, w, t), p->hdr.slot);
+  pool_announce(p);
+  if (!atomic_compare_exchange_strong_explicit(&w->deque_top, &t, t + 1,
+                                               memory_order_seq_cst,
+                                               memory_order_relaxed)) {
+    pool_announce_clear(p);
+    return MOV_STEAL_ABORT;
+  }
+  if (atomic_load_explicit(&w->status, memory_order_acquire) ==
+      MOV_WK_REAPING)
+    pool_reaping_free(p, w);
+  return MOV_STEAL_GOT;
+}
+
+static uint64_t pool_rng(mov_pool *p) {   /* xorshift64 */
+  uint64_t x = p->rng;
+  x ^= x << 13;
+  x ^= x >> 7;
+  x ^= x << 17;
+  return p->rng = x;
+}
+
+#define MOV_STEAL_ROUNDS 4
+
+/* Random victim among LIVE and REAPING slots, one attempt per victim,
+   bounded rounds; EMPTY and ABORT alike move to the next victim. Exhausting
+   the rounds falls through to the injection scan and then the pre-park
+   spin + announce-then-rescan, which is what makes a missed steal safe. */
+static int pool_steal(mov_pool *p) {
+  uint32_t mw = p->hdr.max_workers;
+  if (mw <= 1) return 0;
+  for (int r = 0; r < MOV_STEAL_ROUNDS; r++) {
+    uint32_t start = (uint32_t) (pool_rng(p) % mw);
+    for (uint32_t k = 0; k < mw; k++) {
+      uint32_t i = (start + k) % mw;
+      if ((int) i == p->wk_slot) continue;
+      int32_t st = atomic_load_explicit(&p->wk[i].status,
+                                        memory_order_acquire);
+      if (st != MOV_WK_LIVE && st != MOV_WK_REAPING) continue;
+      if (pool_steal_from(p, i) == MOV_STEAL_GOT) return 1;
+    }
+  }
+  return 0;
+}
+
+/* The fairness tick's full scan: every injection ring unfiltered by the
+   ready mask, then every REAPING slot's orphaned deque — the bound on
+   external-submission (and ownerless-work) latency when a saturated pool
+   never otherwise falls through its local tiers. */
+static int pool_fairness_scan(mov_pool *p) {
+  if (pool_claim_rings(p, 0)) return 1;
+  for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
+    if ((int) i == p->wk_slot) continue;
+    if (atomic_load_explicit(&p->wk[i].status, memory_order_acquire) ==
+        MOV_WK_REAPING && pool_steal_from(p, i) == MOV_STEAL_GOT)
+      return 1;
+  }
+  return 0;
+}
+
+/* One claim attempt in tier order. On success the entry is in scratch and
+   announced; the caller executes it. */
+static int pool_next_task(mov_pool *p) {
+  if (++p->claims % 61 == 0 && pool_fairness_scan(p)) return 1;
+  if (pool_deque_pop(p)) return 1;
+  if (pool_steal(p)) return 1;
+  return pool_claim_rings(p, 1);
+}
+
+/* Cheap work probe for the pre-announce spin: one load of the ready mask
+   plus a sweep of the deque index lines. */
+static int pool_work_hint(mov_pool *p) {
+  if (atomic_load_explicit(p->inj_ready, memory_order_acquire) != 0)
+    return 1;
+  for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
+    int32_t st = atomic_load_explicit(&p->wk[i].status,
+                                      memory_order_acquire);
+    if ((st == MOV_WK_LIVE || st == MOV_WK_REAPING) &&
+        deque_nonempty(&p->wk[i]))
+      return 1;
+  }
+  return 0;
+}
+
+/* Unfiltered work check for the pre-park rescan, covering every claim
+   source — injection rings (repairing a stale-clear ready bit as it goes)
+   and every LIVE or REAPING deque, own included. */
 static int pool_any_work(mov_pool *p) {
   int any = 0;
   for (uint32_t s = 0; s < p->hdr.max_submitters; s++) {
@@ -1049,6 +1277,13 @@ static int pool_any_work(mov_pool *p) {
                                memory_order_seq_cst);
       any = 1;
     }
+  }
+  for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
+    int32_t st = atomic_load_explicit(&p->wk[i].status,
+                                      memory_order_acquire);
+    if ((st == MOV_WK_LIVE || st == MOV_WK_REAPING) &&
+        deque_nonempty(&p->wk[i]))
+      any = 1;
   }
   return any;
 }
@@ -1142,7 +1377,7 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout, SEXP eval_fun) {
         atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0)
       return Rf_ScalarInteger(-1);
 
-    if (pool_try_claim(p)) {
+    if (pool_next_task(p)) {
       pool_execute(p, keepers, eval_fun);
       return Rf_ScalarInteger(1);
     }
@@ -1153,10 +1388,9 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout, SEXP eval_fun) {
        without touching the parked_workers line */
     for (int i = 0; i < MOV_SPIN_ITERS; i++) {
       MOV_PAUSE();
-      if (atomic_load_explicit(p->inj_ready, memory_order_acquire) != 0)
-        break;
+      if (pool_work_hint(p)) break;
     }
-    if (atomic_load_explicit(p->inj_ready, memory_order_acquire) != 0)
+    if (pool_work_hint(p))
       continue;
 
     /* announce-then-rescan (the sleep race): either our rescan sees the
@@ -1198,6 +1432,37 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout, SEXP eval_fun) {
       return Rf_ScalarInteger(0);
     }
   }
+}
+
+/* Test-only: claim up to n injection entries and queue them on this
+   worker's own deque instead of executing them — the deterministic way to
+   populate a deque before Phase 3's nested submit exists. The full check
+   precedes the claim (space only grows once we own the bottom), so a
+   claimed entry can always be queued; the announce clears once the entry
+   is safely in the deque, where worker death hands it to the REAPING
+   consumption path instead of the in-flight reap. */
+SEXP mov_pool_deque_pull(SEXP xp, SEXP n_sexp) {
+  mov_pool *p = pool_get(xp);
+  if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("mov: not a worker handle");
+  mov_wk_slot *me = &p->wk[p->wk_slot];
+  int n = Rf_asInteger(n_sexp);
+  int was_empty = !deque_nonempty(me);
+  int moved = 0;
+  while (moved < n) {
+    if (atomic_load_explicit(&me->deque_bottom, memory_order_relaxed) -
+        atomic_load_explicit(&me->deque_top, memory_order_acquire) >=
+        (int64_t) me->deque_cap)
+      break;
+    if (!pool_claim_rings(p, 1)) break;
+    pool_deque_push(p, p->scratch);
+    pool_announce_clear(p);
+    moved++;
+  }
+  /* the nested-submit wake rule: a push taking the deque from empty to
+     non-empty wakes one parked peer */
+  if (moved > 0 && was_empty) pool_wake_one_worker(p);
+  return Rf_ScalarInteger(moved);
 }
 
 // Collect and cancel ----------------------------------------------------------------------
@@ -1361,7 +1626,7 @@ SEXP mov_pool_status_call(SEXP xp) {
   const char *names[] = {"name", "role", "max_workers", "max_submitters",
                          "injection_cap", "result_slots", "slot_size",
                          "workers", "parked", "submitters", "injection",
-                         "tasks", "shutdown", ""};
+                         "tasks", "deque", "shutdown", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(p->shm.name));
   SET_VECTOR_ELT(out, 1, Rf_mkString(
@@ -1406,7 +1671,16 @@ SEXP mov_pool_status_call(SEXP xp) {
     if (st >= MOV_RS_PENDING && st <= MOV_RS_CANCEL)
       INTEGER(tasks)[st - MOV_RS_PENDING]++;
   }
-  SET_VECTOR_ELT(out, 12, Rf_ScalarLogical(
+  SEXP dq = Rf_allocVector(REALSXP, (R_xlen_t) p->hdr.max_workers);
+  SET_VECTOR_ELT(out, 12, dq);
+  for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
+    int64_t d =
+      atomic_load_explicit(&p->wk[i].deque_bottom, memory_order_acquire) -
+      atomic_load_explicit(&p->wk[i].deque_top, memory_order_acquire);
+    REAL(dq)[i] = d > 0 ? (double) d : 0;   /* a pop transiently reads -1 */
+  }
+
+  SET_VECTOR_ELT(out, 13, Rf_ScalarLogical(
     (int) atomic_load_explicit(p->shutdown, memory_order_acquire)));
   UNPROTECT(1);
   return out;

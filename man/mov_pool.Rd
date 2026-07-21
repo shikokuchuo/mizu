@@ -20,8 +20,8 @@ mov_pool(
 )
 }
 \arguments{
-\item{n_workers}{number of worker processes to spawn. Phase 1 supports
-exactly one.}
+\item{n_workers}{number of worker processes to spawn, at most
+\code{max_workers}.}
 
 \item{max_workers}{worker registry capacity (at most 64).}
 
@@ -31,8 +31,8 @@ submitter owns its own injection ring and an equal share of
 
 \item{injection_cap}{entries per submitter injection ring; a power of two.}
 
-\item{per_worker_cap}{entries per worker deque; a power of two. Laid out
-now, consumed by the Phase 2 stealing tier.}
+\item{per_worker_cap}{entries per worker work-stealing deque; a power of
+two.}
 
 \item{result_slots}{total result slots, partitioned equally across
 submitter slots; rounded up to a multiple of \code{max_submitters}. Bounds
@@ -67,9 +67,10 @@ Handles are process-private and do not survive \code{fork()}.
 Creates a shared-memory task pool — per-submitter injection rings feeding
 worker processes, with results published through a slot pool — and spawns
 its worker processes. Submission is an SHM ring write plus at most one
-directed wake: no dispatcher process is in the loop. Phase 1 supports a
-single worker; the region is laid out for \code{max_workers} so later phases
-add capacity without a new wire format.
+directed wake: no dispatcher process is in the loop. Each worker owns a
+work-stealing deque; idle workers steal from busy peers and consume the
+injection rings, with a fairness tick bounding external-submission
+latency on a saturated pool.
 }
 \details{
 The pool's lifetime is bound to the creating process, which holds

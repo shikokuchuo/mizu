@@ -74,26 +74,34 @@ echo_expr <- quote(
   }
 )
 
-# In-process pool pair: controller plus a worker handle joined from this
-# process — the deterministic harness for the injection / result-slot
-# protocols, with no process management involved. The worker consumes via
-# single steps driven by the test.
-pool_pair <- function(max_submitters = 8L, injection_cap = 64L,
-                      result_slots = 64L, slot_size = 256L) {
-  ctrl <- .Call(mov:::mov_pool_create, 1L, max_submitters, injection_cap,
-                64L, result_slots, slot_size, tempdir())
-  wk <- .Call(mov:::mov_pool_worker_join, .Call(mov:::mov_pool_suffix, ctrl),
-              0L)
-  list(ctrl = ctrl, wk = wk)
+# In-process pool pair: controller plus one or more worker handles joined
+# from this process — the deterministic harness for the injection /
+# result-slot / stealing protocols, with no process management involved.
+# Workers consume via single steps driven by the test; p$wk is the first
+# worker, p$wks all of them.
+pool_pair <- function(workers = 1L, max_submitters = 8L, injection_cap = 64L,
+                      per_worker_cap = 64L, result_slots = 64L,
+                      slot_size = 256L) {
+  ctrl <- .Call(mov:::mov_pool_create, workers, max_submitters, injection_cap,
+                per_worker_cap, result_slots, slot_size, tempdir())
+  suffix <- .Call(mov:::mov_pool_suffix, ctrl)
+  wks <- lapply(seq_len(workers) - 1L, function(slot)
+    .Call(mov:::mov_pool_worker_join, suffix, slot))
+  list(ctrl = ctrl, wk = wks[[1L]], wks = wks)
 }
 
 # One worker-loop iteration: 1 = executed a task, 0 = none, -1 = shutdown
-pool_step <- function(p, timeout = 0)
-  .Call(mov:::mov_pool_step, p$wk, timeout, mov:::worker_eval)
+pool_step <- function(p, timeout = 0, wk = p$wk)
+  .Call(mov:::mov_pool_step, wk, timeout, mov:::worker_eval)
 
-# Orderly in-process teardown: the worker leaves (its slot frees), then the
-# controller destroys (broadcast + unlink + release).
+# Test-only: move up to n queued injection entries onto the worker's own
+# deque (the stand-in for Phase 3's nested submit)
+pool_pull <- function(p, n, wk = p$wk)
+  .Call(mov:::mov_pool_deque_pull, wk, n)
+
+# Orderly in-process teardown: the workers leave (their slots free), then
+# the controller destroys (broadcast + unlink + release).
 pool_end <- function(p) {
-  .Call(mov:::mov_pool_leave, p$wk)
+  for (wk in p$wks) .Call(mov:::mov_pool_leave, wk)
   .Call(mov:::mov_pool_destroy, p$ctrl)
 }
