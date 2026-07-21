@@ -1793,8 +1793,10 @@ static void pool_execute(mov_pool *p, SEXP xp) {
                                       memory_order_relaxed);
   atomic_store_explicit(&rs->worker_slot, p->wk_slot, memory_order_relaxed);
 
-  /* skip dead work — an optimization only: the check races the finalizer's
-     CANCEL, and correctness rests on the publish CAS below either way */
+  /* skip dead work: the check races the finalizer's CANCEL, and correctness
+     rests on the publish CAS below either way. The probe rides here as at
+     the failed publish — a submitter that died before its queued work was
+     claimed would otherwise pin its slot until the stop sweep */
   if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
       MOV_RS_CANCEL) {
     int32_t expected = MOV_RS_CANCEL;
@@ -1802,6 +1804,8 @@ static void pool_execute(mov_pool *p, SEXP xp) {
                                             MOV_RS_FREE,
                                             memory_order_seq_cst,
                                             memory_order_relaxed);
+    if (sub_slot < p->hdr.max_submitters)
+      pool_probe_submitter(p, sub_slot);
     atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
     return;
   }
@@ -1841,8 +1845,9 @@ static void pool_execute(mov_pool *p, SEXP xp) {
                                             MOV_RS_FREE,
                                             memory_order_seq_cst,
                                             memory_order_relaxed);
-    /* a failed publish is submitter death's one hot-path trigger: a live
-       submitter means a genuine cancellation, a dead one is reaped here */
+    /* consuming a CANCEL — here or at the pre-eval skip — is submitter
+       death's one hot-path trigger: a live submitter means a genuine
+       cancellation, a dead one is reaped in-line */
     if (sub_slot < p->hdr.max_submitters)
       pool_probe_submitter(p, sub_slot);
   }

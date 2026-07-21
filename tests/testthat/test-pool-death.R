@@ -99,15 +99,22 @@ test_that("a worker's failed publish reaps the dead submitter", {
   skip_if_no_child_mov()
   p <- mov_pool(n_workers = 1L)
   f <- tfile()
+  g <- tfile()
   mov:::mov_spawn(sprintf('
     q <- mov::mov_pool_attach("%s")
     t <- mov::mov_submit(q, {
-      Sys.sleep(1)
+      Sys.sleep(2)
       "slow"
     })
     writeLines("submitted", %s)
-  ', .Call(mov:::mov_pool_suffix, p), deparse(f)))
+    for (i in 1:600) if (file.exists(%s)) break else Sys.sleep(0.05)
+  ', .Call(mov:::mov_pool_suffix, p), deparse(f), deparse(g)))
   expect_true(wait_for_file(f, timeout = 30))
+  # hold the child until the worker is mid-eval: its CANCEL pre-check has
+  # passed while the slot was still PENDING, so the publish CAS is the one
+  # that meets the CANCEL — and it lands ~2s after the child's quick death
+  expect_true(wait_until(mov_pool_dump(p)$workers$in_flight[1L] != -1L))
+  file.create(g)
   # the child exits: R shutdown finalizes the handle (PENDING -> CANCEL)
   # and the kernel releases its submitter lock. The worker's publish CAS
   # fails on the CANCEL, probes the owning submitter, and reaps in-line.
