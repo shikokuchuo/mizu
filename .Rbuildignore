@@ -1,0 +1,12 @@
+^\.Rproj\.user$
+^\.git$
+^\.gitignore$
+^\.claude$
+^\.cache$
+^\.github$
+^CLAUDE\.md$
+^LICENSE\.md$
+^tools$
+^src/vendor/.*\.o$
+^compile_commands\.json$
+^.*\.Rproj$

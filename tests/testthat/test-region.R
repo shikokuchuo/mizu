@@ -1,0 +1,76 @@
+# Vendored SHM core under the /mov_ namespace, the mov-owned writable attach,
+# and the GC extptr wrappers (producer: munmap + unlink; consumer: munmap).
+
+test_that("regions are created under the mov namespace with correct size", {
+  xp <- .Call(mov:::mov_region_create, 4096)
+  nm <- .Call(mov:::mov_region_name, xp)
+  prefix <- if (.Platform$OS.type == "windows") "Local\\mov_" else "/mov_"
+  expect_true(startsWith(nm, prefix))
+  expect_identical(.Call(mov:::mov_region_size, xp), 4096)
+})
+
+test_that("mov regions are invisible to mori", {
+  skip_if_not_installed("mori")
+  xp <- .Call(mov:::mov_region_create, 4096)
+  expect_null(mori::map_shared(.Call(mov:::mov_region_name, xp)))
+})
+
+test_that("read-only and writable attaches map the same pages", {
+  xp <- .Call(mov:::mov_region_create, 4096)
+  nm <- .Call(mov:::mov_region_name, xp)
+  ro <- .Call(mov:::mov_region_open, nm, FALSE)
+  rw <- .Call(mov:::mov_region_open, nm, TRUE)
+  # consumers discover size by fstat/VirtualQuery: at least the created size,
+  # rounded up to page granularity (16K pages on Apple Silicon)
+  expect_gte(.Call(mov:::mov_region_size, ro), 4096)
+
+  .Call(mov:::mov_poke, xp, 1000, as.raw(1:8))
+  expect_identical(.Call(mov:::mov_peek, ro, 1000, 8), as.raw(1:8))
+  .Call(mov:::mov_poke, rw, 2000, as.raw(0xff))
+  expect_identical(.Call(mov:::mov_peek, xp, 2000, 1), as.raw(0xff))
+})
+
+test_that("peek and poke are bounds-checked", {
+  xp <- .Call(mov:::mov_region_create, 4096)
+  expect_error(.Call(mov:::mov_peek, xp, 4090, 8), "out of bounds")
+  expect_error(.Call(mov:::mov_poke, xp, 4096, as.raw(1)), "out of bounds")
+})
+
+test_that("invalid creates and opens error cleanly", {
+  expect_error(.Call(mov:::mov_region_create, 0), "invalid region size")
+  expect_error(.Call(mov:::mov_region_open, "/mov_nonexistent_0", FALSE),
+               "cannot open")
+  expect_error(.Call(mov:::mov_region_open, "/mov_nonexistent_0", TRUE),
+               "cannot open")
+  expect_error(.Call(mov:::mov_region_name, new.env()),
+               "not an mov region handle")
+})
+
+test_that("producer GC unlinks the name; live consumers keep reading", {
+  xp <- .Call(mov:::mov_region_create, 4096)
+  nm <- .Call(mov:::mov_region_name, xp)
+  .Call(mov:::mov_poke, xp, 0, as.raw(42))
+  ro <- .Call(mov:::mov_region_open, nm, FALSE)
+
+  rm(xp)
+  gc()
+  expect_error(.Call(mov:::mov_region_open, nm, FALSE), "cannot open")
+  expect_identical(.Call(mov:::mov_peek, ro, 0, 1), as.raw(42))
+})
+
+test_that("clean child exit runs the session-exit finalizers", {
+  skip_if_no_child_mov()
+  f <- tfile()
+  mov:::mov_spawn(sprintf('
+    library(mov)
+    xp <- .Call(mov:::mov_region_create, 4096)
+    tmp <- paste0(%s, ".tmp")
+    writeLines(.Call(mov:::mov_region_name, xp), tmp)
+    file.rename(tmp, %s)
+  ', deparse(f), deparse(f)))
+  expect_true(wait_for_file(f))
+  nm <- readLines(f)
+  expect_true(wait_until(
+    inherits(tryCatch(.Call(mov:::mov_region_open, nm, FALSE),
+                      error = identity), "error")))
+})

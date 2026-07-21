@@ -1,0 +1,12 @@
+PKG_CFLAGS = -pthread
+PKG_LIBS = -pthread
+OBJECTS = bounded.o entity.o init.o liveness.o preamble.o shm_rw.o \
+          wait_linux.o wait_macos.o wait_win32.o wrap.o \
+          vendor/serialize.o vendor/shm.o
+
+.PHONY: all clean
+
+all: $(SHLIB)
+
+clean:
+	@rm -f $(OBJECTS) $(SHLIB)
