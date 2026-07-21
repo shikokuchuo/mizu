@@ -33,3 +33,11 @@ spawn_peer <- function(suffix, stdout = "", stderr = "") {
   mov_spawn(sprintf('mov:::peer_main("%s")', suffix),
             stdout = stdout, stderr = stderr)
 }
+
+# Spawn a pool worker: the region-name suffix and the host-assigned slot
+# index travel as argv, under the same rules as spawn_peer.
+spawn_worker <- function(suffix, slot, stdout = "", stderr = "") {
+  stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", suffix), slot >= 0)
+  mov_spawn(sprintf('mov:::worker_main("%s",%dL)', suffix, as.integer(slot)),
+            stdout = stdout, stderr = stderr)
+}

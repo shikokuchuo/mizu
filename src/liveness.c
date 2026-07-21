@@ -37,9 +37,18 @@ void mov_live_close(intptr_t h) {
   CloseHandle((HANDLE) h);
 }
 
+int mov_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
+  BY_HANDLE_FILE_INFORMATION info;
+  if (!GetFileInformationByHandle((HANDLE) h, &info)) return -1;
+  *dev = (uint64_t) info.dwVolumeSerialNumber;
+  *ino = ((uint64_t) info.nFileIndexHigh << 32) | info.nFileIndexLow;
+  return 0;
+}
+
 #else /* POSIX */
 
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -62,6 +71,14 @@ int mov_live_try(intptr_t h) {
 
 void mov_live_close(intptr_t h) {
   close((int) h);
+}
+
+int mov_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
+  struct stat st;
+  if (fstat((int) h, &st) != 0) return -1;
+  *dev = (uint64_t) st.st_dev;
+  *ino = (uint64_t) st.st_ino;
+  return 0;
 }
 
 #endif /* _WIN32 */

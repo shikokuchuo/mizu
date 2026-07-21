@@ -11,12 +11,6 @@
 #include "mov.h"
 #include <R_ext/Utils.h>
 
-/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
-   R, where ATTRIB() was still the sanctioned spelling. */
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
-
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -26,60 +20,15 @@
 #include <sys/mman.h>
 #endif
 
-/* Interrupt-latency bound on parks from R verbs (see *Hybrid wait*): on
-   POSIX a SIGINT EINTRs the timed wait, so the bound only covers front-ends
-   that set R's interrupt flag without a signal and can be lazy; Windows
-   console-control cannot interrupt WaitForSingleObject, so the bound is the
-   Ctrl-C latency and stays short. */
-#ifdef _WIN32
-#define MOV_INTERRUPT_BOUND_MS 100L
-#else
-#define MOV_INTERRUPT_BOUND_MS 2000L
-#endif
-
 /* Consumer head publication cadence: publish every K messages, on
    drain-empty, and before parking. The sender sees at most K slots less
    free space than truly exists and its keeper release trails by at most K
    slots — both benign. */
 #define MOV_HEAD_PUBLISH_K 32
 
-/* Bounded pause-hinted spin over the work sources before announcing a park:
-   sub-µs publish gaps are absorbed without touching the entity line. */
-#define MOV_SPIN_ITERS 256
-
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
-#define MOV_PAUSE() __builtin_ia32_pause()
-#elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-#define MOV_PAUSE() __asm__ __volatile__("isb" ::: "memory")
-#else
-#define MOV_PAUSE() do { } while (0)
-#endif
-
-// Slot framing --------------------------------------------------------------------
-
-/* Every slot: a 16-byte header then the inline region (slot - 16 bytes).
-   INLINE carries a complete serialized stream in the inline region; RAWVEC
-   the bare bytes of an attribute-free non-ALTREP atomic vector (aux =
-   SEXPTYPE) — byte-identical round-trip at allocVector + memcpy cost;
-   ARENA one chunk in the channel's spill arena (aux = chunk offset, chunk
-   byte length as a uint64 in the inline region); SHM_RAW the name of a
-   fresh mov region holding the stream (len = name length, name bytes
-   inline — root-form, bounded by MORI_NAME_MAX). */
-
-enum {
-  MOV_KIND_INLINE = 0,
-  MOV_KIND_ARENA,
-  MOV_KIND_SHM_RAW,
-  MOV_KIND_RAWVEC
-};
-
-typedef struct mov_slot_hdr_s {
-  uint32_t kind;
-  uint32_t len;
-  uint64_t aux;
-} mov_slot_hdr;
-
-typedef char mov_slot_hdr_assert[(sizeof(mov_slot_hdr) == 16) ? 1 : -1];
+/* Slot framing is the shared mov_slot_hdr wire form (mov.h / payload.c):
+   every slot is a 16-byte header then the inline region (slot - 16 bytes),
+   with the channel adding the ARENA tier around the shared kinds. */
 
 // Channel state -------------------------------------------------------------------
 
@@ -150,7 +99,7 @@ enum {
 
 static SEXP mov_chan_tag;
 static SEXP mov_class_channel;
-static SEXP mov_sent_full, mov_sent_timeout, mov_sent_closed, mov_sent_gone;
+SEXP mov_sent_full, mov_sent_timeout, mov_sent_closed, mov_sent_gone;
 
 static SEXP mov_make_sentinel(const char *value, const char *cls) {
   SEXP s = PROTECT(Rf_mkString(value));
@@ -175,7 +124,7 @@ void mov_channel_init(void) {
 
 // Small helpers -------------------------------------------------------------------
 
-static double mov_now(void) {
+double mov_now(void) {
 #ifdef _WIN32
   return (double) GetTickCount64() / 1000.0;
 #else
@@ -185,7 +134,7 @@ static double mov_now(void) {
 #endif
 }
 
-static long mov_self_pid(void) {
+long mov_self_pid(void) {
 #ifdef _WIN32
   return (long) GetCurrentProcessId();
 #else
@@ -203,17 +152,6 @@ static void mov_unlink_region_name(const char *name) {
 #else
   shm_unlink(name);
 #endif
-}
-
-static void *mov_vec_ptr(SEXP x) {
-  switch (TYPEOF(x)) {
-  case LGLSXP:  return LOGICAL(x);
-  case INTSXP:  return INTEGER(x);
-  case REALSXP: return REAL(x);
-  case CPLXSXP: return COMPLEX(x);
-  case RAWSXP:  return RAW(x);
-  }
-  return NULL;
 }
 
 static uint32_t mov_closed_bit(const mov_chan *c) {
@@ -441,23 +379,6 @@ static int chan_arena_alloc(mov_chan *c, SEXP keepers, uint64_t n,
 
 // Send ----------------------------------------------------------------------------
 
-static int chan_raw_eligible(const mov_chan *c, SEXP x, size_t *out_len) {
-  switch (TYPEOF(x)) {
-  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
-    break;
-  default:
-    return 0;
-  }
-  /* The ALTREP exclusion is the linkage-free gate keeping mori-shared
-     vectors on the hook path; the S4 bit is recorded by serialize, so it
-     disqualifies alongside attributes. */
-  if (ALTREP(x) || ANY_ATTRIB(x) || Rf_isS4(x)) return 0;
-  size_t n = (size_t) XLENGTH(x) * mori_sizeof_elt(TYPEOF(x));
-  if (n > c->inline_max) return 0;
-  *out_len = n;
-  return 1;
-}
-
 static int chan_send1(mov_chan *c, SEXP prot, SEXP x) {
   SEXP keepers = VECTOR_ELT(prot, 0);
   mov_chan_ring *r = &c->tx;
@@ -482,7 +403,7 @@ static int chan_send1(mov_chan *c, SEXP prot, SEXP x) {
   int nprotect = 0;
 
   size_t rawlen;
-  if (chan_raw_eligible(c, x, &rawlen)) {
+  if (mov_raw_eligible(x, c->inline_max, &rawlen)) {
     memcpy(payload, mov_vec_ptr(x), rawlen);
     hdr->kind = MOV_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
@@ -503,27 +424,8 @@ static int chan_send1(mov_chan *c, SEXP prot, SEXP x) {
         uint64_t n64 = (uint64_t) n;
         memcpy(payload, &n64, sizeof(n64));
       } else {
-        mori_shm *shm;
-        int rc = mori_shm_create_heap(&shm, n);
-        if (rc != MORI_OK) {
-          const char *summary, *hint;
-          mori_err_describe(rc, &summary, &hint);
-          Rf_error("mov: cannot create payload region (%llu bytes): %s%s%s",
-                   (unsigned long long) n, summary,
-                   hint[0] != '\0' ? ". " : "", hint);
-        }
-        SEXP wrap = PROTECT(mov_shm_wrap_producer(shm));
+        keep = PROTECT(mov_payload_spill_shm(hdr, payload, x, n));
         nprotect++;
-        mori_serialize_into((unsigned char *) shm->addr, n, x);
-        hdr->kind = MOV_KIND_SHM_RAW;
-        hdr->len = (uint32_t) shm->name_len;
-        hdr->aux = 0;
-        memcpy(payload, shm->name, shm->name_len);
-        SEXP k2 = PROTECT(Rf_allocVector(VECSXP, 2));
-        nprotect++;
-        SET_VECTOR_ELT(k2, 0, x);
-        SET_VECTOR_ELT(k2, 1, wrap);
-        keep = k2;
       }
     }
   }
@@ -585,45 +487,16 @@ static SEXP chan_materialize(mov_chan *c, const unsigned char *sl) {
   const mov_slot_hdr *hdr = (const mov_slot_hdr *) sl;
   const unsigned char *payload = sl + sizeof(mov_slot_hdr);
 
-  switch (hdr->kind) {
-  case MOV_KIND_INLINE:
-    if (hdr->len > c->inline_max)
-      Rf_error("mov: corrupt channel slot");
-    return mori_unserialize_from((unsigned char *) payload, hdr->len);
-  case MOV_KIND_RAWVEC: {
-    int type = (int) hdr->aux;
-    size_t elt = mori_sizeof_elt(type);
-    if (elt == 0 || hdr->len > c->inline_max || hdr->len % elt != 0)
-      Rf_error("mov: corrupt channel slot");
-    SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
-    memcpy(mov_vec_ptr(y), payload, hdr->len);
-    return y;
-  }
-  case MOV_KIND_ARENA: {
+  if (hdr->kind == MOV_KIND_ARENA) {
     uint64_t off = hdr->aux, n;
     memcpy(&n, payload, sizeof(n));
     if (c->rx.arena == NULL || off > c->rx.arena_size ||
         n > c->rx.arena_size - off)
-      Rf_error("mov: corrupt channel slot");
+      Rf_error("mov: corrupt payload slot");
     /* already mapped: no open, no syscall */
     return mori_unserialize_from(c->rx.arena + off, (size_t) n);
   }
-  case MOV_KIND_SHM_RAW: {
-    char name[MORI_NAME_MAX];
-    if (hdr->len == 0 || hdr->len >= MORI_NAME_MAX)
-      Rf_error("mov: corrupt channel slot");
-    memcpy(name, payload, hdr->len);
-    name[hdr->len] = '\0';
-    mori_shm *shm = mori_shm_open_heap(name);
-    if (shm == NULL)
-      Rf_error("mov: cannot open payload region '%s'", name);
-    PROTECT(mov_shm_wrap_consumer(shm));
-    SEXP y = mori_unserialize_from((unsigned char *) shm->addr, shm->size);
-    UNPROTECT(1);                /* mapping drops with the wrapper's GC */
-    return y;
-  }
-  }
-  Rf_error("mov: corrupt channel slot");
+  return mov_payload_read(hdr, payload, c->inline_max);
 }
 
 /* Block until a message is available at rx.lhead (MOV_ST_OK) or a verdict.

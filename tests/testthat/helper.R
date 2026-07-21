@@ -73,3 +73,27 @@ echo_expr <- quote(
     mov_flush(ch)
   }
 )
+
+# In-process pool pair: controller plus a worker handle joined from this
+# process — the deterministic harness for the injection / result-slot
+# protocols, with no process management involved. The worker consumes via
+# single steps driven by the test.
+pool_pair <- function(max_submitters = 8L, injection_cap = 64L,
+                      result_slots = 64L, slot_size = 256L) {
+  ctrl <- .Call(mov:::mov_pool_create, 1L, max_submitters, injection_cap,
+                64L, result_slots, slot_size, tempdir())
+  wk <- .Call(mov:::mov_pool_worker_join, .Call(mov:::mov_pool_suffix, ctrl),
+              0L)
+  list(ctrl = ctrl, wk = wk)
+}
+
+# One worker-loop iteration: 1 = executed a task, 0 = none, -1 = shutdown
+pool_step <- function(p, timeout = 0)
+  .Call(mov:::mov_pool_step, p$wk, timeout, mov:::worker_eval)
+
+# Orderly in-process teardown: the worker leaves (its slot frees), then the
+# controller destroys (broadcast + unlink + release).
+pool_end <- function(p) {
+  .Call(mov:::mov_pool_leave, p$wk)
+  .Call(mov:::mov_pool_destroy, p$ctrl)
+}

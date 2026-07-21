@@ -68,6 +68,19 @@ SEXP mov_channel_close(SEXP, SEXP);
 SEXP mov_channel_close_signal(SEXP);
 SEXP mov_channel_alive(SEXP);
 SEXP mov_channel_stat(SEXP);
+SEXP mov_pool_create(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mov_pool_suffix(SEXP);
+SEXP mov_pool_ready_wait(SEXP, SEXP, SEXP);
+SEXP mov_pool_destroy(SEXP);
+SEXP mov_pool_worker_join(SEXP, SEXP);
+SEXP mov_pool_leave(SEXP);
+SEXP mov_pool_attach_call(SEXP);
+SEXP mov_pool_submit(SEXP, SEXP, SEXP);
+SEXP mov_pool_step(SEXP, SEXP, SEXP);
+SEXP mov_pool_collect(SEXP, SEXP);
+SEXP mov_pool_cancel(SEXP);
+SEXP mov_pool_stop_call(SEXP, SEXP);
+SEXP mov_pool_status_call(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
   {"mov_onload_probe",          (DL_FUNC) &mov_onload_probe,          0},
@@ -107,6 +120,19 @@ static const R_CallMethodDef CallEntries[] = {
   {"mov_channel_close_signal",  (DL_FUNC) &mov_channel_close_signal,  1},
   {"mov_channel_alive",         (DL_FUNC) &mov_channel_alive,         1},
   {"mov_channel_stat",          (DL_FUNC) &mov_channel_stat,          1},
+  {"mov_pool_create",           (DL_FUNC) &mov_pool_create,           7},
+  {"mov_pool_suffix",           (DL_FUNC) &mov_pool_suffix,           1},
+  {"mov_pool_ready_wait",       (DL_FUNC) &mov_pool_ready_wait,       3},
+  {"mov_pool_destroy",          (DL_FUNC) &mov_pool_destroy,          1},
+  {"mov_pool_worker_join",      (DL_FUNC) &mov_pool_worker_join,      2},
+  {"mov_pool_leave",            (DL_FUNC) &mov_pool_leave,            1},
+  {"mov_pool_attach_call",      (DL_FUNC) &mov_pool_attach_call,      1},
+  {"mov_pool_submit",           (DL_FUNC) &mov_pool_submit,           3},
+  {"mov_pool_step",             (DL_FUNC) &mov_pool_step,             3},
+  {"mov_pool_collect",          (DL_FUNC) &mov_pool_collect,          2},
+  {"mov_pool_cancel",           (DL_FUNC) &mov_pool_cancel,           1},
+  {"mov_pool_stop_call",        (DL_FUNC) &mov_pool_stop_call,        2},
+  {"mov_pool_status_call",      (DL_FUNC) &mov_pool_status_call,      1},
   {NULL, NULL, 0}
 };
 
@@ -116,4 +142,5 @@ void R_init_mov(DllInfo *dll) {
   mov_wrap_init();
   mov_entity_init();
   mov_channel_init();
+  mov_pool_init();
 }
