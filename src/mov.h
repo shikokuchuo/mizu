@@ -38,6 +38,29 @@ typedef char mov_preamble_assert[(sizeof(mov_preamble) == 64) ? 1 : -1];
 #define MOV_ENTITY_OFFSET(i)  ((size_t) 128 + 64 * (size_t) (i))
 #define MOV_FIXED_LAYOUT_SIZE ((size_t) 512)
 
+/* Rendezvous line fields. ready and closed (one bit per side) are the only
+   atomics; peer_pid is peer-written at attach, before ready. flags is
+   host-written before spawn and immutable thereafter, like the preamble —
+   bit 0 opts the channel into pure-spin waiting (consumers never park, so
+   producers skip the wake fence + parked-flag load on publish). */
+#define MOV_OFF_READY      ((size_t) 64)
+#define MOV_OFF_CLOSED     ((size_t) 68)
+#define MOV_OFF_PEER_PID   ((size_t) 72)
+#define MOV_OFF_FLAGS      ((size_t) 80)
+#define MOV_FLAG_SPIN      1u
+
+/* Entity block fields, offsets within MOV_ENTITY_OFFSET(i). */
+#define MOV_ENTITY_EPOCH   0
+#define MOV_ENTITY_PARKED  4
+#define MOV_ENTITY_REG     8
+
+/* Ring index lines: one full cache line per shared index, producer and
+   consumer writes never sharing a line. H->P is the ring the host produces. */
+#define MOV_OFF_HP_TAIL    ((size_t) 256)
+#define MOV_OFF_HP_HEAD    ((size_t) 320)
+#define MOV_OFF_PH_TAIL    ((size_t) 384)
+#define MOV_OFF_PH_HEAD    ((size_t) 448)
+
 void mov_preamble_write(void *region, const mov_preamble *p);
 /* Returns NULL and fills *out on success, else a static error message. */
 const char *mov_preamble_validate(const void *region, size_t region_size,
@@ -136,9 +159,17 @@ int mov_live_open(const char *path, intptr_t *out);
 int mov_live_try(intptr_t h);
 void mov_live_close(intptr_t h);
 
+// GC extptr wrappers (wrap.c) ------------------------------------------------------
+
+mori_shm *mov_region(SEXP xp);
+SEXP mov_shm_wrap_producer(mori_shm *shm);
+SEXP mov_shm_wrap_consumer(mori_shm *shm);
+SEXP mov_shm_wrap_host(mori_shm *shm);
+
 // init hooks ----------------------------------------------------------------------
 
 void mov_wrap_init(void);
 void mov_entity_init(void);
+void mov_channel_init(void);
 
 #endif /* MOV_H */

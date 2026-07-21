@@ -20,13 +20,20 @@ void mov_wrap_init(void) {
   mov_host_tag = Rf_install("mov_host");
 }
 
-static SEXP mov_shm_wrap_consumer(mori_shm *shm) {
+SEXP mov_shm_wrap_consumer(mori_shm *shm) {
   SEXP ptr = R_MakeExternalPtr(shm, mov_shm_tag, R_NilValue);
   R_RegisterCFinalizerEx(ptr, mori_shm_finalizer, TRUE);
   return ptr;
 }
 
-static SEXP mov_shm_wrap_producer(mori_shm *shm) {
+/* The host half alone: a heap copy carrying the name (POSIX) / creator handle
+   (Windows), finalizer -> unlink / CloseHandle. The channel uses this without
+   the mapping extptr — its mapping must outlive GC ordering (the death
+   listener's parker points into it), so the channel unmaps in its own
+   release path and drives this one-shot at protocol time (close rendezvous /
+   survivor cleanup), with GC as the fallback. Running the finalizer manually
+   is safe: it clears the extptr, so the GC pass is a no-op. */
+SEXP mov_shm_wrap_host(mori_shm *shm) {
 
   mori_shm *host = malloc(sizeof(mori_shm));
   if (host == NULL) Rf_error("mov: allocation failure");
@@ -37,12 +44,15 @@ static SEXP mov_shm_wrap_producer(mori_shm *shm) {
   shm->handle = NULL;
 #endif
 
-  SEXP host_ptr = PROTECT(R_MakeExternalPtr(host, mov_host_tag, R_NilValue));
+  SEXP host_ptr = R_MakeExternalPtr(host, mov_host_tag, R_NilValue);
   R_RegisterCFinalizerEx(host_ptr, mori_host_finalizer, TRUE);
+  return host_ptr;
+}
 
+SEXP mov_shm_wrap_producer(mori_shm *shm) {
+  SEXP host_ptr = PROTECT(mov_shm_wrap_host(shm));
   SEXP shm_ptr = R_MakeExternalPtr(shm, mov_shm_tag, host_ptr);
   R_RegisterCFinalizerEx(shm_ptr, mori_shm_finalizer, TRUE);
-
   UNPROTECT(1);
   return shm_ptr;
 }

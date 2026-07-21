@@ -53,6 +53,21 @@ SEXP mov_live_close_call(SEXP);
 SEXP mov_death_watch_call(SEXP, SEXP, SEXP, SEXP);
 SEXP mov_death_fired_call(SEXP);
 SEXP mov_death_stop_call(SEXP);
+SEXP mov_channel_create(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mov_channel_suffix(SEXP);
+SEXP mov_channel_ready_wait(SEXP, SEXP);
+SEXP mov_channel_destroy(SEXP);
+SEXP mov_channel_attach(SEXP);
+SEXP mov_channel_ready_set(SEXP);
+SEXP mov_channel_send(SEXP, SEXP);
+SEXP mov_channel_send_batch(SEXP, SEXP);
+SEXP mov_channel_flush(SEXP);
+SEXP mov_channel_recv(SEXP, SEXP);
+SEXP mov_channel_recv_batch(SEXP, SEXP, SEXP);
+SEXP mov_channel_close(SEXP, SEXP);
+SEXP mov_channel_close_signal(SEXP);
+SEXP mov_channel_alive(SEXP);
+SEXP mov_channel_stat(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
   {"mov_onload_probe",          (DL_FUNC) &mov_onload_probe,          0},
@@ -77,6 +92,21 @@ static const R_CallMethodDef CallEntries[] = {
   {"mov_death_watch_call",      (DL_FUNC) &mov_death_watch_call,      4},
   {"mov_death_fired_call",      (DL_FUNC) &mov_death_fired_call,      1},
   {"mov_death_stop_call",       (DL_FUNC) &mov_death_stop_call,       1},
+  {"mov_channel_create",        (DL_FUNC) &mov_channel_create,        6},
+  {"mov_channel_suffix",        (DL_FUNC) &mov_channel_suffix,        1},
+  {"mov_channel_ready_wait",    (DL_FUNC) &mov_channel_ready_wait,    2},
+  {"mov_channel_destroy",       (DL_FUNC) &mov_channel_destroy,       1},
+  {"mov_channel_attach",        (DL_FUNC) &mov_channel_attach,        1},
+  {"mov_channel_ready_set",     (DL_FUNC) &mov_channel_ready_set,     1},
+  {"mov_channel_send",          (DL_FUNC) &mov_channel_send,          2},
+  {"mov_channel_send_batch",    (DL_FUNC) &mov_channel_send_batch,    2},
+  {"mov_channel_flush",         (DL_FUNC) &mov_channel_flush,         1},
+  {"mov_channel_recv",          (DL_FUNC) &mov_channel_recv,          2},
+  {"mov_channel_recv_batch",    (DL_FUNC) &mov_channel_recv_batch,    3},
+  {"mov_channel_close",         (DL_FUNC) &mov_channel_close,         2},
+  {"mov_channel_close_signal",  (DL_FUNC) &mov_channel_close_signal,  1},
+  {"mov_channel_alive",         (DL_FUNC) &mov_channel_alive,         1},
+  {"mov_channel_stat",          (DL_FUNC) &mov_channel_stat,          1},
   {NULL, NULL, 0}
 };
 
@@ -85,4 +115,5 @@ void R_init_mov(DllInfo *dll) {
   R_useDynamicSymbols(dll, FALSE);
   mov_wrap_init();
   mov_entity_init();
+  mov_channel_init();
 }

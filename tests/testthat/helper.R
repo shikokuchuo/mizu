@@ -43,3 +43,28 @@ child_mov_ok <- local({
 skip_if_no_child_mov <- function() {
   testthat::skip_if_not(child_mov_ok(), "mov not loadable from child processes")
 }
+
+# In-process channel pair: both ends of one region attached from this
+# process — the deterministic harness for ring mechanics, with no process
+# management involved. The host end produces on the same ring the peer end
+# consumes, exactly as across processes.
+channel_pair <- function(capacity = 64L, slot_size = 256L, arena_size = 4096,
+                         spin = FALSE) {
+  host <- .Call(mov:::mov_channel_create, quote(NULL), capacity, slot_size,
+                arena_size, tempdir(), spin)
+  att <- .Call(mov:::mov_channel_attach, .Call(mov:::mov_channel_suffix, host))
+  peer <- att[[1L]]
+  .Call(mov:::mov_channel_ready_set, peer)
+  stopifnot(.Call(mov:::mov_channel_ready_wait, host, 10))
+  list(host = host, peer = peer)
+}
+
+# The canonical peer expression: echo everything until a sentinel arrives
+echo_expr <- quote(
+  repeat {
+    x <- mov_recv(ch, timeout = 30)
+    if (inherits(x, "mov_condition")) break
+    mov_send(ch, x)
+    mov_flush(ch)
+  }
+)

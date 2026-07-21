@@ -12,13 +12,13 @@ rscript_path <- function() {
 # around the spawn — set, spawn, restore; the child inherits its parent's
 # environment on every platform — so renv and user-library setups resolve
 # mov in the child.
-mov_spawn <- function(expr) {
+mov_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
   stopifnot(is.character(expr), length(expr) == 1L, !is.na(expr))
   old <- Sys.getenv("R_LIBS", unset = NA)
   Sys.setenv(R_LIBS = paste(.libPaths(), collapse = .Platform$path.sep))
   on.exit(if (is.na(old)) Sys.unsetenv("R_LIBS") else Sys.setenv(R_LIBS = old))
   system2(rscript_path(), c("-e", shQuote(expr)),
-          wait = FALSE, stdout = FALSE, stderr = FALSE)
+          wait = FALSE, stdout = stdout, stderr = stderr)
   invisible()
 }
 
@@ -28,7 +28,8 @@ mov_spawn <- function(expr) {
 # interpolated text is pure [0-9a-f_] with no quoting hazard on any platform.
 # (The full Windows name cannot ride an -e string at all: "Local\mov_"
 # contains "\m", an invalid escape in an R string literal.)
-spawn_peer <- function(suffix) {
+spawn_peer <- function(suffix, stdout = "", stderr = "") {
   stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", suffix))
-  mov_spawn(sprintf('mov:::peer_main("%s")', suffix))
+  mov_spawn(sprintf('mov:::peer_main("%s")', suffix),
+            stdout = stdout, stderr = stderr)
 }

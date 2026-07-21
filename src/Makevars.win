@@ -1,4 +1,4 @@
-OBJECTS = bounded.o entity.o init.o liveness.o preamble.o shm_rw.o \
+OBJECTS = bounded.o channel.o entity.o init.o liveness.o preamble.o shm_rw.o \
           wait_linux.o wait_macos.o wait_win32.o wrap.o \
           vendor/serialize.o vendor/shm.o
 
