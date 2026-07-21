@@ -72,12 +72,15 @@ struct mov_death_watch_s {
   _Atomic int *flag;
   mov_parker pk;
   int has_pk;
+  void (*cb)(void *);                /* pure-C death callback (may be NULL) */
+  void *cb_arg;
 };
 
 static void mov_dw_fire(void *ctx) {
   struct mov_death_watch_s *w = ctx;
   atomic_store_explicit(w->flag, 1, memory_order_release);
   if (w->has_pk) mov_unpark(&w->pk);
+  if (w->cb != NULL) w->cb(w->cb_arg);
 }
 
 static void mov_dw_event(void *ctx) {
@@ -90,8 +93,9 @@ static void mov_dw_noop(void *ctx) {
   (void) ctx;
 }
 
-mov_death_watch *mov_death_watch_start(long pid, _Atomic int *flag,
-                                       const mov_parker *pk) {
+mov_death_watch *mov_death_watch_start2(long pid, _Atomic int *flag,
+                                        const mov_parker *pk,
+                                        void (*cb)(void *), void *cb_arg) {
   struct mov_death_watch_s *w = calloc(1, sizeof(*w));
   if (w == NULL) return NULL;
   w->flag = flag;
@@ -99,6 +103,8 @@ mov_death_watch *mov_death_watch_start(long pid, _Atomic int *flag,
     w->pk = *pk;
     w->has_pk = 1;
   }
+  w->cb = cb;
+  w->cb_arg = cb_arg;
 
   w->queue = dispatch_queue_create("mov.death", DISPATCH_QUEUE_SERIAL);
   if (w->queue == NULL) {

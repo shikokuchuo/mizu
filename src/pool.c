@@ -22,6 +22,8 @@
 
 enum { MOV_ROLE_CONTROLLER = 0, MOV_ROLE_WORKER, MOV_ROLE_SUBMITTER };
 
+struct mov_reap_ctx_s { void *pool; uint32_t slot; };
+
 typedef struct mov_pool_s {
   mori_shm shm;                  /* our mapping; unmapped only in release */
   mov_pool_hdr hdr;
@@ -52,6 +54,12 @@ typedef struct mov_pool_s {
   intptr_t *live_all;            /* controller: kept probe fds, wk then sub */
   char livedir[1024];
 
+  /* controller-only: per-worker death watches whose C callbacks run the
+     reap off the R main thread */
+  mov_death_watch **wk_watch;
+  _Atomic int *wk_dead;
+  struct mov_reap_ctx_s *reap_ctx;
+
   /* submitter-local */
   uint32_t rs_cursor;
   uint64_t task_counter;
@@ -63,6 +71,8 @@ typedef struct mov_pool_s {
   uint64_t claims;               /* fairness-tick counter (% 61) */
   uint64_t rng;                  /* xorshift state for victim selection */
   int help_depth;                /* nested-collect help recursion depth */
+  uint32_t probe_streak;         /* thief-probe backstop state */
+  uint32_t probe_victim;
   struct mov_rk_s { uint32_t idx; uint64_t seq; } *rk;
   uint32_t rk_n, rk_cap;
 
@@ -246,6 +256,15 @@ static void pool_release(mov_pool *p) {
     mov_death_watch_stop(p->watch);
     p->watch = NULL;
   }
+  if (p->wk_watch != NULL) {
+    /* stop synchronizes with in-flight reap callbacks: after this loop
+       nothing touches the mapping from another thread */
+    for (uint32_t i = 0; i < p->hdr.max_workers; i++)
+      if (p->wk_watch[i] != NULL) {
+        mov_death_watch_stop(p->wk_watch[i]);
+        p->wk_watch[i] = NULL;
+      }
+  }
   if (p->pk_ok) {
     uint32_t n = p->hdr.max_workers + p->hdr.max_submitters;
     for (uint32_t i = 0; i < n; i++) mov_parker_detach(&p->pks[i]);
@@ -303,15 +322,12 @@ static void pool_shutdown_broadcast(mov_pool *p) {
   }
 }
 
+static void pool_remove_live_files(mov_pool *p);
+
 static void pool_unlink_names(mov_pool *p, SEXP prot) {
   SEXP host_ptr = VECTOR_ELT(prot, 1);
   if (host_ptr != R_NilValue) mori_host_finalizer(host_ptr);
-  char path[1024];
-  for (uint32_t i = 0; i < p->hdr.max_workers; i++)
-    if (pool_live_path(p, path, sizeof(path), "wk", i) == 0) remove(path);
-  for (uint32_t j = 0; j < p->hdr.max_submitters; j++)
-    if (pool_live_path(p, path, sizeof(path), "sub", j) == 0) remove(path);
-  if (pool_live_path(p, path, sizeof(path), "owner", 0) == 0) remove(path);
+  pool_remove_live_files(p);
 }
 
 // Handle access ---------------------------------------------------------------------
@@ -342,6 +358,9 @@ static void mov_pool_finalizer(SEXP xp) {
   pool_release(p);
   free(p->scratch);
   free(p->rk);
+  free(p->wk_watch);
+  free((void *) p->wk_dead);
+  free(p->reap_ctx);
   free(p);
   R_ClearExternalPtr(xp);
 }
@@ -536,29 +555,97 @@ SEXP mov_pool_suffix(SEXP xp) {
   return Rf_mkString(p->shm.name + strlen(MORI_PREFIX_LITERAL));
 }
 
-/* Startup rendezvous: park on the creator's submitter-0 parker, re-checking
-   worker slots 0..n-1 for LIVE on each wake; each worker unparks the creator
-   on reaching LIVE. FALSE on deadline expiry — the caller walks the pool
-   back via mov_pool_destroy. */
-SEXP mov_pool_ready_wait(SEXP xp, SEXP n_sexp, SEXP timeout) {
+static void pool_wk_death_cb(void *arg);
+
+/* The controller points its death listener at every LIVE target slot's
+   pid, stopping any stale watch first so respawned slots get fresh
+   watches. The callback reap then runs off the R main thread at OS
+   notification latency. In-process joins (the test harness) are skipped —
+   a process cannot meaningfully watch itself. */
+static void pool_watch_workers(mov_pool *p, const int *slots, R_xlen_t n) {
+  if (p->wk_watch == NULL) {
+    p->wk_watch = calloc(p->hdr.max_workers, sizeof(*p->wk_watch));
+    p->wk_dead = calloc(p->hdr.max_workers, sizeof(*p->wk_dead));
+    p->reap_ctx = calloc(p->hdr.max_workers, sizeof(*p->reap_ctx));
+    if (p->wk_watch == NULL || p->wk_dead == NULL || p->reap_ctx == NULL)
+      Rf_error("mov: allocation failure");
+  }
+  for (R_xlen_t i = 0; i < n; i++) {
+    uint32_t s = (uint32_t) slots[i];
+    mov_wk_slot *w = &p->wk[s];
+    if (atomic_load_explicit(&w->status, memory_order_acquire) !=
+        MOV_WK_LIVE)
+      continue;
+    if ((long) w->pid == p->self_pid) continue;
+    if (p->wk_watch[s] != NULL) {
+      mov_death_watch_stop(p->wk_watch[s]);
+      p->wk_watch[s] = NULL;
+    }
+    atomic_store_explicit(&p->wk_dead[s], 0, memory_order_relaxed);
+    p->reap_ctx[s].pool = p;
+    p->reap_ctx[s].slot = s;
+    /* NULL leaves the probes and the teardown sweep as the backstops */
+    p->wk_watch[s] = mov_death_watch_start2((long) w->pid, &p->wk_dead[s],
+                                            NULL, pool_wk_death_cb,
+                                            &p->reap_ctx[s]);
+  }
+}
+
+/* Startup / elastic-spawn rendezvous: park on the creator's submitter-0
+   parker, re-checking each target slot for LIVE on each wake; workers
+   unpark the creator on reaching LIVE. On the way out — success or
+   deadline expiry — the death listener is pointed at whichever targets did
+   join. FALSE on expiry; the initial-creation caller walks the pool back
+   via mov_pool_destroy, an elastic caller just errors. */
+SEXP mov_pool_ready_wait(SEXP xp, SEXP slots_sexp, SEXP timeout) {
   mov_pool *p = pool_get(xp);
-  uint32_t n = (uint32_t) Rf_asInteger(n_sexp);
-  if (n > p->hdr.max_workers) Rf_error("mov: more workers than the registry");
+  if (p->role != MOV_ROLE_CONTROLLER)
+    Rf_error("mov: only the controller can wait for workers");
+  if (TYPEOF(slots_sexp) != INTSXP)
+    Rf_error("mov: expected worker slot indices");
+  R_xlen_t n = XLENGTH(slots_sexp);
+  const int *slots = INTEGER(slots_sexp);
+  for (R_xlen_t i = 0; i < n; i++)
+    if (slots[i] < 0 || (uint32_t) slots[i] >= p->hdr.max_workers)
+      Rf_error("mov: worker slot index out of range");
   double deadline = mov_now() + Rf_asReal(timeout);
+  int ok;
   for (;;) {
     uint32_t e = mov_parker_snapshot(pool_sub_pk(p, 0));
-    uint32_t live = 0;
-    for (uint32_t i = 0; i < n; i++)
-      live += atomic_load_explicit(&p->wk[i].status, memory_order_acquire) ==
-        MOV_WK_LIVE;
-    if (live == n) return Rf_ScalarLogical(TRUE);
+    R_xlen_t live = 0;
+    for (R_xlen_t i = 0; i < n; i++)
+      live += atomic_load_explicit(&p->wk[slots[i]].status,
+                                   memory_order_acquire) == MOV_WK_LIVE;
+    ok = live == n;
+    if (ok) break;
     double rem = deadline - mov_now();
-    if (rem <= 0) return Rf_ScalarLogical(FALSE);
+    if (rem <= 0) break;
     long ms = (long) (rem * 1000) + 1;
     if (ms > MOV_INTERRUPT_BOUND_MS) ms = MOV_INTERRUPT_BOUND_MS;
     mov_park(pool_sub_pk(p, 0), e, ms);
     R_CheckUserInterrupt();
   }
+  pool_watch_workers(p, slots, n);
+  return Rf_ScalarLogical(ok);
+}
+
+/* Clean-exit request: the worker observes the word between tasks and takes
+   its LEAVING path — non-blocking here, and never preemptive. Its deque is
+   consumed in place (REAPING) and the process may linger as a lifetime
+   anchor for uncollected results. */
+SEXP mov_pool_retire(SEXP xp, SEXP slot_sexp) {
+  mov_pool *p = pool_get(xp);
+  if (p->role != MOV_ROLE_CONTROLLER)
+    Rf_error("mov: only the controller can retire workers");
+  uint32_t slot = (uint32_t) Rf_asInteger(slot_sexp);
+  if (slot >= p->hdr.max_workers)
+    Rf_error("mov: worker slot index out of range");
+  if (atomic_load_explicit(&p->wk[slot].status, memory_order_acquire) !=
+      MOV_WK_LIVE)
+    Rf_error("mov: worker slot %u is not live", slot);
+  atomic_store_explicit(&p->wk[slot].retire, 1, memory_order_seq_cst);
+  mov_unpark(pool_wk_pk(p, slot));
+  return R_NilValue;
 }
 
 /* Startup walk-back and finalizer-free explicit destroy: broadcast so a
@@ -721,6 +808,7 @@ SEXP mov_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
   me->pid = (int64_t) p->self_pid;
   mov_live_ident(p->live_self, &me->live_dev, &me->live_ino);
   atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
+  atomic_store_explicit(&me->retire, 0, memory_order_relaxed);
   atomic_store_explicit(&me->park_state, MOV_WPK_RUNNING,
                         memory_order_relaxed);
 
@@ -746,6 +834,10 @@ SEXP mov_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
 static void pool_unpark_result_waiter(mov_pool *p, mov_rs_hdr *rs);
 static void pool_wake_one_worker(mov_pool *p);
 static int pool_reaping_free(mov_pool *p, mov_wk_slot *w);
+static int pool_probe_worker(mov_pool *p, uint32_t slot);
+static void pool_probe_submitter(mov_pool *p, uint32_t j);
+static void pool_orphan_teardown_try(mov_pool *p);
+static void pool_reap_result_keepers(mov_pool *p, SEXP keepers);
 
 /* Clean worker exit. A nonempty deque is never drained anywhere: it
    becomes an ordinary steal target while the slot reads REAPING, and the
@@ -794,8 +886,33 @@ SEXP mov_pool_leave(SEXP xp) {
         pool_wake_one_worker(p);
     }
   }
-  pool_release(p);   /* closes the liveness fd: the lock releases */
-  return R_NilValue;
+  /* the slot's own lock releases now, so the slot reads properly departed
+     to any prober; the full release is deferred while kept results anchor
+     region lifetimes — the retiree's lame-duck loop drives it from R */
+  if (p->live_self != 0) {
+    mov_live_close(p->live_self);
+    p->live_self = 0;
+  }
+  if (p->rk_n == 0) pool_release(p);
+  return Rf_ScalarLogical(p->released);
+}
+
+/* One lame-duck beat for a retired worker anchoring uncollected results:
+   reap the keeper table and report whether the anchor may drop. Plain
+   bounded sleeps drive this from R — the slot's parker may already be
+   reclaimed by a respawn, so no unpark can reach this process — and
+   shutdown or owner death ends the linger. */
+SEXP mov_pool_lame_duck(SEXP xp) {
+  mov_pool *p = pool_peek(xp);
+  if (p == NULL) return Rf_ScalarLogical(TRUE);
+  pool_reap_result_keepers(p, VECTOR_ELT(R_ExternalPtrProtected(xp), 0));
+  if (p->rk_n == 0 ||
+      atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
+      atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
+    pool_release(p);
+    return Rf_ScalarLogical(TRUE);
+  }
+  return Rf_ScalarLogical(FALSE);
 }
 
 // Submitter join ------------------------------------------------------------------------
@@ -823,14 +940,16 @@ SEXP mov_pool_attach_call(SEXP suffix_sexp) {
 
 // Submit --------------------------------------------------------------------------------
 
-static void pool_wake_one_worker(mov_pool *p) {
+/* The explicit-start variant exists for the reap paths, which run on the
+   death listener's callback thread and must not touch the handle's
+   process-local scan rotation. */
+static void pool_wake_one_worker_from(mov_pool *p, uint32_t start) {
   /* pusher protocol: push, fence, then the mask load — either the parking
      worker's rescan sees the push or we see its bit */
   atomic_thread_fence(memory_order_seq_cst);
   uint64_t w = atomic_load_explicit(p->parked_workers, memory_order_relaxed);
   if (w == 0) return;
   uint32_t mw = p->hdr.max_workers;
-  uint32_t start = p->scan_start++;
   for (uint32_t k = 0; k < mw; k++) {
     uint32_t i = (start + k) % mw;
     if (!(w & (1ull << i))) continue;
@@ -855,6 +974,10 @@ static void pool_wake_one_worker(mov_pool *p) {
   }
 }
 
+static void pool_wake_one_worker(mov_pool *p) {
+  pool_wake_one_worker_from(p, p->scan_start++);
+}
+
 /* Block until the submitter's own ring has space (announce-then-rescan on
    full_waiters, parked on the submitter's own parker, woken directly by the
    worker whose pop freed a slot) or the deadline passes. */
@@ -877,6 +1000,11 @@ static int pool_ring_space_wait(mov_pool *p, _Atomic int64_t *head,
     if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0) {
       atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
       Rf_error("mov: pool stopped");
+    }
+    if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
+      atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
+      pool_orphan_teardown_try(p);
+      Rf_error("mov: pool stopped or owner dead");
     }
     long ms = MOV_INTERRUPT_BOUND_MS;
     if (deadline >= 0) {
@@ -930,7 +1058,7 @@ static void mov_task_finalizer(SEXP xp) {
             pool_unpark_result_waiter(p, rs);
             break;
           }
-        } else if (st == MOV_RS_OK || st == MOV_RS_ERR) {
+        } else if (st == MOV_RS_OK || st == MOV_RS_ERR || st == MOV_RS_DIED) {
           /* the deliberate "never collected" drop: FREE releases the
              producing worker's result keeper and any region unlinks */
           int32_t w = atomic_load_explicit(&rs->worker_slot,
@@ -1059,6 +1187,10 @@ SEXP mov_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
   mov_pool *p = pool_get(xp);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
     Rf_error("mov: pool stopped");
+  if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
+    pool_orphan_teardown_try(p);
+    Rf_error("mov: pool stopped or owner dead");
+  }
   if (p->role == MOV_ROLE_WORKER)
     return pool_submit_nested(p, xp, payload);
   if (p->sub_slot < 0)
@@ -1332,13 +1464,30 @@ static int pool_steal_any(mov_pool *p, int reaping_only) {
       if (st != MOV_WK_REAPING && (reaping_only || st != MOV_WK_LIVE))
         continue;
       if (pool_steal_from(p, i) == MOV_STEAL_GOT) return 1;
+      if (st == MOV_WK_LIVE && deque_nonempty(&p->wk[i]))
+        p->probe_victim = i;
     }
   }
   return 0;
 }
 
+#define MOV_PROBE_STREAK 16
+
 static int pool_steal(mov_pool *p) {
-  return pool_steal_any(p, 0);
+  p->probe_victim = UINT32_MAX;
+  if (pool_steal_any(p, 0)) {
+    p->probe_streak = 0;
+    return 1;
+  }
+  /* thief backstop: repeated failures against an apparently-live,
+     apparently-nonempty victim warrant one death probe — the cross-check
+     for a reap the listener never ran */
+  if (p->probe_victim != UINT32_MAX &&
+      ++p->probe_streak >= MOV_PROBE_STREAK) {
+    p->probe_streak = 0;
+    pool_probe_worker(p, p->probe_victim);
+  }
+  return 0;
 }
 
 /* The fairness tick's full scan: every injection ring unfiltered by the
@@ -1404,6 +1553,229 @@ static int pool_any_work(mov_pool *p) {
   return any;
 }
 
+// Death reaping ---------------------------------------------------------------------------
+
+/* Everything in this section is pure SHM/CAS/flock/unpark code with no R
+   API: the controller's death-listener callback runs it off the R main
+   thread, concurrently with whatever the handle's own thread is doing, so
+   nothing here touches scratch, keeper vectors, or the scan rotation.
+   Holding the slot's liveness lock is the reap grant; every store is
+   CAS-guarded or idempotent, so concurrent or repeated reaps (a kept-fd
+   re-acquire of a lock the process already holds succeeds) are harmless. */
+
+/* Fail the dead worker's announced in-flight task, unpark every waiter its
+   orphaned deque names (their help scans then steal from it), and either
+   wake a drainer or free the emptied slot. Read-only walk; resumable. */
+static void pool_orphan_and_finalize(mov_pool *p, mov_wk_slot *w,
+                                     uint32_t slot) {
+  int32_t inf = atomic_load_explicit(&w->in_flight_rs, memory_order_acquire);
+  if (inf >= 0 && (uint32_t) inf < p->hdr.result_slots) {
+    mov_rs_hdr *rs = pool_rs(p, (uint32_t) inf);
+    if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) ==
+        atomic_load_explicit(&w->in_flight_seq, memory_order_relaxed)) {
+      int32_t expected = MOV_RS_PENDING;
+      if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                  MOV_RS_DIED,
+                                                  memory_order_seq_cst,
+                                                  memory_order_relaxed)) {
+        pool_unpark_result_waiter(p, rs);
+      } else if (expected == MOV_RS_CANCEL) {
+        /* handle already dropped: no collector waits; return the slot */
+        atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                MOV_RS_FREE,
+                                                memory_order_seq_cst,
+                                                memory_order_relaxed);
+      }
+    }
+    atomic_store_explicit(&w->in_flight_rs, -1, memory_order_relaxed);
+  }
+  int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
+  for (int64_t i = atomic_load_explicit(&w->deque_top, memory_order_acquire);
+       i < b; i++) {
+    mov_entry_hdr *eh = (mov_entry_hdr *) deque_entry_at(p, w, i);
+    if (eh->rs_index < p->hdr.result_slots)
+      pool_unpark_result_waiter(p, pool_rs(p, eh->rs_index));
+  }
+  if (atomic_load_explicit(&w->deque_top, memory_order_acquire) < b) {
+    /* orphaned work must drain even when no waiter is parked */
+    pool_wake_one_worker_from(p, slot);
+  } else {
+    int32_t expected = MOV_WK_REAPING;
+    atomic_compare_exchange_strong_explicit(&w->status, &expected,
+                                            MOV_WK_FREE,
+                                            memory_order_seq_cst,
+                                            memory_order_relaxed);
+  }
+}
+
+/* Precondition: the caller holds the slot's liveness lock. */
+static void pool_reap_worker(mov_pool *p, uint32_t slot) {
+  mov_wk_slot *w = &p->wk[slot];
+  for (;;) {
+    int32_t expected = atomic_load_explicit(&w->status,
+                                            memory_order_acquire);
+    if (expected == MOV_WK_LIVE || expected == MOV_WK_LEAVING) {
+      if (!atomic_compare_exchange_strong_explicit(&w->status, &expected,
+                                                   MOV_WK_REAPING,
+                                                   memory_order_seq_cst,
+                                                   memory_order_relaxed))
+        continue;
+      pool_orphan_and_finalize(p, w, slot);
+    } else if (expected == MOV_WK_REAPING) {
+      /* predecessor reaper died mid-walk: re-running it is harmless */
+      pool_orphan_and_finalize(p, w, slot);
+    } else if (expected == MOV_WK_CLAIMING) {
+      /* died between its lock acquire and CLAIMING -> LIVE: deque
+         uninitialized, nothing in flight — lock-before-CAS in the join is
+         what makes this state conclusive for a lock holder */
+      if (!atomic_compare_exchange_strong_explicit(&w->status, &expected,
+                                                   MOV_WK_FREE,
+                                                   memory_order_seq_cst,
+                                                   memory_order_relaxed))
+        continue;
+    }
+    return;   /* FREE: predecessor reap complete */
+  }
+}
+
+/* Non-blocking death probe + reap. The controller probes on its kept fds;
+   everyone else opens the path without O_CREAT and must prove the file's
+   identity against the slot's recorded (dev, inode) before trusting an
+   acquire — ENOENT or a mismatch reads as indeterminate, never a verdict,
+   because a false DEAD is the one verdict the protocol cannot absorb.
+   Returns 1 when a reap ran. */
+static int pool_probe_worker(mov_pool *p, uint32_t slot) {
+  mov_wk_slot *w = &p->wk[slot];
+  if (atomic_load_explicit(&w->status, memory_order_acquire) == MOV_WK_FREE)
+    return 0;
+  if (p->live_all != NULL) {
+    if (mov_live_try(p->live_all[slot]) != MOV_LIVE_ACQUIRED) return 0;
+    pool_reap_worker(p, slot);
+    mov_live_unlock(p->live_all[slot]);
+    return 1;
+  }
+  char path[1024];
+  intptr_t h;
+  if (pool_live_path(p, path, sizeof(path), "wk", slot) != 0) return 0;
+  if (mov_live_open_existing(path, &h) != 0) return 0;
+  uint64_t dev, ino;
+  int dead = mov_live_ident(h, &dev, &ino) == 0 &&
+    dev == w->live_dev && ino == w->live_ino &&
+    mov_live_try(h) == MOV_LIVE_ACQUIRED;
+  if (dead) pool_reap_worker(p, slot);
+  mov_live_close(h);
+  return dead;
+}
+
+/* Precondition: the caller holds the dead submitter's liveness lock.
+   Cancels its PENDING slots (mid-execution workers observe the publish-CAS
+   failure and discard), frees its published-but-uncollected results
+   (releasing the producing workers' keepers), and leaves CANCEL slots
+   alone — they free at pop, which is what keeps release-at-reuse safe for
+   entries still queued in the dead submitter's ring. */
+static void pool_reap_submitter(mov_pool *p, uint32_t j) {
+  mov_sub_slot *s = &p->sub[j];
+  int32_t expected = MOV_SUB_LIVE;
+  if (!atomic_compare_exchange_strong_explicit(&s->status, &expected,
+                                               MOV_SUB_REAPING,
+                                               memory_order_seq_cst,
+                                               memory_order_acquire) &&
+      expected != MOV_SUB_REAPING)
+    return;                                  /* FREE: nothing to do */
+  for (uint32_t k = 0; k < s->rs_count; k++) {
+    mov_rs_hdr *rs = pool_rs(p, s->rs_start + k);
+    for (;;) {
+      int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
+      if (st == MOV_RS_PENDING) {
+        int32_t e2 = MOV_RS_PENDING;
+        if (!atomic_compare_exchange_strong_explicit(&rs->status, &e2,
+                                                     MOV_RS_CANCEL,
+                                                     memory_order_seq_cst,
+                                                     memory_order_relaxed))
+          continue;
+        pool_unpark_result_waiter(p, rs);
+      } else if (st == MOV_RS_OK || st == MOV_RS_ERR || st == MOV_RS_DIED) {
+        int32_t wk = atomic_load_explicit(&rs->worker_slot,
+                                          memory_order_acquire);
+        int32_t e2 = st;
+        if (!atomic_compare_exchange_strong_explicit(&rs->status, &e2,
+                                                     MOV_RS_FREE,
+                                                     memory_order_seq_cst,
+                                                     memory_order_relaxed))
+          continue;
+        if (wk >= 0 && (uint32_t) wk < p->hdr.max_workers)
+          mov_unpark(pool_wk_pk(p, (uint32_t) wk));   /* keeper drop */
+      }
+      break;
+    }
+  }
+  atomic_store_explicit(&s->status, MOV_SUB_FREE, memory_order_seq_cst);
+}
+
+static void pool_probe_submitter(mov_pool *p, uint32_t j) {
+  if ((int) j == p->sub_slot) return;        /* our own held lock */
+  mov_sub_slot *s = &p->sub[j];
+  if (atomic_load_explicit(&s->status, memory_order_acquire) ==
+      MOV_SUB_FREE)
+    return;
+  if (p->live_all != NULL) {
+    intptr_t h = p->live_all[p->hdr.max_workers + j];
+    if (mov_live_try(h) != MOV_LIVE_ACQUIRED) return;
+    pool_reap_submitter(p, j);
+    mov_live_unlock(h);
+    return;
+  }
+  char path[1024];
+  intptr_t h;
+  if (pool_live_path(p, path, sizeof(path), "sub", j) != 0) return;
+  if (mov_live_open_existing(path, &h) != 0) return;
+  uint64_t dev, ino;
+  if (mov_live_ident(h, &dev, &ino) == 0 &&
+      dev == s->live_dev && ino == s->live_ino &&
+      mov_live_try(h) == MOV_LIVE_ACQUIRED)
+    pool_reap_submitter(p, j);
+  mov_live_close(h);
+}
+
+/* The controller's per-worker death callback: OS notification -> lock
+   verdict -> reap, entirely off the R main thread. A pid-reuse race is
+   absorbed by the lock (the impostor holds nothing here). */
+static void pool_wk_death_cb(void *arg) {
+  struct mov_reap_ctx_s *c = arg;
+  mov_pool *p = (mov_pool *) c->pool;
+  if (mov_live_try(p->live_all[c->slot]) == MOV_LIVE_ACQUIRED) {
+    pool_reap_worker(p, c->slot);
+    mov_live_unlock(p->live_all[c->slot]);
+  }
+}
+
+/* Owner-death cleanup: acquiring the owner lock (the kept fd from join)
+   grants exclusive teardown; a caller finding it held knows teardown is in
+   progress elsewhere and simply fails locally. The broadcast is exactly
+   the stop broadcast; the tail is janitorial best-effort — liveness files
+   by path, the region via the vendored dead-PID reaper (its name embeds
+   the dead creator's pid). */
+static void pool_remove_live_files(mov_pool *p) {
+  char path[1024];
+  for (uint32_t i = 0; i < p->hdr.max_workers; i++)
+    if (pool_live_path(p, path, sizeof(path), "wk", i) == 0) remove(path);
+  for (uint32_t j = 0; j < p->hdr.max_submitters; j++)
+    if (pool_live_path(p, path, sizeof(path), "sub", j) == 0) remove(path);
+  if (pool_live_path(p, path, sizeof(path), "owner", 0) == 0) remove(path);
+}
+
+static void pool_orphan_teardown_try(mov_pool *p) {
+  if (p->live_owner == 0 ||
+      mov_live_try(p->live_owner) != MOV_LIVE_ACQUIRED)
+    return;
+  pool_shutdown_broadcast(p);
+  pool_remove_live_files(p);
+  int n = 0;
+  char **list = mori_shm_reap(&n);
+  for (int i = 0; i < n; i++) free(list[i]);
+  free(list);
+}
+
 /* Executes the claimed, announced entry in scratch and publishes into its
    result slot. Reentrant: help-mode and nested-submit execution recurse
    through here from inside Rf_eval, and every claim path reuses scratch —
@@ -1415,6 +1787,7 @@ static void pool_execute(mov_pool *p, SEXP xp) {
   mov_wk_slot *me = &p->wk[p->wk_slot];
   mov_entry_hdr *eh = (mov_entry_hdr *) p->scratch;
   uint32_t rs_index = eh->rs_index;
+  uint16_t sub_slot = eh->submitter_slot;
   mov_rs_hdr *rs = pool_rs(p, rs_index);
   uint64_t seq = atomic_load_explicit(&me->in_flight_seq,
                                       memory_order_relaxed);
@@ -1468,6 +1841,10 @@ static void pool_execute(mov_pool *p, SEXP xp) {
                                             MOV_RS_FREE,
                                             memory_order_seq_cst,
                                             memory_order_relaxed);
+    /* a failed publish is submitter death's one hot-path trigger: a live
+       submitter means a genuine cancellation, a dead one is reaped here */
+    if (sub_slot < p->hdr.max_submitters)
+      pool_probe_submitter(p, sub_slot);
   }
   atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
   UNPROTECT(4);
@@ -1499,9 +1876,16 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
 
   for (;;) {
     pool_reap_result_keepers(p, keepers);
-    if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
-        atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0)
+    if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
       return Rf_ScalarInteger(-1);
+    if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
+      /* first confirmed detector tears the orphan pool down; losers just
+         exit — the winner's broadcast collapses everyone's discovery */
+      pool_orphan_teardown_try(p);
+      return Rf_ScalarInteger(-1);
+    }
+    if (atomic_load_explicit(&me->retire, memory_order_acquire) != 0)
+      return Rf_ScalarInteger(-2);
 
     if (pool_next_task(p)) {
       pool_execute(p, xp);
@@ -1619,6 +2003,8 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
   for (;;) {
     if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
       Rf_error("mov: task handle already collected or invalidated");
+    if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0)
+      pool_orphan_teardown_try(p);   /* its cancel sweep ends this wait */
     st = atomic_load_explicit(&rs->status, memory_order_acquire);
     if (st != MOV_RS_PENDING) break;
 
@@ -1666,10 +2052,19 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
     }
     mov_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
     R_CheckUserInterrupt();
-    if (deadline >= 0 && mov_now() >= deadline &&
-        atomic_load_explicit(&rs->status, memory_order_acquire) ==
-        MOV_RS_PENDING)
-      return mov_sent_timeout;
+    if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
+        MOV_RS_PENDING) {
+      /* backstop for a missed death notification, piggybacked on a wake
+         that happened regardless — never a wakeup of its own */
+      int32_t claimant = atomic_load_explicit(&rs->worker_slot,
+                                              memory_order_acquire);
+      if (claimant >= 0 && (uint32_t) claimant < p->hdr.max_workers)
+        pool_probe_worker(p, (uint32_t) claimant);
+      if (deadline >= 0 && mov_now() >= deadline &&
+          atomic_load_explicit(&rs->status, memory_order_acquire) ==
+          MOV_RS_PENDING)
+        return mov_sent_timeout;
+    }
   }
 
   switch (st) {
@@ -1703,6 +2098,22 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
     }
     UNPROTECT(1);
     return v;
+  }
+  case MOV_RS_DIED: {
+    /* terminal like ERR, but status-word only: the reaper wrote no
+       payload (see the DIED note in mov.h) */
+    if (t->idx >= p->sub[p->sub_slot].rs_start &&
+        t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count)
+      SET_VECTOR_ELT(pool_task_keepers(p, pool_xp),
+                     (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start),
+                     R_NilValue);
+    int32_t expected = MOV_RS_DIED;
+    if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                 MOV_RS_FREE,
+                                                 memory_order_seq_cst,
+                                                 memory_order_relaxed))
+      Rf_error("mov: task handle already collected");
+    Rf_error("mov: worker died while executing this task");
   }
   case MOV_RS_CANCEL:
     /* the task keeper releases at slot reuse, not here — the worker may not
@@ -1765,6 +2176,15 @@ SEXP mov_pool_stop_call(SEXP xp, SEXP timeout) {
     R_CheckUserInterrupt();
   }
 
+  /* teardown sweep: probe + reap whatever did not exit cleanly — dead
+     workers (their in-flight tasks fail, their deques orphan) and dead or
+     detached submitters (their result slots release). A live hung worker
+     stays unreaped, correctly: the lock adjudicates exit, not stall. */
+  for (uint32_t i = 0; i < p->hdr.max_workers; i++)
+    pool_probe_worker(p, i);
+  for (uint32_t j = 0; j < p->hdr.max_submitters; j++)
+    pool_probe_submitter(p, j);
+
   pool_unlink_names(p, prot);
   pool_release(p);
   return Rf_ScalarLogical(clean);
@@ -1811,13 +2231,13 @@ SEXP mov_pool_status_call(SEXP xp) {
   }
   SET_VECTOR_ELT(out, 10, Rf_ScalarReal(queued));
 
-  SEXP tasks = Rf_allocVector(INTSXP, 4);   /* pending, ok, err, cancel */
+  SEXP tasks = Rf_allocVector(INTSXP, 5);   /* pending ok err cancel died */
   SET_VECTOR_ELT(out, 11, tasks);
-  memset(INTEGER(tasks), 0, 4 * sizeof(int));
+  memset(INTEGER(tasks), 0, 5 * sizeof(int));
   for (uint32_t r = 0; r < p->hdr.result_slots; r++) {
     int32_t st = atomic_load_explicit(&pool_rs(p, r)->status,
                                       memory_order_acquire);
-    if (st >= MOV_RS_PENDING && st <= MOV_RS_CANCEL)
+    if (st >= MOV_RS_PENDING && st <= MOV_RS_DIED)
       INTEGER(tasks)[st - MOV_RS_PENDING]++;
   }
   SEXP dq = Rf_allocVector(REALSXP, (R_xlen_t) p->hdr.max_workers);

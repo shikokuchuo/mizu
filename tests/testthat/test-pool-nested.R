@@ -49,7 +49,7 @@ test_that("a full deque runs nested subtasks inline (work-first)", {
   })
   expect_identical(pool_step(p), 1L)
   expect_identical(mov_collect(t, timeout = 5), 100L)
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 4L))
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
@@ -83,7 +83,7 @@ test_that("a cancelled nested entry frees at its later pop", {
   # the cancelled entry still queues on the deque; the next pop frees it
   expect_identical(mov_pool_status(p$ctrl)$deque, 1)
   expect_identical(pool_step(p), 1L)
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 4L))
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 

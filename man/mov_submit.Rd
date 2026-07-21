@@ -50,7 +50,11 @@ back-pressure is per-submitter — and errors on \code{.timeout} expiry rather
 than stalling. Collection returns the \code{mov_timeout} sentinel (class
 \code{c("mov_timeout", "mov_condition")}) if no result arrives within
 \code{timeout}. A task whose handle was cancelled (or whose pool was stopped)
-raises an error on collect.
+raises an error on collect, as does a task whose executing worker died:
+worker death is detected at OS notification latency (a kernel-released
+lock is the verdict — no heartbeats, no polling) and fails exactly the
+tasks the dead worker had claimed, while work still queued on its deque
+is consumed by the surviving workers.
 
 Task expressions see their evaluating worker's own handle as \code{pool}
 (beneath the arguments in \code{...}), so tasks can submit nested subtasks:

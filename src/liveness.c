@@ -24,6 +24,15 @@ int mov_live_open(const char *path, intptr_t *out) {
   return 0;
 }
 
+int mov_live_open_existing(const char *path, intptr_t *out) {
+  HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE) return -1;
+  *out = (intptr_t) h;
+  return 0;
+}
+
 int mov_live_try(intptr_t h) {
   OVERLAPPED ov;
   memset(&ov, 0, sizeof(ov));
@@ -31,6 +40,12 @@ int mov_live_try(intptr_t h) {
                  0, 1, 0, &ov))
     return MOV_LIVE_ACQUIRED;
   return GetLastError() == ERROR_LOCK_VIOLATION ? MOV_LIVE_HELD : -1;
+}
+
+void mov_live_unlock(intptr_t h) {
+  OVERLAPPED ov;
+  memset(&ov, 0, sizeof(ov));
+  UnlockFileEx((HANDLE) h, 0, 1, 0, &ov);
 }
 
 void mov_live_close(intptr_t h) {
@@ -64,9 +79,20 @@ int mov_live_open(const char *path, intptr_t *out) {
   return 0;
 }
 
+int mov_live_open_existing(const char *path, intptr_t *out) {
+  int fd = open(path, O_RDWR | O_CLOEXEC);
+  if (fd < 0) return -1;
+  *out = (intptr_t) fd;
+  return 0;
+}
+
 int mov_live_try(intptr_t h) {
   if (flock((int) h, LOCK_EX | LOCK_NB) == 0) return MOV_LIVE_ACQUIRED;
   return (errno == EWOULDBLOCK || errno == EAGAIN) ? MOV_LIVE_HELD : -1;
+}
+
+void mov_live_unlock(intptr_t h) {
+  flock((int) h, LOCK_UN);
 }
 
 void mov_live_close(intptr_t h) {

@@ -46,7 +46,7 @@ test_that("a task error is published and re-signalled at collect", {
   expect_s3_class(err, "simpleError")
   expect_identical(conditionMessage(err), "boom today")
   # the slot released with the collect: reusable immediately
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 4L))
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
@@ -79,7 +79,7 @@ test_that("cancel discards a still-queued task; the worker frees the slot", {
   expect_identical(mov_pool_status(p$ctrl)$tasks[["cancel"]], 1L)
   # the queued entry is consumed later; only then does CANCEL become FREE
   pool_step(p)
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 4L))
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
@@ -99,7 +99,7 @@ test_that("a dropped handle cancels its pending task at finalization", {
   gc()
   expect_identical(mov_pool_status(p$ctrl)$tasks[["cancel"]], 1L)
   pool_step(p)                                   # consume + free
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 4L))
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
@@ -110,7 +110,7 @@ test_that("a dropped handle frees an uncollected published result", {
   expect_identical(mov_pool_status(p$ctrl)$tasks[["ok"]], 1L)
   rm(t)
   gc()                                           # OK -> FREE without mapping
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 4L))
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 

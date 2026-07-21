@@ -80,13 +80,67 @@ mov_pool <- function(n_workers = 1L, max_workers = n_workers,
     else
       launcher(suffix, slot)
   }
-  if (!.Call(mov_pool_ready_wait, p, n_workers, startup_timeout)) {
+  if (!.Call(mov_pool_ready_wait, p, seq_len(n_workers) - 1L,
+             startup_timeout)) {
     .Call(mov_pool_destroy, p)
     stop("mov: workers failed to attach within ", format(startup_timeout),
          " seconds", call. = FALSE)
   }
   p
 }
+
+#' Grow or Shrink a Pool's Worker Set
+#'
+#' `mov_spawn_workers()` spawns additional workers into free registry
+#' slots, up to the pool's `max_workers`, and waits for them to join.
+#' `mov_retire_worker()` asks one worker to exit cleanly: the request is
+#' non-blocking and never preemptive — the worker observes it between
+#' tasks, releases its slot, and any work still queued on its deque is
+#' consumed in place by the remaining workers. A retired worker's process
+#' may linger briefly as a lifetime anchor for results it produced that
+#' have not yet been collected.
+#'
+#' Slots free up when workers retire, exit at shutdown, or die and are
+#' reaped, so a pool can cycle workers within its registry capacity for
+#' its whole lifetime. Only the creating process can resize a pool.
+#'
+#' @inheritParams mov_submit
+#' @inheritParams mov_pool
+#' @param n number of workers to spawn.
+#' @param slot the worker's slot index (0-based, as reported by
+#'   [mov_pool_dump()]).
+#'
+#' @return `mov_spawn_workers()` invisibly returns the slot indices
+#'   spawned into. `mov_retire_worker()` invisibly returns `NULL`.
+#'
+#' @export
+mov_spawn_workers <- function(pool, n = 1L, launcher = NULL, stdout = "",
+                              stderr = "", startup_timeout = 10) {
+  n <- as.integer(n)
+  if (is.na(n) || n < 1L)
+    stop("mov: n must be at least 1", call. = FALSE)
+  free <- which(mov_pool_status(pool)$workers == "free") - 1L
+  if (length(free) < n)
+    stop("mov: not enough free worker slots (", length(free), " free)",
+         call. = FALSE)
+  slots <- free[seq_len(n)]
+  suffix <- .Call(mov_pool_suffix, pool)
+  for (slot in slots) {
+    if (is.null(launcher))
+      spawn_worker(suffix, slot, stdout = stdout, stderr = stderr)
+    else
+      launcher(suffix, slot)
+  }
+  if (!.Call(mov_pool_ready_wait, pool, as.integer(slots), startup_timeout))
+    stop("mov: workers failed to attach within ", format(startup_timeout),
+         " seconds", call. = FALSE)
+  invisible(as.integer(slots))
+}
+
+#' @rdname mov_spawn_workers
+#' @export
+mov_retire_worker <- function(pool, slot)
+  invisible(.Call(mov_pool_retire, pool, as.integer(slot)))
 
 #' Attach to a Pool as a Submitter
 #'
@@ -121,7 +175,11 @@ mov_pool_attach <- function(name) {
 #' than stalling. Collection returns the `mov_timeout` sentinel (class
 #' `c("mov_timeout", "mov_condition")`) if no result arrives within
 #' `timeout`. A task whose handle was cancelled (or whose pool was stopped)
-#' raises an error on collect.
+#' raises an error on collect, as does a task whose executing worker died:
+#' worker death is detected at OS notification latency (a kernel-released
+#' lock is the verdict — no heartbeats, no polling) and fails exactly the
+#' tasks the dead worker had claimed, while work still queued on its deque
+#' is consumed by the surviving workers.
 #'
 #' Task expressions see their evaluating worker's own handle as `pool`
 #' (beneath the arguments in `...`), so tasks can submit nested subtasks:
@@ -226,7 +284,7 @@ mov_pool_stop <- function(pool, timeout = 5) {
 #'   `max_submitters`, `injection_cap`, `result_slots`, `slot_size`,
 #'   `workers` (per-slot states), `parked`, `submitters` (per-slot states),
 #'   `injection` (entries queued and unclaimed), `tasks` (result slots by
-#'   state: pending / ok / err / cancel), `deque` (per-worker deque
+#'   state: pending / ok / err / cancel / died), `deque` (per-worker deque
 #'   depths), and `shutdown`.
 #'
 #' @export
@@ -235,7 +293,7 @@ mov_pool_status <- function(pool) {
   st$workers <- c("free", "claiming", "live", "leaving",
                   "reaping")[st$workers + 1L]
   st$submitters <- c("free", "live", "reaping")[st$submitters + 1L]
-  names(st$tasks) <- c("pending", "ok", "err", "cancel")
+  names(st$tasks) <- c("pending", "ok", "err", "cancel", "died")
   st
 }
 
@@ -271,7 +329,8 @@ mov_pool_dump <- function(pool) {
   s$status <- c("free", "live", "reaping")[s$status + 1L]
   d$submitters <- data.frame(slot = seq_along(s$status) - 1L, s)
   tk <- lapply(d$tasks, `[`, !is.na(d$tasks$slot))
-  tk$status <- c("free", "pending", "ok", "err", "cancel")[tk$status + 1L]
+  tk$status <- c("free", "pending", "ok", "err", "cancel",
+                 "died")[tk$status + 1L]
   d$tasks <- data.frame(tk)
   d
 }
@@ -289,9 +348,11 @@ worker_main <- function(suffix, slot) {
   h <- .Call(mov_pool_worker_join, suffix, slot)
   .Call(mov_pool_set_eval, h, worker_evalfn(h))
   status <- 0L
+  rc <- -1L
   tryCatch(
     repeat {
-      if (.Call(mov_pool_step, h, 3600) < 0L) break
+      rc <- .Call(mov_pool_step, h, 3600)
+      if (rc < 0L) break
     },
     error = function(e) {
       cat("mov worker error: ", conditionMessage(e), "\n", sep = "",
@@ -300,6 +361,11 @@ worker_main <- function(suffix, slot) {
     }
   )
   .Call(mov_pool_leave, h)
+  # a retired worker (-2) lingers as a lifetime anchor for its uncollected
+  # results: plain bounded sleeps, since no unpark can reach a released
+  # slot; shutdown or owner death ends the linger
+  if (rc == -2L)
+    while (!.Call(mov_pool_lame_duck, h)) Sys.sleep(1)
   quit(save = "no", status = status)
 }
 

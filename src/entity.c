@@ -8,6 +8,11 @@
 
 mori_shm *mov_region(SEXP xp);   /* wrap.c */
 
+mov_death_watch *mov_death_watch_start(long pid, _Atomic int *flag,
+                                       const mov_parker *pk) {
+  return mov_death_watch_start2(pid, flag, pk, NULL, NULL);
+}
+
 static _Atomic uint32_t *mov_entity_epoch(mori_shm *shm, int entity) {
   if (entity != MOV_ENTITY_HOST && entity != MOV_ENTITY_PEER)
     Rf_error("mov: invalid entity");

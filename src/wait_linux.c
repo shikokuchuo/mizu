@@ -72,6 +72,8 @@ struct mov_death_watch_s {
   _Atomic int *flag;
   mov_parker pk;
   int has_pk;
+  void (*cb)(void *);               /* pure-C death callback (may be NULL) */
+  void *cb_arg;
   struct mov_death_watch_s *prev, *next;
 };
 
@@ -104,6 +106,7 @@ static void mov_dl_fork_guard(void) {
 static void mov_dw_fire(struct mov_death_watch_s *w) {
   atomic_store_explicit(w->flag, 1, memory_order_release);
   if (w->has_pk) mov_unpark(&w->pk);
+  if (w->cb != NULL) w->cb(w->cb_arg);
 }
 
 static void *mov_dl_main(void *arg) {
@@ -180,8 +183,9 @@ static void mov_dl_poke(void) {
   (void) r;
 }
 
-mov_death_watch *mov_death_watch_start(long pid, _Atomic int *flag,
-                                       const mov_parker *pk) {
+mov_death_watch *mov_death_watch_start2(long pid, _Atomic int *flag,
+                                        const mov_parker *pk,
+                                        void (*cb)(void *), void *cb_arg) {
   mov_dl_fork_guard();
 
   struct mov_death_watch_s *w = calloc(1, sizeof(*w));
@@ -191,6 +195,8 @@ mov_death_watch *mov_death_watch_start(long pid, _Atomic int *flag,
     w->pk = *pk;
     w->has_pk = 1;
   }
+  w->cb = cb;
+  w->cb_arg = cb_arg;
 
   int pidfd = (int) syscall(SYS_pidfd_open, (pid_t) pid, 0);
   if (pidfd < 0) {

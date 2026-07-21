@@ -20,7 +20,7 @@ test_that("a spawned worker round-trips every payload kind", {
                    as.double(seq_len(100000L)))
   st <- mov_pool_status(p)
   expect_identical(st$workers, "live")
-  expect_identical(unname(st$tasks), rep(0L, 4L))
+  expect_identical(unname(st$tasks), rep(0L, 5L))
   expect_true(mov_pool_stop(p, timeout = 10))
   expect_error(mov_submit(p, 1), "pool handle is closed")
 })

@@ -209,6 +209,14 @@ typedef struct mov_death_watch_s mov_death_watch;
 
 mov_death_watch *mov_death_watch_start(long pid, _Atomic int *flag,
                                        const mov_parker *pk);
+/* As above plus a generic callback invoked after the flag store and
+   unpark, on the listener's callback thread (or synchronously from start
+   when the pid is already dead): pure C only — no R API, and the
+   callback's targets must stay valid until mov_death_watch_stop returns.
+   The pool's worker reap rides this. */
+mov_death_watch *mov_death_watch_start2(long pid, _Atomic int *flag,
+                                        const mov_parker *pk,
+                                        void (*cb)(void *), void *cb_arg);
 void mov_death_watch_stop(mov_death_watch *w);
 
 /* Package-unload teardown; joins the Linux epoll thread (no-op elsewhere:
@@ -229,7 +237,14 @@ void mov_death_listener_teardown(void);
 enum { MOV_LIVE_ACQUIRED = 0, MOV_LIVE_HELD = 1 };
 
 int mov_live_open(const char *path, intptr_t *out);
+/* Open without creating: ENOENT reads as "indeterminate, treat as alive",
+   never a verdict — the probe-by-path discipline (see the pool's worker
+   death detection). */
+int mov_live_open_existing(const char *path, intptr_t *out);
 int mov_live_try(intptr_t h);
+/* Release an acquired lock while keeping the fd — the kept-fd prober's
+   epilogue after a reap, so a respawned holder can lock the same file. */
+void mov_live_unlock(intptr_t h);
 void mov_live_close(intptr_t h);
 /* The locked file's identity — (dev, inode) on POSIX, (volume serial, file
    index) on Windows — recorded in registry slots at join so a path-opened
@@ -280,7 +295,8 @@ typedef struct mov_wk_slot_s {
   _Atomic int32_t  in_flight_rs;  /* claimed task's result slot (-1 none) */
   _Atomic uint64_t in_flight_seq; /* rs.sequence recorded with in_flight_rs */
   _Atomic int64_t  deque_bottom;  /* owner stores; thieves load */
-  uint8_t          pad0[8];
+  _Atomic int32_t  retire;        /* controller-set clean-exit request */
+  uint8_t          pad0[4];
   _Atomic int64_t  deque_top;     /* thieves CAS; owner loads */
   uint64_t         live_dev;      /* liveness-file identity, written once */
   uint64_t         live_ino;      /*  at join before LIVE */
@@ -336,7 +352,12 @@ typedef char mov_entry_hdr_assert[(sizeof(mov_entry_hdr) == 32) ? 1 : -1];
 enum { MOV_WK_FREE = 0, MOV_WK_CLAIMING, MOV_WK_LIVE, MOV_WK_LEAVING,
        MOV_WK_REAPING };
 enum { MOV_SUB_FREE = 0, MOV_SUB_LIVE, MOV_SUB_REAPING };
-enum { MOV_RS_FREE = 0, MOV_RS_PENDING, MOV_RS_OK, MOV_RS_ERR, MOV_RS_CANCEL };
+/* DIED is the reaper's terminal: status-word only, no payload — a reap
+   cannot write payload bytes without racing a live worker's concurrent
+   publish of the same slot (the benign died-before-claim-committed race),
+   so the "worker died" message lives in collect, keyed off the status. */
+enum { MOV_RS_FREE = 0, MOV_RS_PENDING, MOV_RS_OK, MOV_RS_ERR, MOV_RS_CANCEL,
+       MOV_RS_DIED };
 enum { MOV_WPK_RUNNING = 0, MOV_WPK_IDLE, MOV_WPK_PARKED, MOV_WPK_WAKING };
 
 /* Per-submitter injection ring metadata: the shared tail (submitter-
