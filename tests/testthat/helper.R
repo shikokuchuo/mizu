@@ -44,6 +44,11 @@ skip_if_no_child_mov <- function() {
   testthat::skip_if_not(child_mov_ok(), "mov not loadable from child processes")
 }
 
+# Benchmarks run only where MOV_BENCH is set (see test-benchmark.R)
+skip_unless_bench <- function() {
+  testthat::skip_if_not(nzchar(Sys.getenv("MOV_BENCH")), "MOV_BENCH not set")
+}
+
 # In-process channel pair: both ends of one region attached from this
 # process — the deterministic harness for ring mechanics, with no process
 # management involved. The host end produces on the same ring the peer end

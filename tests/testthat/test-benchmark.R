@@ -2,10 +2,14 @@
 # its target regime (tools/baseline/BASELINE.md — nanonext ipc:// pair:
 # 31.7 us per round-trip, ~31.5k RT/s; target regime: >100k small messages/s
 # sustained). The thresholds are the baseline numbers themselves, measured on
-# the reference hardware, so slower CI runners retain real headroom: the ring
-# runs 5-10x inside them there.
+# the reference hardware, so the comparison is only meaningful on runners of
+# a comparable class: MOV_BENCH gates the run. CI sets it on the modern-
+# runner jobs, where the ring runs well inside the thresholds, and leaves it
+# unset on the legacy VMs (macos-15-intel, ubuntu-22.04), whose parked
+# wake latency alone exceeds the socket baseline.
 
 test_that("round-trip latency beats the socket baseline", {
+  skip_unless_bench()
   skip_if_no_child_mov()
   ch <- mov_channel(echo_expr, capacity = 1024L)
 
@@ -26,6 +30,7 @@ test_that("round-trip latency beats the socket baseline", {
 })
 
 test_that("one-way throughput sustains the >100k msg/s regime", {
+  skip_unless_bench()
   skip_if_no_child_mov()
   n <- 200000L
   ch <- mov_channel(quote({
