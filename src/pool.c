@@ -196,7 +196,7 @@ static const char *pool_hdr_validate(const void *region, size_t region_size,
     return "registry capacities out of range";
   if ((h.inj_cap & (h.inj_cap - 1)) != 0 || h.inj_cap < 2 ||
       (h.deque_cap & (h.deque_cap - 1)) != 0 || h.deque_cap < 2 ||
-      (h.slot & (h.slot - 1)) != 0 || h.slot < 64 || h.slot > (1u << 20))
+      (h.slot & (h.slot - 1)) != 0 || h.slot < 128 || h.slot > (1u << 20))
     return "queue capacities or slot size are not valid powers of two";
   if (h.result_slots == 0 || h.result_slots % h.max_submitters != 0)
     return "result slots are not a multiple of the submitter capacity";
@@ -532,8 +532,10 @@ SEXP mov_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
     Rf_error("mov: injection_cap must be a power of two between 2 and 2^24");
   if (!mov_pow2_u64(deque_cap) || deque_cap < 2 || deque_cap > (1u << 24))
     Rf_error("mov: per_worker_cap must be a power of two between 2 and 2^24");
-  if (!mov_pow2_u64(slot) || slot < 64 || slot > (1u << 20))
-    Rf_error("mov: slot_size must be a power of two between 64 and 2^20");
+  /* floor 128: a result slot's inline budget (slot - 40) must hold a
+     region name (up to 27 bytes on Windows) for an SHM_RAW spill */
+  if (!mov_pow2_u64(slot) || slot < 128 || slot > (1u << 20))
+    Rf_error("mov: slot_size must be a power of two between 128 and 2^20");
   if (rslots < maxs || rslots > (1u << 24))
     Rf_error("mov: result_slots must be between max_submitters and 2^24");
   rslots = (rslots + maxs - 1) / maxs * maxs;   /* per-submitter partition */

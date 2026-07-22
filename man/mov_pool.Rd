@@ -39,7 +39,7 @@ submitter slots; rounded up to a multiple of \code{max_submitters}. Bounds
 each submitter's outstanding (uncollected) tasks.}
 
 \item{slot_size}{bytes per queue entry and result slot; a power of two
-between 64 and 2^20. Task payloads that serialize past the inline
+between 128 and 2^20. Task payloads that serialize past the inline
 budget travel via a fresh region per payload, so pools dispatching
 closures or multi-argument tasks should prefer \code{512L}.}
 

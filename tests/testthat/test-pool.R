@@ -19,6 +19,11 @@ test_that("mov_pool_create validates its parameters", {
   expect_error(.Call(mov:::mov_pool_create, 1L, 8L, 64L, 64L, 64L, 32L,
                      tempdir()),
                "slot_size must be a power of two")
+  # 64 is a power of two but under the floor: a result slot's inline budget
+  # (slot - 40) could not hold a spilled region name
+  expect_error(.Call(mov:::mov_pool_create, 1L, 8L, 64L, 64L, 64L, 64L,
+                     tempdir()),
+               "slot_size must be a power of two between 128")
   expect_error(.Call(mov:::mov_pool_create, 1L, 8L, 64L, 64L, 4L, 256L,
                      tempdir()),
                "result_slots must be")
