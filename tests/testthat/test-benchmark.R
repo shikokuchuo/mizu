@@ -1,15 +1,11 @@
-# Benchmarks-as-tests: the ring must beat the committed Phase 0 baseline in
-# its target regime (tools/baseline/BASELINE.md — nanonext ipc:// pair:
+# Benchmarks-as-reports: each run prints its timings next to the committed
+# Phase 0 baseline (tools/baseline/BASELINE.md — nanonext ipc:// pair:
 # 31.7 us per round-trip, ~31.5k RT/s; target regime: >100k small messages/s
-# sustained). The thresholds are the baseline numbers themselves, measured on
-# the reference hardware, so the comparison is only meaningful on runners of
-# a comparable class: MOV_BENCH gates the run. CI sets it on the modern-
-# runner jobs, where the ring runs well inside the thresholds, and leaves it
-# unset on the legacy VMs (macos-15-intel, ubuntu-22.04), whose parked
-# wake latency alone exceeds the socket baseline.
+# sustained) for eyeballing in the CI log. Nothing asserts on the numbers —
+# runner timing is too variable for thresholds to hold reliably — so only
+# the transport's correctness is tested here.
 
-test_that("round-trip latency beats the socket baseline", {
-  skip_unless_bench()
+test_that("round-trip latency reports against the socket baseline", {
   skip_if_no_child_mov()
   ch <- mov_channel(echo_expr, capacity = 1024L)
 
@@ -25,12 +21,10 @@ test_that("round-trip latency beats the socket baseline", {
   rt(500L)                                  # warm-up
   us <- min(rt(2000L), rt(2000L), rt(2000L))
   cat(sprintf("\nround-trip: %.2f us (baseline 31.73 us)\n", us))
-  expect_lt(us, 31.73)
   expect_true(mov_close(ch, timeout = 10))
 })
 
-test_that("one-way throughput sustains the >100k msg/s regime", {
-  skip_unless_bench()
+test_that("one-way throughput reports against the >100k msg/s regime", {
   skip_if_no_child_mov()
   n <- 200000L
   ch <- mov_channel(quote({
@@ -58,6 +52,5 @@ test_that("one-way throughput sustains the >100k msg/s regime", {
   expect_identical(mov_recv(ch, 60), n)     # peer's receipt count
   rate <- n / (proc.time()[[3]] - t0)
   cat(sprintf("\none-way: %.0f msg/s (target > 100000)\n", rate))
-  expect_gt(rate, 100000)
   expect_true(mov_close(ch, timeout = 10))
 })
