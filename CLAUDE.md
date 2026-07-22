@@ -59,4 +59,4 @@ Per-submitter SPSC injection rings + per-worker Chase-Lev deques + a result-slot
 
 Also in helper.R: `kill_hard()` / `pid_alive()` (use these — `tools::SIGKILL` is NA on Windows and `pskill(pid, 0)` *kills* there), `wait_until()`, `skip_if_no_child_mov()`.
 
-`test-benchmark.R` is report-only: it prints timings against `tools/baseline/BASELINE.md` for eyeballing in CI logs and asserts nothing about the numbers (CI runner timing is too variable; oldrel-2 jobs run on slow runners).
+`test-benchmark.R` is report-only: it prints timings against baseline numbers quoted inline in its comments for eyeballing in CI logs and asserts nothing about the numbers (CI runner timing is too variable; oldrel-2 jobs run on slow runners).

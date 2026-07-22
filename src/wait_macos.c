@@ -4,9 +4,10 @@
    since 10.12, the _SHARED opcodes since 10.15; it underlies libc++
    std::atomic::wait, Rust parking_lot / crossbeam, and abseil — isolated in
    this file so a swap to mach ports would be local. The EINTR behavior under
-   R's terminal SIGINT handler is verified empirically in
-   tools/spike-ulock-eintr/. The death listener is a dispatch source on a
-   per-watch serial queue — no thread of mov's own. */
+   R's terminal SIGINT handler was verified empirically by a standalone
+   spike (spike-ulock-eintr, preserved in git history). The death listener
+   is a dispatch source on a per-watch serial queue — no thread of mov's
+   own. */
 
 #include "mov.h"
 

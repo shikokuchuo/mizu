@@ -1,8 +1,7 @@
-# Benchmarks-as-reports: each run prints its timings next to the committed
-# Phase 0 baseline (tools/baseline/BASELINE.md — nanonext ipc:// pair:
-# 31.7 us per round-trip, ~31.5k RT/s; mirai local dispatch: 63-124 us per
-# task; target regime: >100k small messages/s sustained) for eyeballing in
-# the CI log. Nothing asserts on the numbers — runner timing is too
+# Benchmarks-as-reports: each run prints its timings next to the Phase 0
+# incumbent baseline (M4 Pro, 2026-07 — nanonext ipc:// pair: 31.7 us per
+# round-trip, ~31.5k RT/s; mirai local dispatch: 63-124 us per task; target
+# regime: >100k small messages/s sustained) for eyeballing in the CI log. Nothing asserts on the numbers — runner timing is too
 # variable for thresholds to hold reliably — so only the transport's
 # correctness is tested here. The pool reports double as the regression
 # tripwire for anything added to the worker's per-task path (Phase 5's

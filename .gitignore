@@ -6,8 +6,6 @@ src/*.so
 src/*.dll
 src/vendor/*.o
 src/symbols.rds
-tools/spike-ulock-eintr/*.o
-tools/spike-ulock-eintr/*.so
 # IDE
 .Rproj.user/
 *.Rproj
