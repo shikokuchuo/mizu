@@ -86,7 +86,7 @@ SEXP mov_payload_stage(mov_slot_hdr *hdr, unsigned char *payload,
 }
 
 SEXP mov_payload_read(const mov_slot_hdr *hdr, const unsigned char *payload,
-                      uint32_t inline_max) {
+                      uint32_t inline_max, int *gone) {
   switch (hdr->kind) {
   case MOV_KIND_INLINE:
     if (hdr->len > inline_max)
@@ -108,8 +108,15 @@ SEXP mov_payload_read(const mov_slot_hdr *hdr, const unsigned char *payload,
     memcpy(name, payload, hdr->len);
     name[hdr->len] = '\0';
     mori_shm *shm = mori_shm_open_heap(name);
-    if (shm == NULL)
+    if (shm == NULL) {
+      /* the region died with its creator (Win32 mappings cannot outlive
+         theirs): report rather than raise when the caller can absorb it */
+      if (gone != NULL) {
+        *gone = 1;
+        return R_NilValue;
+      }
       Rf_error("mov: cannot open payload region '%s'", name);
+    }
     PROTECT(mov_shm_wrap_consumer(shm));
     SEXP y = mori_unserialize_from((unsigned char *) shm->addr, shm->size);
     UNPROTECT(1);                /* mapping drops with the wrapper's GC */

@@ -496,7 +496,7 @@ static SEXP chan_materialize(mov_chan *c, const unsigned char *sl) {
     /* already mapped: no open, no syscall */
     return mori_unserialize_from(c->rx.arena + off, (size_t) n);
   }
-  return mov_payload_read(hdr, payload, c->inline_max);
+  return mov_payload_read(hdr, payload, c->inline_max, NULL);
 }
 
 /* Block until a message is available at rx.lhead (MOV_ST_OK) or a verdict.

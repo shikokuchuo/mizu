@@ -119,8 +119,10 @@ SEXP mov_payload_stage(mov_slot_hdr *hdr, unsigned char *payload,
                        uint32_t inline_max, SEXP x);
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload (errors on ARENA — the
    channel resolves its own arena chunks). */
+/* gone: NULL raises on a vanished out-of-line region; else set to 1 with a
+   NULL-value return, for callers that can turn it into a task verdict */
 SEXP mov_payload_read(const mov_slot_hdr *hdr, const unsigned char *payload,
-                      uint32_t inline_max);
+                      uint32_t inline_max, int *gone);
 
 /* Terminal-state sentinels (channel.c), shared across the verb surface. */
 extern SEXP mov_sent_full, mov_sent_timeout, mov_sent_closed, mov_sent_gone;

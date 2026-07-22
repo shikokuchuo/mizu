@@ -3,7 +3,9 @@
 # happen anyway (collect's PENDING-wake backstop, the stop sweep) — with
 # the kernel-released liveness lock as the only verdict. A dead worker's
 # claimed task fails as "worker died"; its queued deque work is consumed
-# in place by survivors. Dead submitters release their result slots; a
+# in place by survivors — executed while its payloads remain reachable,
+# failed as DIED where they vanished with the enqueuer (Win32 mappings
+# cannot outlive their creator). Dead submitters release their result slots; a
 # dead controller's survivors tear the orphan pool down themselves. Kill
 # targets are always spawned processes, never children of fork.
 
@@ -67,7 +69,11 @@ test_that("collect's backstop probe reaps with no listener registered", {
 
 test_that("a dead worker's queued deque work is consumed in place", {
   skip_if_no_child_mov()
-  p <- mov_pool(n_workers = 2L)
+  # entries must stay inline for in-place consumption to be possible
+  # everywhere: an out-of-line payload dies with its enqueuer on Windows
+  # (see the spilled-payload test below), and R CMD check's deep tempdir
+  # pushes these closures past the default slot's inline budget
+  p <- mov_pool(n_workers = 2L, slot_size = 1024L)
   d <- tfile()
   dir.create(d)
   # occupy the second worker so the nested pushes stay on the first's deque
@@ -93,6 +99,46 @@ test_that("a dead worker's queued deque work is consumed in place", {
   expect_identical(mov_collect(blocker, timeout = 10), NULL)
   expect_true(mov_pool_stop(p, timeout = 10))
   unlink(d, recursive = TRUE)
+})
+
+test_that("orphaned entries with spilled payloads drain without thief loss", {
+  skip_if_no_child_mov()
+  p <- mov_pool(n_workers = 2L)
+  d <- tfile()
+  dir.create(d)
+  blocker <- mov_submit(p, Sys.sleep(1.5))
+  Sys.sleep(0.2)
+  # the blob forces each nested entry's payload out-of-line, into regions
+  # the victim creates and takes down with it on Windows
+  t <- mov_submit(p, {
+    for (i in 1:3) mov_submit(pool, {
+      length(x)
+      file.create(f)
+    }, x = blob, f = file.path(d, i))
+    Sys.sleep(30)
+  }, d = d, blob = as.raw(seq_len(70000) %% 256))
+  expect_true(wait_until({
+    dm <- mov_pool_dump(p)
+    any(dm$workers$bottom - dm$workers$top == 3)
+  }))
+  dm <- mov_pool_dump(p)
+  victim <- which(dm$workers$bottom - dm$workers$top == 3)
+  kill_hard(dm$workers$pid[victim])
+
+  # POSIX regions outlive their creator, so the drain executes the orphans;
+  # on Windows they vanished with the victim and the drain fails each as
+  # DIED — either way the deque empties, the slot frees, and the thief
+  # survives to keep serving the pool
+  if (.Platform$OS.type != "windows")
+    expect_true(wait_until(length(dir(d)) == 3L, timeout = 15))
+  expect_true(wait_until(mov_pool_status(p)$workers[victim] == "free",
+                         timeout = 15))
+  err <- tryCatch(mov_collect(t, timeout = 10), error = identity)
+  expect_match(conditionMessage(err), "worker died")
+  expect_identical(mov_collect(blocker, timeout = 10), NULL)
+  t2 <- mov_submit(p, "alive")
+  expect_identical(mov_collect(t2, timeout = 10), "alive")
+  expect_true(mov_pool_stop(p, timeout = 10))
 })
 
 test_that("a worker's failed publish reaps the dead submitter", {

@@ -1811,9 +1811,33 @@ static void pool_execute(mov_pool *p, SEXP xp) {
     return;
   }
 
+  /* A vanished out-of-line entry payload means the enqueuer died and its
+     region went along (Win32 mappings cannot outlive their creator): the
+     task can never run anywhere — it fails as DIED exactly like a claimed
+     task whose worker died, and the drain continues in this thief. */
+  int gone = 0;
   SEXP pl = PROTECT(mov_payload_read(&eh->ph,
                                      p->scratch + sizeof(mov_entry_hdr),
-                                     p->inline_entry));
+                                     p->inline_entry, &gone));
+  if (gone) {
+    int32_t expected = MOV_RS_PENDING;
+    if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                MOV_RS_DIED,
+                                                memory_order_seq_cst,
+                                                memory_order_relaxed)) {
+      pool_unpark_result_waiter(p, rs);
+    } else if (expected == MOV_RS_CANCEL) {
+      atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                              MOV_RS_FREE,
+                                              memory_order_seq_cst,
+                                              memory_order_relaxed);
+      if (sub_slot < p->hdr.max_submitters)
+        pool_probe_submitter(p, sub_slot);
+    }
+    atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
+    UNPROTECT(1);
+    return;
+  }
   /* scratch (and eh with it) is dead from here: the eval below may claim
      into it. worker_evalfn returns list(ok, value-or-condition); user
      errors are caught there, so an error out of this eval is
@@ -2081,7 +2105,8 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
        references */
     SEXP v = PROTECT(mov_payload_read(&rs->ph,
                                       (unsigned char *) rs +
-                                      sizeof(mov_rs_hdr), p->inline_rs));
+                                      sizeof(mov_rs_hdr), p->inline_rs,
+                                      NULL));
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
     if (t->idx >= p->sub[p->sub_slot].rs_start &&
         t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count)
