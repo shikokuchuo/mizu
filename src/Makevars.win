@@ -6,5 +6,9 @@ OBJECTS = bounded.o channel.o entity.o init.o liveness.o payload.o pool.o \
 
 all: $(SHLIB)
 
+# R's makefiles track no header dependencies: without this, editing a header
+# recompiles nothing and one mov.so links objects built from two headers.
+$(OBJECTS): mov.h vendor/mori.h
+
 clean:
 	@rm -f $(OBJECTS) $(SHLIB)
