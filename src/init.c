@@ -80,12 +80,14 @@ SEXP mov_pool_attach_call(SEXP);
 SEXP mov_pool_submit(SEXP, SEXP, SEXP);
 SEXP mov_pool_step(SEXP, SEXP);
 SEXP mov_pool_set_eval(SEXP, SEXP);
+SEXP mov_pool_set_trace(SEXP, SEXP);
 SEXP mov_pool_deque_pull(SEXP, SEXP);
 SEXP mov_pool_dump_call(SEXP);
 SEXP mov_pool_collect(SEXP, SEXP);
 SEXP mov_pool_cancel(SEXP);
 SEXP mov_pool_stop_call(SEXP, SEXP);
 SEXP mov_pool_status_call(SEXP);
+SEXP mov_pool_stats_call(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
   {"mov_onload_probe",          (DL_FUNC) &mov_onload_probe,          0},
@@ -137,12 +139,14 @@ static const R_CallMethodDef CallEntries[] = {
   {"mov_pool_submit",           (DL_FUNC) &mov_pool_submit,           3},
   {"mov_pool_step",             (DL_FUNC) &mov_pool_step,             2},
   {"mov_pool_set_eval",         (DL_FUNC) &mov_pool_set_eval,         2},
+  {"mov_pool_set_trace",        (DL_FUNC) &mov_pool_set_trace,        2},
   {"mov_pool_deque_pull",       (DL_FUNC) &mov_pool_deque_pull,       2},
   {"mov_pool_dump_call",        (DL_FUNC) &mov_pool_dump_call,        1},
   {"mov_pool_collect",          (DL_FUNC) &mov_pool_collect,          2},
   {"mov_pool_cancel",           (DL_FUNC) &mov_pool_cancel,           1},
   {"mov_pool_stop_call",        (DL_FUNC) &mov_pool_stop_call,        2},
   {"mov_pool_status_call",      (DL_FUNC) &mov_pool_status_call,      1},
+  {"mov_pool_stats_call",       (DL_FUNC) &mov_pool_stats_call,       1},
   {NULL, NULL, 0}
 };
 

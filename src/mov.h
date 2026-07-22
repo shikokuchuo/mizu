@@ -285,7 +285,12 @@ typedef char mov_pool_hdr_assert[(sizeof(mov_pool_hdr) == 64) ? 1 : -1];
    fields; deque_top sits apart on line 1 so thief CAS traffic never pingpongs
    with the owner's high-rate deque_bottom writes. in_flight_rs/_seq are
    recorded before any claim is attempted (announce-before-claim) and read
-   only post-mortem by a reaper serialized by the liveness lock. */
+   only post-mortem by a reaper serialized by the liveness lock. The stat_*
+   counters are cumulative per incarnation (reset at join), owner-published
+   from process-local counters only at park/fairness-tick cadence — never
+   per task, which would reintroduce the line-1 pingpong deque_top's
+   placement exists to avoid — so under load they lag by up to one fairness
+   tick and are exact whenever the worker is parked or departed. */
 typedef struct mov_wk_slot_s {
   _Atomic int32_t  status;        /* FREE, CLAIMING, LIVE, LEAVING, REAPING */
   int32_t          id;            /* slot index (redundant, for debugging) */
@@ -302,7 +307,11 @@ typedef struct mov_wk_slot_s {
   _Atomic int64_t  deque_top;     /* thieves CAS; owner loads */
   uint64_t         live_dev;      /* liveness-file identity, written once */
   uint64_t         live_ino;      /*  at join before LIVE */
-  uint8_t          pad1[40];
+  _Atomic uint64_t stat_tasks;    /* task evals run (help/nested included) */
+  _Atomic uint64_t stat_steals;   /* entries claimed from peers' deques */
+  _Atomic uint64_t stat_inj;      /* entries claimed from injection rings */
+  _Atomic uint64_t stat_parks;    /* kernel parks in the worker loop */
+  _Atomic uint64_t stat_helps;    /* claims run in nested-collect help mode */
 } mov_wk_slot;
 
 typedef char mov_wk_slot_assert[(sizeof(mov_wk_slot) == 128) ? 1 : -1];

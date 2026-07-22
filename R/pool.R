@@ -335,6 +335,75 @@ mov_pool_dump <- function(pool) {
   d
 }
 
+#' Cumulative Pool Counters
+#'
+#' Per-worker and per-submitter counters accumulated since each
+#' participant joined, complementing the point-in-time snapshots of
+#' [mov_pool_status()] and [mov_pool_dump()]. Nothing here costs the hot
+#' paths anything: submitter counts are the injection rings' own monotonic
+#' positions (submission writes nothing extra), and worker counters are
+#' kept process-locally and mirrored into the region only when a worker
+#' parks, leaves, or passes its fairness tick — so under continuous load a
+#' worker's row can lag by up to 61 claims, and is exact whenever that
+#' worker is parked, retired, or the pool is quiescent.
+#'
+#' @inheritParams mov_submit
+#'
+#' @return A list of two data frames. `workers`: one row per worker slot
+#'   with `status`, `pid`, `tasks` (task evaluations run, help-mode and
+#'   nested inline execution included), `steals` (entries claimed from
+#'   peers' deques), `injections` (entries claimed from injection rings),
+#'   `parks` (kernel parks in the worker loop), `helps` (claims executed
+#'   while blocked in a nested collect), and the current `deque` depth.
+#'   `submitters`: one row per submitter slot with `status`, `pid`,
+#'   `injected` (entries ever published to its injection ring), `claimed`
+#'   (entries workers have taken from it), and `queued` (their
+#'   difference). Counters reset when a slot is reused by a new joiner.
+#'
+#' @export
+mov_pool_stats <- function(pool) {
+  st <- .Call(mov_pool_stats_call, pool)
+  w <- st$workers
+  w$status <- c("free", "claiming", "live", "leaving",
+                "reaping")[w$status + 1L]
+  st$workers <- data.frame(slot = seq_along(w$status) - 1L, w)
+  s <- st$submitters
+  s$status <- c("free", "live", "reaping")[s$status + 1L]
+  s$queued <- s$injected - s$claimed
+  st$submitters <- data.frame(slot = seq_along(s$status) - 1L, s)
+  st
+}
+
+#' Trace Task Lifecycle Events
+#'
+#' Registers a hook on a pool handle, called as `fn(event, id)` at each
+#' task lifecycle event this process observes: `"submit"` when a task is
+#' committed, and — on worker handles — `"start"` before a task's
+#' evaluation, `"done"` / `"error"` when its result publishes, or `"drop"`
+#' when a claimed task is discarded (cancelled before or during execution,
+#' or its out-of-line payload died with its enqueuer). `id` identifies the
+#' task as `"<submitter slot>:<counter>"`, stable across processes, so
+#' logs from both sides of a pool can be correlated.
+#'
+#' Registration is per-handle and per-process. A submitter tracing its own
+#' handle sees only `"submit"`; execution events happen on the workers. To
+#' trace a worker, install the hook from a task, on the worker's own
+#' handle bound as `pool`: `mov_submit(p, mov_pool_trace(pool, fn))`.
+#' The disabled hook costs one pointer check per event site, and no event
+#' sites exist on the channel hot path. An error raised by the hook
+#' propagates as an infrastructure failure at its site — on a worker it
+#' takes the worker down, exactly like an error escaping the evaluator.
+#'
+#' @inheritParams mov_submit
+#' @param fn a `function(event, id)`, or `NULL` to remove a registered
+#'   hook.
+#'
+#' @return Invisibly, `NULL`.
+#'
+#' @export
+mov_pool_trace <- function(pool, fn = NULL)
+  invisible(.Call(mov_pool_set_trace, pool, fn))
+
 # Worker entry point: invoked as `Rscript -e 'mov:::worker_main("<suffix>",
 # <slot>)'` by the launcher. Rebuilds the region name from the compiled-in
 # prefix plus the argv suffix, attaches writable, validates the header,
