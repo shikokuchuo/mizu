@@ -14,7 +14,7 @@ mov_channel(
   stdout = "",
   stderr = "",
   liveness_dir = tempdir(),
-  startup_timeout = 5
+  startup_timeout = 30
 )
 }
 \arguments{

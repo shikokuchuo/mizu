@@ -69,7 +69,7 @@
 mov_channel <- function(expr, capacity = 16384L, slot_size = 256L,
                         arena_size = 4194304, spin = FALSE, launcher = NULL,
                         stdout = "", stderr = "", liveness_dir = tempdir(),
-                        startup_timeout = 5) {
+                        startup_timeout = 30) {
   ch <- .Call(mov_channel_create, expr, capacity, slot_size, arena_size,
               liveness_dir, spin)
   suffix <- .Call(mov_channel_suffix, ch)

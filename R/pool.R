@@ -65,7 +65,7 @@ mov_pool <- function(n_workers = 1L, max_workers = n_workers,
                      per_worker_cap = 1024L, result_slots = 4096L,
                      slot_size = 256L, launcher = NULL, stdout = "",
                      stderr = "", liveness_dir = tempdir(),
-                     startup_timeout = 10) {
+                     startup_timeout = 30) {
   n_workers <- as.integer(n_workers)
   if (is.na(n_workers) || n_workers < 1L)
     stop("mov: n_workers must be at least 1", call. = FALSE)
@@ -115,7 +115,7 @@ mov_pool <- function(n_workers = 1L, max_workers = n_workers,
 #'
 #' @export
 mov_spawn_workers <- function(pool, n = 1L, launcher = NULL, stdout = "",
-                              stderr = "", startup_timeout = 10) {
+                              stderr = "", startup_timeout = 30) {
   n <- as.integer(n)
   if (is.na(n) || n < 1L)
     stop("mov: n must be at least 1", call. = FALSE)

@@ -11,7 +11,7 @@ mov_spawn_workers(
   launcher = NULL,
   stdout = "",
   stderr = "",
-  startup_timeout = 10
+  startup_timeout = 30
 )
 
 mov_retire_worker(pool, slot)

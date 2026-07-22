@@ -16,7 +16,7 @@ mov_pool(
   stdout = "",
   stderr = "",
   liveness_dir = tempdir(),
-  startup_timeout = 10
+  startup_timeout = 30
 )
 }
 \arguments{
