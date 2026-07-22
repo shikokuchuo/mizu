@@ -50,6 +50,30 @@ test_that("a task error is published and re-signalled at collect", {
   pool_end(p)
 })
 
+test_that("a classed condition re-signals with class and fields intact", {
+  p <- pool_pair()
+  cond <- structure(list(message = "typed", call = NULL, data = 42L),
+                    class = c("mov_test_error", "error", "condition"))
+  t <- mov_submit(p$ctrl, stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(mov_collect(t, timeout = 5), error = identity)
+  expect_identical(class(err), c("mov_test_error", "error", "condition"))
+  expect_identical(conditionMessage(err), "typed")
+  expect_identical(err$data, 42L)
+  pool_end(p)
+})
+
+test_that("only error conditions fail a task: a warning passes through", {
+  p <- pool_pair()
+  t <- mov_submit(p$ctrl, {
+    warning("advisory only")
+    "completed"
+  })
+  expect_warning(pool_step(p), "advisory only")
+  expect_identical(mov_collect(t, timeout = 5), "completed")
+  pool_end(p)
+})
+
 test_that("collect times out with the sentinel and later succeeds", {
   p <- pool_pair()
   t <- mov_submit(p$ctrl, "done")

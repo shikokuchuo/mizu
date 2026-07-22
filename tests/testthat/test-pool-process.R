@@ -44,6 +44,10 @@ test_that("a task error carries its condition across processes", {
   err <- tryCatch(mov_collect(t, timeout = 30), error = identity)
   expect_s3_class(err, "error")
   expect_identical(conditionMessage(err), "worker-side failure")
+  # the worker's loop re-enters after publishing the failure: the same
+  # (only) worker serves the next task
+  expect_identical(mov_collect(mov_submit(p, "alive"), timeout = 30),
+                   "alive")
   expect_true(mov_pool_stop(p, timeout = 10))
 })
 

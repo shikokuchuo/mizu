@@ -143,6 +143,18 @@ test_that("nested submits trace under the worker's own submitter identity", {
   pool_end(p)
 })
 
+test_that("an error from a worker-side hook is infrastructure failure", {
+  p <- pool_pair()
+  mov_pool_trace(p$wk, function(event, id) stop("hook boom"))
+  t <- mov_submit(p$ctrl, "never published")
+  # the hook errors at the "start" site, outside any task eval: the step
+  # raises — the worker-fatal path — and nothing publishes to the slot
+  expect_error(pool_step(p), "hook boom")
+  expect_s3_class(mov_collect(t, timeout = 0), "mov_timeout")
+  mov_pool_trace(p$wk, NULL)
+  pool_end(p)
+})
+
 test_that("mov_pool_trace validates its hook argument", {
   p <- pool_pair()
   expect_error(mov_pool_trace(p$ctrl, "not a function"),

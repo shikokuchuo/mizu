@@ -392,7 +392,8 @@ mov_pool_stats <- function(pool) {
 #' The disabled hook costs one pointer check per event site, and no event
 #' sites exist on the channel hot path. An error raised by the hook
 #' propagates as an infrastructure failure at its site — on a worker it
-#' takes the worker down, exactly like an error escaping the evaluator.
+#' takes the worker down (unlike a task's own error, which publishes as
+#' that task's ERR result).
 #'
 #' @inheritParams mov_submit
 #' @param fn a `function(event, id)`, or `NULL` to remove a registered
@@ -411,24 +412,33 @@ mov_pool_trace <- function(pool, fn = NULL)
 # its death listener at the owner, and unparks the creator on reaching
 # LIVE. The loop then lives in mov_pool_step: one claim in tier order
 # (fairness tick, own deque, steal, injection) per task, parked indefinitely
-# when idle, returning negative on shutdown or owner death.
+# when idle, returning negative on shutdown or owner death. The eval hot
+# path arms no error handler: a task error longjmps out of the step and
+# mov_pool_fail_inflight publishes the caught condition as that task's ERR
+# result — FALSE marks an error from outside any task eval, which is
+# infrastructure failure and takes the worker down.
 worker_main <- function(suffix, slot) {
   if (!"package:mov" %in% search()) attachNamespace("mov")
   h <- .Call(mov_pool_worker_join, suffix, slot)
-  .Call(mov_pool_set_eval, h, worker_evalfn(h))
+  .Call(mov_pool_set_eval, h)
   status <- 0L
   rc <- -1L
-  tryCatch(
-    repeat {
-      rc <- .Call(mov_pool_step, h, 3600)
-      if (rc < 0L) break
-    },
-    error = function(e) {
+  repeat {
+    e <- tryCatch({
+      repeat {
+        rc <- .Call(mov_pool_step, h, 3600)
+        if (rc < 0L) break
+      }
+      NULL
+    }, error = function(e) e)
+    if (is.null(e)) break
+    if (!.Call(mov_pool_fail_inflight, h, e)) {
       cat("mov worker error: ", conditionMessage(e), "\n", sep = "",
           file = stderr())
-      status <<- 1L
+      status <- 1L
+      break
     }
-  )
+  }
   .Call(mov_pool_leave, h)
   # a retired worker (-2) lingers as a lifetime anchor for its uncollected
   # results: plain bounded sleeps, since no unpark can reach a released
@@ -436,20 +446,4 @@ worker_main <- function(suffix, slot) {
   if (rc == -2L)
     while (!.Call(mov_pool_lame_duck, h)) Sys.sleep(1)
   quit(save = "no", status = status)
-}
-
-# Builds the worker's evaluator: one task payload — list(expr, named args)
-# — evaluated in a fresh environment whose parent binds the worker's own
-# handle as `pool`, which is what worker-side nested submit closes over
-# (arguments shadow it if a task names one `pool`). User errors are caught
-# and published as ERR results; anything escaping the evaluator is
-# infrastructure failure and takes the worker down.
-worker_evalfn <- function(h) {
-  base <- new.env(parent = globalenv())
-  base[["pool"]] <- h
-  function(payload) {
-    env <- list2env(payload[[2L]], parent = base)
-    tryCatch(list(TRUE, eval(payload[[1L]], env)),
-             error = function(e) list(FALSE, e))
-  }
 }

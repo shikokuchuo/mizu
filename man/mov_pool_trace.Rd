@@ -34,5 +34,6 @@ handle bound as \code{pool}: \code{mov_submit(p, mov_pool_trace(pool, fn))}.
 The disabled hook costs one pointer check per event site, and no event
 sites exist on the channel hot path. An error raised by the hook
 propagates as an infrastructure failure at its site — on a worker it
-takes the worker down, exactly like an error escaping the evaluator.
+takes the worker down (unlike a task's own error, which publishes as
+that task's ERR result).
 }

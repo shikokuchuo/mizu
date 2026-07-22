@@ -71,6 +71,14 @@ typedef struct mov_pool_s {
   uint64_t claims;               /* fairness-tick counter (% 61) */
   uint64_t rng;                  /* xorshift state for victim selection */
   int help_depth;                /* nested-collect help recursion depth */
+  /* identity of the outermost (unwind-path) task eval, for
+     mov_pool_fail_inflight: written only by catching = 0 executes — inner
+     help / inline recursion clears the shm announce, so it cannot serve
+     the unwind path */
+  int in_eval;
+  uint32_t cur_rs_index;
+  uint64_t cur_seq, cur_task_id;
+  uint16_t cur_sub_slot;
   uint32_t probe_streak;         /* thief-probe backstop state */
   uint32_t probe_victim;
   struct mov_rk_s { uint32_t idx; uint64_t seq; } *rk;
@@ -374,8 +382,8 @@ static void mov_pool_finalizer(SEXP xp) {
    or the worker's result keepers (length result_slots); [1] the host unlink
    extptr (controller only); [2] a worker's nested-submit task keepers
    (length rs_count, allocated when the worker claims a submitter slot);
-   [3] the worker's evaluator closure (mov_pool_set_eval); [4] the handle's
-   trace hook (mov_pool_set_trace). */
+   [3] the worker's evaluation base env (mov_pool_set_eval); [4] the
+   handle's trace hook (mov_pool_set_trace). */
 static SEXP pool_make_handle(mov_pool *p, SEXP keepers, SEXP host_ptr) {
   SEXP prot = PROTECT(Rf_allocVector(VECSXP, 5));
   SET_VECTOR_ELT(prot, 0, keepers);
@@ -394,25 +402,80 @@ static SEXP pool_task_keepers(mov_pool *p, SEXP xp) {
                     p->role == MOV_ROLE_WORKER ? 2 : 0);
 }
 
-/* Registers the worker's evaluator closure — worker_evalfn(h) on the R
-   side, which binds the handle as `pool` beneath every task's arguments.
-   Stashed on the handle so nested submit's inline-execute fallback and
-   collect's help mode can run tasks outside mov_pool_step. */
-SEXP mov_pool_set_eval(SEXP xp, SEXP fn) {
+/* Arms a worker handle for evaluation: a base environment under
+   globalenv() binding the handle itself as `pool` — what worker-side
+   nested submit closes over; task argument frames chain beneath it, so a
+   task argument named `pool` shadows it. Stashed on the handle so nested
+   submit's inline-execute fallback and collect's help mode can run tasks
+   outside mov_pool_step. */
+SEXP mov_pool_set_eval(SEXP xp) {
   mov_pool *p = pool_get(xp);
   if (p->role != MOV_ROLE_WORKER)
     Rf_error("mov: not a worker handle");
-  if (TYPEOF(fn) != CLOSXP)
-    Rf_error("mov: expected an eval function");
-  SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 3, fn);
+  SEXP base = PROTECT(R_NewEnv(R_GlobalEnv, 0, 0));
+  Rf_defineVar(Rf_install("pool"), xp, base);
+  SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 3, base);
+  UNPROTECT(1);
   return R_NilValue;
 }
 
-static SEXP pool_eval_fun(SEXP xp) {
-  SEXP fn = VECTOR_ELT(R_ExternalPtrProtected(xp), 3);
-  if (TYPEOF(fn) != CLOSXP)
+static SEXP pool_eval_env(SEXP xp) {
+  SEXP env = VECTOR_ELT(R_ExternalPtrProtected(xp), 3);
+  if (TYPEOF(env) != ENVSXP)
     Rf_error("mov: no evaluator registered on this worker handle");
-  return fn;
+  return env;
+}
+
+/* The task evaluator: one wire payload — list(expr, named args) — with the
+   arguments bound into a fresh unhashed frame under the base environment.
+   Two error disciplines, chosen by the caller. The worker loop's hot path
+   (catching = 0) arms no handler at all: a user error longjmps out of
+   mov_pool_step and worker_main publishes the caught condition as this
+   task's ERR result through mov_pool_fail_inflight — the in_eval flag is
+   what separates those errors from infrastructure failure, which stays
+   fatal. Help mode and nested submit's inline execute (catching = 1) run
+   inside a task's own evaluation, where an escaping error would land in
+   the wrong task's frames: they contain it with R_tryCatchError and pay
+   its R-closure trampoline — several µs, still cheaper than the park that
+   helping replaced. */
+struct mov_eval_ctx { SEXP expr; SEXP env; int ok; };
+
+static SEXP pool_eval_body(void *data) {
+  struct mov_eval_ctx *c = (struct mov_eval_ctx *) data;
+  return Rf_eval(c->expr, c->env);
+}
+
+static SEXP pool_eval_handler(SEXP cond, void *data) {
+  ((struct mov_eval_ctx *) data)->ok = 0;
+  return cond;
+}
+
+static SEXP pool_eval_task(mov_pool *p, SEXP xp, SEXP payload, int catching,
+                           int *ok) {
+  if (TYPEOF(payload) != VECSXP || Rf_xlength(payload) != 2 ||
+      TYPEOF(VECTOR_ELT(payload, 1)) != VECSXP)
+    Rf_error("mov: corrupt task payload");
+  SEXP args = VECTOR_ELT(payload, 1);
+  SEXP names = Rf_getAttrib(args, R_NamesSymbol);
+  R_xlen_t n = Rf_xlength(args);
+  if (n > 0 && TYPEOF(names) != STRSXP)
+    Rf_error("mov: corrupt task payload");
+  SEXP env = PROTECT(R_NewEnv(pool_eval_env(xp), 0, 0));
+  for (R_xlen_t i = 0; i < n; i++)
+    Rf_defineVar(Rf_installTrChar(STRING_ELT(names, i)),
+                 VECTOR_ELT(args, i), env);
+  struct mov_eval_ctx c = { VECTOR_ELT(payload, 0), env, 1 };
+  SEXP value;
+  if (catching) {
+    value = R_tryCatchError(pool_eval_body, &c, pool_eval_handler, &c);
+  } else {
+    p->in_eval = 1;
+    value = Rf_eval(c.expr, c.env);
+    p->in_eval = 0;
+  }
+  *ok = c.ok;
+  UNPROTECT(1);
+  return value;
 }
 
 /* Per-handle, per-process trace hook: fn(event, id), with id the entry
@@ -1177,7 +1240,7 @@ static void pool_fill_entry(mov_pool *p, mov_entry_hdr *eh,
   eh->pad = 0;
 }
 
-static void pool_execute(mov_pool *p, SEXP xp);
+static void pool_execute(mov_pool *p, SEXP xp, int catching);
 static void pool_announce(mov_pool *p);
 
 /* Worker-side nested submit: the local-deque push. The worker becomes a
@@ -1210,7 +1273,7 @@ static SEXP pool_submit_nested(mov_pool *p, SEXP xp, SEXP payload) {
   /* everything that can longjmp — staging, handle allocation, the
      evaluator lookup the inline path needs — runs before any observable
      mutation: an error leaves the entry unpublished and the slot FREE */
-  if (inline_exec) (void) pool_eval_fun(xp);
+  if (inline_exec) (void) pool_eval_env(xp);
   SEXP keep = PROTECT(mov_payload_stage(&eh->ph, e + sizeof(mov_entry_hdr),
                                         p->inline_entry, payload));
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
@@ -1224,7 +1287,7 @@ static SEXP pool_submit_nested(mov_pool *p, SEXP xp, SEXP payload) {
   } else {
     pool_trace_emit(xp, "submit", tid);
     pool_announce(p);
-    pool_execute(p, xp);
+    pool_execute(p, xp, 1);
   }
   UNPROTECT(2);
   return txp;
@@ -1885,14 +1948,59 @@ static void pool_orphan_teardown_try(mov_pool *p) {
   free(list);
 }
 
+/* The publish tail shared by pool_execute and the unwind path
+   (mov_pool_fail_inflight): stage the outcome into the result slot, CAS it
+   OK/ERR, pin the keeper, wake the waiter — or consume a concurrent CANCEL
+   and probe the (possibly dead) submitter. Retires the in-flight announce.
+   Payload writes are plain stores into a slot no allocator can touch
+   (status stays PENDING/CANCEL until the FREE transition); the publish CAS
+   is the release barrier a collector's acquire load pairs with. */
+static int pool_publish_result(mov_pool *p, SEXP xp, uint32_t rs_index,
+                               uint16_t sub_slot, uint64_t seq, int ok,
+                               SEXP value) {
+  mov_rs_hdr *rs = pool_rs(p, rs_index);
+  pool_rk_reserve(p);
+  SEXP keep = PROTECT(mov_payload_stage(&rs->ph,
+                                        (unsigned char *) rs +
+                                        sizeof(mov_rs_hdr),
+                                        p->inline_rs, value));
+  int32_t expected = MOV_RS_PENDING;
+  int published =
+    atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                            ok ? MOV_RS_OK : MOV_RS_ERR,
+                                            memory_order_seq_cst,
+                                            memory_order_acquire);
+  if (published) {
+    SET_VECTOR_ELT(VECTOR_ELT(R_ExternalPtrProtected(xp), 0),
+                   (R_xlen_t) rs_index, keep);
+    pool_rk_add(p, rs_index, seq);
+    pool_unpark_result_waiter(p, rs);
+  } else {
+    /* cancelled while we ran: drop the result, return the slot */
+    expected = MOV_RS_CANCEL;
+    atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                            MOV_RS_FREE,
+                                            memory_order_seq_cst,
+                                            memory_order_relaxed);
+    /* consuming a CANCEL — here or at the pre-eval skip — is submitter
+       death's one hot-path trigger: a live submitter means a genuine
+       cancellation, a dead one is reaped in-line */
+    if (sub_slot < p->hdr.max_submitters)
+      pool_probe_submitter(p, sub_slot);
+  }
+  atomic_store_explicit(&p->wk[p->wk_slot].in_flight_rs, -1,
+                        memory_order_relaxed);
+  UNPROTECT(1);
+  return published;
+}
+
 /* Executes the claimed, announced entry in scratch and publishes into its
    result slot. Reentrant: help-mode and nested-submit execution recurse
    through here from inside Rf_eval, and every claim path reuses scratch —
    so everything needed from the entry and the announce is copied out
    before the eval. */
-static void pool_execute(mov_pool *p, SEXP xp) {
-  SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
-  (void) pool_eval_fun(xp);
+static void pool_execute(mov_pool *p, SEXP xp, int catching) {
+  (void) pool_eval_env(xp);
   mov_wk_slot *me = &p->wk[p->wk_slot];
   mov_entry_hdr *eh = (mov_entry_hdr *) p->scratch;
   uint32_t rs_index = eh->rs_index;
@@ -1902,6 +2010,12 @@ static void pool_execute(mov_pool *p, SEXP xp) {
   uint64_t seq = atomic_load_explicit(&me->in_flight_seq,
                                       memory_order_relaxed);
   atomic_store_explicit(&rs->worker_slot, p->wk_slot, memory_order_relaxed);
+  if (!catching) {
+    p->cur_rs_index = rs_index;
+    p->cur_seq = seq;
+    p->cur_task_id = task_id;
+    p->cur_sub_slot = sub_slot;
+  }
 
   /* skip dead work: the check races the finalizer's CANCEL, and correctness
      rests on the publish CAS below either way. The probe rides here as at
@@ -1951,49 +2065,35 @@ static void pool_execute(mov_pool *p, SEXP xp) {
   }
   pool_trace_emit(xp, "start", task_id);
   /* scratch (and eh with it) is dead from here: the eval below may claim
-     into it. worker_evalfn returns list(ok, value-or-condition); user
-     errors are caught there, so an error out of this eval is
-     infrastructure failure and propagates to worker_main */
-  SEXP call = PROTECT(Rf_lang2(pool_eval_fun(xp), pl));
-  SEXP res = PROTECT(Rf_eval(call, R_GlobalEnv));
+     into it */
+  int ok = 1;
+  SEXP value = PROTECT(pool_eval_task(p, xp, pl, catching, &ok));
   p->st_tasks++;
-  int ok = Rf_asLogical(VECTOR_ELT(res, 0)) == TRUE;
-  SEXP value = VECTOR_ELT(res, 1);
-
-  /* payload writes are plain stores into a slot no allocator can touch
-     (status stays PENDING/CANCEL until the FREE transition); the publish CAS
-     is the release barrier a collector's acquire load pairs with */
-  pool_rk_reserve(p);
-  SEXP keep = PROTECT(mov_payload_stage(&rs->ph,
-                                        (unsigned char *) rs +
-                                        sizeof(mov_rs_hdr),
-                                        p->inline_rs, value));
-  int32_t expected = MOV_RS_PENDING;
-  int published =
-    atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                            ok ? MOV_RS_OK : MOV_RS_ERR,
-                                            memory_order_seq_cst,
-                                            memory_order_acquire);
-  if (published) {
-    SET_VECTOR_ELT(keepers, (R_xlen_t) rs_index, keep);
-    pool_rk_add(p, rs_index, seq);
-    pool_unpark_result_waiter(p, rs);
-  } else {
-    /* cancelled while we ran: drop the result, return the slot */
-    expected = MOV_RS_CANCEL;
-    atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                            MOV_RS_FREE,
-                                            memory_order_seq_cst,
-                                            memory_order_relaxed);
-    /* consuming a CANCEL — here or at the pre-eval skip — is submitter
-       death's one hot-path trigger: a live submitter means a genuine
-       cancellation, a dead one is reaped in-line */
-    if (sub_slot < p->hdr.max_submitters)
-      pool_probe_submitter(p, sub_slot);
-  }
-  atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
-  UNPROTECT(4);
+  int published = pool_publish_result(p, xp, rs_index, sub_slot, seq, ok,
+                                      value);
+  UNPROTECT(2);
   pool_trace_emit(xp, published ? (ok ? "done" : "error") : "drop", task_id);
+}
+
+/* The unwind path's publisher, called from R — worker_main, or the test
+   harness's step wrapper — with the condition caught after a task's eval
+   longjmped out of mov_pool_step. Publishes it as that task's ERR result
+   and reports TRUE; FALSE means the error did not come from inside a task
+   eval and the caller must treat it as fatal infrastructure failure. The
+   in_eval gate is what keeps errors from staging, payload reads, or trace
+   hooks on the fatal path. */
+SEXP mov_pool_fail_inflight(SEXP xp, SEXP cond) {
+  mov_pool *p = pool_get(xp);
+  if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("mov: not a worker handle");
+  if (!p->in_eval)
+    return Rf_ScalarLogical(0);
+  p->in_eval = 0;
+  p->st_tasks++;
+  int published = pool_publish_result(p, xp, p->cur_rs_index,
+                                      p->cur_sub_slot, p->cur_seq, 0, cond);
+  pool_trace_emit(xp, published ? "error" : "drop", p->cur_task_id);
+  return Rf_ScalarLogical(1);
 }
 
 /* One worker-loop iteration: reap keepers, check flags, claim + execute one
@@ -2006,15 +2106,17 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
   mov_pool *p = pool_get(xp);
   if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
     Rf_error("mov: not a worker handle");
-  (void) pool_eval_fun(xp);
+  (void) pool_eval_env(xp);
   SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
   mov_wk_slot *me = &p->wk[p->wk_slot];
   uint64_t my_bit = 1ull << p->wk_slot;
   double timeout_s = Rf_asReal(timeout);
   double deadline = R_FINITE(timeout_s) ? mov_now() + timeout_s : -1;
 
-  /* heal any announce left dangling by an interrupt longjmp out of a
-     previous step: a stale bit costs the pusher one failed CAS */
+  /* heal any announce (or unwind-path eval flag) left dangling by an
+     interrupt longjmp out of a previous step: a stale bit costs the pusher
+     one failed CAS */
+  p->in_eval = 0;
   atomic_store_explicit(&me->park_state, MOV_WPK_RUNNING,
                         memory_order_relaxed);
   atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
@@ -2039,7 +2141,7 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
     }
 
     if (pool_next_task(p)) {
-      pool_execute(p, xp);
+      pool_execute(p, xp, 0);
       return Rf_ScalarInteger(1);
     }
 
@@ -2187,7 +2289,7 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
       if (got) {
         p->st_helps++;
         p->help_depth++;
-        pool_execute(p, pool_xp);
+        pool_execute(p, pool_xp, 1);
         p->help_depth--;
         continue;
       }

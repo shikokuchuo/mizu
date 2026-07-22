@@ -53,6 +53,73 @@ test_that("a full deque runs nested subtasks inline (work-first)", {
   pool_end(p)
 })
 
+test_that("help mode contains an erroring subtask at its own boundary", {
+  p <- pool_pair()
+  # the subtask's error must publish as the subtask's ERR result and
+  # re-signal at the nested collect — never escape into the outer task's
+  # frames, whose own result stays OK
+  t <- mov_submit(p$ctrl, {
+    s <- mov_submit(pool, stop("sub boom"))
+    paste("caught:", tryCatch(mov_collect(s, timeout = 5),
+                              error = conditionMessage))
+  })
+  expect_identical(pool_step(p), 1L)
+  expect_identical(mov_collect(t, timeout = 5), "caught: sub boom")
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  pool_end(p)
+})
+
+test_that("a full deque's inline execution contains subtask errors", {
+  p <- pool_pair(per_worker_cap = 2L, max_submitters = 2L,
+                 result_slots = 64L)
+  # the first two subtasks queue, the rest run inline at submit: both
+  # execution paths contain the error at the subtask boundary
+  t <- mov_submit(p$ctrl, {
+    subs <- lapply(1:4, function(i) mov_submit(pool, stop("boom ", i),
+                                               i = i))
+    vapply(subs, function(s)
+      tryCatch(mov_collect(s, timeout = 5), error = conditionMessage), "")
+  })
+  expect_identical(pool_step(p), 1L)
+  expect_identical(mov_collect(t, timeout = 5), paste("boom", 1:4))
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  pool_end(p)
+})
+
+test_that("a task error after nested activity publishes to its own slot", {
+  p <- pool_pair()
+  # the inner execute retires the worker's shm announce: the unwind path
+  # must publish from the process-local claim identity, not the announce
+  t <- mov_submit(p$ctrl, {
+    s <- mov_submit(pool, "inner ok")
+    stopifnot(identical(mov_collect(s, timeout = 5), "inner ok"))
+    stop("outer boom")
+  })
+  expect_identical(pool_step(p), 1L)
+  err <- tryCatch(mov_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "simpleError")
+  expect_identical(conditionMessage(err), "outer boom")
+  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  pool_end(p)
+})
+
+test_that("classed conditions survive help-mode containment", {
+  p <- pool_pair()
+  cond <- structure(list(message = "typed sub", call = NULL),
+                    class = c("mov_test_error", "error", "condition"))
+  # the outer tryCatch keys on the custom class: it must survive the
+  # containment, the wire crossing, and the re-signal
+  t <- mov_submit(p$ctrl, {
+    s <- mov_submit(pool, stop(cond), cond = cond)
+    tryCatch(mov_collect(s, timeout = 5),
+             mov_test_error = function(e) paste("typed:",
+                                                conditionMessage(e)))
+  }, cond = cond)
+  expect_identical(pool_step(p), 1L)
+  expect_identical(mov_collect(t, timeout = 5), "typed: typed sub")
+  pool_end(p)
+})
+
 test_that("nested collect helps through recursion past the depth limit", {
   p <- pool_pair(max_submitters = 2L, result_slots = 128L)
   # each level nested-submits the next and collects it: help depth climbs

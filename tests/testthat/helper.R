@@ -104,15 +104,21 @@ pool_pair <- function(workers = 1L, max_submitters = 8L, injection_cap = 64L,
   suffix <- .Call(mov:::mov_pool_suffix, ctrl)
   wks <- lapply(seq_len(workers) - 1L, function(slot) {
     wk <- .Call(mov:::mov_pool_worker_join, suffix, slot)
-    .Call(mov:::mov_pool_set_eval, wk, mov:::worker_evalfn(wk))
+    .Call(mov:::mov_pool_set_eval, wk)
     wk
   })
   list(ctrl = ctrl, wk = wks[[1L]], wks = wks)
 }
 
-# One worker-loop iteration: 1 = executed a task, 0 = none, -1 = shutdown
-pool_step <- function(p, timeout = 0, wk = p$wk)
-  .Call(mov:::mov_pool_step, wk, timeout)
+# One worker-loop iteration: 1 = executed a task, 0 = none, -1 = shutdown.
+# A task error longjmps out of the step — the eval hot path arms no
+# handler — so publish it as the task's ERR result, as worker_main does.
+pool_step <- function(p, timeout = 0, wk = p$wk) {
+  e <- tryCatch(return(.Call(mov:::mov_pool_step, wk, timeout)),
+                error = function(e) e)
+  if (!.Call(mov:::mov_pool_fail_inflight, wk, e)) stop(e)
+  1L
+}
 
 # Test-only: move up to n queued injection entries onto the worker's own
 # deque (the stand-in for Phase 3's nested submit)
