@@ -74,7 +74,8 @@ typedef struct mov_pool_s {
   uint32_t probe_streak;         /* thief-probe backstop state */
   uint32_t probe_victim;
   struct mov_rk_s { uint32_t idx; uint64_t seq; } *rk;
-  uint32_t rk_n, rk_cap;
+  uint32_t *rk_pos;              /* per result slot: rk position + 1, 0 = none */
+  uint32_t rk_n, rk_cap, rk_cursor;
   /* cumulative stat counters, mirrored into the slot's stat_* fields by
      pool_stats_publish at park/fairness-tick cadence */
   uint64_t st_tasks, st_steals, st_inj, st_parks, st_helps;
@@ -361,6 +362,7 @@ static void mov_pool_finalizer(SEXP xp) {
   pool_release(p);
   free(p->scratch);
   free(p->rk);
+  free(p->rk_pos);
   free(p->wk_watch);
   free((void *) p->wk_dead);
   free(p->reap_ctx);
@@ -927,11 +929,14 @@ SEXP mov_pool_leave(SEXP xp) {
   }
   /* the slot's own lock releases now, so the slot reads properly departed
      to any prober; the full release is deferred while kept results anchor
-     region lifetimes — the retiree's lame-duck loop drives it from R */
+     region lifetimes — the retiree's lame-duck loop drives it from R. The
+     sweep makes the anchor check exact: the step loop's busy-path reap is
+     quota-bounded and may leave consumed records behind */
   if (p->live_self != 0) {
     mov_live_close(p->live_self);
     p->live_self = 0;
   }
+  pool_reap_result_keepers(p, VECTOR_ELT(R_ExternalPtrProtected(xp), 0));
   if (p->rk_n == 0) pool_release(p);
   return Rf_ScalarLogical(p->released);
 }
@@ -1270,28 +1275,60 @@ SEXP mov_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
 
 // Worker step ----------------------------------------------------------------------------
 
-/* Drop kept results whose slot has left OK/ERR (or been resequenced): the
-   collector's or finalizer's FREE transition is the consumed-signal, its
-   directed unpark what re-runs this on a parked worker. */
+/* Drop a kept result once its slot has left OK/ERR (or been resequenced):
+   the collector's or finalizer's FREE transition is the consumed-signal,
+   its directed unpark what re-runs the reap on a parked worker. rk_pos
+   keys the table by slot — at most one record per slot, updated in place
+   when a reused slot republishes — so a stale record can never alias (and
+   nil) a successor's keeper. Returns 1 when the record at i was retained,
+   0 when it was removed (the swapped-in tail record then sits at i). */
+static int pool_rk_visit(mov_pool *p, SEXP keepers, uint32_t i) {
+  mov_rs_hdr *rs = pool_rs(p, p->rk[i].idx);
+  int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
+  uint64_t seq = atomic_load_explicit(&rs->sequence, memory_order_relaxed);
+  if ((st == MOV_RS_OK || st == MOV_RS_ERR) && seq == p->rk[i].seq)
+    return 1;
+  SET_VECTOR_ELT(keepers, (R_xlen_t) p->rk[i].idx, R_NilValue);
+  p->rk_pos[p->rk[i].idx] = 0;
+  p->rk_n--;
+  if (i < p->rk_n) {
+    p->rk[i] = p->rk[p->rk_n];
+    p->rk_pos[p->rk[i].idx] = i + 1;
+  }
+  return 0;
+}
+
+/* The full sweep, for the idle and departure paths (pre-park, empty step
+   returns, the lame-duck beat) where visiting every record costs nothing
+   the pool feels. */
 static void pool_reap_result_keepers(mov_pool *p, SEXP keepers) {
   uint32_t i = 0;
-  while (i < p->rk_n) {
-    mov_rs_hdr *rs = pool_rs(p, p->rk[i].idx);
-    int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
-    uint64_t seq = atomic_load_explicit(&rs->sequence, memory_order_relaxed);
-    if ((st == MOV_RS_OK || st == MOV_RS_ERR) && seq == p->rk[i].seq) {
-      i++;
-      continue;
-    }
-    SET_VECTOR_ELT(keepers, (R_xlen_t) p->rk[i].idx, R_NilValue);
-    p->rk[i] = p->rk[--p->rk_n];
+  while (i < p->rk_n) i += (uint32_t) pool_rk_visit(p, keepers, i);
+  p->rk_cursor = 0;
+}
+
+/* The busy-path reap: at most MOV_REAP_QUOTA visits under a rotating
+   cursor, so a loaded worker's per-task reap cost is O(1) against any
+   number of results outstanding — under a fire-then-collect backlog the
+   old whole-table scan went quadratic. Consumption keeps pace as long as
+   the quota exceeds the frees a task period can see; the idle-path sweep
+   clears any residue. */
+static void pool_reap_quota(mov_pool *p, SEXP keepers) {
+  uint32_t lim = p->rk_n < MOV_REAP_QUOTA ? p->rk_n : MOV_REAP_QUOTA;
+  for (uint32_t k = 0; k < lim && p->rk_n > 0; k++) {
+    if (p->rk_cursor >= p->rk_n) p->rk_cursor = 0;
+    p->rk_cursor += (uint32_t) pool_rk_visit(p, keepers, p->rk_cursor);
   }
 }
 
 /* Growth is split from recording so it can run before the publish CAS: an
    allocation failure after publish would leave a pinned keeper the reap
-   never visits. */
+   never visits. First use also sizes the slot -> record map. */
 static void pool_rk_reserve(mov_pool *p) {
+  if (p->rk_pos == NULL) {
+    p->rk_pos = calloc(p->hdr.result_slots, sizeof(*p->rk_pos));
+    if (p->rk_pos == NULL) Rf_error("mov: allocation failure");
+  }
   if (p->rk_n < p->rk_cap) return;
   uint32_t cap = p->rk_cap == 0 ? 64 : p->rk_cap * 2;
   struct mov_rk_s *rk = realloc(p->rk, cap * sizeof(*rk));
@@ -1301,9 +1338,15 @@ static void pool_rk_reserve(mov_pool *p) {
 }
 
 static void pool_rk_add(mov_pool *p, uint32_t idx, uint64_t seq) {
+  uint32_t pos = p->rk_pos[idx];
+  if (pos != 0) {          /* reused slot: the record follows the new
+                              incarnation — publish replaced the keeper */
+    p->rk[pos - 1].seq = seq;
+    return;
+  }
   p->rk[p->rk_n].idx = idx;
   p->rk[p->rk_n].seq = seq;
-  p->rk_n++;
+  p->rk_pos[idx] = ++p->rk_n;
 }
 
 /* Announce-before-claim: a worker dying after a claim CAS but before
@@ -1978,7 +2021,7 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
                             memory_order_seq_cst);
 
   for (;;) {
-    pool_reap_result_keepers(p, keepers);
+    pool_reap_quota(p, keepers);
     if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0) {
       pool_stats_publish(p);
       return Rf_ScalarInteger(-1);
@@ -2001,6 +2044,7 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
     }
 
     if (timeout_s <= 0) {
+      pool_reap_result_keepers(p, keepers);
       pool_stats_publish(p);
       return Rf_ScalarInteger(0);
     }
@@ -2013,6 +2057,10 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
     }
     if (pool_work_hint(p))
       continue;
+
+    /* going idle: sweep the whole keeper table, so a parked worker holds
+       only what is genuinely uncollected */
+    pool_reap_result_keepers(p, keepers);
 
     /* announce-then-rescan (the sleep race): either our rescan sees the
        push or the pusher's mask load sees our bit */

@@ -169,6 +169,11 @@ enum { MOV_PARK_WOKEN = 0, MOV_PARK_TIMEOUT = 1, MOV_PARK_INTR = 2 };
    sub-µs publish gaps are absorbed without touching the entity line. */
 #define MOV_SPIN_ITERS 256
 
+/* Busy-path bound on result-keeper reap visits per worker step: keeps the
+   per-task reap cost O(1) against any number of results outstanding. The
+   idle-path full sweep clears any residue before a park. */
+#define MOV_REAP_QUOTA 32
+
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
 #define MOV_PAUSE() __builtin_ia32_pause()
 #elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
