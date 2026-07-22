@@ -24,9 +24,10 @@ test_that("worker stats count tasks and publish at park cadence, not per task", 
   expect_identical(st$steals, 0)
   expect_identical(st$parks, 0)             # timeout = 0 never parks
 
-  # a timed idle step parks once and republishes on the way out
+  # a timed idle step parks and republishes on the way out; Windows tick
+  # quantization can split one idle step into several short parks
   expect_identical(pool_step(p, timeout = 0.05), 0L)
-  expect_identical(mov_pool_stats(p$ctrl)$workers$parks, 1)
+  expect_gte(mov_pool_stats(p$ctrl)$workers$parks, 1)
 
   for (t in ts) expect_identical(mov_collect(t, 5), 2)
   pool_end(p)
