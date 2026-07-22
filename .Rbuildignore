@@ -5,6 +5,7 @@
 ^\.cache$
 ^\.github$
 ^CLAUDE\.md$
+^README\.Rmd$
 ^LICENSE\.md$
 ^tools$
 ^src/vendor/.*\.o$

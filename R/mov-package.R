@@ -1,4 +1,4 @@
-#' mov: Shared-Memory Transport for R
+#' mov: Lock-Free Shared-Memory Channels and Task Pools
 #'
 #' High-rate, small-message transport between R processes on the same
 #' machine over 'POSIX' shared memory (Linux, macOS) or 'Win32' file

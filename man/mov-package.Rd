@@ -4,7 +4,7 @@
 \name{mov-package}
 \alias{mov}
 \alias{mov-package}
-\title{mov: Shared-Memory Transport for R}
+\title{mov: Lock-Free Shared-Memory Channels and Task Pools}
 \description{
 High-rate, small-message transport between R processes on the same
 machine over 'POSIX' shared memory (Linux, macOS) or 'Win32' file
