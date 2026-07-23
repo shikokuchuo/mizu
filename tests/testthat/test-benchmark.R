@@ -9,36 +9,36 @@
 # slowdown here is the first place a violation of that rule shows up).
 
 test_that("round-trip latency reports against the socket baseline", {
-  skip_if_no_child_mov()
-  ch <- mov_channel(echo_expr, capacity = 1024L)
+  skip_if_no_child_kioto()
+  ch <- kio_channel(echo_expr, capacity = 1024L)
 
   rt <- function(n) {
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
-      mov_send(ch, 0L)
-      mov_flush(ch)
-      mov_recv(ch, 30)
+      kio_send(ch, 0L)
+      kio_flush(ch)
+      kio_recv(ch, 30)
     }
     (proc.time()[[3]] - t0) / n * 1e6
   }
   rt(500L)                                  # warm-up
   us <- min(rt(2000L), rt(2000L), rt(2000L))
   cat(sprintf("\nround-trip: %.2f us (baseline 31.73 us)\n", us))
-  expect_true(mov_close(ch, timeout = 10))
+  expect_true(kio_close(ch, timeout = 10))
 })
 
 test_that("one-way throughput reports against the >100k msg/s regime", {
-  skip_if_no_child_mov()
+  skip_if_no_child_kioto()
   n <- 200000L
-  ch <- mov_channel(quote({
+  ch <- kio_channel(quote({
     total <- 0L
     repeat {
-      xs <- mov_recv_batch(ch, n = 4096L, timeout = 30)
-      if (inherits(xs, "mov_condition")) break
+      xs <- kio_recv_batch(ch, n = 4096L, timeout = 30)
+      if (inherits(xs, "kio_condition")) break
       total <- total + length(xs)
       if (total >= 200000L) {
-        mov_send(ch, total)
-        mov_flush(ch)
+        kio_send(ch, total)
+        kio_flush(ch)
         break
       }
     }
@@ -49,22 +49,22 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
   sent <- 0L
   while (sent < n) {
     want <- min(4096L, n - sent)
-    sent <- sent + mov_send_batch(ch, batch[seq_len(want)])
+    sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
   }
-  mov_flush(ch)
-  expect_identical(mov_recv(ch, 60), n)     # peer's receipt count
+  kio_flush(ch)
+  expect_identical(kio_recv(ch, 60), n)     # peer's receipt count
   rate <- n / (proc.time()[[3]] - t0)
   cat(sprintf("\none-way: %.0f msg/s (target > 100000)\n", rate))
-  expect_true(mov_close(ch, timeout = 10))
+  expect_true(kio_close(ch, timeout = 10))
 })
 
 test_that("pool task dispatch reports against the mirai baseline", {
-  skip_if_no_child_mov()
-  p <- mov_pool(1L, max_submitters = 2L)    # 2048 result slots for us
+  skip_if_no_child_kioto()
+  p <- kio_pool(1L, max_submitters = 2L)    # 2048 result slots for us
 
   rt <- function(n) {
     t0 <- proc.time()[[3]]
-    for (i in seq_len(n)) mov_collect(mov_submit(p, NULL), timeout = 30)
+    for (i in seq_len(n)) kio_collect(kio_submit(p, NULL), timeout = 30)
     (proc.time()[[3]] - t0) / n * 1e6
   }
   rt(200L)                                  # warm-up
@@ -75,8 +75,8 @@ test_that("pool task dispatch reports against the mirai baseline", {
   tp <- function(n) {
     t0 <- proc.time()[[3]]
     ts <- vector("list", n)
-    for (i in seq_len(n)) ts[[i]] <- mov_submit(p, NULL)
-    for (i in seq_len(n)) mov_collect(ts[[i]], timeout = 30)
+    for (i in seq_len(n)) ts[[i]] <- kio_submit(p, NULL)
+    for (i in seq_len(n)) kio_collect(ts[[i]], timeout = 30)
     n / (proc.time()[[3]] - t0)
   }
   tp(200L)
@@ -85,6 +85,6 @@ test_that("pool task dispatch reports against the mirai baseline", {
 
   # once the worker parks, its stat mirror is exact
   total <- 200 + 2 * 1000 + 200 + 2 * 2000
-  expect_true(wait_until(mov_pool_stats(p)$workers$tasks == total))
-  expect_true(mov_pool_stop(p))
+  expect_true(wait_until(kio_pool_stats(p)$workers$tasks == total))
+  expect_true(kio_pool_stop(p))
 })

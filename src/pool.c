@@ -12,32 +12,32 @@
    bridged by keepers on both sides of every queue (submitter task keepers
    released at collect or slot reuse; worker result keepers released when
    the slot leaves OK/ERR). The region layout is the SHM-layout table in
-   ipc-plan.md; the registry and slot structs in mov.h are its wire
+   ipc-plan.md; the registry and slot structs in kioto.h are its wire
    format. */
 
 #include <stdlib.h>
 #include <stdio.h>
-#include "mov.h"
+#include "kioto.h"
 #include <R_ext/Utils.h>
 
-enum { MOV_ROLE_CONTROLLER = 0, MOV_ROLE_WORKER, MOV_ROLE_SUBMITTER };
+enum { KIO_ROLE_CONTROLLER = 0, KIO_ROLE_WORKER, KIO_ROLE_SUBMITTER };
 
-struct mov_reap_ctx_s { void *pool; uint32_t slot; };
+struct kio_reap_ctx_s { void *pool; uint32_t slot; };
 
-typedef struct mov_pool_s {
+typedef struct kio_pool_s {
   mori_shm shm;                  /* our mapping; unmapped only in release */
-  mov_pool_hdr hdr;
+  kio_pool_hdr hdr;
   unsigned char *base;
   int role;
   int released;
   long self_pid;                 /* fork guard */
   int wk_slot;                   /* our worker slot (-1 unless worker) */
   int sub_slot;                  /* our submitter slot (-1 unless we submit) */
-  uint32_t inline_entry;         /* slot - sizeof(mov_entry_hdr) */
-  uint32_t inline_rs;            /* slot - sizeof(mov_rs_hdr) */
+  uint32_t inline_entry;         /* slot - sizeof(kio_entry_hdr) */
+  uint32_t inline_rs;            /* slot - sizeof(kio_rs_hdr) */
 
-  mov_wk_slot *wk;
-  mov_sub_slot *sub;
+  kio_wk_slot *wk;
+  kio_sub_slot *sub;
   _Atomic uint64_t *inj_ready;
   _Atomic uint64_t *full_waiters;
   _Atomic uint32_t *shutdown;
@@ -45,7 +45,7 @@ typedef struct mov_pool_s {
   unsigned char *rings;
   unsigned char *results;
 
-  mov_parker *pks;               /* every entity: workers, then submitters */
+  kio_parker *pks;               /* every entity: workers, then submitters */
   int pk_ok;
 
   intptr_t live_self;            /* our held lock (worker / submitter slot) */
@@ -56,9 +56,9 @@ typedef struct mov_pool_s {
 
   /* controller-only: per-worker death watches whose C callbacks run the
      reap off the R main thread */
-  mov_death_watch **wk_watch;
+  kio_death_watch **wk_watch;
   _Atomic int *wk_dead;
-  struct mov_reap_ctx_s *reap_ctx;
+  struct kio_reap_ctx_s *reap_ctx;
 
   /* submitter-local */
   uint32_t rs_cursor;
@@ -72,7 +72,7 @@ typedef struct mov_pool_s {
   uint64_t rng;                  /* xorshift state for victim selection */
   int help_depth;                /* nested-collect help recursion depth */
   /* identity of the outermost (unwind-path) task eval, for
-     mov_pool_fail_inflight: written only by catching = 0 executes — inner
+     kio_pool_fail_inflight: written only by catching = 0 executes — inner
      help / inline recursion clears the shm announce, so it cannot serve
      the unwind path */
   int in_eval;
@@ -81,7 +81,7 @@ typedef struct mov_pool_s {
   uint16_t cur_sub_slot;
   uint32_t probe_streak;         /* thief-probe backstop state */
   uint32_t probe_victim;
-  struct mov_rk_s { uint32_t idx; uint64_t seq; } *rk;
+  struct kio_rk_s { uint32_t idx; uint64_t seq; } *rk;
   uint32_t *rk_pos;              /* per result slot: rk position + 1, 0 = none */
   uint32_t rk_n, rk_cap, rk_cursor;
   /* cumulative stat counters, mirrored into the slot's stat_* fields by
@@ -89,35 +89,35 @@ typedef struct mov_pool_s {
   uint64_t st_tasks, st_steals, st_inj, st_parks, st_helps;
 
   _Atomic int owner_dead;        /* death-listener flag: wake trigger only */
-  mov_death_watch *watch;
-} mov_pool;
+  kio_death_watch *watch;
+} kio_pool;
 
-static SEXP mov_pool_tag;
-static SEXP mov_task_tag;
-static SEXP mov_class_pool;
-static SEXP mov_class_task;
+static SEXP kio_pool_tag;
+static SEXP kio_task_tag;
+static SEXP kio_class_pool;
+static SEXP kio_class_task;
 
-void mov_pool_init(void) {
-  mov_pool_tag = Rf_install("mov_pool");
-  mov_task_tag = Rf_install("mov_task");
-  mov_class_pool = Rf_mkString("mov_pool");
-  R_PreserveObject(mov_class_pool);
-  mov_class_task = Rf_mkString("mov_task");
-  R_PreserveObject(mov_class_task);
+void kio_pool_init(void) {
+  kio_pool_tag = Rf_install("kio_pool");
+  kio_task_tag = Rf_install("kio_task");
+  kio_class_pool = Rf_mkString("kio_pool");
+  R_PreserveObject(kio_class_pool);
+  kio_class_task = Rf_mkString("kio_task");
+  R_PreserveObject(kio_class_task);
 }
 
 // Layout ----------------------------------------------------------------------------
 
-static uint64_t pool_ring_bytes(const mov_pool_hdr *h) {
-  return MOV_INJ_META_SIZE + (uint64_t) h->inj_cap * h->slot;
+static uint64_t pool_ring_bytes(const kio_pool_hdr *h) {
+  return KIO_INJ_META_SIZE + (uint64_t) h->inj_cap * h->slot;
 }
 
 /* Region size implied by a header; the create sizes with it and the attach
    validator checks against it, so both sides share one piece of offset math. */
-static uint64_t pool_fixed_size(const mov_pool_hdr *h) {
+static uint64_t pool_fixed_size(const kio_pool_hdr *h) {
   return 64 +
-    (uint64_t) h->max_workers * sizeof(mov_wk_slot) +
-    (uint64_t) h->max_submitters * sizeof(mov_sub_slot) +
+    (uint64_t) h->max_workers * sizeof(kio_wk_slot) +
+    (uint64_t) h->max_submitters * sizeof(kio_sub_slot) +
     128 +
     (uint64_t) h->max_submitters * pool_ring_bytes(h) +
     (uint64_t) h->max_workers * ((uint64_t) h->deque_cap * h->slot) +
@@ -125,72 +125,72 @@ static uint64_t pool_fixed_size(const mov_pool_hdr *h) {
     128;
 }
 
-static void pool_wire(mov_pool *p) {
+static void pool_wire(kio_pool *p) {
   unsigned char *b = (unsigned char *) p->shm.addr;
-  const mov_pool_hdr *h = &p->hdr;
+  const kio_pool_hdr *h = &p->hdr;
   p->base = b;
-  p->inline_entry = h->slot - (uint32_t) sizeof(mov_entry_hdr);
-  p->inline_rs = h->slot - (uint32_t) sizeof(mov_rs_hdr);
+  p->inline_entry = h->slot - (uint32_t) sizeof(kio_entry_hdr);
+  p->inline_rs = h->slot - (uint32_t) sizeof(kio_rs_hdr);
 
   size_t off = 64;
-  p->wk = (mov_wk_slot *) (b + off);
-  off += (size_t) h->max_workers * sizeof(mov_wk_slot);
-  p->sub = (mov_sub_slot *) (b + off);
-  off += (size_t) h->max_submitters * sizeof(mov_sub_slot);
-  p->inj_ready = (_Atomic uint64_t *) (b + off + MOV_TIER_READY_OFF);
-  p->full_waiters = (_Atomic uint64_t *) (b + off + MOV_TIER_FULL_OFF);
+  p->wk = (kio_wk_slot *) (b + off);
+  off += (size_t) h->max_workers * sizeof(kio_wk_slot);
+  p->sub = (kio_sub_slot *) (b + off);
+  off += (size_t) h->max_submitters * sizeof(kio_sub_slot);
+  p->inj_ready = (_Atomic uint64_t *) (b + off + KIO_TIER_READY_OFF);
+  p->full_waiters = (_Atomic uint64_t *) (b + off + KIO_TIER_FULL_OFF);
   off += 128;
   p->rings = b + off;
   off += (size_t) h->max_submitters * pool_ring_bytes(h);
   off += (size_t) h->max_workers * ((size_t) h->deque_cap * h->slot);
   p->results = b + off;
   off += (size_t) h->result_slots * h->slot;
-  p->shutdown = (_Atomic uint32_t *) (b + off + MOV_CTRL_SHUTDOWN_OFF);
-  p->parked_workers = (_Atomic uint64_t *) (b + off + MOV_CTRL_PARKED_OFF);
+  p->shutdown = (_Atomic uint32_t *) (b + off + KIO_CTRL_SHUTDOWN_OFF);
+  p->parked_workers = (_Atomic uint64_t *) (b + off + KIO_CTRL_PARKED_OFF);
 }
 
-static unsigned char *pool_ring(mov_pool *p, uint32_t s) {
+static unsigned char *pool_ring(kio_pool *p, uint32_t s) {
   return p->rings + (size_t) s * pool_ring_bytes(&p->hdr);
 }
 
 static _Atomic int64_t *ring_tail(unsigned char *r) {
-  return (_Atomic int64_t *) (r + MOV_INJ_TAIL_OFF);
+  return (_Atomic int64_t *) (r + KIO_INJ_TAIL_OFF);
 }
 
 static _Atomic int64_t *ring_head(unsigned char *r) {
-  return (_Atomic int64_t *) (r + MOV_INJ_HEAD_OFF);
+  return (_Atomic int64_t *) (r + KIO_INJ_HEAD_OFF);
 }
 
-static unsigned char *ring_entry(mov_pool *p, unsigned char *r, uint64_t i) {
-  return r + MOV_INJ_META_SIZE +
+static unsigned char *ring_entry(kio_pool *p, unsigned char *r, uint64_t i) {
+  return r + KIO_INJ_META_SIZE +
     (i & ((uint64_t) p->hdr.inj_cap - 1)) * p->hdr.slot;
 }
 
-static mov_rs_hdr *pool_rs(mov_pool *p, uint32_t idx) {
-  return (mov_rs_hdr *) (p->results + (size_t) idx * p->hdr.slot);
+static kio_rs_hdr *pool_rs(kio_pool *p, uint32_t idx) {
+  return (kio_rs_hdr *) (p->results + (size_t) idx * p->hdr.slot);
 }
 
-static unsigned char *deque_entry_at(mov_pool *p, mov_wk_slot *w, int64_t i) {
+static unsigned char *deque_entry_at(kio_pool *p, kio_wk_slot *w, int64_t i) {
   return p->base + w->deque_buf_off +
     ((uint64_t) i & ((uint64_t) w->deque_cap - 1)) * p->hdr.slot;
 }
 
-static int deque_nonempty(mov_wk_slot *w) {
+static int deque_nonempty(kio_wk_slot *w) {
   return atomic_load_explicit(&w->deque_top, memory_order_acquire) <
     atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
 }
 
 static const char *pool_hdr_validate(const void *region, size_t region_size,
-                                     mov_pool_hdr *out) {
+                                     kio_pool_hdr *out) {
   if (region_size < 64)
     return "region is smaller than a pool header";
-  mov_pool_hdr h;
+  kio_pool_hdr h;
   memcpy(&h, region, sizeof(h));
-  if (h.magic != MOV_POOL_MAGIC)
-    return "bad magic: not an mov pool region";
-  if (h.version != MOV_ABI_VERSION)
+  if (h.magic != KIO_POOL_MAGIC)
+    return "bad magic: not a kioto pool region";
+  if (h.version != KIO_ABI_VERSION)
     return "ABI version mismatch: participant and controller were built "
-           "against different mov wire formats";
+           "against different kioto wire formats";
   if (h.max_workers == 0 || h.max_workers > 64 ||
       h.max_submitters == 0 || h.max_submitters > 64)
     return "registry capacities out of range";
@@ -212,11 +212,11 @@ static const char *pool_hdr_validate(const void *region, size_t region_size,
 
 // Parkers and liveness paths -----------------------------------------------------------
 
-static mov_parker *pool_wk_pk(mov_pool *p, uint32_t i) {
+static kio_parker *pool_wk_pk(kio_pool *p, uint32_t i) {
   return &p->pks[i];
 }
 
-static mov_parker *pool_sub_pk(mov_pool *p, uint32_t j) {
+static kio_parker *pool_sub_pk(kio_pool *p, uint32_t j) {
   return &p->pks[p->hdr.max_workers + j];
 }
 
@@ -224,16 +224,16 @@ static mov_parker *pool_sub_pk(mov_pool *p, uint32_t j) {
    MW..MW+MS-1. Every participant attaches every entity's parker up front —
    submitters unpark workers, workers unpark submitters — with create = 1 only
    on the controller, before any spawn. */
-static int pool_parkers_attach(mov_pool *p, int create) {
+static int pool_parkers_attach(kio_pool *p, int create) {
   uint32_t mw = p->hdr.max_workers, ms = p->hdr.max_submitters;
-  p->pks = calloc(mw + ms, sizeof(mov_parker));
+  p->pks = calloc(mw + ms, sizeof(kio_parker));
   if (p->pks == NULL) return -1;
   for (uint32_t i = 0; i < mw + ms; i++) {
     _Atomic uint32_t *epoch = i < mw ? &p->wk[i].park_epoch
                                      : &p->sub[i - mw].park_epoch;
-    if (mov_parker_attach(&p->pks[i], epoch, p->shm.name, (int) i,
+    if (kio_parker_attach(&p->pks[i], epoch, p->shm.name, (int) i,
                           create) != 0) {
-      for (uint32_t k = 0; k < i; k++) mov_parker_detach(&p->pks[k]);
+      for (uint32_t k = 0; k < i; k++) kio_parker_detach(&p->pks[k]);
       free(p->pks);
       p->pks = NULL;
       return -1;
@@ -246,12 +246,12 @@ static int pool_parkers_attach(mov_pool *p, int create) {
 /* kind is "wk" / "sub" (with idx) or "owner" (idx ignored). All paths live in
    the controller-chosen directory recorded in the header — no participant
    ever resolves the directory independently. */
-static int pool_live_path(mov_pool *p, char *buf, size_t size,
+static int pool_live_path(kio_pool *p, char *buf, size_t size,
                           const char *kind, uint32_t idx) {
   const char *suffix = p->shm.name + strlen(MORI_PREFIX_LITERAL);
   int n = strcmp(kind, "owner") == 0 ?
-    snprintf(buf, size, "%s/mov_%s.owner", p->livedir, suffix) :
-    snprintf(buf, size, "%s/mov_%s.%s.%u", p->livedir, suffix, kind, idx);
+    snprintf(buf, size, "%s/kio_%s.owner", p->livedir, suffix) :
+    snprintf(buf, size, "%s/kio_%s.%s.%u", p->livedir, suffix, kind, idx);
   return (n > 0 && (size_t) n < size) ? 0 : -1;
 }
 
@@ -261,11 +261,11 @@ static int pool_live_path(mov_pool *p, char *buf, size_t size,
    unlinks: the region name and liveness files are removed only by the
    controller's stop / destroy protocol. Order is load-bearing, as in the
    channel: the death watch and parkers reference the mapping. */
-static void pool_release(mov_pool *p) {
+static void pool_release(kio_pool *p) {
   if (p->released) return;
   p->released = 1;
   if (p->watch != NULL) {
-    mov_death_watch_stop(p->watch);
+    kio_death_watch_stop(p->watch);
     p->watch = NULL;
   }
   if (p->wk_watch != NULL) {
@@ -273,13 +273,13 @@ static void pool_release(mov_pool *p) {
        nothing touches the mapping from another thread */
     for (uint32_t i = 0; i < p->hdr.max_workers; i++)
       if (p->wk_watch[i] != NULL) {
-        mov_death_watch_stop(p->wk_watch[i]);
+        kio_death_watch_stop(p->wk_watch[i]);
         p->wk_watch[i] = NULL;
       }
   }
   if (p->pk_ok) {
     uint32_t n = p->hdr.max_workers + p->hdr.max_submitters;
-    for (uint32_t i = 0; i < n; i++) mov_parker_detach(&p->pks[i]);
+    for (uint32_t i = 0; i < n; i++) kio_parker_detach(&p->pks[i]);
     p->pk_ok = 0;
   }
   free(p->pks);
@@ -287,56 +287,56 @@ static void pool_release(mov_pool *p) {
   if (p->shm.addr != NULL) mori_shm_close(&p->shm, 0);
   p->base = NULL;
   if (p->live_self != 0) {
-    mov_live_close(p->live_self);
+    kio_live_close(p->live_self);
     p->live_self = 0;
   }
   if (p->live_sub != 0) {
-    mov_live_close(p->live_sub);
+    kio_live_close(p->live_sub);
     p->live_sub = 0;
   }
   if (p->live_owner != 0) {
-    mov_live_close(p->live_owner);
+    kio_live_close(p->live_owner);
     p->live_owner = 0;
   }
   if (p->live_all != NULL) {
     uint32_t n = p->hdr.max_workers + p->hdr.max_submitters;
     for (uint32_t i = 0; i < n; i++)
-      if (p->live_all[i] != 0) mov_live_close(p->live_all[i]);
+      if (p->live_all[i] != 0) kio_live_close(p->live_all[i]);
     free(p->live_all);
     p->live_all = NULL;
   }
 }
 
-/* The controller half of teardown, shared by mov_pool_stop, the startup
+/* The controller half of teardown, shared by kio_pool_stop, the startup
    walk-back, and the handle finalizer: broadcast shutdown, wake everyone,
    cancel every pending result, unlink the names. Waiting for workers is the
    caller's business (the finalizer cannot wait). */
-static void pool_shutdown_broadcast(mov_pool *p) {
+static void pool_shutdown_broadcast(kio_pool *p) {
   atomic_store_explicit(p->shutdown, 1u, memory_order_seq_cst);
   for (uint32_t i = 0; i < p->hdr.max_workers; i++)
-    mov_unpark(pool_wk_pk(p, i));
+    kio_unpark(pool_wk_pk(p, i));
   for (uint32_t j = 0; j < p->hdr.max_submitters; j++)
     if (atomic_load_explicit(p->full_waiters, memory_order_acquire) &
         (1ull << j))
-      mov_unpark(pool_sub_pk(p, j));
+      kio_unpark(pool_sub_pk(p, j));
   for (uint32_t r = 0; r < p->hdr.result_slots; r++) {
-    mov_rs_hdr *rs = pool_rs(p, r);
-    int32_t expected = MOV_RS_PENDING;
+    kio_rs_hdr *rs = pool_rs(p, r);
+    int32_t expected = KIO_RS_PENDING;
     if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                MOV_RS_CANCEL,
+                                                KIO_RS_CANCEL,
                                                 memory_order_seq_cst,
                                                 memory_order_relaxed)) {
       int32_t ws = atomic_load_explicit(&rs->waiter_slot,
                                         memory_order_acquire);
       if (ws >= 0 && (uint32_t) ws < p->hdr.max_submitters)
-        mov_unpark(pool_sub_pk(p, (uint32_t) ws));
+        kio_unpark(pool_sub_pk(p, (uint32_t) ws));
     }
   }
 }
 
-static void pool_remove_live_files(mov_pool *p);
+static void pool_remove_live_files(kio_pool *p);
 
-static void pool_unlink_names(mov_pool *p, SEXP prot) {
+static void pool_unlink_names(kio_pool *p, SEXP prot) {
   SEXP host_ptr = VECTOR_ELT(prot, 1);
   if (host_ptr != R_NilValue) mori_host_finalizer(host_ptr);
   pool_remove_live_files(p);
@@ -344,26 +344,26 @@ static void pool_unlink_names(mov_pool *p, SEXP prot) {
 
 // Handle access ---------------------------------------------------------------------
 
-static mov_pool *pool_peek(SEXP xp) {
-  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mov_pool_tag)
-    Rf_error("mov: not a pool handle");
-  mov_pool *p = (mov_pool *) R_ExternalPtrAddr(xp);
+static kio_pool *pool_peek(SEXP xp) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_pool_tag)
+    Rf_error("kioto: not a pool handle");
+  kio_pool *p = (kio_pool *) R_ExternalPtrAddr(xp);
   if (p == NULL || p->released) return NULL;
-  if (p->self_pid != mov_self_pid())
-    Rf_error("mov: pool handles do not survive fork()");
+  if (p->self_pid != kio_self_pid())
+    Rf_error("kioto: pool handles do not survive fork()");
   return p;
 }
 
-static mov_pool *pool_get(SEXP xp) {
-  mov_pool *p = pool_peek(xp);
-  if (p == NULL) Rf_error("mov: pool handle is closed");
+static kio_pool *pool_get(SEXP xp) {
+  kio_pool *p = pool_peek(xp);
+  if (p == NULL) Rf_error("kioto: pool handle is closed");
   return p;
 }
 
-static void mov_pool_finalizer(SEXP xp) {
-  mov_pool *p = (mov_pool *) R_ExternalPtrAddr(xp);
+static void kio_pool_finalizer(SEXP xp) {
+  kio_pool *p = (kio_pool *) R_ExternalPtrAddr(xp);
   if (p == NULL) return;
-  if (!p->released && p->role == MOV_ROLE_CONTROLLER && p->base != NULL) {
+  if (!p->released && p->role == KIO_ROLE_CONTROLLER && p->base != NULL) {
     pool_shutdown_broadcast(p);
     pool_unlink_names(p, R_ExternalPtrProtected(xp));
   }
@@ -382,24 +382,24 @@ static void mov_pool_finalizer(SEXP xp) {
    or the worker's result keepers (length result_slots); [1] the host unlink
    extptr (controller only); [2] a worker's nested-submit task keepers
    (length rs_count, allocated when the worker claims a submitter slot);
-   [3] the worker's evaluation base env (mov_pool_set_eval); [4] the
-   handle's trace hook (mov_pool_set_trace). */
-static SEXP pool_make_handle(mov_pool *p, SEXP keepers, SEXP host_ptr) {
+   [3] the worker's evaluation base env (kio_pool_set_eval); [4] the
+   handle's trace hook (kio_pool_set_trace). */
+static SEXP pool_make_handle(kio_pool *p, SEXP keepers, SEXP host_ptr) {
   SEXP prot = PROTECT(Rf_allocVector(VECSXP, 5));
   SET_VECTOR_ELT(prot, 0, keepers);
   SET_VECTOR_ELT(prot, 1, host_ptr);
-  SEXP xp = PROTECT(R_MakeExternalPtr(p, mov_pool_tag, prot));
-  R_RegisterCFinalizerEx(xp, mov_pool_finalizer, TRUE);
-  Rf_setAttrib(xp, R_ClassSymbol, mov_class_pool);
+  SEXP xp = PROTECT(R_MakeExternalPtr(p, kio_pool_tag, prot));
+  R_RegisterCFinalizerEx(xp, kio_pool_finalizer, TRUE);
+  Rf_setAttrib(xp, R_ClassSymbol, kio_class_pool);
   UNPROTECT(2);
   return xp;
 }
 
 /* The submitter's task-keeper table: prot[0] on submitter handles, prot[2]
    on worker handles (nested submits). */
-static SEXP pool_task_keepers(mov_pool *p, SEXP xp) {
+static SEXP pool_task_keepers(kio_pool *p, SEXP xp) {
   return VECTOR_ELT(R_ExternalPtrProtected(xp),
-                    p->role == MOV_ROLE_WORKER ? 2 : 0);
+                    p->role == KIO_ROLE_WORKER ? 2 : 0);
 }
 
 /* Arms a worker handle for evaluation: a base environment under
@@ -407,11 +407,11 @@ static SEXP pool_task_keepers(mov_pool *p, SEXP xp) {
    nested submit closes over; task argument frames chain beneath it, so a
    task argument named `pool` shadows it. Stashed on the handle so nested
    submit's inline-execute fallback and collect's help mode can run tasks
-   outside mov_pool_step. */
-SEXP mov_pool_set_eval(SEXP xp) {
-  mov_pool *p = pool_get(xp);
-  if (p->role != MOV_ROLE_WORKER)
-    Rf_error("mov: not a worker handle");
+   outside kio_pool_step. */
+SEXP kio_pool_set_eval(SEXP xp) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_WORKER)
+    Rf_error("kioto: not a worker handle");
   SEXP base = PROTECT(R_NewEnv(R_GlobalEnv, 0, 0));
   Rf_defineVar(Rf_install("pool"), xp, base);
   SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 3, base);
@@ -422,7 +422,7 @@ SEXP mov_pool_set_eval(SEXP xp) {
 static SEXP pool_eval_env(SEXP xp) {
   SEXP env = VECTOR_ELT(R_ExternalPtrProtected(xp), 3);
   if (TYPEOF(env) != ENVSXP)
-    Rf_error("mov: no evaluator registered on this worker handle");
+    Rf_error("kioto: no evaluator registered on this worker handle");
   return env;
 }
 
@@ -430,41 +430,41 @@ static SEXP pool_eval_env(SEXP xp) {
    arguments bound into a fresh unhashed frame under the base environment.
    Two error disciplines, chosen by the caller. The worker loop's hot path
    (catching = 0) arms no handler at all: a user error longjmps out of
-   mov_pool_step and worker_main publishes the caught condition as this
-   task's ERR result through mov_pool_fail_inflight — the in_eval flag is
+   kio_pool_step and worker_main publishes the caught condition as this
+   task's ERR result through kio_pool_fail_inflight — the in_eval flag is
    what separates those errors from infrastructure failure, which stays
    fatal. Help mode and nested submit's inline execute (catching = 1) run
    inside a task's own evaluation, where an escaping error would land in
    the wrong task's frames: they contain it with R_tryCatchError and pay
    its R-closure trampoline — several µs, still cheaper than the park that
    helping replaced. */
-struct mov_eval_ctx { SEXP expr; SEXP env; int ok; };
+struct kio_eval_ctx { SEXP expr; SEXP env; int ok; };
 
 static SEXP pool_eval_body(void *data) {
-  struct mov_eval_ctx *c = (struct mov_eval_ctx *) data;
+  struct kio_eval_ctx *c = (struct kio_eval_ctx *) data;
   return Rf_eval(c->expr, c->env);
 }
 
 static SEXP pool_eval_handler(SEXP cond, void *data) {
-  ((struct mov_eval_ctx *) data)->ok = 0;
+  ((struct kio_eval_ctx *) data)->ok = 0;
   return cond;
 }
 
-static SEXP pool_eval_task(mov_pool *p, SEXP xp, SEXP payload, int catching,
+static SEXP pool_eval_task(kio_pool *p, SEXP xp, SEXP payload, int catching,
                            int *ok) {
   if (TYPEOF(payload) != VECSXP || Rf_xlength(payload) != 2 ||
       TYPEOF(VECTOR_ELT(payload, 1)) != VECSXP)
-    Rf_error("mov: corrupt task payload");
+    Rf_error("kioto: corrupt task payload");
   SEXP args = VECTOR_ELT(payload, 1);
   SEXP names = Rf_getAttrib(args, R_NamesSymbol);
   R_xlen_t n = Rf_xlength(args);
   if (n > 0 && TYPEOF(names) != STRSXP)
-    Rf_error("mov: corrupt task payload");
+    Rf_error("kioto: corrupt task payload");
   SEXP env = PROTECT(R_NewEnv(pool_eval_env(xp), 0, 0));
   for (R_xlen_t i = 0; i < n; i++)
     Rf_defineVar(Rf_installTrChar(STRING_ELT(names, i)),
                  VECTOR_ELT(args, i), env);
-  struct mov_eval_ctx c = { VECTOR_ELT(payload, 0), env, 1 };
+  struct kio_eval_ctx c = { VECTOR_ELT(payload, 0), env, 1 };
   SEXP value;
   if (catching) {
     value = R_tryCatchError(pool_eval_body, &c, pool_eval_handler, &c);
@@ -484,10 +484,10 @@ static SEXP pool_eval_task(mov_pool *p, SEXP xp, SEXP payload, int catching,
    pool_execute — never in the channel, whose per-message budget has no
    room even for a clock read. Disabled cost is one pointer check per
    site. */
-SEXP mov_pool_set_trace(SEXP xp, SEXP fn) {
+SEXP kio_pool_set_trace(SEXP xp, SEXP fn) {
   (void) pool_get(xp);
   if (fn != R_NilValue && TYPEOF(fn) != CLOSXP)
-    Rf_error("mov: expected a function or NULL");
+    Rf_error("kioto: expected a function or NULL");
   SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 4, fn);
   return R_NilValue;
 }
@@ -511,11 +511,11 @@ static void pool_trace_emit(SEXP xp, const char *event, uint64_t id) {
 
 // Create (controller) -----------------------------------------------------------------
 
-static int mov_pow2_u64(uint64_t v) {
+static int kio_pow2_u64(uint64_t v) {
   return v != 0 && (v & (v - 1)) == 0;
 }
 
-SEXP mov_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
+SEXP kio_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
                      SEXP deque_sexp, SEXP rslots_sexp, SEXP slot_sexp,
                      SEXP livedir_sexp) {
   uint64_t maxw = (uint64_t) Rf_asInteger(maxw_sexp);
@@ -525,58 +525,58 @@ SEXP mov_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   uint64_t rslots = (uint64_t) Rf_asInteger(rslots_sexp);
   uint64_t slot = (uint64_t) Rf_asInteger(slot_sexp);
   if (maxw < 1 || maxw > 64)
-    Rf_error("mov: max_workers must be between 1 and 64");
+    Rf_error("kioto: max_workers must be between 1 and 64");
   if (maxs < 1 || maxs > 64)
-    Rf_error("mov: max_submitters must be between 1 and 64");
-  if (!mov_pow2_u64(inj_cap) || inj_cap < 2 || inj_cap > (1u << 24))
-    Rf_error("mov: injection_cap must be a power of two between 2 and 2^24");
-  if (!mov_pow2_u64(deque_cap) || deque_cap < 2 || deque_cap > (1u << 24))
-    Rf_error("mov: per_worker_cap must be a power of two between 2 and 2^24");
+    Rf_error("kioto: max_submitters must be between 1 and 64");
+  if (!kio_pow2_u64(inj_cap) || inj_cap < 2 || inj_cap > (1u << 24))
+    Rf_error("kioto: injection_cap must be a power of two between 2 and 2^24");
+  if (!kio_pow2_u64(deque_cap) || deque_cap < 2 || deque_cap > (1u << 24))
+    Rf_error("kioto: per_worker_cap must be a power of two between 2 and 2^24");
   /* floor 128: a result slot's inline budget (slot - 40) must hold a
      region name (up to 27 bytes on Windows) for an SHM_RAW spill */
-  if (!mov_pow2_u64(slot) || slot < 128 || slot > (1u << 20))
-    Rf_error("mov: slot_size must be a power of two between 128 and 2^20");
+  if (!kio_pow2_u64(slot) || slot < 128 || slot > (1u << 20))
+    Rf_error("kioto: slot_size must be a power of two between 128 and 2^20");
   if (rslots < maxs || rslots > (1u << 24))
-    Rf_error("mov: result_slots must be between max_submitters and 2^24");
+    Rf_error("kioto: result_slots must be between max_submitters and 2^24");
   rslots = (rslots + maxs - 1) / maxs * maxs;   /* per-submitter partition */
   if (TYPEOF(livedir_sexp) != STRSXP || XLENGTH(livedir_sexp) != 1)
-    Rf_error("mov: expected a liveness directory path");
+    Rf_error("kioto: expected a liveness directory path");
   const char *livedir = CHAR(STRING_ELT(livedir_sexp, 0));
   size_t livedir_len = strlen(livedir);
   if (livedir_len == 0 || livedir_len > 900)
-    Rf_error("mov: liveness directory path too long");
+    Rf_error("kioto: liveness directory path too long");
 
-  mov_pool_hdr h = {
-    .magic = MOV_POOL_MAGIC,
-    .version = MOV_ABI_VERSION,
+  kio_pool_hdr h = {
+    .magic = KIO_POOL_MAGIC,
+    .version = KIO_ABI_VERSION,
     .max_workers = (uint32_t) maxw,
     .max_submitters = (uint32_t) maxs,
     .inj_cap = (uint32_t) inj_cap,
     .deque_cap = (uint32_t) deque_cap,
     .result_slots = (uint32_t) rslots,
     .slot = (uint32_t) slot,
-    .owner_pid = (uint64_t) mov_self_pid(),
+    .owner_pid = (uint64_t) kio_self_pid(),
   };
   uint64_t fixed = pool_fixed_size(&h);
   h.livedir_offset = MORI_ALIGN64(fixed);
   h.livedir_size = livedir_len;
   uint64_t total = h.livedir_offset + livedir_len;
   if (total > ((uint64_t) 1 << 46))
-    Rf_error("mov: pool region too large");
+    Rf_error("kioto: pool region too large");
 
-  mov_pool *p = calloc(1, sizeof(*p));
-  if (p == NULL) Rf_error("mov: allocation failure");
+  kio_pool *p = calloc(1, sizeof(*p));
+  if (p == NULL) Rf_error("kioto: allocation failure");
   int rc = mori_shm_create(&p->shm, (size_t) total);
   if (rc != MORI_OK) {
     free(p);
     const char *summary, *hint;
     mori_err_describe(rc, &summary, &hint);
-    Rf_error("mov: cannot create pool region (%llu bytes): %s%s%s",
+    Rf_error("kioto: cannot create pool region (%llu bytes): %s%s%s",
              (unsigned long long) total, summary,
              hint[0] != '\0' ? ". " : "", hint);
   }
-  p->role = MOV_ROLE_CONTROLLER;
-  p->self_pid = mov_self_pid();
+  p->role = KIO_ROLE_CONTROLLER;
+  p->self_pid = kio_self_pid();
   p->wk_slot = -1;
   p->sub_slot = 0;
   p->hdr = h;
@@ -584,7 +584,7 @@ SEXP mov_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
 
   /* From here cleanup is the finalizer's: build the handle before anything
      that can longjmp. */
-  SEXP host_ptr = PROTECT(mov_shm_wrap_host(&p->shm));
+  SEXP host_ptr = PROTECT(kio_shm_wrap_host(&p->shm));
   SEXP keepers = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) (rslots / maxs)));
   SEXP xp = PROTECT(pool_make_handle(p, keepers, host_ptr));
 
@@ -611,49 +611,49 @@ SEXP mov_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
      (pool lifetime = creator lifetime) and the submitter-slot-0 lock. */
   char path[1024];
   p->live_all = calloc(h.max_workers + h.max_submitters, sizeof(intptr_t));
-  if (p->live_all == NULL) Rf_error("mov: allocation failure");
+  if (p->live_all == NULL) Rf_error("kioto: allocation failure");
   for (uint32_t i = 0; i < h.max_workers + h.max_submitters; i++) {
     int is_wk = i < h.max_workers;
     if (pool_live_path(p, path, sizeof(path), is_wk ? "wk" : "sub",
                        is_wk ? i : i - h.max_workers) != 0)
-      Rf_error("mov: liveness file path too long");
-    if (mov_live_open(path, &p->live_all[i]) != 0)
-      Rf_error("mov: cannot create liveness file '%s'", path);
+      Rf_error("kioto: liveness file path too long");
+    if (kio_live_open(path, &p->live_all[i]) != 0)
+      Rf_error("kioto: cannot create liveness file '%s'", path);
   }
   if (pool_live_path(p, path, sizeof(path), "owner", 0) != 0)
-    Rf_error("mov: liveness file path too long");
-  if (mov_live_open(path, &p->live_owner) != 0 ||
-      mov_live_try(p->live_owner) != MOV_LIVE_ACQUIRED)
-    Rf_error("mov: cannot lock owner liveness file '%s'", path);
+    Rf_error("kioto: liveness file path too long");
+  if (kio_live_open(path, &p->live_owner) != 0 ||
+      kio_live_try(p->live_owner) != KIO_LIVE_ACQUIRED)
+    Rf_error("kioto: cannot lock owner liveness file '%s'", path);
 
   /* Windows: every entity's named parker event must exist before any spawn */
   if (pool_parkers_attach(p, 1) != 0)
-    Rf_error("mov: cannot attach pool parkers");
+    Rf_error("kioto: cannot attach pool parkers");
 
   /* Claim submitter slot 0 for the calling process: lock-before-CAS, as in
      every join. */
   p->live_self = p->live_all[h.max_workers + 0];
-  if (mov_live_try(p->live_self) != MOV_LIVE_ACQUIRED)
-    Rf_error("mov: cannot lock submitter liveness file");
-  mov_sub_slot *s0 = &p->sub[0];
-  int32_t expected = MOV_SUB_FREE;
+  if (kio_live_try(p->live_self) != KIO_LIVE_ACQUIRED)
+    Rf_error("kioto: cannot lock submitter liveness file");
+  kio_sub_slot *s0 = &p->sub[0];
+  int32_t expected = KIO_SUB_FREE;
   if (!atomic_compare_exchange_strong_explicit(&s0->status, &expected,
-                                               MOV_SUB_LIVE,
+                                               KIO_SUB_LIVE,
                                                memory_order_seq_cst,
                                                memory_order_relaxed))
-    Rf_error("mov: submitter slot 0 is not free in a fresh region");
+    Rf_error("kioto: submitter slot 0 is not free in a fresh region");
   s0->pid = (int64_t) p->self_pid;
   s0->rs_start = 0;
   s0->rs_count = (uint32_t) (rslots / maxs);
-  mov_live_ident(p->live_self, &s0->live_dev, &s0->live_ino);
+  kio_live_ident(p->live_self, &s0->live_dev, &s0->live_ino);
   p->rs_cursor = 0;
 
   UNPROTECT(3);
   return xp;
 }
 
-SEXP mov_pool_suffix(SEXP xp) {
-  mov_pool *p = pool_get(xp);
+SEXP kio_pool_suffix(SEXP xp) {
+  kio_pool *p = pool_get(xp);
   return Rf_mkString(p->shm.name + strlen(MORI_PREFIX_LITERAL));
 }
 
@@ -664,30 +664,30 @@ static void pool_wk_death_cb(void *arg);
    watches. The callback reap then runs off the R main thread at OS
    notification latency. In-process joins (the test harness) are skipped —
    a process cannot meaningfully watch itself. */
-static void pool_watch_workers(mov_pool *p, const int *slots, R_xlen_t n) {
+static void pool_watch_workers(kio_pool *p, const int *slots, R_xlen_t n) {
   if (p->wk_watch == NULL) {
     p->wk_watch = calloc(p->hdr.max_workers, sizeof(*p->wk_watch));
     p->wk_dead = calloc(p->hdr.max_workers, sizeof(*p->wk_dead));
     p->reap_ctx = calloc(p->hdr.max_workers, sizeof(*p->reap_ctx));
     if (p->wk_watch == NULL || p->wk_dead == NULL || p->reap_ctx == NULL)
-      Rf_error("mov: allocation failure");
+      Rf_error("kioto: allocation failure");
   }
   for (R_xlen_t i = 0; i < n; i++) {
     uint32_t s = (uint32_t) slots[i];
-    mov_wk_slot *w = &p->wk[s];
+    kio_wk_slot *w = &p->wk[s];
     if (atomic_load_explicit(&w->status, memory_order_acquire) !=
-        MOV_WK_LIVE)
+        KIO_WK_LIVE)
       continue;
     if ((long) w->pid == p->self_pid) continue;
     if (p->wk_watch[s] != NULL) {
-      mov_death_watch_stop(p->wk_watch[s]);
+      kio_death_watch_stop(p->wk_watch[s]);
       p->wk_watch[s] = NULL;
     }
     atomic_store_explicit(&p->wk_dead[s], 0, memory_order_relaxed);
     p->reap_ctx[s].pool = p;
     p->reap_ctx[s].slot = s;
     /* NULL leaves the probes and the teardown sweep as the backstops */
-    p->wk_watch[s] = mov_death_watch_start2((long) w->pid, &p->wk_dead[s],
+    p->wk_watch[s] = kio_death_watch_start2((long) w->pid, &p->wk_dead[s],
                                             NULL, pool_wk_death_cb,
                                             &p->reap_ctx[s]);
   }
@@ -698,33 +698,33 @@ static void pool_watch_workers(mov_pool *p, const int *slots, R_xlen_t n) {
    unpark the creator on reaching LIVE. On the way out — success or
    deadline expiry — the death listener is pointed at whichever targets did
    join. FALSE on expiry; the initial-creation caller walks the pool back
-   via mov_pool_destroy, an elastic caller just errors. */
-SEXP mov_pool_ready_wait(SEXP xp, SEXP slots_sexp, SEXP timeout) {
-  mov_pool *p = pool_get(xp);
-  if (p->role != MOV_ROLE_CONTROLLER)
-    Rf_error("mov: only the controller can wait for workers");
+   via kio_pool_destroy, an elastic caller just errors. */
+SEXP kio_pool_ready_wait(SEXP xp, SEXP slots_sexp, SEXP timeout) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_CONTROLLER)
+    Rf_error("kioto: only the controller can wait for workers");
   if (TYPEOF(slots_sexp) != INTSXP)
-    Rf_error("mov: expected worker slot indices");
+    Rf_error("kioto: expected worker slot indices");
   R_xlen_t n = XLENGTH(slots_sexp);
   const int *slots = INTEGER(slots_sexp);
   for (R_xlen_t i = 0; i < n; i++)
     if (slots[i] < 0 || (uint32_t) slots[i] >= p->hdr.max_workers)
-      Rf_error("mov: worker slot index out of range");
-  double deadline = mov_now() + Rf_asReal(timeout);
+      Rf_error("kioto: worker slot index out of range");
+  double deadline = kio_now() + Rf_asReal(timeout);
   int ok;
   for (;;) {
-    uint32_t e = mov_parker_snapshot(pool_sub_pk(p, 0));
+    uint32_t e = kio_parker_snapshot(pool_sub_pk(p, 0));
     R_xlen_t live = 0;
     for (R_xlen_t i = 0; i < n; i++)
       live += atomic_load_explicit(&p->wk[slots[i]].status,
-                                   memory_order_acquire) == MOV_WK_LIVE;
+                                   memory_order_acquire) == KIO_WK_LIVE;
     ok = live == n;
     if (ok) break;
-    double rem = deadline - mov_now();
+    double rem = deadline - kio_now();
     if (rem <= 0) break;
     long ms = (long) (rem * 1000) + 1;
-    if (ms > MOV_INTERRUPT_BOUND_MS) ms = MOV_INTERRUPT_BOUND_MS;
-    mov_park(pool_sub_pk(p, 0), e, ms);
+    if (ms > KIO_INTERRUPT_BOUND_MS) ms = KIO_INTERRUPT_BOUND_MS;
+    kio_park(pool_sub_pk(p, 0), e, ms);
     R_CheckUserInterrupt();
   }
   pool_watch_workers(p, slots, n);
@@ -735,28 +735,28 @@ SEXP mov_pool_ready_wait(SEXP xp, SEXP slots_sexp, SEXP timeout) {
    its LEAVING path — non-blocking here, and never preemptive. Its deque is
    consumed in place (REAPING) and the process may linger as a lifetime
    anchor for uncollected results. */
-SEXP mov_pool_retire(SEXP xp, SEXP slot_sexp) {
-  mov_pool *p = pool_get(xp);
-  if (p->role != MOV_ROLE_CONTROLLER)
-    Rf_error("mov: only the controller can retire workers");
+SEXP kio_pool_retire(SEXP xp, SEXP slot_sexp) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_CONTROLLER)
+    Rf_error("kioto: only the controller can retire workers");
   uint32_t slot = (uint32_t) Rf_asInteger(slot_sexp);
   if (slot >= p->hdr.max_workers)
-    Rf_error("mov: worker slot index out of range");
+    Rf_error("kioto: worker slot index out of range");
   if (atomic_load_explicit(&p->wk[slot].status, memory_order_acquire) !=
-      MOV_WK_LIVE)
-    Rf_error("mov: worker slot %u is not live", slot);
+      KIO_WK_LIVE)
+    Rf_error("kioto: worker slot %u is not live", slot);
   atomic_store_explicit(&p->wk[slot].retire, 1, memory_order_seq_cst);
-  mov_unpark(pool_wk_pk(p, slot));
+  kio_unpark(pool_wk_pk(p, slot));
   return R_NilValue;
 }
 
 /* Startup walk-back and finalizer-free explicit destroy: broadcast so a
    late-joining worker exits instead of parking against a pool that gave up,
    then unlink everything. */
-SEXP mov_pool_destroy(SEXP xp) {
-  mov_pool *p = pool_get(xp);
-  if (p->role != MOV_ROLE_CONTROLLER)
-    Rf_error("mov: only the controller can destroy a pool");
+SEXP kio_pool_destroy(SEXP xp) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_CONTROLLER)
+    Rf_error("kioto: only the controller can destroy a pool");
   pool_shutdown_broadcast(p);
   pool_unlink_names(p, R_ExternalPtrProtected(xp));
   pool_release(p);
@@ -765,23 +765,23 @@ SEXP mov_pool_destroy(SEXP xp) {
 
 // Attach helpers ----------------------------------------------------------------------
 
-static mov_pool *pool_open_common(const char *suffix, SEXP *xp_out,
+static kio_pool *pool_open_common(const char *suffix, SEXP *xp_out,
                                   int keeper_len_is_rs) {
   for (const char *q = suffix; *q != '\0'; q++)
     if (!((*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f') || *q == '_'))
-      Rf_error("mov: malformed region-name suffix");
+      Rf_error("kioto: malformed region-name suffix");
   char name[MORI_NAME_MAX];
   int nn = snprintf(name, sizeof(name), "%s%s", MORI_PREFIX_LITERAL, suffix);
   if (nn <= 0 || (size_t) nn >= sizeof(name))
-    Rf_error("mov: malformed region-name suffix");
+    Rf_error("kioto: malformed region-name suffix");
 
-  mov_pool *p = calloc(1, sizeof(*p));
-  if (p == NULL) Rf_error("mov: allocation failure");
-  if (mov_shm_open_rw(&p->shm, name) != 0) {
+  kio_pool *p = calloc(1, sizeof(*p));
+  if (p == NULL) Rf_error("kioto: allocation failure");
+  if (kio_shm_open_rw(&p->shm, name) != 0) {
     free(p);
-    Rf_error("mov: cannot open pool region '%s'", name);
+    Rf_error("kioto: cannot open pool region '%s'", name);
   }
-  p->self_pid = mov_self_pid();
+  p->self_pid = kio_self_pid();
   p->wk_slot = -1;
   p->sub_slot = -1;
 
@@ -790,7 +790,7 @@ static mov_pool *pool_open_common(const char *suffix, SEXP *xp_out,
   if (err != NULL) {
     mori_shm_close(&p->shm, 0);
     free(p);
-    Rf_error("mov: invalid pool region: %s", err);
+    Rf_error("kioto: invalid pool region: %s", err);
   }
 
   R_xlen_t klen = keeper_len_is_rs ?
@@ -812,23 +812,23 @@ static mov_pool *pool_open_common(const char *suffix, SEXP *xp_out,
    acquire means the previous holder is dead — Phase 2 has no orphan-teardown
    acquirer, so the probe simply refuses the join (closing the handle releases
    the momentarily-held lock). */
-static void pool_owner_check(mov_pool *p) {
+static void pool_owner_check(kio_pool *p) {
   char path[1024];
   if (pool_live_path(p, path, sizeof(path), "owner", 0) != 0)
-    Rf_error("mov: liveness file path too long");
-  if (mov_live_open(path, &p->live_owner) != 0)
-    Rf_error("mov: cannot open owner liveness file '%s'", path);
+    Rf_error("kioto: liveness file path too long");
+  if (kio_live_open(path, &p->live_owner) != 0)
+    Rf_error("kioto: cannot open owner liveness file '%s'", path);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
-      mov_live_try(p->live_owner) == MOV_LIVE_ACQUIRED)
-    Rf_error("mov: pool stopped or owner dead");
+      kio_live_try(p->live_owner) == KIO_LIVE_ACQUIRED)
+    Rf_error("kioto: pool stopped or owner dead");
 }
 
-static void pool_watch_owner(mov_pool *p, mov_parker *own_pk) {
+static void pool_watch_owner(kio_pool *p, kio_parker *own_pk) {
   if ((long) p->hdr.owner_pid == p->self_pid) return;   /* in-process join */
-  p->watch = mov_death_watch_start((long) p->hdr.owner_pid, &p->owner_dead,
+  p->watch = kio_death_watch_start((long) p->hdr.owner_pid, &p->owner_dead,
                                    own_pk);
   if (p->watch == NULL)
-    Rf_error("mov: cannot watch owner process %llu",
+    Rf_error("kioto: cannot watch owner process %llu",
              (unsigned long long) p->hdr.owner_pid);
 }
 
@@ -836,28 +836,28 @@ static void pool_watch_owner(mov_pool *p, mov_parker *own_pk) {
    dead submitter is recognisable by its free liveness lock regardless of
    which side of the CAS it died on. Fills the slot's identity fields, sets
    p->sub_slot, and returns the held lock through *lock_out. Shared by
-   mov_pool_attach and a worker's first nested submit. */
-static void pool_claim_sub_slot(mov_pool *p, intptr_t *lock_out) {
+   kio_pool_attach and a worker's first nested submit. */
+static void pool_claim_sub_slot(kio_pool *p, intptr_t *lock_out) {
   char path[1024];
   uint32_t per = p->hdr.result_slots / p->hdr.max_submitters;
   for (uint32_t j = 0; j < p->hdr.max_submitters; j++) {
     if (atomic_load_explicit(&p->sub[j].status, memory_order_acquire) !=
-        MOV_SUB_FREE)
+        KIO_SUB_FREE)
       continue;
     if (pool_live_path(p, path, sizeof(path), "sub", j) != 0)
-      Rf_error("mov: liveness file path too long");
+      Rf_error("kioto: liveness file path too long");
     intptr_t h;
-    if (mov_live_open(path, &h) != 0) continue;
-    if (mov_live_try(h) != MOV_LIVE_ACQUIRED) {
-      mov_live_close(h);
+    if (kio_live_open(path, &h) != 0) continue;
+    if (kio_live_try(h) != KIO_LIVE_ACQUIRED) {
+      kio_live_close(h);
       continue;                    /* another claimant beat us */
     }
-    int32_t expected = MOV_SUB_FREE;
+    int32_t expected = KIO_SUB_FREE;
     if (!atomic_compare_exchange_strong_explicit(&p->sub[j].status, &expected,
-                                                 MOV_SUB_LIVE,
+                                                 KIO_SUB_LIVE,
                                                  memory_order_seq_cst,
                                                  memory_order_relaxed)) {
-      mov_live_close(h);           /* stale FREE reading */
+      kio_live_close(h);           /* stale FREE reading */
       continue;
     }
     *lock_out = h;
@@ -865,30 +865,30 @@ static void pool_claim_sub_slot(mov_pool *p, intptr_t *lock_out) {
     break;
   }
   if (p->sub_slot < 0)
-    Rf_error("mov: submitter registry full");
+    Rf_error("kioto: submitter registry full");
 
-  mov_sub_slot *me = &p->sub[p->sub_slot];
+  kio_sub_slot *me = &p->sub[p->sub_slot];
   me->pid = (int64_t) p->self_pid;
   me->rs_start = (uint32_t) p->sub_slot * per;
   me->rs_count = per;
-  mov_live_ident(*lock_out, &me->live_dev, &me->live_ino);
+  kio_live_ident(*lock_out, &me->live_dev, &me->live_ino);
 }
 
 // Worker join --------------------------------------------------------------------------
 
-static void pool_stats_publish(mov_pool *p);
+static void pool_stats_publish(kio_pool *p);
 
-SEXP mov_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
+SEXP kio_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
   if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
-    Rf_error("mov: expected a region-name suffix");
+    Rf_error("kioto: expected a region-name suffix");
   SEXP xp;
-  mov_pool *p = pool_open_common(CHAR(STRING_ELT(suffix_sexp, 0)), &xp, 1);
+  kio_pool *p = pool_open_common(CHAR(STRING_ELT(suffix_sexp, 0)), &xp, 1);
   PROTECT(xp);
-  p->role = MOV_ROLE_WORKER;
+  p->role = KIO_ROLE_WORKER;
 
   uint32_t slot = (uint32_t) Rf_asInteger(slot_sexp);
   if (slot >= p->hdr.max_workers)
-    Rf_error("mov: worker slot index out of range");
+    Rf_error("kioto: worker slot index out of range");
   pool_owner_check(p);
 
   /* Lock-before-CAS: what makes "CLAIMING + free lock" a reliable dead-worker
@@ -896,71 +896,71 @@ SEXP mov_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
      ghost from a previous spawn. */
   char path[1024];
   if (pool_live_path(p, path, sizeof(path), "wk", slot) != 0)
-    Rf_error("mov: liveness file path too long");
-  if (mov_live_open(path, &p->live_self) != 0 ||
-      mov_live_try(p->live_self) != MOV_LIVE_ACQUIRED)
-    Rf_error("mov: worker slot %u already held — stale spawn?", slot);
-  mov_wk_slot *me = &p->wk[slot];
-  int32_t expected = MOV_WK_FREE;
+    Rf_error("kioto: liveness file path too long");
+  if (kio_live_open(path, &p->live_self) != 0 ||
+      kio_live_try(p->live_self) != KIO_LIVE_ACQUIRED)
+    Rf_error("kioto: worker slot %u already held — stale spawn?", slot);
+  kio_wk_slot *me = &p->wk[slot];
+  int32_t expected = KIO_WK_FREE;
   if (!atomic_compare_exchange_strong_explicit(&me->status, &expected,
-                                               MOV_WK_CLAIMING,
+                                               KIO_WK_CLAIMING,
                                                memory_order_seq_cst,
                                                memory_order_relaxed))
-    Rf_error("mov: worker slot %u not free — stale spawn?", slot);
+    Rf_error("kioto: worker slot %u not free — stale spawn?", slot);
   p->wk_slot = (int) slot;
 
   me->pid = (int64_t) p->self_pid;
-  mov_live_ident(p->live_self, &me->live_dev, &me->live_ino);
+  kio_live_ident(p->live_self, &me->live_dev, &me->live_ino);
   atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
   atomic_store_explicit(&me->retire, 0, memory_order_relaxed);
-  atomic_store_explicit(&me->park_state, MOV_WPK_RUNNING,
+  atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
                         memory_order_relaxed);
   pool_stats_publish(p);   /* zero any previous incarnation's counters */
 
   if (pool_parkers_attach(p, 0) != 0)
-    Rf_error("mov: cannot attach pool parkers");
+    Rf_error("kioto: cannot attach pool parkers");
   p->scratch = malloc(p->hdr.slot);
-  if (p->scratch == NULL) Rf_error("mov: allocation failure");
+  if (p->scratch == NULL) Rf_error("kioto: allocation failure");
   p->rng = ((uint64_t) p->self_pid * 0x9E3779B97F4A7C15ull) ^
-    ((uint64_t) (mov_now() * 1e9)) ^ ((uint64_t) slot << 32);
+    ((uint64_t) (kio_now() * 1e9)) ^ ((uint64_t) slot << 32);
   if (p->rng == 0) p->rng = 1;
   pool_watch_owner(p, pool_wk_pk(p, slot));
 
-  expected = MOV_WK_CLAIMING;
-  atomic_compare_exchange_strong_explicit(&me->status, &expected, MOV_WK_LIVE,
+  expected = KIO_WK_CLAIMING;
+  atomic_compare_exchange_strong_explicit(&me->status, &expected, KIO_WK_LIVE,
                                           memory_order_seq_cst,
                                           memory_order_relaxed);
-  mov_unpark(pool_sub_pk(p, 0));   /* the creator's startup wait */
+  kio_unpark(pool_sub_pk(p, 0));   /* the creator's startup wait */
 
   UNPROTECT(1);
   return xp;
 }
 
-static void pool_unpark_result_waiter(mov_pool *p, mov_rs_hdr *rs);
-static void pool_wake_one_worker(mov_pool *p);
-static int pool_reaping_free(mov_pool *p, mov_wk_slot *w);
-static int pool_probe_worker(mov_pool *p, uint32_t slot);
-static void pool_probe_submitter(mov_pool *p, uint32_t j);
-static void pool_orphan_teardown_try(mov_pool *p);
-static void pool_reap_result_keepers(mov_pool *p, SEXP keepers);
+static void pool_unpark_result_waiter(kio_pool *p, kio_rs_hdr *rs);
+static void pool_wake_one_worker(kio_pool *p);
+static int pool_reaping_free(kio_pool *p, kio_wk_slot *w);
+static int pool_probe_worker(kio_pool *p, uint32_t slot);
+static void pool_probe_submitter(kio_pool *p, uint32_t j);
+static void pool_orphan_teardown_try(kio_pool *p);
+static void pool_reap_result_keepers(kio_pool *p, SEXP keepers);
 
 /* Clean worker exit. A nonempty deque is never drained anywhere: it
    becomes an ordinary steal target while the slot reads REAPING, and the
    observer of the drained deque returns the slot to FREE. Kept results are
    abandoned: the Phase 2 exits are shutdown and owner death, both of which
    cancel or orphan every outstanding collect anyway. */
-SEXP mov_pool_leave(SEXP xp) {
-  mov_pool *p = pool_peek(xp);
+SEXP kio_pool_leave(SEXP xp) {
+  kio_pool *p = pool_peek(xp);
   if (p == NULL) return R_NilValue;
-  if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
-    Rf_error("mov: not a worker handle");
-  mov_wk_slot *me = &p->wk[p->wk_slot];
+  if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("kioto: not a worker handle");
+  kio_wk_slot *me = &p->wk[p->wk_slot];
   pool_stats_publish(p);   /* final, exact mirror for the departed slot */
   atomic_fetch_and_explicit(p->parked_workers, ~(1ull << p->wk_slot),
                             memory_order_seq_cst);
-  int32_t expected = MOV_WK_LIVE;
+  int32_t expected = KIO_WK_LIVE;
   if (atomic_compare_exchange_strong_explicit(&me->status, &expected,
-                                              MOV_WK_LEAVING,
+                                              KIO_WK_LEAVING,
                                               memory_order_seq_cst,
                                               memory_order_relaxed)) {
     /* walk the deque read-only, unparking each entry's result waiter;
@@ -970,20 +970,20 @@ SEXP mov_pool_leave(SEXP xp) {
     int64_t b = atomic_load_explicit(&me->deque_bottom,
                                      memory_order_acquire);
     for (int64_t i = t; i < b; i++) {
-      mov_entry_hdr *eh = (mov_entry_hdr *) deque_entry_at(p, me, i);
+      kio_entry_hdr *eh = (kio_entry_hdr *) deque_entry_at(p, me, i);
       if (eh->rs_index < p->hdr.result_slots)
         pool_unpark_result_waiter(p, pool_rs(p, eh->rs_index));
     }
     if (atomic_load_explicit(&me->deque_top, memory_order_acquire) >= b) {
-      expected = MOV_WK_LEAVING;
+      expected = KIO_WK_LEAVING;
       atomic_compare_exchange_strong_explicit(&me->status, &expected,
-                                              MOV_WK_FREE,
+                                              KIO_WK_FREE,
                                               memory_order_seq_cst,
                                               memory_order_relaxed);
     } else {
-      expected = MOV_WK_LEAVING;
+      expected = KIO_WK_LEAVING;
       atomic_compare_exchange_strong_explicit(&me->status, &expected,
-                                              MOV_WK_REAPING,
+                                              KIO_WK_REAPING,
                                               memory_order_seq_cst,
                                               memory_order_relaxed);
       /* a thief that emptied the deque while we still read LEAVING saw
@@ -998,7 +998,7 @@ SEXP mov_pool_leave(SEXP xp) {
      sweep makes the anchor check exact: the step loop's busy-path reap is
      quota-bounded and may leave consumed records behind */
   if (p->live_self != 0) {
-    mov_live_close(p->live_self);
+    kio_live_close(p->live_self);
     p->live_self = 0;
   }
   pool_reap_result_keepers(p, VECTOR_ELT(R_ExternalPtrProtected(xp), 0));
@@ -1011,8 +1011,8 @@ SEXP mov_pool_leave(SEXP xp) {
    bounded sleeps drive this from R — the slot's parker may already be
    reclaimed by a respawn, so no unpark can reach this process — and
    shutdown or owner death ends the linger. */
-SEXP mov_pool_lame_duck(SEXP xp) {
-  mov_pool *p = pool_peek(xp);
+SEXP kio_pool_lame_duck(SEXP xp) {
+  kio_pool *p = pool_peek(xp);
   if (p == NULL) return Rf_ScalarLogical(TRUE);
   pool_reap_result_keepers(p, VECTOR_ELT(R_ExternalPtrProtected(xp), 0));
   if (p->rk_n == 0 ||
@@ -1026,19 +1026,19 @@ SEXP mov_pool_lame_duck(SEXP xp) {
 
 // Submitter join ------------------------------------------------------------------------
 
-SEXP mov_pool_attach_call(SEXP suffix_sexp) {
+SEXP kio_pool_attach_call(SEXP suffix_sexp) {
   if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
-    Rf_error("mov: expected a region-name suffix");
+    Rf_error("kioto: expected a region-name suffix");
   SEXP xp;
-  mov_pool *p = pool_open_common(CHAR(STRING_ELT(suffix_sexp, 0)), &xp, 0);
+  kio_pool *p = pool_open_common(CHAR(STRING_ELT(suffix_sexp, 0)), &xp, 0);
   PROTECT(xp);
-  p->role = MOV_ROLE_SUBMITTER;
+  p->role = KIO_ROLE_SUBMITTER;
   pool_owner_check(p);
 
   pool_claim_sub_slot(p, &p->live_self);
 
   if (pool_parkers_attach(p, 0) != 0)
-    Rf_error("mov: cannot attach pool parkers");
+    Rf_error("kioto: cannot attach pool parkers");
   pool_watch_owner(p, pool_sub_pk(p, (uint32_t) p->sub_slot));
   p->inj_ltail = atomic_load_explicit(ring_tail(pool_ring(p,
     (uint32_t) p->sub_slot)), memory_order_acquire);
@@ -1052,7 +1052,7 @@ SEXP mov_pool_attach_call(SEXP suffix_sexp) {
 /* The explicit-start variant exists for the reap paths, which run on the
    death listener's callback thread and must not touch the handle's
    process-local scan rotation. */
-static void pool_wake_one_worker_from(mov_pool *p, uint32_t start) {
+static void pool_wake_one_worker_from(kio_pool *p, uint32_t start) {
   /* pusher protocol: push, fence, then the mask load — either the parking
      worker's rescan sees the push or we see its bit */
   atomic_thread_fence(memory_order_seq_cst);
@@ -1062,20 +1062,20 @@ static void pool_wake_one_worker_from(mov_pool *p, uint32_t start) {
   for (uint32_t k = 0; k < mw; k++) {
     uint32_t i = (start + k) % mw;
     if (!(w & (1ull << i))) continue;
-    int32_t expected = MOV_WPK_PARKED;
+    int32_t expected = KIO_WPK_PARKED;
     if (atomic_compare_exchange_strong_explicit(&p->wk[i].park_state,
-                                                &expected, MOV_WPK_WAKING,
+                                                &expected, KIO_WPK_WAKING,
                                                 memory_order_seq_cst,
                                                 memory_order_relaxed)) {
-      mov_unpark(pool_wk_pk(p, i));
+      kio_unpark(pool_wk_pk(p, i));
       return;
     }
-    if (expected == MOV_WPK_IDLE) {
+    if (expected == KIO_WPK_IDLE) {
       /* announced but not yet parked — its rescan may already have missed
          this publish, so an uncontested wake is not safe to skip. Its epoch
          snapshot predates the announce, so this unpark turns the upcoming
          sleep into an immediate return; at worst one spurious wake. */
-      mov_unpark(pool_wk_pk(p, i));
+      kio_unpark(pool_wk_pk(p, i));
       return;
     }
     /* RUNNING or WAKING: the worker transitioned away or another pusher
@@ -1083,22 +1083,22 @@ static void pool_wake_one_worker_from(mov_pool *p, uint32_t start) {
   }
 }
 
-static void pool_wake_one_worker(mov_pool *p) {
+static void pool_wake_one_worker(kio_pool *p) {
   pool_wake_one_worker_from(p, p->scan_start++);
 }
 
 /* Block until the submitter's own ring has space (announce-then-rescan on
    full_waiters, parked on the submitter's own parker, woken directly by the
    worker whose pop freed a slot) or the deadline passes. */
-static int pool_ring_space_wait(mov_pool *p, _Atomic int64_t *head,
+static int pool_ring_space_wait(kio_pool *p, _Atomic int64_t *head,
                                 double timeout_s) {
   if (p->inj_ltail - atomic_load_explicit(head, memory_order_acquire) <
       (int64_t) p->hdr.inj_cap)
     return 1;
   uint64_t bit = 1ull << p->sub_slot;
-  double deadline = R_FINITE(timeout_s) ? mov_now() + timeout_s : -1;
+  double deadline = R_FINITE(timeout_s) ? kio_now() + timeout_s : -1;
   for (;;) {
-    uint32_t e = mov_parker_snapshot(pool_sub_pk(p, (uint32_t) p->sub_slot));
+    uint32_t e = kio_parker_snapshot(pool_sub_pk(p, (uint32_t) p->sub_slot));
     atomic_fetch_or_explicit(p->full_waiters, bit, memory_order_seq_cst);
     atomic_thread_fence(memory_order_seq_cst);
     if (p->inj_ltail - atomic_load_explicit(head, memory_order_acquire) <
@@ -1108,16 +1108,16 @@ static int pool_ring_space_wait(mov_pool *p, _Atomic int64_t *head,
     }
     if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0) {
       atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
-      Rf_error("mov: pool stopped");
+      Rf_error("kioto: pool stopped");
     }
     if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
       atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
       pool_orphan_teardown_try(p);
-      Rf_error("mov: pool stopped or owner dead");
+      Rf_error("kioto: pool stopped or owner dead");
     }
-    long ms = MOV_INTERRUPT_BOUND_MS;
+    long ms = KIO_INTERRUPT_BOUND_MS;
     if (deadline >= 0) {
-      double rem = deadline - mov_now();
+      double rem = deadline - kio_now();
       if (rem <= 0) {
         atomic_fetch_and_explicit(p->full_waiters, ~bit,
                                   memory_order_seq_cst);
@@ -1126,59 +1126,59 @@ static int pool_ring_space_wait(mov_pool *p, _Atomic int64_t *head,
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
-    mov_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    kio_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
     atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
     R_CheckUserInterrupt();
   }
 }
 
-typedef struct mov_task_s {
+typedef struct kio_task_s {
   uint32_t idx;                  /* global result-slot index */
   uint64_t seq;
-} mov_task;
+} kio_task;
 
-static void pool_unpark_result_waiter(mov_pool *p, mov_rs_hdr *rs) {
+static void pool_unpark_result_waiter(kio_pool *p, kio_rs_hdr *rs) {
   int32_t ws = atomic_load_explicit(&rs->waiter_slot, memory_order_acquire);
   if (ws >= 0 && (uint32_t) ws < p->hdr.max_submitters)
-    mov_unpark(pool_sub_pk(p, (uint32_t) ws));
+    kio_unpark(pool_sub_pk(p, (uint32_t) ws));
 }
 
 /* The handle finalizer's state machine (also invoked deliberately by
-   mov_cancel's PENDING arm). A task keeper is never dropped here: CANCEL is
+   kio_cancel's PENDING arm). A task keeper is never dropped here: CANCEL is
    not a release point — FREE strictly implies the worker is done with the
    entry, materialize included, so release-at-reuse stays safe. */
-static void mov_task_finalizer(SEXP xp) {
-  mov_task *t = (mov_task *) R_ExternalPtrAddr(xp);
+static void kio_task_finalizer(SEXP xp) {
+  kio_task *t = (kio_task *) R_ExternalPtrAddr(xp);
   if (t == NULL) return;
   SEXP pool_xp = R_ExternalPtrProtected(xp);
-  mov_pool *p = (mov_pool *) R_ExternalPtrAddr(pool_xp);
+  kio_pool *p = (kio_pool *) R_ExternalPtrAddr(pool_xp);
   if (p != NULL && !p->released && p->base != NULL &&
-      p->self_pid == mov_self_pid()) {
-    mov_rs_hdr *rs = pool_rs(p, t->idx);
+      p->self_pid == kio_self_pid()) {
+    kio_rs_hdr *rs = pool_rs(p, t->idx);
     if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) == t->seq) {
       for (;;) {
         int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
-        if (st == MOV_RS_PENDING) {
-          int32_t expected = MOV_RS_PENDING;
+        if (st == KIO_RS_PENDING) {
+          int32_t expected = KIO_RS_PENDING;
           if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                      MOV_RS_CANCEL,
+                                                      KIO_RS_CANCEL,
                                                       memory_order_seq_cst,
                                                       memory_order_acquire)) {
             pool_unpark_result_waiter(p, rs);
             break;
           }
-        } else if (st == MOV_RS_OK || st == MOV_RS_ERR || st == MOV_RS_DIED) {
+        } else if (st == KIO_RS_OK || st == KIO_RS_ERR || st == KIO_RS_DIED) {
           /* the deliberate "never collected" drop: FREE releases the
              producing worker's result keeper and any region unlinks */
           int32_t w = atomic_load_explicit(&rs->worker_slot,
                                            memory_order_acquire);
           int32_t expected = st;
           if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                      MOV_RS_FREE,
+                                                      KIO_RS_FREE,
                                                       memory_order_seq_cst,
                                                       memory_order_acquire)) {
             if (w >= 0 && (uint32_t) w < p->hdr.max_workers)
-              mov_unpark(pool_wk_pk(p, (uint32_t) w));
+              kio_unpark(pool_wk_pk(p, (uint32_t) w));
             break;
           }
         } else {
@@ -1193,29 +1193,29 @@ static void mov_task_finalizer(SEXP xp) {
 
 /* Result slot from the submitter's own subrange. Reusing a FREE slot drops
    its previous task keeper — the lazy backstop — by overwrite at commit. */
-static uint32_t pool_alloc_rs(mov_pool *p) {
-  mov_sub_slot *me = &p->sub[p->sub_slot];
+static uint32_t pool_alloc_rs(kio_pool *p) {
+  kio_sub_slot *me = &p->sub[p->sub_slot];
   for (uint32_t k = 0; k < me->rs_count; k++) {
     uint32_t cand = (p->rs_cursor + k) % me->rs_count;
     if (atomic_load_explicit(&pool_rs(p, me->rs_start + cand)->status,
-                             memory_order_acquire) == MOV_RS_FREE)
+                             memory_order_acquire) == KIO_RS_FREE)
       return cand;
   }
-  Rf_error("mov: result slots exhausted — collect or cancel outstanding "
+  Rf_error("kioto: result slots exhausted — collect or cancel outstanding "
            "tasks first");
 }
 
 /* The handle carries the sequence about to be installed at commit, so
    until the bump it is simply stale. */
-static SEXP pool_make_task(mov_pool *p, SEXP xp, uint32_t rs_index) {
-  mov_task *t = malloc(sizeof(*t));
-  if (t == NULL) Rf_error("mov: allocation failure");
+static SEXP pool_make_task(kio_pool *p, SEXP xp, uint32_t rs_index) {
+  kio_task *t = malloc(sizeof(*t));
+  if (t == NULL) Rf_error("kioto: allocation failure");
   t->idx = rs_index;
   t->seq = atomic_load_explicit(&pool_rs(p, rs_index)->sequence,
                                 memory_order_relaxed) + 1;
-  SEXP txp = PROTECT(R_MakeExternalPtr(t, mov_task_tag, xp));
-  R_RegisterCFinalizerEx(txp, mov_task_finalizer, TRUE);
-  Rf_setAttrib(txp, R_ClassSymbol, mov_class_task);
+  SEXP txp = PROTECT(R_MakeExternalPtr(t, kio_task_tag, xp));
+  R_RegisterCFinalizerEx(txp, kio_task_finalizer, TRUE);
+  Rf_setAttrib(txp, R_ClassSymbol, kio_class_task);
   UNPROTECT(1);
   return txp;
 }
@@ -1224,17 +1224,17 @@ static SEXP pool_make_task(mov_pool *p, SEXP xp, uint32_t rs_index) {
    stream carries hook-emitted mori identifiers is not knowable without
    inspecting it — install the sequence, and open the slot as PENDING.
    Everything that can longjmp ran before this. */
-static void pool_commit_rs(mov_pool *p, SEXP keepers, uint32_t local,
-                           SEXP keep, mov_rs_hdr *rs) {
+static void pool_commit_rs(kio_pool *p, SEXP keepers, uint32_t local,
+                           SEXP keep, kio_rs_hdr *rs) {
   SET_VECTOR_ELT(keepers, (R_xlen_t) local, keep);
   p->rs_cursor = local + 1;
   atomic_fetch_add_explicit(&rs->sequence, 1, memory_order_relaxed);
   atomic_store_explicit(&rs->waiter_slot, -1, memory_order_relaxed);
   atomic_store_explicit(&rs->worker_slot, -1, memory_order_relaxed);
-  atomic_store_explicit(&rs->status, MOV_RS_PENDING, memory_order_release);
+  atomic_store_explicit(&rs->status, KIO_RS_PENDING, memory_order_release);
 }
 
-static void pool_fill_entry(mov_pool *p, mov_entry_hdr *eh,
+static void pool_fill_entry(kio_pool *p, kio_entry_hdr *eh,
                             uint32_t rs_index) {
   eh->task_id = ((uint64_t) p->sub_slot << 48) | ++p->task_counter;
   eh->rs_index = rs_index;
@@ -1242,8 +1242,8 @@ static void pool_fill_entry(mov_pool *p, mov_entry_hdr *eh,
   eh->pad = 0;
 }
 
-static void pool_execute(mov_pool *p, SEXP xp, int catching);
-static void pool_announce(mov_pool *p);
+static void pool_execute(kio_pool *p, SEXP xp, int catching);
+static void pool_announce(kio_pool *p);
 
 /* Worker-side nested submit: the local-deque push. The worker becomes a
    submitter on first use — same keeper-table discipline, keyed by its own
@@ -1251,9 +1251,9 @@ static void pool_announce(mov_pool *p);
    slots on workers. The entry is staged directly into the worker's own
    deque slot and published by the bottom store; a full deque executes the
    task inline instead (work-first), so nested submit never blocks. */
-static SEXP pool_submit_nested(mov_pool *p, SEXP xp, SEXP payload) {
+static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
   if (p->wk_slot < 0)
-    Rf_error("mov: not a worker handle");
+    Rf_error("kioto: not a worker handle");
   SEXP prot = R_ExternalPtrProtected(xp);
   if (p->sub_slot < 0) {
     pool_claim_sub_slot(p, &p->live_sub);
@@ -1263,20 +1263,20 @@ static SEXP pool_submit_nested(mov_pool *p, SEXP xp, SEXP payload) {
   SEXP keepers = VECTOR_ELT(prot, 2);
   uint32_t local = pool_alloc_rs(p);
   uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
-  mov_rs_hdr *rs = pool_rs(p, rs_index);
+  kio_rs_hdr *rs = pool_rs(p, rs_index);
 
-  mov_wk_slot *w = &p->wk[p->wk_slot];
+  kio_wk_slot *w = &p->wk[p->wk_slot];
   int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_relaxed);
   int64_t t = atomic_load_explicit(&w->deque_top, memory_order_acquire);
   int inline_exec = b - t >= (int64_t) w->deque_cap;
   unsigned char *e = inline_exec ? p->scratch : deque_entry_at(p, w, b);
-  mov_entry_hdr *eh = (mov_entry_hdr *) e;
+  kio_entry_hdr *eh = (kio_entry_hdr *) e;
 
   /* everything that can longjmp — staging, handle allocation, the
      evaluator lookup the inline path needs — runs before any observable
      mutation: an error leaves the entry unpublished and the slot FREE */
   if (inline_exec) (void) pool_eval_env(xp);
-  SEXP keep = PROTECT(mov_payload_stage(&eh->ph, e + sizeof(mov_entry_hdr),
+  SEXP keep = PROTECT(kio_payload_stage(&eh->ph, e + sizeof(kio_entry_hdr),
                                         p->inline_entry, payload));
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
@@ -1295,32 +1295,32 @@ static SEXP pool_submit_nested(mov_pool *p, SEXP xp, SEXP payload) {
   return txp;
 }
 
-SEXP mov_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
-  mov_pool *p = pool_get(xp);
+SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
+  kio_pool *p = pool_get(xp);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
-    Rf_error("mov: pool stopped");
+    Rf_error("kioto: pool stopped");
   if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
     pool_orphan_teardown_try(p);
-    Rf_error("mov: pool stopped or owner dead");
+    Rf_error("kioto: pool stopped or owner dead");
   }
-  if (p->role == MOV_ROLE_WORKER)
+  if (p->role == KIO_ROLE_WORKER)
     return pool_submit_nested(p, xp, payload);
   if (p->sub_slot < 0)
-    Rf_error("mov: not a submitter handle");
+    Rf_error("kioto: not a submitter handle");
   SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
 
   unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
   if (!pool_ring_space_wait(p, ring_head(ring), Rf_asReal(timeout)))
-    Rf_error("mov: submission timed out (injection ring full)");
+    Rf_error("kioto: submission timed out (injection ring full)");
 
   uint32_t local = pool_alloc_rs(p);
   uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
-  mov_rs_hdr *rs = pool_rs(p, rs_index);
+  kio_rs_hdr *rs = pool_rs(p, rs_index);
 
   /* staging and handle allocation can longjmp: nothing observable yet */
   unsigned char *e = ring_entry(p, ring, (uint64_t) p->inj_ltail);
-  mov_entry_hdr *eh = (mov_entry_hdr *) e;
-  SEXP keep = PROTECT(mov_payload_stage(&eh->ph, e + sizeof(mov_entry_hdr),
+  kio_entry_hdr *eh = (kio_entry_hdr *) e;
+  SEXP keep = PROTECT(kio_payload_stage(&eh->ph, e + sizeof(kio_entry_hdr),
                                         p->inline_entry, payload));
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
@@ -1347,11 +1347,11 @@ SEXP mov_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
    when a reused slot republishes — so a stale record can never alias (and
    nil) a successor's keeper. Returns 1 when the record at i was retained,
    0 when it was removed (the swapped-in tail record then sits at i). */
-static int pool_rk_visit(mov_pool *p, SEXP keepers, uint32_t i) {
-  mov_rs_hdr *rs = pool_rs(p, p->rk[i].idx);
+static int pool_rk_visit(kio_pool *p, SEXP keepers, uint32_t i) {
+  kio_rs_hdr *rs = pool_rs(p, p->rk[i].idx);
   int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
   uint64_t seq = atomic_load_explicit(&rs->sequence, memory_order_relaxed);
-  if ((st == MOV_RS_OK || st == MOV_RS_ERR) && seq == p->rk[i].seq)
+  if ((st == KIO_RS_OK || st == KIO_RS_ERR) && seq == p->rk[i].seq)
     return 1;
   SET_VECTOR_ELT(keepers, (R_xlen_t) p->rk[i].idx, R_NilValue);
   p->rk_pos[p->rk[i].idx] = 0;
@@ -1366,20 +1366,20 @@ static int pool_rk_visit(mov_pool *p, SEXP keepers, uint32_t i) {
 /* The full sweep, for the idle and departure paths (pre-park, empty step
    returns, the lame-duck beat) where visiting every record costs nothing
    the pool feels. */
-static void pool_reap_result_keepers(mov_pool *p, SEXP keepers) {
+static void pool_reap_result_keepers(kio_pool *p, SEXP keepers) {
   uint32_t i = 0;
   while (i < p->rk_n) i += (uint32_t) pool_rk_visit(p, keepers, i);
   p->rk_cursor = 0;
 }
 
-/* The busy-path reap: at most MOV_REAP_QUOTA visits under a rotating
+/* The busy-path reap: at most KIO_REAP_QUOTA visits under a rotating
    cursor, so a loaded worker's per-task reap cost is O(1) against any
    number of results outstanding — under a fire-then-collect backlog the
    old whole-table scan went quadratic. Consumption keeps pace as long as
    the quota exceeds the frees a task period can see; the idle-path sweep
    clears any residue. */
-static void pool_reap_quota(mov_pool *p, SEXP keepers) {
-  uint32_t lim = p->rk_n < MOV_REAP_QUOTA ? p->rk_n : MOV_REAP_QUOTA;
+static void pool_reap_quota(kio_pool *p, SEXP keepers) {
+  uint32_t lim = p->rk_n < KIO_REAP_QUOTA ? p->rk_n : KIO_REAP_QUOTA;
   for (uint32_t k = 0; k < lim && p->rk_n > 0; k++) {
     if (p->rk_cursor >= p->rk_n) p->rk_cursor = 0;
     p->rk_cursor += (uint32_t) pool_rk_visit(p, keepers, p->rk_cursor);
@@ -1389,20 +1389,20 @@ static void pool_reap_quota(mov_pool *p, SEXP keepers) {
 /* Growth is split from recording so it can run before the publish CAS: an
    allocation failure after publish would leave a pinned keeper the reap
    never visits. First use also sizes the slot -> record map. */
-static void pool_rk_reserve(mov_pool *p) {
+static void pool_rk_reserve(kio_pool *p) {
   if (p->rk_pos == NULL) {
     p->rk_pos = calloc(p->hdr.result_slots, sizeof(*p->rk_pos));
-    if (p->rk_pos == NULL) Rf_error("mov: allocation failure");
+    if (p->rk_pos == NULL) Rf_error("kioto: allocation failure");
   }
   if (p->rk_n < p->rk_cap) return;
   uint32_t cap = p->rk_cap == 0 ? 64 : p->rk_cap * 2;
-  struct mov_rk_s *rk = realloc(p->rk, cap * sizeof(*rk));
-  if (rk == NULL) Rf_error("mov: allocation failure");
+  struct kio_rk_s *rk = realloc(p->rk, cap * sizeof(*rk));
+  if (rk == NULL) Rf_error("kioto: allocation failure");
   p->rk = rk;
   p->rk_cap = cap;
 }
 
-static void pool_rk_add(mov_pool *p, uint32_t idx, uint64_t seq) {
+static void pool_rk_add(kio_pool *p, uint32_t idx, uint64_t seq) {
   uint32_t pos = p->rk_pos[idx];
   if (pos != 0) {          /* reused slot: the record follows the new
                               incarnation — publish replaced the keeper */
@@ -1419,11 +1419,11 @@ static void pool_rk_add(mov_pool *p, uint32_t idx, uint64_t seq) {
    copied into scratch, before any claim (ring-head CAS, deque-bottom
    commit, or steal CAS) is attempted; plain stores suffice — the only
    reader is a post-mortem reaper serialized by the liveness lock. */
-static void pool_announce(mov_pool *p) {
-  mov_entry_hdr *eh = (mov_entry_hdr *) p->scratch;
+static void pool_announce(kio_pool *p) {
+  kio_entry_hdr *eh = (kio_entry_hdr *) p->scratch;
   if (eh->rs_index >= p->hdr.result_slots)
-    Rf_error("mov: corrupt pool entry");
-  mov_wk_slot *me = &p->wk[p->wk_slot];
+    Rf_error("kioto: corrupt pool entry");
+  kio_wk_slot *me = &p->wk[p->wk_slot];
   atomic_store_explicit(&me->in_flight_rs, (int32_t) eh->rs_index,
                         memory_order_relaxed);
   atomic_store_explicit(&me->in_flight_seq,
@@ -1433,7 +1433,7 @@ static void pool_announce(mov_pool *p) {
                         memory_order_relaxed);
 }
 
-static void pool_announce_clear(mov_pool *p) {
+static void pool_announce_clear(kio_pool *p) {
   atomic_store_explicit(&p->wk[p->wk_slot].in_flight_rs, -1,
                         memory_order_relaxed);
 }
@@ -1444,8 +1444,8 @@ static void pool_announce_clear(mov_pool *p) {
    would reintroduce exactly the thief-CAS pingpong that line's layout
    avoids. Under load the mirrors lag by up to one tick (61 claims); a
    parked or departed worker's are exact. */
-static void pool_stats_publish(mov_pool *p) {
-  mov_wk_slot *me = &p->wk[p->wk_slot];
+static void pool_stats_publish(kio_pool *p) {
+  kio_wk_slot *me = &p->wk[p->wk_slot];
   atomic_store_explicit(&me->stat_tasks, p->st_tasks, memory_order_relaxed);
   atomic_store_explicit(&me->stat_steals, p->st_steals,
                         memory_order_relaxed);
@@ -1458,7 +1458,7 @@ static void pool_stats_publish(mov_pool *p) {
    path (use_mask) and unfiltered on the fairness tick. The mask is a hint
    only: a stale clear bit is repaired by the pre-park full rescan, so it
    costs one trip to the park path, never a lost task. */
-static int pool_claim_rings(mov_pool *p, int use_mask) {
+static int pool_claim_rings(kio_pool *p, int use_mask) {
   uint64_t ready = ~0ull;
   if (use_mask) {
     ready = atomic_load_explicit(p->inj_ready, memory_order_acquire);
@@ -1500,7 +1500,7 @@ static int pool_claim_rings(mov_pool *p, int use_mask) {
             bit) {
           uint64_t w = atomic_fetch_and_explicit(p->full_waiters, ~bit,
                                                  memory_order_seq_cst);
-          if (w & bit) mov_unpark(pool_sub_pk(p, s));
+          if (w & bit) kio_unpark(pool_sub_pk(p, s));
         }
         return 1;
       }
@@ -1518,8 +1518,8 @@ static int pool_claim_rings(mov_pool *p, int use_mask) {
    loads top fresh: the steal path's stale-copy argument (a slot is
    overwritten only after top advanced past it, failing the thief's CAS)
    relies on the owner never lapping an unadvanced top. */
-static int pool_deque_push(mov_pool *p, const unsigned char *entry) {
-  mov_wk_slot *me = &p->wk[p->wk_slot];
+static int pool_deque_push(kio_pool *p, const unsigned char *entry) {
+  kio_wk_slot *me = &p->wk[p->wk_slot];
   int64_t b = atomic_load_explicit(&me->deque_bottom, memory_order_relaxed);
   int64_t t = atomic_load_explicit(&me->deque_top, memory_order_acquire);
   if (b - t >= (int64_t) me->deque_cap) return 0;
@@ -1533,8 +1533,8 @@ static int pool_deque_push(mov_pool *p, const unsigned char *entry) {
    top. The entry is copied and announced before the claim can commit —
    only the owner writes the buffer, so the pre-decrement copy is stable —
    and the announce is cleared on the lost race. */
-static int pool_deque_pop(mov_pool *p) {
-  mov_wk_slot *me = &p->wk[p->wk_slot];
+static int pool_deque_pop(kio_pool *p) {
+  kio_wk_slot *me = &p->wk[p->wk_slot];
   int64_t b = atomic_load_explicit(&me->deque_bottom, memory_order_relaxed);
   int64_t t = atomic_load_explicit(&me->deque_top, memory_order_acquire);
   if (t >= b) return 0;
@@ -1555,7 +1555,7 @@ static int pool_deque_pop(mov_pool *p) {
   return got;
 }
 
-enum { MOV_STEAL_EMPTY = 0, MOV_STEAL_GOT, MOV_STEAL_ABORT };
+enum { KIO_STEAL_EMPTY = 0, KIO_STEAL_GOT, KIO_STEAL_ABORT };
 
 /* Attempt REAPING -> FREE. Conclusive only with top/bottom re-loaded after
    the status acquire (an earlier bottom read may predate the leaver's final
@@ -1563,10 +1563,10 @@ enum { MOV_STEAL_EMPTY = 0, MOV_STEAL_GOT, MOV_STEAL_ABORT };
    top >= bottom then means truly drained, and any observer may free the
    slot — which closes the race where a thief empties the deque while the
    owner still reads LEAVING. Returns 1 when the deque is drained. */
-static int pool_reaping_free(mov_pool *p, mov_wk_slot *w) {
+static int pool_reaping_free(kio_pool *p, kio_wk_slot *w) {
   if (deque_nonempty(w)) return 0;
-  int32_t expected = MOV_WK_REAPING;
-  atomic_compare_exchange_strong_explicit(&w->status, &expected, MOV_WK_FREE,
+  int32_t expected = KIO_WK_REAPING;
+  atomic_compare_exchange_strong_explicit(&w->status, &expected, KIO_WK_FREE,
                                           memory_order_seq_cst,
                                           memory_order_relaxed);
   return 1;
@@ -1577,16 +1577,16 @@ static int pool_reaping_free(mov_pool *p, mov_wk_slot *w) {
    owner lapping the buffer is discarded unobserved. An orphaned (REAPING)
    deque is consumed through this same path; whoever observes it drained
    returns the slot to FREE. */
-static int pool_steal_from(mov_pool *p, uint32_t v) {
-  mov_wk_slot *w = &p->wk[v];
+static int pool_steal_from(kio_pool *p, uint32_t v) {
+  kio_wk_slot *w = &p->wk[v];
   int64_t t = atomic_load_explicit(&w->deque_top, memory_order_acquire);
   atomic_thread_fence(memory_order_seq_cst);
   int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
   if (t >= b) {
     if (atomic_load_explicit(&w->status, memory_order_acquire) ==
-        MOV_WK_REAPING && !pool_reaping_free(p, w))
-      return MOV_STEAL_ABORT;   /* orphaned and nonempty after all: retry */
-    return MOV_STEAL_EMPTY;
+        KIO_WK_REAPING && !pool_reaping_free(p, w))
+      return KIO_STEAL_ABORT;   /* orphaned and nonempty after all: retry */
+    return KIO_STEAL_EMPTY;
   }
   memcpy(p->scratch, deque_entry_at(p, w, t), p->hdr.slot);
   pool_announce(p);
@@ -1594,16 +1594,16 @@ static int pool_steal_from(mov_pool *p, uint32_t v) {
                                                memory_order_seq_cst,
                                                memory_order_relaxed)) {
     pool_announce_clear(p);
-    return MOV_STEAL_ABORT;
+    return KIO_STEAL_ABORT;
   }
   if (atomic_load_explicit(&w->status, memory_order_acquire) ==
-      MOV_WK_REAPING)
+      KIO_WK_REAPING)
     pool_reaping_free(p, w);
   p->st_steals++;
-  return MOV_STEAL_GOT;
+  return KIO_STEAL_GOT;
 }
 
-static uint64_t pool_rng(mov_pool *p) {   /* xorshift64 */
+static uint64_t pool_rng(kio_pool *p) {   /* xorshift64 */
   uint64_t x = p->rng;
   x ^= x << 13;
   x ^= x >> 7;
@@ -1611,8 +1611,8 @@ static uint64_t pool_rng(mov_pool *p) {   /* xorshift64 */
   return p->rng = x;
 }
 
-#define MOV_STEAL_ROUNDS 4
-#define MOV_HELP_DEPTH_LIMIT 32
+#define KIO_STEAL_ROUNDS 4
+#define KIO_HELP_DEPTH_LIMIT 32
 
 /* Random victim, one attempt per victim, bounded rounds; EMPTY and ABORT
    alike move to the next victim. Victims are LIVE and REAPING slots — or
@@ -1621,29 +1621,29 @@ static uint64_t pool_rng(mov_pool *p) {   /* xorshift64 */
    work does not. Exhausting the rounds falls through to the caller's next
    tier (injection scan, then the pre-park spin + announce-then-rescan),
    which is what makes a missed steal safe. */
-static int pool_steal_any(mov_pool *p, int reaping_only) {
+static int pool_steal_any(kio_pool *p, int reaping_only) {
   uint32_t mw = p->hdr.max_workers;
   if (mw <= 1) return 0;
-  for (int r = 0; r < MOV_STEAL_ROUNDS; r++) {
+  for (int r = 0; r < KIO_STEAL_ROUNDS; r++) {
     uint32_t start = (uint32_t) (pool_rng(p) % mw);
     for (uint32_t k = 0; k < mw; k++) {
       uint32_t i = (start + k) % mw;
       if ((int) i == p->wk_slot) continue;
       int32_t st = atomic_load_explicit(&p->wk[i].status,
                                         memory_order_acquire);
-      if (st != MOV_WK_REAPING && (reaping_only || st != MOV_WK_LIVE))
+      if (st != KIO_WK_REAPING && (reaping_only || st != KIO_WK_LIVE))
         continue;
-      if (pool_steal_from(p, i) == MOV_STEAL_GOT) return 1;
-      if (st == MOV_WK_LIVE && deque_nonempty(&p->wk[i]))
+      if (pool_steal_from(p, i) == KIO_STEAL_GOT) return 1;
+      if (st == KIO_WK_LIVE && deque_nonempty(&p->wk[i]))
         p->probe_victim = i;
     }
   }
   return 0;
 }
 
-#define MOV_PROBE_STREAK 16
+#define KIO_PROBE_STREAK 16
 
-static int pool_steal(mov_pool *p) {
+static int pool_steal(kio_pool *p) {
   p->probe_victim = UINT32_MAX;
   if (pool_steal_any(p, 0)) {
     p->probe_streak = 0;
@@ -1653,7 +1653,7 @@ static int pool_steal(mov_pool *p) {
      apparently-nonempty victim warrant one death probe — the cross-check
      for a reap the listener never ran */
   if (p->probe_victim != UINT32_MAX &&
-      ++p->probe_streak >= MOV_PROBE_STREAK) {
+      ++p->probe_streak >= KIO_PROBE_STREAK) {
     p->probe_streak = 0;
     pool_probe_worker(p, p->probe_victim);
   }
@@ -1664,12 +1664,12 @@ static int pool_steal(mov_pool *p) {
    ready mask, then every REAPING slot's orphaned deque — the bound on
    external-submission (and ownerless-work) latency when a saturated pool
    never otherwise falls through its local tiers. */
-static int pool_fairness_scan(mov_pool *p) {
+static int pool_fairness_scan(kio_pool *p) {
   if (pool_claim_rings(p, 0)) return 1;
   for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
     if ((int) i == p->wk_slot) continue;
     if (atomic_load_explicit(&p->wk[i].status, memory_order_acquire) ==
-        MOV_WK_REAPING && pool_steal_from(p, i) == MOV_STEAL_GOT)
+        KIO_WK_REAPING && pool_steal_from(p, i) == KIO_STEAL_GOT)
       return 1;
   }
   return 0;
@@ -1677,7 +1677,7 @@ static int pool_fairness_scan(mov_pool *p) {
 
 /* One claim attempt in tier order. On success the entry is in scratch and
    announced; the caller executes it. */
-static int pool_next_task(mov_pool *p) {
+static int pool_next_task(kio_pool *p) {
   if (++p->claims % 61 == 0) {
     pool_stats_publish(p);
     if (pool_fairness_scan(p)) return 1;
@@ -1689,13 +1689,13 @@ static int pool_next_task(mov_pool *p) {
 
 /* Cheap work probe for the pre-announce spin: one load of the ready mask
    plus a sweep of the deque index lines. */
-static int pool_work_hint(mov_pool *p) {
+static int pool_work_hint(kio_pool *p) {
   if (atomic_load_explicit(p->inj_ready, memory_order_acquire) != 0)
     return 1;
   for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
     int32_t st = atomic_load_explicit(&p->wk[i].status,
                                       memory_order_acquire);
-    if ((st == MOV_WK_LIVE || st == MOV_WK_REAPING) &&
+    if ((st == KIO_WK_LIVE || st == KIO_WK_REAPING) &&
         deque_nonempty(&p->wk[i]))
       return 1;
   }
@@ -1705,7 +1705,7 @@ static int pool_work_hint(mov_pool *p) {
 /* Unfiltered work check for the pre-park rescan, covering every claim
    source — injection rings (repairing a stale-clear ready bit as it goes)
    and every LIVE or REAPING deque, own included. */
-static int pool_any_work(mov_pool *p) {
+static int pool_any_work(kio_pool *p) {
   int any = 0;
   for (uint32_t s = 0; s < p->hdr.max_submitters; s++) {
     unsigned char *ring = pool_ring(p, s);
@@ -1719,7 +1719,7 @@ static int pool_any_work(mov_pool *p) {
   for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
     int32_t st = atomic_load_explicit(&p->wk[i].status,
                                       memory_order_acquire);
-    if ((st == MOV_WK_LIVE || st == MOV_WK_REAPING) &&
+    if ((st == KIO_WK_LIVE || st == KIO_WK_REAPING) &&
         deque_nonempty(&p->wk[i]))
       any = 1;
   }
@@ -1740,23 +1740,23 @@ static int pool_any_work(mov_pool *p) {
 /* Fail the dead worker's announced in-flight task, unpark every waiter its
    orphaned deque names (their help scans then steal from it), and either
    wake a drainer or free the emptied slot. Read-only walk; resumable. */
-static void pool_orphan_and_finalize(mov_pool *p, mov_wk_slot *w,
+static void pool_orphan_and_finalize(kio_pool *p, kio_wk_slot *w,
                                      uint32_t slot) {
   int32_t inf = atomic_load_explicit(&w->in_flight_rs, memory_order_acquire);
   if (inf >= 0 && (uint32_t) inf < p->hdr.result_slots) {
-    mov_rs_hdr *rs = pool_rs(p, (uint32_t) inf);
+    kio_rs_hdr *rs = pool_rs(p, (uint32_t) inf);
     if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) ==
         atomic_load_explicit(&w->in_flight_seq, memory_order_relaxed)) {
-      int32_t expected = MOV_RS_PENDING;
+      int32_t expected = KIO_RS_PENDING;
       if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                  MOV_RS_DIED,
+                                                  KIO_RS_DIED,
                                                   memory_order_seq_cst,
                                                   memory_order_relaxed)) {
         pool_unpark_result_waiter(p, rs);
-      } else if (expected == MOV_RS_CANCEL) {
+      } else if (expected == KIO_RS_CANCEL) {
         /* handle already dropped: no collector waits; return the slot */
         atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                MOV_RS_FREE,
+                                                KIO_RS_FREE,
                                                 memory_order_seq_cst,
                                                 memory_order_relaxed);
       }
@@ -1766,7 +1766,7 @@ static void pool_orphan_and_finalize(mov_pool *p, mov_wk_slot *w,
   int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
   for (int64_t i = atomic_load_explicit(&w->deque_top, memory_order_acquire);
        i < b; i++) {
-    mov_entry_hdr *eh = (mov_entry_hdr *) deque_entry_at(p, w, i);
+    kio_entry_hdr *eh = (kio_entry_hdr *) deque_entry_at(p, w, i);
     if (eh->rs_index < p->hdr.result_slots)
       pool_unpark_result_waiter(p, pool_rs(p, eh->rs_index));
   }
@@ -1774,36 +1774,36 @@ static void pool_orphan_and_finalize(mov_pool *p, mov_wk_slot *w,
     /* orphaned work must drain even when no waiter is parked */
     pool_wake_one_worker_from(p, slot);
   } else {
-    int32_t expected = MOV_WK_REAPING;
+    int32_t expected = KIO_WK_REAPING;
     atomic_compare_exchange_strong_explicit(&w->status, &expected,
-                                            MOV_WK_FREE,
+                                            KIO_WK_FREE,
                                             memory_order_seq_cst,
                                             memory_order_relaxed);
   }
 }
 
 /* Precondition: the caller holds the slot's liveness lock. */
-static void pool_reap_worker(mov_pool *p, uint32_t slot) {
-  mov_wk_slot *w = &p->wk[slot];
+static void pool_reap_worker(kio_pool *p, uint32_t slot) {
+  kio_wk_slot *w = &p->wk[slot];
   for (;;) {
     int32_t expected = atomic_load_explicit(&w->status,
                                             memory_order_acquire);
-    if (expected == MOV_WK_LIVE || expected == MOV_WK_LEAVING) {
+    if (expected == KIO_WK_LIVE || expected == KIO_WK_LEAVING) {
       if (!atomic_compare_exchange_strong_explicit(&w->status, &expected,
-                                                   MOV_WK_REAPING,
+                                                   KIO_WK_REAPING,
                                                    memory_order_seq_cst,
                                                    memory_order_relaxed))
         continue;
       pool_orphan_and_finalize(p, w, slot);
-    } else if (expected == MOV_WK_REAPING) {
+    } else if (expected == KIO_WK_REAPING) {
       /* predecessor reaper died mid-walk: re-running it is harmless */
       pool_orphan_and_finalize(p, w, slot);
-    } else if (expected == MOV_WK_CLAIMING) {
+    } else if (expected == KIO_WK_CLAIMING) {
       /* died between its lock acquire and CLAIMING -> LIVE: deque
          uninitialized, nothing in flight — lock-before-CAS in the join is
          what makes this state conclusive for a lock holder */
       if (!atomic_compare_exchange_strong_explicit(&w->status, &expected,
-                                                   MOV_WK_FREE,
+                                                   KIO_WK_FREE,
                                                    memory_order_seq_cst,
                                                    memory_order_relaxed))
         continue;
@@ -1818,26 +1818,26 @@ static void pool_reap_worker(mov_pool *p, uint32_t slot) {
    acquire — ENOENT or a mismatch reads as indeterminate, never a verdict,
    because a false DEAD is the one verdict the protocol cannot absorb.
    Returns 1 when a reap ran. */
-static int pool_probe_worker(mov_pool *p, uint32_t slot) {
-  mov_wk_slot *w = &p->wk[slot];
-  if (atomic_load_explicit(&w->status, memory_order_acquire) == MOV_WK_FREE)
+static int pool_probe_worker(kio_pool *p, uint32_t slot) {
+  kio_wk_slot *w = &p->wk[slot];
+  if (atomic_load_explicit(&w->status, memory_order_acquire) == KIO_WK_FREE)
     return 0;
   if (p->live_all != NULL) {
-    if (mov_live_try(p->live_all[slot]) != MOV_LIVE_ACQUIRED) return 0;
+    if (kio_live_try(p->live_all[slot]) != KIO_LIVE_ACQUIRED) return 0;
     pool_reap_worker(p, slot);
-    mov_live_unlock(p->live_all[slot]);
+    kio_live_unlock(p->live_all[slot]);
     return 1;
   }
   char path[1024];
   intptr_t h;
   if (pool_live_path(p, path, sizeof(path), "wk", slot) != 0) return 0;
-  if (mov_live_open_existing(path, &h) != 0) return 0;
+  if (kio_live_open_existing(path, &h) != 0) return 0;
   uint64_t dev, ino;
-  int dead = mov_live_ident(h, &dev, &ino) == 0 &&
+  int dead = kio_live_ident(h, &dev, &ino) == 0 &&
     dev == w->live_dev && ino == w->live_ino &&
-    mov_live_try(h) == MOV_LIVE_ACQUIRED;
+    kio_live_try(h) == KIO_LIVE_ACQUIRED;
   if (dead) pool_reap_worker(p, slot);
-  mov_live_close(h);
+  kio_live_close(h);
   return dead;
 }
 
@@ -1847,79 +1847,79 @@ static int pool_probe_worker(mov_pool *p, uint32_t slot) {
    (releasing the producing workers' keepers), and leaves CANCEL slots
    alone — they free at pop, which is what keeps release-at-reuse safe for
    entries still queued in the dead submitter's ring. */
-static void pool_reap_submitter(mov_pool *p, uint32_t j) {
-  mov_sub_slot *s = &p->sub[j];
-  int32_t expected = MOV_SUB_LIVE;
+static void pool_reap_submitter(kio_pool *p, uint32_t j) {
+  kio_sub_slot *s = &p->sub[j];
+  int32_t expected = KIO_SUB_LIVE;
   if (!atomic_compare_exchange_strong_explicit(&s->status, &expected,
-                                               MOV_SUB_REAPING,
+                                               KIO_SUB_REAPING,
                                                memory_order_seq_cst,
                                                memory_order_acquire) &&
-      expected != MOV_SUB_REAPING)
+      expected != KIO_SUB_REAPING)
     return;                                  /* FREE: nothing to do */
   for (uint32_t k = 0; k < s->rs_count; k++) {
-    mov_rs_hdr *rs = pool_rs(p, s->rs_start + k);
+    kio_rs_hdr *rs = pool_rs(p, s->rs_start + k);
     for (;;) {
       int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
-      if (st == MOV_RS_PENDING) {
-        int32_t e2 = MOV_RS_PENDING;
+      if (st == KIO_RS_PENDING) {
+        int32_t e2 = KIO_RS_PENDING;
         if (!atomic_compare_exchange_strong_explicit(&rs->status, &e2,
-                                                     MOV_RS_CANCEL,
+                                                     KIO_RS_CANCEL,
                                                      memory_order_seq_cst,
                                                      memory_order_relaxed))
           continue;
         pool_unpark_result_waiter(p, rs);
-      } else if (st == MOV_RS_OK || st == MOV_RS_ERR || st == MOV_RS_DIED) {
+      } else if (st == KIO_RS_OK || st == KIO_RS_ERR || st == KIO_RS_DIED) {
         int32_t wk = atomic_load_explicit(&rs->worker_slot,
                                           memory_order_acquire);
         int32_t e2 = st;
         if (!atomic_compare_exchange_strong_explicit(&rs->status, &e2,
-                                                     MOV_RS_FREE,
+                                                     KIO_RS_FREE,
                                                      memory_order_seq_cst,
                                                      memory_order_relaxed))
           continue;
         if (wk >= 0 && (uint32_t) wk < p->hdr.max_workers)
-          mov_unpark(pool_wk_pk(p, (uint32_t) wk));   /* keeper drop */
+          kio_unpark(pool_wk_pk(p, (uint32_t) wk));   /* keeper drop */
       }
       break;
     }
   }
-  atomic_store_explicit(&s->status, MOV_SUB_FREE, memory_order_seq_cst);
+  atomic_store_explicit(&s->status, KIO_SUB_FREE, memory_order_seq_cst);
 }
 
-static void pool_probe_submitter(mov_pool *p, uint32_t j) {
+static void pool_probe_submitter(kio_pool *p, uint32_t j) {
   if ((int) j == p->sub_slot) return;        /* our own held lock */
-  mov_sub_slot *s = &p->sub[j];
+  kio_sub_slot *s = &p->sub[j];
   if (atomic_load_explicit(&s->status, memory_order_acquire) ==
-      MOV_SUB_FREE)
+      KIO_SUB_FREE)
     return;
   if (p->live_all != NULL) {
     intptr_t h = p->live_all[p->hdr.max_workers + j];
-    if (mov_live_try(h) != MOV_LIVE_ACQUIRED) return;
+    if (kio_live_try(h) != KIO_LIVE_ACQUIRED) return;
     pool_reap_submitter(p, j);
-    mov_live_unlock(h);
+    kio_live_unlock(h);
     return;
   }
   char path[1024];
   intptr_t h;
   if (pool_live_path(p, path, sizeof(path), "sub", j) != 0) return;
-  if (mov_live_open_existing(path, &h) != 0) return;
+  if (kio_live_open_existing(path, &h) != 0) return;
   uint64_t dev, ino;
-  if (mov_live_ident(h, &dev, &ino) == 0 &&
+  if (kio_live_ident(h, &dev, &ino) == 0 &&
       dev == s->live_dev && ino == s->live_ino &&
-      mov_live_try(h) == MOV_LIVE_ACQUIRED)
+      kio_live_try(h) == KIO_LIVE_ACQUIRED)
     pool_reap_submitter(p, j);
-  mov_live_close(h);
+  kio_live_close(h);
 }
 
 /* The controller's per-worker death callback: OS notification -> lock
    verdict -> reap, entirely off the R main thread. A pid-reuse race is
    absorbed by the lock (the impostor holds nothing here). */
 static void pool_wk_death_cb(void *arg) {
-  struct mov_reap_ctx_s *c = arg;
-  mov_pool *p = (mov_pool *) c->pool;
-  if (mov_live_try(p->live_all[c->slot]) == MOV_LIVE_ACQUIRED) {
+  struct kio_reap_ctx_s *c = arg;
+  kio_pool *p = (kio_pool *) c->pool;
+  if (kio_live_try(p->live_all[c->slot]) == KIO_LIVE_ACQUIRED) {
     pool_reap_worker(p, c->slot);
-    mov_live_unlock(p->live_all[c->slot]);
+    kio_live_unlock(p->live_all[c->slot]);
   }
 }
 
@@ -1929,7 +1929,7 @@ static void pool_wk_death_cb(void *arg) {
    the stop broadcast; the tail is janitorial best-effort — liveness files
    by path, the region via the vendored dead-PID reaper (its name embeds
    the dead creator's pid). */
-static void pool_remove_live_files(mov_pool *p) {
+static void pool_remove_live_files(kio_pool *p) {
   char path[1024];
   for (uint32_t i = 0; i < p->hdr.max_workers; i++)
     if (pool_live_path(p, path, sizeof(path), "wk", i) == 0) remove(path);
@@ -1938,9 +1938,9 @@ static void pool_remove_live_files(mov_pool *p) {
   if (pool_live_path(p, path, sizeof(path), "owner", 0) == 0) remove(path);
 }
 
-static void pool_orphan_teardown_try(mov_pool *p) {
+static void pool_orphan_teardown_try(kio_pool *p) {
   if (p->live_owner == 0 ||
-      mov_live_try(p->live_owner) != MOV_LIVE_ACQUIRED)
+      kio_live_try(p->live_owner) != KIO_LIVE_ACQUIRED)
     return;
   pool_shutdown_broadcast(p);
   pool_remove_live_files(p);
@@ -1951,25 +1951,25 @@ static void pool_orphan_teardown_try(mov_pool *p) {
 }
 
 /* The publish tail shared by pool_execute and the unwind path
-   (mov_pool_fail_inflight): stage the outcome into the result slot, CAS it
+   (kio_pool_fail_inflight): stage the outcome into the result slot, CAS it
    OK/ERR, pin the keeper, wake the waiter — or consume a concurrent CANCEL
    and probe the (possibly dead) submitter. Retires the in-flight announce.
    Payload writes are plain stores into a slot no allocator can touch
    (status stays PENDING/CANCEL until the FREE transition); the publish CAS
    is the release barrier a collector's acquire load pairs with. */
-static int pool_publish_result(mov_pool *p, SEXP xp, uint32_t rs_index,
+static int pool_publish_result(kio_pool *p, SEXP xp, uint32_t rs_index,
                                uint16_t sub_slot, uint64_t seq, int ok,
                                SEXP value) {
-  mov_rs_hdr *rs = pool_rs(p, rs_index);
+  kio_rs_hdr *rs = pool_rs(p, rs_index);
   pool_rk_reserve(p);
-  SEXP keep = PROTECT(mov_payload_stage(&rs->ph,
+  SEXP keep = PROTECT(kio_payload_stage(&rs->ph,
                                         (unsigned char *) rs +
-                                        sizeof(mov_rs_hdr),
+                                        sizeof(kio_rs_hdr),
                                         p->inline_rs, value));
-  int32_t expected = MOV_RS_PENDING;
+  int32_t expected = KIO_RS_PENDING;
   int published =
     atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                            ok ? MOV_RS_OK : MOV_RS_ERR,
+                                            ok ? KIO_RS_OK : KIO_RS_ERR,
                                             memory_order_seq_cst,
                                             memory_order_acquire);
   if (published) {
@@ -1979,9 +1979,9 @@ static int pool_publish_result(mov_pool *p, SEXP xp, uint32_t rs_index,
     pool_unpark_result_waiter(p, rs);
   } else {
     /* cancelled while we ran: drop the result, return the slot */
-    expected = MOV_RS_CANCEL;
+    expected = KIO_RS_CANCEL;
     atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                            MOV_RS_FREE,
+                                            KIO_RS_FREE,
                                             memory_order_seq_cst,
                                             memory_order_relaxed);
     /* consuming a CANCEL — here or at the pre-eval skip — is submitter
@@ -2001,14 +2001,14 @@ static int pool_publish_result(mov_pool *p, SEXP xp, uint32_t rs_index,
    through here from inside Rf_eval, and every claim path reuses scratch —
    so everything needed from the entry and the announce is copied out
    before the eval. */
-static void pool_execute(mov_pool *p, SEXP xp, int catching) {
+static void pool_execute(kio_pool *p, SEXP xp, int catching) {
   (void) pool_eval_env(xp);
-  mov_wk_slot *me = &p->wk[p->wk_slot];
-  mov_entry_hdr *eh = (mov_entry_hdr *) p->scratch;
+  kio_wk_slot *me = &p->wk[p->wk_slot];
+  kio_entry_hdr *eh = (kio_entry_hdr *) p->scratch;
   uint32_t rs_index = eh->rs_index;
   uint16_t sub_slot = eh->submitter_slot;
   uint64_t task_id = eh->task_id;
-  mov_rs_hdr *rs = pool_rs(p, rs_index);
+  kio_rs_hdr *rs = pool_rs(p, rs_index);
   uint64_t seq = atomic_load_explicit(&me->in_flight_seq,
                                       memory_order_relaxed);
   atomic_store_explicit(&rs->worker_slot, p->wk_slot, memory_order_relaxed);
@@ -2024,10 +2024,10 @@ static void pool_execute(mov_pool *p, SEXP xp, int catching) {
      the failed publish — a submitter that died before its queued work was
      claimed would otherwise pin its slot until the stop sweep */
   if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
-      MOV_RS_CANCEL) {
-    int32_t expected = MOV_RS_CANCEL;
+      KIO_RS_CANCEL) {
+    int32_t expected = KIO_RS_CANCEL;
     atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                            MOV_RS_FREE,
+                                            KIO_RS_FREE,
                                             memory_order_seq_cst,
                                             memory_order_relaxed);
     if (sub_slot < p->hdr.max_submitters)
@@ -2042,19 +2042,19 @@ static void pool_execute(mov_pool *p, SEXP xp, int catching) {
      task can never run anywhere — it fails as DIED exactly like a claimed
      task whose worker died, and the drain continues in this thief. */
   int gone = 0;
-  SEXP pl = PROTECT(mov_payload_read(&eh->ph,
-                                     p->scratch + sizeof(mov_entry_hdr),
+  SEXP pl = PROTECT(kio_payload_read(&eh->ph,
+                                     p->scratch + sizeof(kio_entry_hdr),
                                      p->inline_entry, &gone));
   if (gone) {
-    int32_t expected = MOV_RS_PENDING;
+    int32_t expected = KIO_RS_PENDING;
     if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                MOV_RS_DIED,
+                                                KIO_RS_DIED,
                                                 memory_order_seq_cst,
                                                 memory_order_relaxed)) {
       pool_unpark_result_waiter(p, rs);
-    } else if (expected == MOV_RS_CANCEL) {
+    } else if (expected == KIO_RS_CANCEL) {
       atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                              MOV_RS_FREE,
+                                              KIO_RS_FREE,
                                               memory_order_seq_cst,
                                               memory_order_relaxed);
       if (sub_slot < p->hdr.max_submitters)
@@ -2079,15 +2079,15 @@ static void pool_execute(mov_pool *p, SEXP xp, int catching) {
 
 /* The unwind path's publisher, called from R — worker_main, or the test
    harness's step wrapper — with the condition caught after a task's eval
-   longjmped out of mov_pool_step. Publishes it as that task's ERR result
+   longjmped out of kio_pool_step. Publishes it as that task's ERR result
    and reports TRUE; FALSE means the error did not come from inside a task
    eval and the caller must treat it as fatal infrastructure failure. The
    in_eval gate is what keeps errors from staging, payload reads, or trace
    hooks on the fatal path. */
-SEXP mov_pool_fail_inflight(SEXP xp, SEXP cond) {
-  mov_pool *p = pool_get(xp);
-  if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
-    Rf_error("mov: not a worker handle");
+SEXP kio_pool_fail_inflight(SEXP xp, SEXP cond) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("kioto: not a worker handle");
   if (!p->in_eval)
     return Rf_ScalarLogical(0);
   p->in_eval = 0;
@@ -2102,24 +2102,24 @@ SEXP mov_pool_fail_inflight(SEXP xp, SEXP cond) {
    task or park. Returns 1 after executing a task, 0 on timeout / spurious
    wake, -1 on shutdown or owner death. The R-level worker_main loops over
    this; the in-process test harness single-steps it. The evaluator comes
-   from the handle (mov_pool_set_eval), checked up front so a claim can
+   from the handle (kio_pool_set_eval), checked up front so a claim can
    never outrun a missing evaluator. */
-SEXP mov_pool_step(SEXP xp, SEXP timeout) {
-  mov_pool *p = pool_get(xp);
-  if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
-    Rf_error("mov: not a worker handle");
+SEXP kio_pool_step(SEXP xp, SEXP timeout) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("kioto: not a worker handle");
   (void) pool_eval_env(xp);
   SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
-  mov_wk_slot *me = &p->wk[p->wk_slot];
+  kio_wk_slot *me = &p->wk[p->wk_slot];
   uint64_t my_bit = 1ull << p->wk_slot;
   double timeout_s = Rf_asReal(timeout);
-  double deadline = R_FINITE(timeout_s) ? mov_now() + timeout_s : -1;
+  double deadline = R_FINITE(timeout_s) ? kio_now() + timeout_s : -1;
 
   /* heal any announce (or unwind-path eval flag) left dangling by an
      interrupt longjmp out of a previous step: a stale bit costs the pusher
      one failed CAS */
   p->in_eval = 0;
-  atomic_store_explicit(&me->park_state, MOV_WPK_RUNNING,
+  atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
                         memory_order_relaxed);
   atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
                             memory_order_seq_cst);
@@ -2155,8 +2155,8 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
 
     /* bounded spin before announcing: sub-µs submit gaps are absorbed
        without touching the parked_workers line */
-    for (int i = 0; i < MOV_SPIN_ITERS; i++) {
-      MOV_PAUSE();
+    for (int i = 0; i < KIO_SPIN_ITERS; i++) {
+      KIO_PAUSE();
       if (pool_work_hint(p)) break;
     }
     if (pool_work_hint(p))
@@ -2168,8 +2168,8 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
 
     /* announce-then-rescan (the sleep race): either our rescan sees the
        push or the pusher's mask load sees our bit */
-    uint32_t e = mov_parker_snapshot(pool_wk_pk(p, (uint32_t) p->wk_slot));
-    atomic_store_explicit(&me->park_state, MOV_WPK_IDLE,
+    uint32_t e = kio_parker_snapshot(pool_wk_pk(p, (uint32_t) p->wk_slot));
+    atomic_store_explicit(&me->park_state, KIO_WPK_IDLE,
                           memory_order_relaxed);
     pool_stats_publish(p);
     atomic_fetch_or_explicit(p->parked_workers, my_bit,
@@ -2180,30 +2180,30 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
         atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
       atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
                                 memory_order_seq_cst);
-      atomic_store_explicit(&me->park_state, MOV_WPK_RUNNING,
+      atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
                             memory_order_relaxed);
       continue;
     }
-    int32_t expected = MOV_WPK_IDLE;
+    int32_t expected = KIO_WPK_IDLE;
     if (atomic_compare_exchange_strong_explicit(&me->park_state, &expected,
-                                                MOV_WPK_PARKED,
+                                                KIO_WPK_PARKED,
                                                 memory_order_seq_cst,
                                                 memory_order_relaxed)) {
       long ms = -1;
       if (deadline >= 0) {
-        double rem = deadline - mov_now();
+        double rem = deadline - kio_now();
         ms = rem <= 0 ? 0 : (long) (rem * 1000) + 1;
       }
-      mov_park(pool_wk_pk(p, (uint32_t) p->wk_slot), e, ms);
+      kio_park(pool_wk_pk(p, (uint32_t) p->wk_slot), e, ms);
       p->st_parks++;
     }
     atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
                               memory_order_seq_cst);
-    atomic_store_explicit(&me->park_state, MOV_WPK_RUNNING,
+    atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
                           memory_order_relaxed);
     pool_stats_publish(p);
     R_CheckUserInterrupt();
-    if (deadline >= 0 && mov_now() >= deadline) {
+    if (deadline >= 0 && kio_now() >= deadline) {
       pool_reap_result_keepers(p, keepers);
       return Rf_ScalarInteger(0);
     }
@@ -2217,11 +2217,11 @@ SEXP mov_pool_step(SEXP xp, SEXP timeout) {
    claimed entry can always be queued; the announce clears once the entry
    is safely in the deque, where worker death hands it to the REAPING
    consumption path instead of the in-flight reap. */
-SEXP mov_pool_deque_pull(SEXP xp, SEXP n_sexp) {
-  mov_pool *p = pool_get(xp);
-  if (p->role != MOV_ROLE_WORKER || p->wk_slot < 0)
-    Rf_error("mov: not a worker handle");
-  mov_wk_slot *me = &p->wk[p->wk_slot];
+SEXP kio_pool_deque_pull(SEXP xp, SEXP n_sexp) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("kioto: not a worker handle");
+  kio_wk_slot *me = &p->wk[p->wk_slot];
   int n = Rf_asInteger(n_sexp);
   int was_empty = !deque_nonempty(me);
   int moved = 0;
@@ -2243,36 +2243,36 @@ SEXP mov_pool_deque_pull(SEXP xp, SEXP n_sexp) {
 
 // Collect and cancel ----------------------------------------------------------------------
 
-static mov_task *task_get(SEXP xp, mov_pool **pool_out, SEXP *pool_xp_out) {
-  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mov_task_tag)
-    Rf_error("mov: not a task handle");
-  mov_task *t = (mov_task *) R_ExternalPtrAddr(xp);
-  if (t == NULL) Rf_error("mov: task handle is stale");
+static kio_task *task_get(SEXP xp, kio_pool **pool_out, SEXP *pool_xp_out) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_task_tag)
+    Rf_error("kioto: not a task handle");
+  kio_task *t = (kio_task *) R_ExternalPtrAddr(xp);
+  if (t == NULL) Rf_error("kioto: task handle is stale");
   SEXP pool_xp = R_ExternalPtrProtected(xp);
-  mov_pool *p = pool_get(pool_xp);
+  kio_pool *p = pool_get(pool_xp);
   *pool_out = p;
   if (pool_xp_out != NULL) *pool_xp_out = pool_xp;
   return t;
 }
 
-SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
-  mov_pool *p;
+SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
+  kio_pool *p;
   SEXP pool_xp;
-  mov_task *t = task_get(xp, &p, &pool_xp);
+  kio_task *t = task_get(xp, &p, &pool_xp);
   if (p->sub_slot < 0)
-    Rf_error("mov: not a submitter's task handle");
-  mov_rs_hdr *rs = pool_rs(p, t->idx);
+    Rf_error("kioto: not a submitter's task handle");
+  kio_rs_hdr *rs = pool_rs(p, t->idx);
   double timeout_s = Rf_asReal(timeout);
   double deadline = -1;
 
   int32_t st;
   for (;;) {
     if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
-      Rf_error("mov: task handle already collected or invalidated");
+      Rf_error("kioto: task handle already collected or invalidated");
     if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0)
       pool_orphan_teardown_try(p);   /* its cancel sweep ends this wait */
     st = atomic_load_explicit(&rs->status, memory_order_acquire);
-    if (st != MOV_RS_PENDING) break;
+    if (st != KIO_RS_PENDING) break;
 
     /* Help mode: a worker blocked on its own subtree must make progress
        on runnable work, not park — N workers simultaneously parked in
@@ -2284,10 +2284,10 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
        REAPING deques): live peers' deques have a guaranteed executor, so
        excluding them there bounds C-stack growth without a hang — every
        chain of waiting collectors bottoms out in a worker executing. */
-    if (p->role == MOV_ROLE_WORKER && p->wk_slot >= 0) {
+    if (p->role == KIO_ROLE_WORKER && p->wk_slot >= 0) {
       int got = pool_deque_pop(p);
       if (!got)
-        got = pool_steal_any(p, p->help_depth >= MOV_HELP_DEPTH_LIMIT);
+        got = pool_steal_any(p, p->help_depth >= KIO_HELP_DEPTH_LIMIT);
       if (got) {
         p->st_helps++;
         p->help_depth++;
@@ -2297,52 +2297,52 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
       }
     }
 
-    if (timeout_s <= 0) return mov_sent_timeout;
+    if (timeout_s <= 0) return kio_sent_timeout;
     if (deadline < 0 && R_FINITE(timeout_s))
-      deadline = mov_now() + timeout_s;
+      deadline = kio_now() + timeout_s;
 
     /* announce -> fence -> re-check -> park bounded; the publishing worker
        reads waiter_slot after its publish CAS and unparks us */
-    uint32_t e = mov_parker_snapshot(pool_sub_pk(p, (uint32_t) p->sub_slot));
+    uint32_t e = kio_parker_snapshot(pool_sub_pk(p, (uint32_t) p->sub_slot));
     atomic_store_explicit(&rs->waiter_slot, p->sub_slot,
                           memory_order_relaxed);
     atomic_thread_fence(memory_order_seq_cst);
     if (atomic_load_explicit(&rs->status, memory_order_acquire) !=
-        MOV_RS_PENDING)
+        KIO_RS_PENDING)
       continue;
-    long ms = MOV_INTERRUPT_BOUND_MS;
+    long ms = KIO_INTERRUPT_BOUND_MS;
     if (deadline >= 0) {
-      double rem = deadline - mov_now();
-      if (rem <= 0) return mov_sent_timeout;
+      double rem = deadline - kio_now();
+      if (rem <= 0) return kio_sent_timeout;
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
-    mov_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    kio_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
     R_CheckUserInterrupt();
     if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
-        MOV_RS_PENDING) {
+        KIO_RS_PENDING) {
       /* backstop for a missed death notification, piggybacked on a wake
          that happened regardless — never a wakeup of its own */
       int32_t claimant = atomic_load_explicit(&rs->worker_slot,
                                               memory_order_acquire);
       if (claimant >= 0 && (uint32_t) claimant < p->hdr.max_workers)
         pool_probe_worker(p, (uint32_t) claimant);
-      if (deadline >= 0 && mov_now() >= deadline &&
+      if (deadline >= 0 && kio_now() >= deadline &&
           atomic_load_explicit(&rs->status, memory_order_acquire) ==
-          MOV_RS_PENDING)
-        return mov_sent_timeout;
+          KIO_RS_PENDING)
+        return kio_sent_timeout;
     }
   }
 
   switch (st) {
-  case MOV_RS_OK:
-  case MOV_RS_ERR: {
+  case KIO_RS_OK:
+  case KIO_RS_ERR: {
     /* materialize BEFORE the FREE transition — publication of FREE is what
        lets the worker's keeper reap unlink everything this payload
        references */
-    SEXP v = PROTECT(mov_payload_read(&rs->ph,
+    SEXP v = PROTECT(kio_payload_read(&rs->ph,
                                       (unsigned char *) rs +
-                                      sizeof(mov_rs_hdr), p->inline_rs,
+                                      sizeof(kio_rs_hdr), p->inline_rs,
                                       NULL));
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
     if (t->idx >= p->sub[p->sub_slot].rs_start &&
@@ -2352,59 +2352,59 @@ SEXP mov_pool_collect(SEXP xp, SEXP timeout) {
                      R_NilValue);
     int32_t expected = st;
     if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                 MOV_RS_FREE,
+                                                 KIO_RS_FREE,
                                                  memory_order_seq_cst,
                                                  memory_order_acquire)) {
       UNPROTECT(1);
-      Rf_error("mov: task handle already collected");
+      Rf_error("kioto: task handle already collected");
     }
     if (w >= 0 && (uint32_t) w < p->hdr.max_workers)
-      mov_unpark(pool_wk_pk(p, (uint32_t) w));   /* keeper-drop signal */
-    if (st == MOV_RS_ERR) {
+      kio_unpark(pool_wk_pk(p, (uint32_t) w));   /* keeper-drop signal */
+    if (st == KIO_RS_ERR) {
       SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), v));
       Rf_eval(call, R_BaseEnv);                  /* no return */
     }
     UNPROTECT(1);
     return v;
   }
-  case MOV_RS_DIED: {
+  case KIO_RS_DIED: {
     /* terminal like ERR, but status-word only: the reaper wrote no
-       payload (see the DIED note in mov.h) */
+       payload (see the DIED note in kioto.h) */
     if (t->idx >= p->sub[p->sub_slot].rs_start &&
         t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count)
       SET_VECTOR_ELT(pool_task_keepers(p, pool_xp),
                      (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start),
                      R_NilValue);
-    int32_t expected = MOV_RS_DIED;
+    int32_t expected = KIO_RS_DIED;
     if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                 MOV_RS_FREE,
+                                                 KIO_RS_FREE,
                                                  memory_order_seq_cst,
                                                  memory_order_relaxed))
-      Rf_error("mov: task handle already collected");
-    Rf_error("mov: worker died while executing this task");
+      Rf_error("kioto: task handle already collected");
+    Rf_error("kioto: worker died while executing this task");
   }
-  case MOV_RS_CANCEL:
+  case KIO_RS_CANCEL:
     /* the task keeper releases at slot reuse, not here — the worker may not
        have materialized yet */
-    Rf_error("mov: task cancelled or pool stopped");
-  case MOV_RS_FREE:
+    Rf_error("kioto: task cancelled or pool stopped");
+  case KIO_RS_FREE:
   default:
-    Rf_error("mov: task handle already collected");
+    Rf_error("kioto: task handle already collected");
   }
 }
 
 /* Advisory and discard-only, never preemptive: a task already executing runs
    to completion and its result is dropped by the worker's failed publish
    CAS. */
-SEXP mov_pool_cancel(SEXP xp) {
-  mov_pool *p;
-  mov_task *t = task_get(xp, &p, NULL);
-  mov_rs_hdr *rs = pool_rs(p, t->idx);
+SEXP kio_pool_cancel(SEXP xp) {
+  kio_pool *p;
+  kio_task *t = task_get(xp, &p, NULL);
+  kio_rs_hdr *rs = pool_rs(p, t->idx);
   if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
     return Rf_ScalarLogical(FALSE);
-  int32_t expected = MOV_RS_PENDING;
+  int32_t expected = KIO_RS_PENDING;
   if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                              MOV_RS_CANCEL,
+                                              KIO_RS_CANCEL,
                                               memory_order_seq_cst,
                                               memory_order_relaxed)) {
     pool_unpark_result_waiter(p, rs);
@@ -2415,32 +2415,32 @@ SEXP mov_pool_cancel(SEXP xp) {
 
 // Stop and introspection ---------------------------------------------------------------------
 
-SEXP mov_pool_stop_call(SEXP xp, SEXP timeout) {
-  mov_pool *p = pool_peek(xp);
+SEXP kio_pool_stop_call(SEXP xp, SEXP timeout) {
+  kio_pool *p = pool_peek(xp);
   if (p == NULL) return Rf_ScalarLogical(TRUE);   /* stop is idempotent */
-  if (p->role != MOV_ROLE_CONTROLLER)
-    Rf_error("mov: only the controller can stop a pool");
+  if (p->role != KIO_ROLE_CONTROLLER)
+    Rf_error("kioto: only the controller can stop a pool");
   SEXP prot = R_ExternalPtrProtected(xp);
 
   pool_shutdown_broadcast(p);
 
   /* wait for workers to take their clean-exit path; their liveness locks
      release with their fds either way */
-  double deadline = mov_now() + Rf_asReal(timeout);
+  double deadline = kio_now() + Rf_asReal(timeout);
   int clean;
   for (;;) {
     clean = 1;
     for (uint32_t i = 0; i < p->hdr.max_workers; i++) {
       int32_t st = atomic_load_explicit(&p->wk[i].status,
                                         memory_order_acquire);
-      if (st == MOV_WK_LIVE || st == MOV_WK_LEAVING || st == MOV_WK_CLAIMING)
+      if (st == KIO_WK_LIVE || st == KIO_WK_LEAVING || st == KIO_WK_CLAIMING)
         clean = 0;
     }
-    if (clean || mov_now() >= deadline) break;
+    if (clean || kio_now() >= deadline) break;
     for (uint32_t i = 0; i < p->hdr.max_workers; i++)
-      mov_unpark(pool_wk_pk(p, i));
-    uint32_t e = mov_parker_snapshot(pool_sub_pk(p, 0));
-    mov_park(pool_sub_pk(p, 0), e, 50);
+      kio_unpark(pool_wk_pk(p, i));
+    uint32_t e = kio_parker_snapshot(pool_sub_pk(p, 0));
+    kio_park(pool_sub_pk(p, 0), e, 50);
     R_CheckUserInterrupt();
   }
 
@@ -2458,8 +2458,8 @@ SEXP mov_pool_stop_call(SEXP xp, SEXP timeout) {
   return Rf_ScalarLogical(clean);
 }
 
-SEXP mov_pool_status_call(SEXP xp) {
-  mov_pool *p = pool_get(xp);
+SEXP kio_pool_status_call(SEXP xp) {
+  kio_pool *p = pool_get(xp);
   const char *names[] = {"name", "role", "max_workers", "max_submitters",
                          "injection_cap", "result_slots", "slot_size",
                          "workers", "parked", "submitters", "injection",
@@ -2467,8 +2467,8 @@ SEXP mov_pool_status_call(SEXP xp) {
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(p->shm.name));
   SET_VECTOR_ELT(out, 1, Rf_mkString(
-    p->role == MOV_ROLE_CONTROLLER ? "controller" :
-    p->role == MOV_ROLE_WORKER ? "worker" : "submitter"));
+    p->role == KIO_ROLE_CONTROLLER ? "controller" :
+    p->role == KIO_ROLE_WORKER ? "worker" : "submitter"));
   SET_VECTOR_ELT(out, 2, Rf_ScalarInteger((int) p->hdr.max_workers));
   SET_VECTOR_ELT(out, 3, Rf_ScalarInteger((int) p->hdr.max_submitters));
   SET_VECTOR_ELT(out, 4, Rf_ScalarInteger((int) p->hdr.inj_cap));
@@ -2505,8 +2505,8 @@ SEXP mov_pool_status_call(SEXP xp) {
   for (uint32_t r = 0; r < p->hdr.result_slots; r++) {
     int32_t st = atomic_load_explicit(&pool_rs(p, r)->status,
                                       memory_order_acquire);
-    if (st >= MOV_RS_PENDING && st <= MOV_RS_DIED)
-      INTEGER(tasks)[st - MOV_RS_PENDING]++;
+    if (st >= KIO_RS_PENDING && st <= KIO_RS_DIED)
+      INTEGER(tasks)[st - KIO_RS_PENDING]++;
   }
   SEXP dq = Rf_allocVector(REALSXP, (R_xlen_t) p->hdr.max_workers);
   SET_VECTOR_ELT(out, 12, dq);
@@ -2524,13 +2524,13 @@ SEXP mov_pool_status_call(SEXP xp) {
 }
 
 /* Cumulative counters, read-only. Per-worker rows mirror the slots'
-   stat_* fields (see the mov_wk_slot comment for their publish cadence);
+   stat_* fields (see the kio_wk_slot comment for their publish cadence);
    per-submitter injection totals are the ring positions themselves —
    tail = entries ever published, head = entries ever claimed, both
    monotonic from zero — so the wire state is the metric and the submit
    path writes nothing extra. */
-SEXP mov_pool_stats_call(SEXP xp) {
-  mov_pool *p = pool_get(xp);
+SEXP kio_pool_stats_call(SEXP xp) {
+  kio_pool *p = pool_get(xp);
   uint32_t mw = p->hdr.max_workers, ms = p->hdr.max_submitters;
   const char *names[] = {"workers", "submitters", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
@@ -2543,7 +2543,7 @@ SEXP mov_pool_stats_call(SEXP xp) {
   for (int f = 1; f < 8; f++)
     SET_VECTOR_ELT(wk, f, Rf_allocVector(REALSXP, (R_xlen_t) mw));
   for (uint32_t i = 0; i < mw; i++) {
-    mov_wk_slot *w = &p->wk[i];
+    kio_wk_slot *w = &p->wk[i];
     INTEGER(VECTOR_ELT(wk, 0))[i] =
       (int) atomic_load_explicit(&w->status, memory_order_acquire);
     REAL(VECTOR_ELT(wk, 1))[i] = (double) w->pid;
@@ -2587,8 +2587,8 @@ SEXP mov_pool_stats_call(SEXP xp) {
    registry detail, the three hot masks unpacked per slot, and every
    non-FREE result slot. States can move between the count pass and the
    fill pass; short rows are padded with NA and trimmed on the R side. */
-SEXP mov_pool_dump_call(SEXP xp) {
-  mov_pool *p = pool_get(xp);
+SEXP kio_pool_dump_call(SEXP xp) {
+  kio_pool *p = pool_get(xp);
   uint32_t mw = p->hdr.max_workers, ms = p->hdr.max_submitters;
   const char *names[] = {"name", "shutdown", "workers", "submitters",
                          "tasks", ""};
@@ -2608,7 +2608,7 @@ SEXP mov_pool_dump_call(SEXP xp) {
   uint64_t parked = atomic_load_explicit(p->parked_workers,
                                          memory_order_acquire);
   for (uint32_t i = 0; i < mw; i++) {
-    mov_wk_slot *w = &p->wk[i];
+    kio_wk_slot *w = &p->wk[i];
     INTEGER(VECTOR_ELT(wk, 0))[i] =
       (int) atomic_load_explicit(&w->status, memory_order_acquire);
     REAL(VECTOR_ELT(wk, 1))[i] = (double) w->pid;
@@ -2635,7 +2635,7 @@ SEXP mov_pool_dump_call(SEXP xp) {
   uint64_t full = atomic_load_explicit(p->full_waiters,
                                        memory_order_acquire);
   for (uint32_t j = 0; j < ms; j++) {
-    mov_sub_slot *s = &p->sub[j];
+    kio_sub_slot *s = &p->sub[j];
     unsigned char *ring = pool_ring(p, j);
     INTEGER(VECTOR_ELT(sb, 0))[j] =
       (int) atomic_load_explicit(&s->status, memory_order_acquire);
@@ -2652,7 +2652,7 @@ SEXP mov_pool_dump_call(SEXP xp) {
   uint32_t n = 0;
   for (uint32_t r = 0; r < p->hdr.result_slots; r++)
     n += atomic_load_explicit(&pool_rs(p, r)->status,
-                              memory_order_acquire) != MOV_RS_FREE;
+                              memory_order_acquire) != KIO_RS_FREE;
   const char *tnames[] = {"slot", "status", "sequence", "worker", "waiter",
                           ""};
   SEXP tk = Rf_mkNamed(VECSXP, tnames);
@@ -2662,9 +2662,9 @@ SEXP mov_pool_dump_call(SEXP xp) {
                                          (R_xlen_t) n));
   uint32_t m = 0;
   for (uint32_t r = 0; r < p->hdr.result_slots && m < n; r++) {
-    mov_rs_hdr *rs = pool_rs(p, r);
+    kio_rs_hdr *rs = pool_rs(p, r);
     int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
-    if (st == MOV_RS_FREE) continue;
+    if (st == KIO_RS_FREE) continue;
     INTEGER(VECTOR_ELT(tk, 0))[m] = (int) r;
     INTEGER(VECTOR_ELT(tk, 1))[m] = (int) st;
     REAL(VECTOR_ELT(tk, 2))[m] = (double)

@@ -16,9 +16,9 @@
 #define MORI_FORMAT_BUFLEN   1024              /* formatter stack buffer */
 
 #ifdef _WIN32
-#define MORI_PREFIX_LITERAL  "Local\\mov_"
+#define MORI_PREFIX_LITERAL  "Local\\kio_"
 #else
-#define MORI_PREFIX_LITERAL  "/mov_"
+#define MORI_PREFIX_LITERAL  "/kio_"
 #endif
 
 // Types -----------------------------------------------------------------------

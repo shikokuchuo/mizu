@@ -44,16 +44,16 @@ wait_until <- function(expr, timeout = 10) {
   }
 }
 
-# Cross-process tests spawn fresh Rscript children that library(mov):
-# available under R CMD check (mov is installed in the check library and
-# mov_spawn propagates it via R_LIBS), but not under a bare load_all().
-child_mov_ok <- local({
+# Cross-process tests spawn fresh Rscript children that library(kioto):
+# available under R CMD check (kioto is installed in the check library and
+# kio_spawn propagates it via R_LIBS), but not under a bare load_all().
+child_kioto_ok <- local({
   val <- NULL
   function() {
     if (is.null(val)) {
       f <- tfile()
-      mov:::mov_spawn(sprintf(
-        'if (requireNamespace("mov", quietly = TRUE)) file.create(%s)',
+      kioto:::kio_spawn(sprintf(
+        'if (requireNamespace("kioto", quietly = TRUE)) file.create(%s)',
         deparse(f)))
       val <<- wait_for_file(f)
       unlink(f)
@@ -62,8 +62,8 @@ child_mov_ok <- local({
   }
 })
 
-skip_if_no_child_mov <- function() {
-  testthat::skip_if_not(child_mov_ok(), "mov not loadable from child processes")
+skip_if_no_child_kioto <- function() {
+  testthat::skip_if_not(child_kioto_ok(), "kioto not loadable from child processes")
 }
 
 # In-process channel pair: both ends of one region attached from this
@@ -72,22 +72,22 @@ skip_if_no_child_mov <- function() {
 # consumes, exactly as across processes.
 channel_pair <- function(capacity = 64L, slot_size = 256L, arena_size = 4096,
                          spin = FALSE) {
-  host <- .Call(mov:::mov_channel_create, quote(NULL), capacity, slot_size,
+  host <- .Call(kioto:::kio_channel_create, quote(NULL), capacity, slot_size,
                 arena_size, tempdir(), spin)
-  att <- .Call(mov:::mov_channel_attach, .Call(mov:::mov_channel_suffix, host))
+  att <- .Call(kioto:::kio_channel_attach, .Call(kioto:::kio_channel_suffix, host))
   peer <- att[[1L]]
-  .Call(mov:::mov_channel_ready_set, peer)
-  stopifnot(.Call(mov:::mov_channel_ready_wait, host, 10))
+  .Call(kioto:::kio_channel_ready_set, peer)
+  stopifnot(.Call(kioto:::kio_channel_ready_wait, host, 10))
   list(host = host, peer = peer)
 }
 
 # The canonical peer expression: echo everything until a sentinel arrives
 echo_expr <- quote(
   repeat {
-    x <- mov_recv(ch, timeout = 30)
-    if (inherits(x, "mov_condition")) break
-    mov_send(ch, x)
-    mov_flush(ch)
+    x <- kio_recv(ch, timeout = 30)
+    if (inherits(x, "kio_condition")) break
+    kio_send(ch, x)
+    kio_flush(ch)
   }
 )
 
@@ -99,12 +99,12 @@ echo_expr <- quote(
 pool_pair <- function(workers = 1L, max_submitters = 8L, injection_cap = 64L,
                       per_worker_cap = 64L, result_slots = 64L,
                       slot_size = 256L) {
-  ctrl <- .Call(mov:::mov_pool_create, workers, max_submitters, injection_cap,
+  ctrl <- .Call(kioto:::kio_pool_create, workers, max_submitters, injection_cap,
                 per_worker_cap, result_slots, slot_size, tempdir())
-  suffix <- .Call(mov:::mov_pool_suffix, ctrl)
+  suffix <- .Call(kioto:::kio_pool_suffix, ctrl)
   wks <- lapply(seq_len(workers) - 1L, function(slot) {
-    wk <- .Call(mov:::mov_pool_worker_join, suffix, slot)
-    .Call(mov:::mov_pool_set_eval, wk)
+    wk <- .Call(kioto:::kio_pool_worker_join, suffix, slot)
+    .Call(kioto:::kio_pool_set_eval, wk)
     wk
   })
   list(ctrl = ctrl, wk = wks[[1L]], wks = wks)
@@ -114,20 +114,20 @@ pool_pair <- function(workers = 1L, max_submitters = 8L, injection_cap = 64L,
 # A task error longjmps out of the step — the eval hot path arms no
 # handler — so publish it as the task's ERR result, as worker_main does.
 pool_step <- function(p, timeout = 0, wk = p$wk) {
-  e <- tryCatch(return(.Call(mov:::mov_pool_step, wk, timeout)),
+  e <- tryCatch(return(.Call(kioto:::kio_pool_step, wk, timeout)),
                 error = function(e) e)
-  if (!.Call(mov:::mov_pool_fail_inflight, wk, e)) stop(e)
+  if (!.Call(kioto:::kio_pool_fail_inflight, wk, e)) stop(e)
   1L
 }
 
 # Test-only: move up to n queued injection entries onto the worker's own
 # deque (the stand-in for Phase 3's nested submit)
 pool_pull <- function(p, n, wk = p$wk)
-  .Call(mov:::mov_pool_deque_pull, wk, n)
+  .Call(kioto:::kio_pool_deque_pull, wk, n)
 
 # Orderly in-process teardown: the workers leave (their slots free), then
 # the controller destroys (broadcast + unlink + release).
 pool_end <- function(p) {
-  for (wk in p$wks) .Call(mov:::mov_pool_leave, wk)
-  .Call(mov:::mov_pool_destroy, p$ctrl)
+  for (wk in p$wks) .Call(kioto:::kio_pool_leave, wk)
+  .Call(kioto:::kio_pool_destroy, p$ctrl)
 }

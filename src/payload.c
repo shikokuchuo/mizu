@@ -1,11 +1,11 @@
-/* Shared payload framing over the mov_slot_hdr wire form — the staging and
+/* Shared payload framing over the kio_slot_hdr wire form — the staging and
    materializing code common to Part I channel slots and Part II pool entries
    / result slots. The channel adds its arena tier around these; the pool has
    no arena (its payloads release at collect or slot reuse — unordered — so a
    producer-local FIFO allocator does not apply) and stages through
-   mov_payload_stage directly. */
+   kio_payload_stage directly. */
 
-#include "mov.h"
+#include "kioto.h"
 
 /* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
    R, where ATTRIB() was still the sanctioned spelling. */
@@ -13,7 +13,7 @@
 #define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
 #endif
 
-void *mov_vec_ptr(SEXP x) {
+void *kio_vec_ptr(SEXP x) {
   switch (TYPEOF(x)) {
   case LGLSXP:  return LOGICAL(x);
   case INTSXP:  return INTEGER(x);
@@ -24,7 +24,7 @@ void *mov_vec_ptr(SEXP x) {
   return NULL;
 }
 
-int mov_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
+int kio_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
     break;
@@ -41,20 +41,20 @@ int mov_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
   return 1;
 }
 
-SEXP mov_payload_spill_shm(mov_slot_hdr *hdr, unsigned char *payload, SEXP x,
+SEXP kio_payload_spill_shm(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
                            size_t n) {
   mori_shm *shm;
   int rc = mori_shm_create_heap(&shm, n);
   if (rc != MORI_OK) {
     const char *summary, *hint;
     mori_err_describe(rc, &summary, &hint);
-    Rf_error("mov: cannot create payload region (%llu bytes): %s%s%s",
+    Rf_error("kioto: cannot create payload region (%llu bytes): %s%s%s",
              (unsigned long long) n, summary,
              hint[0] != '\0' ? ". " : "", hint);
   }
-  SEXP wrap = PROTECT(mov_shm_wrap_producer(shm));
+  SEXP wrap = PROTECT(kio_shm_wrap_producer(shm));
   mori_serialize_into((unsigned char *) shm->addr, n, x);
-  hdr->kind = MOV_KIND_SHM_RAW;
+  hdr->kind = KIO_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = 0;
   memcpy(payload, shm->name, shm->name_len);
@@ -65,46 +65,46 @@ SEXP mov_payload_spill_shm(mov_slot_hdr *hdr, unsigned char *payload, SEXP x,
   return keep;
 }
 
-SEXP mov_payload_stage(mov_slot_hdr *hdr, unsigned char *payload,
+SEXP kio_payload_stage(kio_slot_hdr *hdr, unsigned char *payload,
                        uint32_t inline_max, SEXP x) {
   size_t rawlen;
-  if (mov_raw_eligible(x, inline_max, &rawlen)) {
-    memcpy(payload, mov_vec_ptr(x), rawlen);
-    hdr->kind = MOV_KIND_RAWVEC;
+  if (kio_raw_eligible(x, inline_max, &rawlen)) {
+    memcpy(payload, kio_vec_ptr(x), rawlen);
+    hdr->kind = KIO_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
     return x;
   }
-  size_t n = mov_serialize_bounded(payload, inline_max, x);
+  size_t n = kio_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {
-    hdr->kind = MOV_KIND_INLINE;
+    hdr->kind = KIO_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = 0;
     return x;
   }
-  return mov_payload_spill_shm(hdr, payload, x, n);
+  return kio_payload_spill_shm(hdr, payload, x, n);
 }
 
-SEXP mov_payload_read(const mov_slot_hdr *hdr, const unsigned char *payload,
+SEXP kio_payload_read(const kio_slot_hdr *hdr, const unsigned char *payload,
                       uint32_t inline_max, int *gone) {
   switch (hdr->kind) {
-  case MOV_KIND_INLINE:
+  case KIO_KIND_INLINE:
     if (hdr->len > inline_max)
-      Rf_error("mov: corrupt payload slot");
+      Rf_error("kioto: corrupt payload slot");
     return mori_unserialize_from((unsigned char *) payload, hdr->len);
-  case MOV_KIND_RAWVEC: {
+  case KIO_KIND_RAWVEC: {
     int type = (int) hdr->aux;
     size_t elt = mori_sizeof_elt(type);
     if (elt == 0 || hdr->len > inline_max || hdr->len % elt != 0)
-      Rf_error("mov: corrupt payload slot");
+      Rf_error("kioto: corrupt payload slot");
     SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
-    memcpy(mov_vec_ptr(y), payload, hdr->len);
+    memcpy(kio_vec_ptr(y), payload, hdr->len);
     return y;
   }
-  case MOV_KIND_SHM_RAW: {
+  case KIO_KIND_SHM_RAW: {
     char name[MORI_NAME_MAX];
     if (hdr->len == 0 || hdr->len >= MORI_NAME_MAX)
-      Rf_error("mov: corrupt payload slot");
+      Rf_error("kioto: corrupt payload slot");
     memcpy(name, payload, hdr->len);
     name[hdr->len] = '\0';
     mori_shm *shm = mori_shm_open_heap(name);
@@ -115,13 +115,13 @@ SEXP mov_payload_read(const mov_slot_hdr *hdr, const unsigned char *payload,
         *gone = 1;
         return R_NilValue;
       }
-      Rf_error("mov: cannot open payload region '%s'", name);
+      Rf_error("kioto: cannot open payload region '%s'", name);
     }
-    PROTECT(mov_shm_wrap_consumer(shm));
+    PROTECT(kio_shm_wrap_consumer(shm));
     SEXP y = mori_unserialize_from((unsigned char *) shm->addr, shm->size);
     UNPROTECT(1);                /* mapping drops with the wrapper's GC */
     return y;
   }
   }
-  Rf_error("mov: corrupt payload slot");
+  Rf_error("kioto: corrupt payload slot");
 }

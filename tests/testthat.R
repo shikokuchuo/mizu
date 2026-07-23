@@ -1,4 +1,4 @@
 library(testthat)
-library(mov)
+library(kioto)
 
-test_check("mov")
+test_check("kioto")

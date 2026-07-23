@@ -6,58 +6,58 @@
 test_that("a task round-trips every result payload kind", {
   p <- pool_pair()
   tasks <- list(
-    raw = mov_submit(p$ctrl, x * 2L, x = 21L),                 # RAWVEC
-    inline = mov_submit(p$ctrl, list(a = x, b = "y"), x = 1),  # INLINE
-    shm = mov_submit(p$ctrl, seq_len(n) + 0, n = 100000L)      # SHM_RAW
+    raw = kio_submit(p$ctrl, x * 2L, x = 21L),                 # RAWVEC
+    inline = kio_submit(p$ctrl, list(a = x, b = "y"), x = 1),  # INLINE
+    shm = kio_submit(p$ctrl, seq_len(n) + 0, n = 100000L)      # SHM_RAW
   )
-  expect_identical(mov_pool_status(p$ctrl)$injection, 3)
+  expect_identical(kio_pool_status(p$ctrl)$injection, 3)
   while (pool_step(p) == 1L) NULL
-  expect_identical(mov_collect(tasks$raw, timeout = 5), 42L)
-  expect_identical(mov_collect(tasks$inline, timeout = 5),
+  expect_identical(kio_collect(tasks$raw, timeout = 5), 42L)
+  expect_identical(kio_collect(tasks$inline, timeout = 5),
                    list(a = 1, b = "y"))
-  expect_identical(mov_collect(tasks$shm, timeout = 5),
+  expect_identical(kio_collect(tasks$shm, timeout = 5),
                    as.double(seq_len(100000L)))
   pool_end(p)
 })
 
 test_that("task arguments arrive as the only bindings", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, sort(ls(environment())), a = 1, b = 2)
+  t <- kio_submit(p$ctrl, sort(ls(environment())), a = 1, b = 2)
   pool_step(p)
-  expect_identical(mov_collect(t, timeout = 5), c("a", "b"))
-  expect_error(mov_submit(p$ctrl, x + 1, 5), "must be named")
+  expect_identical(kio_collect(t, timeout = 5), c("a", "b"))
+  expect_error(kio_submit(p$ctrl, x + 1, 5), "must be named")
   pool_end(p)
 })
 
 test_that("large task payloads travel by region and round-trip", {
   p <- pool_pair()   # default 256 B slots: this spills to SHM_RAW
   big <- runif(100000)
-  t <- mov_submit(p$ctrl, sum(v), v = big)
+  t <- kio_submit(p$ctrl, sum(v), v = big)
   pool_step(p)
-  expect_identical(mov_collect(t, timeout = 5), sum(big))
+  expect_identical(kio_collect(t, timeout = 5), sum(big))
   pool_end(p)
 })
 
 test_that("a task error is published and re-signalled at collect", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, stop("boom ", x), x = "today")
+  t <- kio_submit(p$ctrl, stop("boom ", x), x = "today")
   pool_step(p)
-  err <- tryCatch(mov_collect(t, timeout = 5), error = identity)
+  err <- tryCatch(kio_collect(t, timeout = 5), error = identity)
   expect_s3_class(err, "simpleError")
   expect_identical(conditionMessage(err), "boom today")
   # the slot released with the collect: reusable immediately
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
 test_that("a classed condition re-signals with class and fields intact", {
   p <- pool_pair()
   cond <- structure(list(message = "typed", call = NULL, data = 42L),
-                    class = c("mov_test_error", "error", "condition"))
-  t <- mov_submit(p$ctrl, stop(cond), cond = cond)
+                    class = c("kio_test_error", "error", "condition"))
+  t <- kio_submit(p$ctrl, stop(cond), cond = cond)
   pool_step(p)
-  err <- tryCatch(mov_collect(t, timeout = 5), error = identity)
-  expect_identical(class(err), c("mov_test_error", "error", "condition"))
+  err <- tryCatch(kio_collect(t, timeout = 5), error = identity)
+  expect_identical(class(err), c("kio_test_error", "error", "condition"))
   expect_identical(conditionMessage(err), "typed")
   expect_identical(err$data, 42L)
   pool_end(p)
@@ -65,105 +65,105 @@ test_that("a classed condition re-signals with class and fields intact", {
 
 test_that("only error conditions fail a task: a warning passes through", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, {
+  t <- kio_submit(p$ctrl, {
     warning("advisory only")
     "completed"
   })
   expect_warning(pool_step(p), "advisory only")
-  expect_identical(mov_collect(t, timeout = 5), "completed")
+  expect_identical(kio_collect(t, timeout = 5), "completed")
   pool_end(p)
 })
 
 test_that("collect times out with the sentinel and later succeeds", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, "done")
-  expect_s3_class(mov_collect(t, timeout = 0), c("mov_timeout",
-                                                 "mov_condition"))
-  expect_s3_class(mov_collect(t, timeout = 0.1), "mov_timeout")
+  t <- kio_submit(p$ctrl, "done")
+  expect_s3_class(kio_collect(t, timeout = 0), c("kio_timeout",
+                                                 "kio_condition"))
+  expect_s3_class(kio_collect(t, timeout = 0.1), "kio_timeout")
   pool_step(p)
-  expect_identical(mov_collect(t, timeout = 5), "done")
+  expect_identical(kio_collect(t, timeout = 5), "done")
   pool_end(p)
 })
 
 test_that("a handle collects exactly once", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, 1L)
+  t <- kio_submit(p$ctrl, 1L)
   pool_step(p)
-  expect_identical(mov_collect(t, timeout = 5), 1L)
-  expect_error(mov_collect(t, timeout = 5), "already collected")
+  expect_identical(kio_collect(t, timeout = 5), 1L)
+  expect_error(kio_collect(t, timeout = 5), "already collected")
   pool_end(p)
 })
 
 test_that("cancel discards a still-queued task; the worker frees the slot", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, stop("never runs"))
-  expect_true(mov_cancel(t))
-  expect_false(mov_cancel(t))                    # already cancelled
-  expect_error(mov_collect(t, timeout = 5), "cancelled")
-  expect_identical(mov_pool_status(p$ctrl)$tasks[["cancel"]], 1L)
+  t <- kio_submit(p$ctrl, stop("never runs"))
+  expect_true(kio_cancel(t))
+  expect_false(kio_cancel(t))                    # already cancelled
+  expect_error(kio_collect(t, timeout = 5), "cancelled")
+  expect_identical(kio_pool_status(p$ctrl)$tasks[["cancel"]], 1L)
   # the queued entry is consumed later; only then does CANCEL become FREE
   pool_step(p)
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
 test_that("cancel is too late once the task has completed", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, "ran")
+  t <- kio_submit(p$ctrl, "ran")
   pool_step(p)
-  expect_false(mov_cancel(t))
-  expect_identical(mov_collect(t, timeout = 5), "ran")
+  expect_false(kio_cancel(t))
+  expect_identical(kio_collect(t, timeout = 5), "ran")
   pool_end(p)
 })
 
 test_that("a dropped handle cancels its pending task at finalization", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, "orphaned")
+  t <- kio_submit(p$ctrl, "orphaned")
   rm(t)
   gc()
-  expect_identical(mov_pool_status(p$ctrl)$tasks[["cancel"]], 1L)
+  expect_identical(kio_pool_status(p$ctrl)$tasks[["cancel"]], 1L)
   pool_step(p)                                   # consume + free
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
 test_that("a dropped handle frees an uncollected published result", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, "never collected")
+  t <- kio_submit(p$ctrl, "never collected")
   pool_step(p)
-  expect_identical(mov_pool_status(p$ctrl)$tasks[["ok"]], 1L)
+  expect_identical(kio_pool_status(p$ctrl)$tasks[["ok"]], 1L)
   rm(t)
   gc()                                           # OK -> FREE without mapping
-  expect_identical(unname(mov_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
 
 test_that("result slots are bounded per submitter and reused after collect", {
   p <- pool_pair(max_submitters = 8L, result_slots = 16L)   # 2 per submitter
-  t1 <- mov_submit(p$ctrl, 1L)
-  t2 <- mov_submit(p$ctrl, 2L)
-  expect_error(mov_submit(p$ctrl, 3L), "result slots exhausted")
+  t1 <- kio_submit(p$ctrl, 1L)
+  t2 <- kio_submit(p$ctrl, 2L)
+  expect_error(kio_submit(p$ctrl, 3L), "result slots exhausted")
   while (pool_step(p) == 1L) NULL
-  expect_identical(mov_collect(t1, timeout = 5), 1L)
+  expect_identical(kio_collect(t1, timeout = 5), 1L)
   # collect released a slot: the allocator reuses it
-  t3 <- mov_submit(p$ctrl, 3L)
+  t3 <- kio_submit(p$ctrl, 3L)
   pool_step(p)
-  expect_identical(mov_collect(t2, timeout = 5), 2L)
-  expect_identical(mov_collect(t3, timeout = 5), 3L)
+  expect_identical(kio_collect(t2, timeout = 5), 2L)
+  expect_identical(kio_collect(t3, timeout = 5), 3L)
   pool_end(p)
 })
 
 test_that("injection back-pressure is per-submitter and error-bounded", {
   p <- pool_pair(injection_cap = 2L)
-  t1 <- mov_submit(p$ctrl, 1L)
-  t2 <- mov_submit(p$ctrl, 2L)
-  expect_error(mov_submit(p$ctrl, 3L, .timeout = 0.2),
+  t1 <- kio_submit(p$ctrl, 1L)
+  t2 <- kio_submit(p$ctrl, 2L)
+  expect_error(kio_submit(p$ctrl, 3L, .timeout = 0.2),
                "submission timed out")
   # a worker pop frees exactly this ring's space
   pool_step(p)
-  t3 <- mov_submit(p$ctrl, 3L, .timeout = 0)
+  t3 <- kio_submit(p$ctrl, 3L, .timeout = 0)
   while (pool_step(p) == 1L) NULL
-  for (t in list(t1, t2, t3)) expect_no_error(mov_collect(t, timeout = 5))
+  for (t in list(t1, t2, t3)) expect_no_error(kio_collect(t, timeout = 5))
   pool_end(p)
 })
 
@@ -171,26 +171,26 @@ test_that("queued task payloads stay pinned across the sender's GC", {
   p <- pool_pair()
   v <- runif(100000)                     # SHM_RAW task payload
   s <- sum(v)
-  t <- mov_submit(p$ctrl, sum(v), v = v)
+  t <- kio_submit(p$ctrl, sum(v), v = v)
   rm(v)
   gc()   # without the task keeper, the payload region would unlink here
   pool_step(p)                           # the worker's open must succeed
-  expect_identical(mov_collect(t, timeout = 5), s)
+  expect_identical(kio_collect(t, timeout = 5), s)
   pool_end(p)
 })
 
 test_that("published results stay pinned across the worker's GC", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, seq_len(n) + 0, n = 100000L)   # SHM_RAW result
+  t <- kio_submit(p$ctrl, seq_len(n) + 0, n = 100000L)   # SHM_RAW result
   pool_step(p)
   gc()   # without the result keeper, the result region would unlink here
-  expect_identical(mov_collect(t, timeout = 5), as.double(seq_len(100000L)))
+  expect_identical(kio_collect(t, timeout = 5), as.double(seq_len(100000L)))
   pool_end(p)
 })
 
 test_that("a destroyed pool invalidates outstanding task handles", {
   p <- pool_pair()
-  t <- mov_submit(p$ctrl, "never run")   # no step: stays PENDING
+  t <- kio_submit(p$ctrl, "never run")   # no step: stays PENDING
   pool_end(p)                            # broadcast CANCELs it
-  expect_error(mov_collect(t, timeout = 5), "pool handle is closed")
+  expect_error(kio_collect(t, timeout = 5), "pool handle is closed")
 })

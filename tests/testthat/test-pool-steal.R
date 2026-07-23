@@ -6,82 +6,82 @@
 
 test_that("the owner pops its deque LIFO down to the last-element CAS", {
   p <- pool_pair(workers = 1L, max_submitters = 1L)
-  ta <- mov_submit(p$ctrl, "a")
-  tb <- mov_submit(p$ctrl, "b")
-  tc <- mov_submit(p$ctrl, "c")
+  ta <- kio_submit(p$ctrl, "a")
+  tb <- kio_submit(p$ctrl, "b")
+  tc <- kio_submit(p$ctrl, "c")
   expect_identical(pool_pull(p, 3L), 3L)
-  st <- mov_pool_status(p$ctrl)
+  st <- kio_pool_status(p$ctrl)
   expect_identical(st$injection, 0)
   expect_identical(st$deque, 3)
 
   # bottom order is claim order a, b, c: pops surface c first
   expect_identical(pool_step(p), 1L)
-  expect_identical(mov_collect(tc, timeout = 5), "c")
-  expect_s3_class(mov_collect(ta, timeout = 0), "mov_timeout")
+  expect_identical(kio_collect(tc, timeout = 5), "c")
+  expect_s3_class(kio_collect(ta, timeout = 0), "kio_timeout")
   expect_identical(pool_step(p), 1L)
-  expect_identical(mov_collect(tb, timeout = 5), "b")
+  expect_identical(kio_collect(tb, timeout = 5), "b")
   # the final pop is the last element: the owner wins the top CAS
   expect_identical(pool_step(p), 1L)
-  expect_identical(mov_collect(ta, timeout = 5), "a")
-  expect_identical(mov_pool_status(p$ctrl)$deque, 0)
+  expect_identical(kio_collect(ta, timeout = 5), "a")
+  expect_identical(kio_pool_status(p$ctrl)$deque, 0)
   pool_end(p)
 })
 
 test_that("an idle worker steals from a peer's deque top", {
   p <- pool_pair(workers = 2L, max_submitters = 1L)
-  ta <- mov_submit(p$ctrl, "a")
-  tb <- mov_submit(p$ctrl, "b")
+  ta <- kio_submit(p$ctrl, "a")
+  tb <- kio_submit(p$ctrl, "b")
   expect_identical(pool_pull(p, 2L), 2L)
 
   # the thief takes the top — the FIFO end — while the owner keeps b
   expect_identical(pool_step(p, wk = p$wks[[2L]]), 1L)
-  expect_identical(mov_collect(ta, timeout = 5), "a")
-  expect_s3_class(mov_collect(tb, timeout = 0), "mov_timeout")
-  expect_identical(mov_pool_status(p$ctrl)$deque, c(1, 0))
+  expect_identical(kio_collect(ta, timeout = 5), "a")
+  expect_s3_class(kio_collect(tb, timeout = 0), "kio_timeout")
+  expect_identical(kio_pool_status(p$ctrl)$deque, c(1, 0))
   expect_identical(pool_step(p), 1L)
-  expect_identical(mov_collect(tb, timeout = 5), "b")
+  expect_identical(kio_collect(tb, timeout = 5), "b")
   pool_end(p)
 })
 
 test_that("a leaving worker's deque is consumed in place: REAPING to FREE", {
   p <- pool_pair(workers = 2L, max_submitters = 1L)
-  ta <- mov_submit(p$ctrl, "a")
-  tb <- mov_submit(p$ctrl, "b")
+  ta <- kio_submit(p$ctrl, "a")
+  tb <- kio_submit(p$ctrl, "b")
   expect_identical(pool_pull(p, 2L), 2L)
-  .Call(mov:::mov_pool_leave, p$wk)
-  expect_identical(mov_pool_status(p$ctrl)$workers, c("reaping", "live"))
+  .Call(kioto:::kio_pool_leave, p$wk)
+  expect_identical(kio_pool_status(p$ctrl)$workers, c("reaping", "live"))
 
   # the survivor drains the orphaned deque through the ordinary steal path;
   # observing it drained returns the slot to FREE
   expect_identical(pool_step(p, wk = p$wks[[2L]]), 1L)
   expect_identical(pool_step(p, wk = p$wks[[2L]]), 1L)
-  expect_identical(mov_collect(ta, timeout = 5), "a")
-  expect_identical(mov_collect(tb, timeout = 5), "b")
-  expect_identical(mov_pool_status(p$ctrl)$workers, c("free", "live"))
+  expect_identical(kio_collect(ta, timeout = 5), "a")
+  expect_identical(kio_collect(tb, timeout = 5), "b")
+  expect_identical(kio_pool_status(p$ctrl)$workers, c("free", "live"))
   pool_end(p)
 })
 
 test_that("a leaving worker with an empty deque frees its slot directly", {
   p <- pool_pair(workers = 2L, max_submitters = 1L)
-  .Call(mov:::mov_pool_leave, p$wk)
-  expect_identical(mov_pool_status(p$ctrl)$workers, c("free", "live"))
+  .Call(kioto:::kio_pool_leave, p$wk)
+  expect_identical(kio_pool_status(p$ctrl)$workers, c("free", "live"))
   pool_end(p)
 })
 
 test_that("the fairness tick claims injection ahead of local work", {
   p <- pool_pair(workers = 1L, max_submitters = 1L, injection_cap = 128L,
                  per_worker_cap = 128L, result_slots = 128L)
-  local <- lapply(1:61, function(i) mov_submit(p$ctrl, i, i = i))
+  local <- lapply(1:61, function(i) kio_submit(p$ctrl, i, i = i))
   expect_identical(pool_pull(p, 61L), 61L)
-  ext <- mov_submit(p$ctrl, "external")
+  ext <- kio_submit(p$ctrl, "external")
 
   # claims 1..60 pop the deque; claim 61 is the tick's full scan, which
   # takes the ring entry while 1 local entry still queues below it
   for (i in 1:60) expect_identical(pool_step(p), 1L)
-  expect_s3_class(mov_collect(ext, timeout = 0), "mov_timeout")
+  expect_s3_class(kio_collect(ext, timeout = 0), "kio_timeout")
   expect_identical(pool_step(p), 1L)
-  expect_identical(mov_collect(ext, timeout = 5), "external")
-  expect_identical(mov_pool_status(p$ctrl)$deque, 1)
+  expect_identical(kio_collect(ext, timeout = 5), "external")
+  expect_identical(kio_pool_status(p$ctrl)$deque, 1)
   while (pool_step(p) == 1L) NULL
   pool_end(p)
 })
@@ -89,12 +89,12 @@ test_that("the fairness tick claims injection ahead of local work", {
 test_that("pull stops at deque capacity and leaves the rest queued", {
   p <- pool_pair(workers = 1L, max_submitters = 1L, injection_cap = 128L,
                  per_worker_cap = 4L, result_slots = 128L)
-  tasks <- lapply(1:6, function(i) mov_submit(p$ctrl, i, i = i))
+  tasks <- lapply(1:6, function(i) kio_submit(p$ctrl, i, i = i))
   expect_identical(pool_pull(p, 6L), 4L)
-  st <- mov_pool_status(p$ctrl)
+  st <- kio_pool_status(p$ctrl)
   expect_identical(st$deque, 4)
   expect_identical(st$injection, 2)
   while (pool_step(p) == 1L) NULL
-  for (i in 1:6) expect_identical(mov_collect(tasks[[i]], timeout = 5), i)
+  for (i in 1:6) expect_identical(kio_collect(tasks[[i]], timeout = 5), i)
   pool_end(p)
 })

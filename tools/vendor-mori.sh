@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Vendors mori's platform SHM core and exact-size serialize streams into
 # src/vendor/, applying the enumerated substitution set that forks the
-# runtime namespace to /mov_ (see ipc-plan.md, *Vendored mori code*).
+# runtime namespace to /kio_ (see ipc-plan.md, *Vendored mori code*).
 #
 # Usage: tools/vendor-mori.sh [ref]
 #   ref        tag/commit to vendor (default: the pin below)
@@ -50,15 +50,15 @@ done
 #    registry-log filename prefix, and the reaper's scan filter all
 #    derive from MORI_PREFIX_LITERAL.
 sed -i.bak \
-  -e 's|"/mori_"|"/mov_"|' \
-  -e 's|"Local\\\\mori_"|"Local\\\\mov_"|' \
+  -e 's|"/mori_"|"/kio_"|' \
+  -e 's|"Local\\\\mori_"|"Local\\\\kio_"|' \
   "$DEST/mori.h"
 
 # 2. The macOS registry dir; 3. the user-facing reaper name in the
 #    MORI_EEXIST hint string and its comments.
 sed -i.bak \
-  -e 's|"%s/mori"|"%s/mov"|' \
-  -e 's|prune_shared()|mov_prune()|g' \
+  -e 's|"%s/mori"|"%s/kioto"|' \
+  -e 's|prune_shared()|kio_prune()|g' \
   "$DEST/shm.c"
 
 rm -f "$DEST"/*.bak

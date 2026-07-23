@@ -6,6 +6,6 @@ commit: d61dd7984e57bb1cf79c3c46e422c469be847820
 commit-date: 2026-07-21T11:06:26+01:00
 license: MIT (mori, same author) — see upstream LICENSE
 
-84bcde712e07e8a7becc49db2e698ea0809757ca0c659e9a77f69d26d6d12acd  mori.h
-607a409e0cd318a6e499752c85d7bdcb8ebdbd2d81c154bcff66b899508f5ef1  shm.c
+99ebb3ca57a0d1c02b6ba944c838bfe2360e1405f1ead21f8a797899c95c9437  mori.h
+bf0abb23e3a1926c13fc5e0df1ec59a616a192d6442346e2ab1b84c43563149d  shm.c
 79d89b026116b278eebf4b26b6533bc6c980208d6e7af2fff649dd110451cf16  serialize.c

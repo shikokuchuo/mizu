@@ -7,14 +7,14 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include "mov.h"
+#include "kioto.h"
 
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-int mov_shm_open_rw(mori_shm *shm, const char *name) {
+int kio_shm_open_rw(mori_shm *shm, const char *name) {
 
   shm->addr = NULL;
   shm->size = 0;
@@ -57,18 +57,18 @@ int mov_shm_open_rw(mori_shm *shm, const char *name) {
 /* Same /dev/shm direct-open on Linux as the vendored core (avoids the -lrt
    link dependency of shm_open); macOS has shm_open in libc. */
 #ifdef __linux__
-static int mov_shm_os_open_rw(const char *name) {
+static int kio_shm_os_open_rw(const char *name) {
   char path[64];
   snprintf(path, sizeof(path), "/dev/shm%s", name);
   return open(path, O_RDWR, 0);
 }
 #else
-static int mov_shm_os_open_rw(const char *name) {
+static int kio_shm_os_open_rw(const char *name) {
   return shm_open(name, O_RDWR, 0);
 }
 #endif
 
-int mov_shm_open_rw(mori_shm *shm, const char *name) {
+int kio_shm_open_rw(mori_shm *shm, const char *name) {
 
   shm->addr = NULL;
   shm->size = 0;
@@ -78,7 +78,7 @@ int mov_shm_open_rw(mori_shm *shm, const char *name) {
   shm->name[nl] = '\0';
   shm->name_len = (uint8_t) nl;
 
-  int fd = mov_shm_os_open_rw(name);
+  int fd = kio_shm_os_open_rw(name);
   if (fd < 0) return -1;
 
   struct stat st;
@@ -107,10 +107,10 @@ int mov_shm_open_rw(mori_shm *shm, const char *name) {
 
 #endif /* _WIN32 */
 
-mori_shm *mov_shm_open_rw_heap(const char *name) {
+mori_shm *kio_shm_open_rw_heap(const char *name) {
   mori_shm *shm = malloc(sizeof(mori_shm));
   if (shm == NULL) return NULL;
-  if (mov_shm_open_rw(shm, name) != 0) {
+  if (kio_shm_open_rw(shm, name) != 0) {
     free(shm);
     return NULL;
   }
