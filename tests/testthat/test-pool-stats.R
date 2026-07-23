@@ -74,6 +74,32 @@ test_that("submitter counters are the ring positions: exact, no cadence", {
   pool_end(p)
 })
 
+test_that("spills count SHM_RAW payloads against the task's submitter", {
+  p <- pool_pair()                       # 256 B slots
+  expect_identical(kio_pool_stats(p$ctrl)$submitters$spills[1], 0)
+
+  # inline traffic leaves the counter untouched
+  t0 <- kio_submit(p$ctrl, x + 1L, x = 1L)
+  pool_step(p)
+  kio_collect(t0, 5)
+  expect_identical(kio_pool_stats(p$ctrl)$submitters$spills[1], 0)
+
+  # an oversized task payload spills at submit, exact and cadence-free
+  v <- runif(100000)
+  t1 <- kio_submit(p$ctrl, sum(v), v = v)
+  expect_identical(kio_pool_stats(p$ctrl)$submitters$spills[1], 1)
+  pool_step(p)
+  kio_collect(t1, 5)                     # scalar result: no second spill
+  expect_identical(kio_pool_stats(p$ctrl)$submitters$spills[1], 1)
+
+  # an oversized result spills at publish, attributed to the submitter
+  t2 <- kio_submit(p$ctrl, seq_len(n) + 0, n = 100000L)
+  pool_step(p)
+  kio_collect(t2, 5)
+  expect_identical(kio_pool_stats(p$ctrl)$submitters$spills[1], 2)
+  pool_end(p)
+})
+
 test_that("a departed worker's stats are exact; a rejoining one resets them", {
   p <- pool_pair()
   t <- kio_submit(p$ctrl, 1 + 1)

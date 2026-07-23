@@ -169,6 +169,13 @@ enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
    sub-µs publish gaps are absorbed without touching the entity line. */
 #define KIO_SPIN_ITERS 256
 
+/* Collect's pre-announce spin bound, sized for a short task's whole
+   submit -> publish turnaround (a few µs) rather than a publish gap:
+   waiter_slot stays unannounced through the spin, so a fast result costs
+   neither side a syscall — the publisher skips its wake, the collector its
+   park. Spent at most once per collect call, before the first park. */
+#define KIO_COLLECT_SPIN_ITERS 1024
+
 /* Busy-path bound on result-keeper reap visits per worker step: keeps the
    per-task reap cost O(1) against any number of results outstanding. The
    idle-path full sweep clears any residue before a park. */
@@ -322,7 +329,12 @@ typedef struct kio_wk_slot_s {
 typedef char kio_wk_slot_assert[(sizeof(kio_wk_slot) == 128) ? 1 : -1];
 
 /* Submitter registry slot: one cache line. The result-slot subrange is the
-   static partition result_slots / max_submitters, stored for introspection. */
+   static partition result_slots / max_submitters, stored for introspection.
+   stat_spills counts payloads staged past the inline budget onto the
+   SHM_RAW tier — task payloads at submit, result payloads at publish, both
+   attributed to the task's submitter — the visible signal that slot_size
+   is undersized for the traffic. Spill-path-only writes (a fresh region
+   per payload dwarfs the cross-process fetch_add); reset at claim. */
 typedef struct kio_sub_slot_s {
   _Atomic int32_t  status;        /* FREE, LIVE, REAPING */
   _Atomic uint32_t park_epoch;    /* parker epoch word */
@@ -331,7 +343,8 @@ typedef struct kio_sub_slot_s {
   uint32_t         rs_count;
   uint64_t         live_dev;
   uint64_t         live_ino;
-  uint8_t          pad[24];
+  _Atomic uint64_t stat_spills;
+  uint8_t          pad[16];
 } kio_sub_slot;
 
 typedef char kio_sub_slot_assert[(sizeof(kio_sub_slot) == 64) ? 1 : -1];

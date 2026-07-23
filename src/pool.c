@@ -871,6 +871,7 @@ static void pool_claim_sub_slot(kio_pool *p, intptr_t *lock_out) {
   me->pid = (int64_t) p->self_pid;
   me->rs_start = (uint32_t) p->sub_slot * per;
   me->rs_count = per;
+  atomic_store_explicit(&me->stat_spills, 0, memory_order_relaxed);
   kio_live_ident(*lock_out, &me->live_dev, &me->live_ino);
 }
 
@@ -1143,6 +1144,32 @@ static void pool_unpark_result_waiter(kio_pool *p, kio_rs_hdr *rs) {
     kio_unpark(pool_sub_pk(p, (uint32_t) ws));
 }
 
+/* Keeper-drop wake for the worker that produced a freed result slot, gated
+   on the parked mask: a running worker's own reap visits consume the FREE,
+   so only an announced (idle or parked) worker needs the syscall. Pairs
+   with the step loop's announce-before-sweep order through the same fence
+   protocol as pool_wake_one_worker_from: either this fence-then-load sees
+   the announce bit, or the worker's post-announce keeper sweep sees the
+   FREE. Pure C — the submitter reaper calls it off the R main thread. */
+static void pool_unpark_keeper_drop(kio_pool *p, int32_t w) {
+  if (w < 0 || (uint32_t) w >= p->hdr.max_workers) return;
+  atomic_thread_fence(memory_order_seq_cst);
+  if (atomic_load_explicit(p->parked_workers, memory_order_relaxed) &
+      (1ull << (uint32_t) w))
+    kio_unpark(pool_wk_pk(p, (uint32_t) w));
+}
+
+/* SHM_RAW staging is the off-ramp from the inline fast path — a fresh
+   region per payload. Counted against the task's submitter for task and
+   result payloads alike, so kio_pool_stats surfaces an undersized
+   slot_size from either direction of the traffic. */
+static void pool_count_spill(kio_pool *p, uint32_t sub_slot,
+                             const kio_slot_hdr *ph) {
+  if (ph->kind == KIO_KIND_SHM_RAW && sub_slot < p->hdr.max_submitters)
+    atomic_fetch_add_explicit(&p->sub[sub_slot].stat_spills, 1,
+                              memory_order_relaxed);
+}
+
 /* The handle finalizer's state machine (also invoked deliberately by
    kio_cancel's PENDING arm). A task keeper is never dropped here: CANCEL is
    not a release point — FREE strictly implies the worker is done with the
@@ -1177,8 +1204,7 @@ static void kio_task_finalizer(SEXP xp) {
                                                       KIO_RS_FREE,
                                                       memory_order_seq_cst,
                                                       memory_order_acquire)) {
-            if (w >= 0 && (uint32_t) w < p->hdr.max_workers)
-              kio_unpark(pool_wk_pk(p, (uint32_t) w));
+            pool_unpark_keeper_drop(p, w);
             break;
           }
         } else {
@@ -1278,6 +1304,7 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
   if (inline_exec) (void) pool_eval_env(xp);
   SEXP keep = PROTECT(kio_payload_stage(&eh->ph, e + sizeof(kio_entry_hdr),
                                         p->inline_entry, payload));
+  pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
   pool_fill_entry(p, eh, rs_index);
@@ -1322,6 +1349,7 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
   kio_entry_hdr *eh = (kio_entry_hdr *) e;
   SEXP keep = PROTECT(kio_payload_stage(&eh->ph, e + sizeof(kio_entry_hdr),
                                         p->inline_entry, payload));
+  pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
   pool_fill_entry(p, eh, rs_index);
@@ -1877,8 +1905,7 @@ static void pool_reap_submitter(kio_pool *p, uint32_t j) {
                                                      memory_order_seq_cst,
                                                      memory_order_relaxed))
           continue;
-        if (wk >= 0 && (uint32_t) wk < p->hdr.max_workers)
-          kio_unpark(pool_wk_pk(p, (uint32_t) wk));   /* keeper drop */
+        pool_unpark_keeper_drop(p, wk);
       }
       break;
     }
@@ -1966,6 +1993,7 @@ static int pool_publish_result(kio_pool *p, SEXP xp, uint32_t rs_index,
                                         (unsigned char *) rs +
                                         sizeof(kio_rs_hdr),
                                         p->inline_rs, value));
+  pool_count_spill(p, sub_slot, &rs->ph);
   int32_t expected = KIO_RS_PENDING;
   int published =
     atomic_compare_exchange_strong_explicit(&rs->status, &expected,
@@ -2162,10 +2190,6 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
     if (pool_work_hint(p))
       continue;
 
-    /* going idle: sweep the whole keeper table, so a parked worker holds
-       only what is genuinely uncollected */
-    pool_reap_result_keepers(p, keepers);
-
     /* announce-then-rescan (the sleep race): either our rescan sees the
        push or the pusher's mask load sees our bit */
     uint32_t e = kio_parker_snapshot(pool_wk_pk(p, (uint32_t) p->wk_slot));
@@ -2175,6 +2199,13 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
     atomic_fetch_or_explicit(p->parked_workers, my_bit,
                              memory_order_seq_cst);
     atomic_thread_fence(memory_order_seq_cst);
+    /* going idle: sweep the whole keeper table, so a parked worker holds
+       only what is genuinely uncollected. After the announce, so a
+       keeper-drop FREE racing this park is either consumed here or its
+       dropper saw our bit and unparks us (pool_unpark_keeper_drop) —
+       the epoch snapshot above predates the bit, so that unpark turns
+       the park below into an immediate return */
+    pool_reap_result_keepers(p, keepers);
     if (pool_any_work(p) ||
         atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
         atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
@@ -2298,6 +2329,19 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
     }
 
     if (timeout_s <= 0) return kio_sent_timeout;
+
+    /* bounded pause-hinted spin before the park announce — the collect
+       mirror of the worker's pre-announce spin: a short task's publish is
+       absorbed without the park/wake syscall pair on either side, since
+       waiter_slot stays unannounced through the spin and the publisher
+       skips its wake. Falls through to the parked path at the bound. */
+    for (int i = 0; i < KIO_COLLECT_SPIN_ITERS; i++) {
+      KIO_PAUSE();
+      st = atomic_load_explicit(&rs->status, memory_order_acquire);
+      if (st != KIO_RS_PENDING) break;
+    }
+    if (st != KIO_RS_PENDING) break;
+
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = kio_now() + timeout_s;
 
@@ -2358,8 +2402,7 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
       UNPROTECT(1);
       Rf_error("kioto: task handle already collected");
     }
-    if (w >= 0 && (uint32_t) w < p->hdr.max_workers)
-      kio_unpark(pool_wk_pk(p, (uint32_t) w));   /* keeper-drop signal */
+    pool_unpark_keeper_drop(p, w);
     if (st == KIO_RS_ERR) {
       SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), v));
       Rf_eval(call, R_BaseEnv);                  /* no return */
@@ -2589,11 +2632,12 @@ SEXP kio_pool_stats_call(SEXP xp) {
     REAL(VECTOR_ELT(wk, 7))[i] = d > 0 ? (double) d : 0;
   }
 
-  const char *snames[] = {"status", "pid", "injected", "claimed", ""};
+  const char *snames[] = {"status", "pid", "injected", "claimed", "spills",
+                          ""};
   SEXP sb = Rf_mkNamed(VECSXP, snames);
   SET_VECTOR_ELT(out, 1, sb);
   SET_VECTOR_ELT(sb, 0, Rf_allocVector(INTSXP, (R_xlen_t) ms));
-  for (int f = 1; f < 4; f++)
+  for (int f = 1; f < 5; f++)
     SET_VECTOR_ELT(sb, f, Rf_allocVector(REALSXP, (R_xlen_t) ms));
   for (uint32_t j = 0; j < ms; j++) {
     unsigned char *ring = pool_ring(p, j);
@@ -2604,6 +2648,8 @@ SEXP kio_pool_stats_call(SEXP xp) {
       atomic_load_explicit(ring_tail(ring), memory_order_acquire);
     REAL(VECTOR_ELT(sb, 3))[j] = (double)
       atomic_load_explicit(ring_head(ring), memory_order_acquire);
+    REAL(VECTOR_ELT(sb, 4))[j] = (double)
+      atomic_load_explicit(&p->sub[j].stat_spills, memory_order_relaxed);
   }
   UNPROTECT(1);
   return out;

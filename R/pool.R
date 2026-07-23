@@ -32,9 +32,12 @@
 #'   submitter slots; rounded up to a multiple of `max_submitters`. Bounds
 #'   each submitter's outstanding (uncollected) tasks.
 #' @param slot_size bytes per queue entry and result slot; a power of two
-#'   between 128 and 2^20. Task payloads that serialize past the inline
-#'   budget travel via a fresh region per payload, so pools dispatching
-#'   closures or multi-argument tasks should prefer `512L`.
+#'   between 128 and 2^20. Payloads (task or result) that serialize past
+#'   the inline budget travel via a fresh region per payload — an
+#'   order-of-magnitude latency cliff, surfaced per submitter as
+#'   [kio_pool_stats()]`$submitters$spills`. The default `512L` keeps
+#'   typical expression-plus-arguments tasks inline; pools moving only
+#'   scalar payloads can drop to `256L`.
 #' @param launcher `NULL` for the default launcher (`system2(Rscript, ...)`
 #'   with the host's `.libPaths()` propagated via `R_LIBS`), or a
 #'   `function(suffix, slot)` that arranges for an R process to eventually
@@ -63,7 +66,7 @@
 kio_pool <- function(n_workers = 1L, max_workers = n_workers,
                      max_submitters = 8L, injection_cap = 1024L,
                      per_worker_cap = 1024L, result_slots = 4096L,
-                     slot_size = 256L, launcher = NULL, stdout = "",
+                     slot_size = 512L, launcher = NULL, stdout = "",
                      stderr = "", liveness_dir = tempdir(),
                      startup_timeout = 30) {
   n_workers <- as.integer(n_workers)
@@ -341,11 +344,13 @@ kio_pool_dump <- function(pool) {
 #' participant joined, complementing the point-in-time snapshots of
 #' [kio_pool_status()] and [kio_pool_dump()]. Nothing here costs the hot
 #' paths anything: submitter counts are the injection rings' own monotonic
-#' positions (submission writes nothing extra), and worker counters are
-#' kept process-locally and mirrored into the region only when a worker
-#' parks, leaves, or passes its fairness tick — so under continuous load a
-#' worker's row can lag by up to 61 claims, and is exact whenever that
-#' worker is parked, retired, or the pool is quiescent.
+#' positions (submission writes nothing extra; the spill counter is bumped
+#' only on the spill path itself, which a fresh region per payload already
+#' dominates), and worker counters are kept process-locally and mirrored
+#' into the region only when a worker parks, leaves, or passes its fairness
+#' tick — so under continuous load a worker's row can lag by up to 61
+#' claims, and is exact whenever that worker is parked, retired, or the
+#' pool is quiescent.
 #'
 #' @inheritParams kio_submit
 #'
@@ -357,8 +362,12 @@ kio_pool_dump <- function(pool) {
 #'   while blocked in a nested collect), and the current `deque` depth.
 #'   `submitters`: one row per submitter slot with `status`, `pid`,
 #'   `injected` (entries ever published to its injection ring), `claimed`
-#'   (entries workers have taken from it), and `queued` (their
-#'   difference). Counters reset when a slot is reused by a new joiner.
+#'   (entries workers have taken from it), `spills` (payloads past the
+#'   inline budget that traveled via a fresh region each — task payloads at
+#'   submit and result payloads at publish, both attributed to the task's
+#'   submitter; nonzero means `slot_size` is undersized for the traffic),
+#'   and `queued` (`injected - claimed`). Counters reset when a slot is
+#'   reused by a new joiner.
 #'
 #' @export
 kio_pool_stats <- function(pool) {

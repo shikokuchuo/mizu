@@ -19,17 +19,23 @@ peers' deques), \code{injections} (entries claimed from injection rings),
 while blocked in a nested collect), and the current \code{deque} depth.
 \code{submitters}: one row per submitter slot with \code{status}, \code{pid},
 \code{injected} (entries ever published to its injection ring), \code{claimed}
-(entries workers have taken from it), and \code{queued} (their
-difference). Counters reset when a slot is reused by a new joiner.
+(entries workers have taken from it), \code{spills} (payloads past the
+inline budget that traveled via a fresh region each — task payloads at
+submit and result payloads at publish, both attributed to the task's
+submitter; nonzero means \code{slot_size} is undersized for the traffic),
+and \code{queued} (\code{injected - claimed}). Counters reset when a slot is
+reused by a new joiner.
 }
 \description{
 Per-worker and per-submitter counters accumulated since each
 participant joined, complementing the point-in-time snapshots of
 \code{\link[=kio_pool_status]{kio_pool_status()}} and \code{\link[=kio_pool_dump]{kio_pool_dump()}}. Nothing here costs the hot
 paths anything: submitter counts are the injection rings' own monotonic
-positions (submission writes nothing extra), and worker counters are
-kept process-locally and mirrored into the region only when a worker
-parks, leaves, or passes its fairness tick — so under continuous load a
-worker's row can lag by up to 61 claims, and is exact whenever that
-worker is parked, retired, or the pool is quiescent.
+positions (submission writes nothing extra; the spill counter is bumped
+only on the spill path itself, which a fresh region per payload already
+dominates), and worker counters are kept process-locally and mirrored
+into the region only when a worker parks, leaves, or passes its fairness
+tick — so under continuous load a worker's row can lag by up to 61
+claims, and is exact whenever that worker is parked, retired, or the
+pool is quiescent.
 }

@@ -11,7 +11,7 @@ kio_pool(
   injection_cap = 1024L,
   per_worker_cap = 1024L,
   result_slots = 4096L,
-  slot_size = 256L,
+  slot_size = 512L,
   launcher = NULL,
   stdout = "",
   stderr = "",
@@ -39,9 +39,12 @@ submitter slots; rounded up to a multiple of \code{max_submitters}. Bounds
 each submitter's outstanding (uncollected) tasks.}
 
 \item{slot_size}{bytes per queue entry and result slot; a power of two
-between 128 and 2^20. Task payloads that serialize past the inline
-budget travel via a fresh region per payload, so pools dispatching
-closures or multi-argument tasks should prefer \code{512L}.}
+between 128 and 2^20. Payloads (task or result) that serialize past
+the inline budget travel via a fresh region per payload — an
+order-of-magnitude latency cliff, surfaced per submitter as
+\code{\link[=kio_pool_stats]{kio_pool_stats()}}\verb{$submitters$spills}. The default \code{512L} keeps
+typical expression-plus-arguments tasks inline; pools moving only
+scalar payloads can drop to \code{256L}.}
 
 \item{launcher}{\code{NULL} for the default launcher (\code{system2(Rscript, ...)}
 with the host's \code{.libPaths()} propagated via \code{R_LIBS}), or a
