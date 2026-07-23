@@ -86,6 +86,7 @@ SEXP kio_pool_deque_pull(SEXP, SEXP);
 SEXP kio_pool_dump_call(SEXP);
 SEXP kio_pool_collect(SEXP, SEXP);
 SEXP kio_pool_cancel(SEXP);
+SEXP kio_pool_task_state(SEXP);
 SEXP kio_pool_stop_call(SEXP, SEXP);
 SEXP kio_pool_status_call(SEXP);
 SEXP kio_pool_stats_call(SEXP);
@@ -146,6 +147,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_pool_dump_call",        (DL_FUNC) &kio_pool_dump_call,        1},
   {"kio_pool_collect",          (DL_FUNC) &kio_pool_collect,          2},
   {"kio_pool_cancel",           (DL_FUNC) &kio_pool_cancel,           1},
+  {"kio_pool_task_state",       (DL_FUNC) &kio_pool_task_state,       1},
   {"kio_pool_stop_call",        (DL_FUNC) &kio_pool_stop_call,        2},
   {"kio_pool_status_call",      (DL_FUNC) &kio_pool_status_call,      1},
   {"kio_pool_stats_call",       (DL_FUNC) &kio_pool_stats_call,       1},

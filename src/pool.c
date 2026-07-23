@@ -2413,6 +2413,32 @@ SEXP kio_pool_cancel(SEXP xp) {
   return Rf_ScalarLogical(FALSE);
 }
 
+/* Non-consuming state probe for the print method: two single reads, racy
+   against slot reuse exactly as kio_pool_dump is. Collect leaves the handle
+   intact and moves the slot on, so FREE (or an advanced sequence) reads as
+   collected; a released pool means the task can never be collected. Total
+   for every real handle — print must not error. */
+SEXP kio_pool_task_state(SEXP xp) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_task_tag)
+    Rf_error("kioto: not a task handle");
+  kio_task *t = (kio_task *) R_ExternalPtrAddr(xp);
+  kio_pool *p = (kio_pool *) R_ExternalPtrAddr(R_ExternalPtrProtected(xp));
+  if (t == NULL || p == NULL || p->released || p->base == NULL ||
+      p->self_pid != kio_self_pid())
+    return Rf_mkString("dropped");
+  kio_rs_hdr *rs = pool_rs(p, t->idx);
+  if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
+    return Rf_mkString("collected");
+  switch (atomic_load_explicit(&rs->status, memory_order_acquire)) {
+  case KIO_RS_PENDING: return Rf_mkString("pending");
+  case KIO_RS_OK:      return Rf_mkString("ok");
+  case KIO_RS_ERR:     return Rf_mkString("err");
+  case KIO_RS_CANCEL:  return Rf_mkString("cancel");
+  case KIO_RS_DIED:    return Rf_mkString("died");
+  default:             return Rf_mkString("collected");   /* FREE */
+  }
+}
+
 // Stop and introspection ---------------------------------------------------------------------
 
 SEXP kio_pool_stop_call(SEXP xp, SEXP timeout) {
