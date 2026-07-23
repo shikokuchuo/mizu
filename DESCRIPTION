@@ -10,12 +10,10 @@ Authors@R: c(
 Description: Parallel computation and data exchange between R processes on
     the same machine: lock-free channels and work-stealing task pools over
     'POSIX' shared memory (Linux, macOS) or 'Win32' file mappings
-    (Windows). The hot path stays entirely in user space: single-producer
-    single-consumer rings with batched publication, hybrid spin-then-park
-    waiting, and event-driven peer-death detection. A complement to
-    'mirai' for workloads measurably bound by per-message socket overhead;
-    payload contents interoperate transparently with 'mori' shared
-    objects.
+    (Windows), with the hot path entirely in user space. Inter-process
+    communication cheap enough that work can be divided at granularities
+    usually reserved for threads. A complement to 'mirai'; payload
+    contents interoperate transparently with 'mori' shared objects.
 License: MIT + file LICENSE
 URL: https://github.com/shikokuchuo/kioto
 BugReports: https://github.com/shikokuchuo/kioto/issues
