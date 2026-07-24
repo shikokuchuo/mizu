@@ -90,6 +90,19 @@ SEXP kio_pool_task_state(SEXP);
 SEXP kio_pool_stop_call(SEXP, SEXP);
 SEXP kio_pool_status_call(SEXP);
 SEXP kio_pool_stats_call(SEXP);
+SEXP kio_pool_map_caps(SEXP);
+SEXP kio_pool_map_cache(SEXP);
+SEXP kio_map_eligible(SEXP);
+SEXP kio_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP kio_map_open(SEXP, SEXP);
+SEXP kio_map_desc(SEXP);
+SEXP kio_map_slice(SEXP, SEXP, SEXP);
+SEXP kio_map_write(SEXP, SEXP, SEXP);
+SEXP kio_map_gather(SEXP);
+SEXP kio_map_timeout_call(void);
+SEXP kio_map_rng_base(SEXP);
+SEXP kio_map_rng_seek(SEXP, SEXP);
+SEXP kio_map_rng_install(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
   {"kio_onload_probe",          (DL_FUNC) &kio_onload_probe,          0},
@@ -151,6 +164,19 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_pool_stop_call",        (DL_FUNC) &kio_pool_stop_call,        2},
   {"kio_pool_status_call",      (DL_FUNC) &kio_pool_status_call,      1},
   {"kio_pool_stats_call",       (DL_FUNC) &kio_pool_stats_call,       1},
+  {"kio_pool_map_caps",         (DL_FUNC) &kio_pool_map_caps,         1},
+  {"kio_pool_map_cache",        (DL_FUNC) &kio_pool_map_cache,        1},
+  {"kio_map_eligible",          (DL_FUNC) &kio_map_eligible,          1},
+  {"kio_map_stage",             (DL_FUNC) &kio_map_stage,             5},
+  {"kio_map_open",              (DL_FUNC) &kio_map_open,              2},
+  {"kio_map_desc",              (DL_FUNC) &kio_map_desc,              1},
+  {"kio_map_slice",             (DL_FUNC) &kio_map_slice,             3},
+  {"kio_map_write",             (DL_FUNC) &kio_map_write,             3},
+  {"kio_map_gather",            (DL_FUNC) &kio_map_gather,            1},
+  {"kio_map_timeout_call",      (DL_FUNC) &kio_map_timeout_call,      0},
+  {"kio_map_rng_base",          (DL_FUNC) &kio_map_rng_base,          1},
+  {"kio_map_rng_seek",          (DL_FUNC) &kio_map_rng_seek,          2},
+  {"kio_map_rng_install",       (DL_FUNC) &kio_map_rng_install,       1},
   {NULL, NULL, 0}
 };
 

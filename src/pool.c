@@ -383,9 +383,11 @@ static void kio_pool_finalizer(SEXP xp) {
    extptr (controller only); [2] a worker's nested-submit task keepers
    (length rs_count, allocated when the worker claims a submitter slot);
    [3] the worker's evaluation base env (kio_pool_set_eval); [4] the
-   handle's trace hook (kio_pool_set_trace). */
+   handle's trace hook (kio_pool_set_trace); [5] the worker's map-context
+   cache env (kio_map; created lazily by kio_pool_map_cache, cleared whole
+   by the idle sweep — clear-all is its entire eviction policy). */
 static SEXP pool_make_handle(kio_pool *p, SEXP keepers, SEXP host_ptr) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 5));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
   SET_VECTOR_ELT(prot, 0, keepers);
   SET_VECTOR_ELT(prot, 1, host_ptr);
   SEXP xp = PROTECT(R_MakeExternalPtr(p, kio_pool_tag, prot));
@@ -777,7 +779,7 @@ static kio_pool *pool_open_common(const char *suffix, SEXP *xp_out,
 
   kio_pool *p = calloc(1, sizeof(*p));
   if (p == NULL) Rf_error("kioto: allocation failure");
-  if (kio_shm_open_rw(&p->shm, name) != 0) {
+  if (kio_shm_open_rw(&p->shm, name, 1) != 0) {
     free(p);
     Rf_error("kioto: cannot open pool region '%s'", name);
   }
@@ -943,7 +945,7 @@ static int pool_reaping_free(kio_pool *p, kio_wk_slot *w);
 static int pool_probe_worker(kio_pool *p, uint32_t slot);
 static void pool_probe_submitter(kio_pool *p, uint32_t j);
 static void pool_orphan_teardown_try(kio_pool *p);
-static void pool_reap_result_keepers(kio_pool *p, SEXP keepers);
+static void pool_idle_sweep(kio_pool *p, SEXP xp);
 
 /* Clean worker exit. A nonempty deque is never drained anywhere: it
    becomes an ordinary steal target while the slot reads REAPING, and the
@@ -1002,7 +1004,7 @@ SEXP kio_pool_leave(SEXP xp) {
     kio_live_close(p->live_self);
     p->live_self = 0;
   }
-  pool_reap_result_keepers(p, VECTOR_ELT(R_ExternalPtrProtected(xp), 0));
+  pool_idle_sweep(p, xp);
   if (p->rk_n == 0) pool_release(p);
   return Rf_ScalarLogical(p->released);
 }
@@ -1015,7 +1017,7 @@ SEXP kio_pool_leave(SEXP xp) {
 SEXP kio_pool_lame_duck(SEXP xp) {
   kio_pool *p = pool_peek(xp);
   if (p == NULL) return Rf_ScalarLogical(TRUE);
-  pool_reap_result_keepers(p, VECTOR_ELT(R_ExternalPtrProtected(xp), 0));
+  pool_idle_sweep(p, xp);
   if (p->rk_n == 0 ||
       atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
       atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
@@ -1398,6 +1400,19 @@ static void pool_reap_result_keepers(kio_pool *p, SEXP keepers) {
   uint32_t i = 0;
   while (i < p->rk_n) i += (uint32_t) pool_rk_visit(p, keepers, i);
   p->rk_cursor = 0;
+}
+
+/* The idle-path sweep proper: the full keeper reap plus the map-context
+   cache drop (prot[5], see R/map.R) — its only eviction beyond the
+   R side's clear-at-8 bound, since workers cannot observe map completion.
+   An idle or departing worker holds nothing; a map whose chunks span a
+   park pays one re-open + re-unserialize. In-flight chunks are unaffected:
+   their own R references keep a dropped context's mapping alive until
+   their frames drop. */
+static void pool_idle_sweep(kio_pool *p, SEXP xp) {
+  SEXP prot = R_ExternalPtrProtected(xp);
+  pool_reap_result_keepers(p, VECTOR_ELT(prot, 0));
+  SET_VECTOR_ELT(prot, 5, R_NilValue);
 }
 
 /* The busy-path reap: at most KIO_REAP_QUOTA visits under a rotating
@@ -2176,7 +2191,7 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
     }
 
     if (timeout_s <= 0) {
-      pool_reap_result_keepers(p, keepers);
+      pool_idle_sweep(p, xp);
       pool_stats_publish(p);
       return Rf_ScalarInteger(0);
     }
@@ -2199,13 +2214,14 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
     atomic_fetch_or_explicit(p->parked_workers, my_bit,
                              memory_order_seq_cst);
     atomic_thread_fence(memory_order_seq_cst);
-    /* going idle: sweep the whole keeper table, so a parked worker holds
-       only what is genuinely uncollected. After the announce, so a
-       keeper-drop FREE racing this park is either consumed here or its
-       dropper saw our bit and unparks us (pool_unpark_keeper_drop) —
-       the epoch snapshot above predates the bit, so that unpark turns
-       the park below into an immediate return */
-    pool_reap_result_keepers(p, keepers);
+    /* going idle: sweep the whole keeper table (and drop the map-context
+       cache), so a parked worker holds only what is genuinely
+       uncollected. After the announce, so a keeper-drop FREE racing this
+       park is either consumed here or its dropper saw our bit and unparks
+       us (pool_unpark_keeper_drop) — the epoch snapshot above predates
+       the bit, so that unpark turns the park below into an immediate
+       return */
+    pool_idle_sweep(p, xp);
     if (pool_any_work(p) ||
         atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
         atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
@@ -2235,7 +2251,7 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
     pool_stats_publish(p);
     R_CheckUserInterrupt();
     if (deadline >= 0 && kio_now() >= deadline) {
-      pool_reap_result_keepers(p, keepers);
+      pool_idle_sweep(p, xp);
       return Rf_ScalarInteger(0);
     }
   }
@@ -2480,6 +2496,63 @@ SEXP kio_pool_task_state(SEXP xp) {
   case KIO_RS_DIED:    return Rf_mkString("died");
   default:             return Rf_mkString("collected");   /* FREE */
   }
+}
+
+// kio_map support -----------------------------------------------------------------------------
+
+/* The inputs to kio_map's chunk-count formula, in one read pass: live
+   workers, FREE result slots in the caller's own subrange (not rs_count —
+   the subrange is shared with whatever tasks are already outstanding, and
+   pool_alloc_rs would otherwise error mid-submit), the injection cap, and
+   the entry inline budget (the region-less probe's bound). Only this
+   process allocates from its own subrange, so the FREE count can only
+   grow under it. A worker's first nested map claims its submitter slot
+   here — before the count, which would otherwise read an unclaimed
+   subrange — exactly as nested submit does. */
+SEXP kio_pool_map_caps(SEXP xp) {
+  kio_pool *p = pool_get(xp);
+  if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
+    Rf_error("kioto: pool stopped");
+  if (p->role == KIO_ROLE_WORKER && p->wk_slot >= 0 && p->sub_slot < 0) {
+    pool_claim_sub_slot(p, &p->live_sub);
+    SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 2,
+                   Rf_allocVector(VECSXP,
+                                  (R_xlen_t) p->sub[p->sub_slot].rs_count));
+  }
+  if (p->sub_slot < 0)
+    Rf_error("kioto: not a submitter handle");
+  int live = 0;
+  for (uint32_t i = 0; i < p->hdr.max_workers; i++)
+    live += atomic_load_explicit(&p->wk[i].status, memory_order_acquire) ==
+      KIO_WK_LIVE;
+  kio_sub_slot *me = &p->sub[p->sub_slot];
+  int free_rs = 0;
+  for (uint32_t k = 0; k < me->rs_count; k++)
+    free_rs += atomic_load_explicit(&pool_rs(p, me->rs_start + k)->status,
+                                    memory_order_acquire) == KIO_RS_FREE;
+  SEXP out = Rf_allocVector(INTSXP, 4);
+  INTEGER(out)[0] = live;
+  INTEGER(out)[1] = free_rs;
+  INTEGER(out)[2] = (int) p->hdr.inj_cap;
+  INTEGER(out)[3] = (int) p->inline_entry;
+  return out;
+}
+
+/* The worker's map-context cache env (prot[5]), created lazily so pools
+   that never map spend nothing on it. The idle sweep clears the slot back
+   to NULL; the R side re-creates through here and bounds residency at ~8
+   contexts with a clear-all. */
+SEXP kio_pool_map_cache(SEXP xp) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("kioto: not a worker handle");
+  SEXP prot = R_ExternalPtrProtected(xp);
+  SEXP cache = VECTOR_ELT(prot, 5);
+  if (TYPEOF(cache) != ENVSXP) {
+    cache = R_NewEnv(R_EmptyEnv, 0, 0);
+    SET_VECTOR_ELT(prot, 5, cache);
+  }
+  return cache;
 }
 
 // Stop and introspection ---------------------------------------------------------------------

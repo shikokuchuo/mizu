@@ -50,6 +50,8 @@ The R layer is a thin `.Call` veneer. Children are spawned via `Rscript -e` (`R/
 
 Per-submitter SPSC injection rings + per-worker Chase-Lev deques + result slots, no dispatcher process ("pool" always means the worker pool; the result-slot array is "result slots"). Workers seek work in tier order: fairness tick, own deque, random-victim steal, injection scan. Nested `kio_submit(pool, ...)` inside a task pushes to the worker's own deque; a worker blocked in nested `kio_collect()` helps (executes/steals) instead of sleeping. `kio_pool_dump()` is the first tool when a pool hangs.
 
+`kio_map()` (`R/map.R`, `src/map.c`, `src/rng.c`) stages f/`...`/x once per call — into one map region (header + single descriptor stream + optional bare-bytes RAWVEC x section + optional template output area), or entirely inline in the chunk payloads when small — and submits C ordinary chunk tasks (`map_chunk()` worker-side). The stages (`map_stage`/`map_submit`/`map_collect`) are composable so the `pool_pair()` harness can interleave `pool_step()`. Workers cache map contexts on their handle's prot[5], cleared whole by the idle sweep. `.seed` derives per-element L'Ecuyer-CMRG streams (jump kernel vendored from nanonext with RngStreams attribution — see LICENSE.note); results are chunking- and steal-order-invariant.
+
 ## Testing
 
 `tests/testthat/helper.R` provides the two deterministic in-process harnesses — use them for protocol/ring mechanics instead of spawning processes:

@@ -68,8 +68,12 @@ const char *kio_preamble_validate(const void *region, size_t region_size,
 
 // Writable attach (peer side; both sides write ring indices) -------------------
 
-int kio_shm_open_rw(mori_shm *shm, const char *name);
-mori_shm *kio_shm_open_rw_heap(const char *name);
+/* populate pre-faults the whole mapping (Linux only: macOS defines
+   MAP_POPULATE away and Windows has no equivalent). The channel and pool
+   attaches populate — the whole ring is hot there; kio_map's template-path
+   contexts don't, so a large RAWVEC x still demand-pages per worker. */
+int kio_shm_open_rw(mori_shm *shm, const char *name, int populate);
+mori_shm *kio_shm_open_rw_heap(const char *name, int populate);
 
 // Bounded single-pass serialize -------------------------------------------------
 

@@ -88,3 +88,43 @@ test_that("pool task dispatch reports against the mirai baseline", {
   expect_true(wait_until(kio_pool_stats(p)$workers$tasks == total))
   expect_true(kio_pool_stop(p))
 })
+
+test_that("kio_map reports against serial lapply and per-task dispatch", {
+  skip_if_no_child_kioto()
+  p <- kio_pool(2L)
+
+  # overhead regime: trivial f, where per-element cost is everything.
+  # Baselines (M4 Pro, 2026-07): serial lapply ~0.2 us/element; per-element
+  # kio_submit/kio_collect ~4 us (the pool round-trip above); mirai_map
+  # ~63-124 us/element (one mirai task per element).
+  n <- 100000L
+  x <- seq_len(n) + 0L                        # materialized: RAWVEC path
+  f <- function(i) i + 1L
+  mp <- function() {
+    t0 <- proc.time()[[3]]
+    r <- kio_map(p, x, f, .template = numeric(1))
+    us <- (proc.time()[[3]] - t0) / n * 1e6
+    expect_identical(r, x + 1)
+    us
+  }
+  mp()                                        # warm-up
+  us <- min(mp(), mp())
+  t0 <- proc.time()[[3]]
+  base <- vapply(x, f, numeric(1))
+  lap <- (proc.time()[[3]] - t0) / n * 1e6
+  cat(sprintf("\nkio_map trivial f: %.2f us/element (serial vapply %.2f, per-task dispatch ~4, mirai_map 63-124)\n",
+              us, lap))
+
+  # compute-bound regime: the win is wall-clock division of real work
+  slow <- function(i) {
+    t0 <- proc.time()[[3]]
+    while (proc.time()[[3]] - t0 < 0.005) NULL
+    i
+  }
+  t0 <- proc.time()[[3]]
+  r <- kio_map(p, 1:64, slow)
+  el <- proc.time()[[3]] - t0
+  expect_identical(r, as.list(1:64))
+  cat(sprintf("kio_map 64 x 5ms on 2 workers: %.2fs (serial 0.32s)\n", el))
+  expect_true(kio_pool_stop(p))
+})

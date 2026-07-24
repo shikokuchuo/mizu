@@ -14,8 +14,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-int kio_shm_open_rw(mori_shm *shm, const char *name) {
+int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 
+  (void) populate;   /* no Windows equivalent of MAP_POPULATE */
   shm->addr = NULL;
   shm->size = 0;
   shm->handle = NULL;
@@ -68,7 +69,7 @@ static int kio_shm_os_open_rw(const char *name) {
 }
 #endif
 
-int kio_shm_open_rw(mori_shm *shm, const char *name) {
+int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 
   shm->addr = NULL;
   shm->size = 0;
@@ -88,11 +89,12 @@ int kio_shm_open_rw(mori_shm *shm, const char *name) {
   }
   size_t size = (size_t) st.st_size;
 
-  /* MAP_POPULATE, unlike the vendored read-only consumer open: the whole
-     ring is hot on the peer, so pre-faulting once beats faulting on the
-     hot path. */
+  /* MAP_POPULATE (when asked), unlike the vendored read-only consumer
+     open: the whole ring is hot on the peer, so pre-faulting once beats
+     faulting on the hot path. kio_map's template contexts opt out — see
+     kioto.h. */
   void *addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
-                    MAP_SHARED | MAP_POPULATE, fd, 0);
+                    MAP_SHARED | (populate ? MAP_POPULATE : 0), fd, 0);
   if (addr == MAP_FAILED) {
     close(fd);
     return -1;
@@ -107,10 +109,10 @@ int kio_shm_open_rw(mori_shm *shm, const char *name) {
 
 #endif /* _WIN32 */
 
-mori_shm *kio_shm_open_rw_heap(const char *name) {
+mori_shm *kio_shm_open_rw_heap(const char *name, int populate) {
   mori_shm *shm = malloc(sizeof(mori_shm));
   if (shm == NULL) return NULL;
-  if (kio_shm_open_rw(shm, name) != 0) {
+  if (kio_shm_open_rw(shm, name, populate) != 0) {
     free(shm);
     return NULL;
   }

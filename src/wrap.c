@@ -91,7 +91,7 @@ SEXP kio_region_open(SEXP name, SEXP rw) {
   const char *nm = CHAR(STRING_ELT(name, 0));
 
   mori_shm *shm = Rf_asLogical(rw) == TRUE ?
-    kio_shm_open_rw_heap(nm) : mori_shm_open_heap(nm);
+    kio_shm_open_rw_heap(nm, 1) : mori_shm_open_heap(nm);
   if (shm == NULL)
     Rf_error("kioto: cannot open region '%s'", nm);
   return kio_shm_wrap_consumer(shm);

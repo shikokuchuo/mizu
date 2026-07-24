@@ -10,6 +10,16 @@
 #                             collect all (in-process loop as the anchor)
 #   5. streaming              one-way 1L messages: channel send_batch /
 #                             recv_batch against one mirai task per message
+#   6. parallel map           kio_map against mirai_map, 4 workers: trivial
+#                             f per-element overhead (serial lapply as the
+#                             anchor, plus kio_map's .template and .seed
+#                             variants), then scenario 4's fan-out work as
+#                             one map call. The models differ by design:
+#                             mirai_map submits one mirai per element, so
+#                             its per-task cost is its per-element cost;
+#                             kio_map stages f/x once and submits ~8 chunk
+#                             tasks per worker — that amortization is what
+#                             the scenario measures
 #
 # Scenarios 1 and 2 carry a raw-transport floor row: a kioto channel echoing
 # 1L, no task model on top. Scenarios 1 and 5 also carry the socket-stack
@@ -32,7 +42,7 @@ REPS <- 3L
 results <- list()
 
 note <- function(scenario, framework, value, unit) {
-  cat(sprintf("  %-16s %12s %s\n", framework,
+  cat(sprintf("  %-20s %12s %s\n", framework,
               formatC(value, format = "f", digits = 1, big.mark = ","), unit))
   results[[length(results) + 1L]] <<-
     data.frame(scenario = scenario, framework = framework, value = value,
@@ -312,11 +322,68 @@ for (disp in c(TRUE, FALSE)) {
   daemons(0L)
 }
 
+# 6. parallel map ---------------------------------------------------------------
+
+cat("\n== 6. parallel map (f over n elements, 4 workers) ==\n")
+
+# overhead regime: trivial f, where per-element cost is the whole story
+n <- 10000L
+x <- runif(n)
+f <- function(v) v + 1
+
+k <- 10L        # map calls per rep: a trivial map outruns mclock's ms ticks
+ms <- best_ms(function() timed(for (j in seq_len(k)) lapply(x, f)))
+note("map trivial f", "serial lapply", ms * 1000 / (k * n), "us/elt")
+
+p <- kio_pool(4L, max_submitters = 2L)
+invisible(kio_map(p, x, f))
+ms <- best_ms(function() timed(for (j in seq_len(k)) kio_map(p, x, f)))
+note("map trivial f", "kio_map", ms * 1000 / (k * n), "us/elt")
+ms <- best_ms(function() timed(
+  for (j in seq_len(k)) kio_map(p, x, f, .template = numeric(1))))
+note("map trivial f", "kio_map template", ms * 1000 / (k * n), "us/elt")
+# per-element L'Ecuyer-CMRG streams: the price of reproducibility
+ms <- best_ms(function() timed(
+  for (j in seq_len(k)) kio_map(p, x, f, .seed = 42L)))
+note("map trivial f", "kio_map .seed", ms * 1000 / (k * n), "us/elt")
+kio_pool_stop(p)
+
+for (disp in c(TRUE, FALSE)) {
+  daemons(4L, dispatcher = disp)
+  invisible(mirai_map(x[seq_len(200L)], f)[])
+  ms <- best_ms(function() timed(invisible(mirai_map(x, f)[])))
+  note("map trivial f",
+       if (disp) "mirai_map dispatcher" else "mirai_map direct",
+       ms * 1000 / n, "us/elt")
+  daemons(0L)
+}
+
+# compute regime: scenario 4's fan-out work as a single map call — the
+# per-element overhead above amortized against real tasks
+n <- 2000L
+g <- function(i) sum(runif(1e4))
+
+p <- kio_pool(4L, max_submitters = 2L)
+invisible(kio_map(p, seq_len(n), g))
+ms <- best_ms(function() timed(kio_map(p, seq_len(n), g)))
+note("map fan-out", "kio_map", n / ms * 1000, "elts/s")
+kio_pool_stop(p)
+
+for (disp in c(TRUE, FALSE)) {
+  daemons(4L, dispatcher = disp)
+  invisible(mirai_map(seq_len(200L), g)[])
+  ms <- best_ms(function() timed(invisible(mirai_map(seq_len(n), g)[])))
+  note("map fan-out",
+       if (disp) "mirai_map dispatcher" else "mirai_map direct",
+       n / ms * 1000, "elts/s")
+  daemons(0L)
+}
+
 # summary ----------------------------------------------------------------------
 
 cat("\n== summary ==\n")
 df <- do.call(rbind, results)
 df <- df[order(match(df$scenario, unique(df$scenario))), ]
-cat(sprintf("  %-20s %-16s %12s %s\n", df$scenario, df$framework,
+cat(sprintf("  %-20s %-20s %12s %s\n", df$scenario, df$framework,
             formatC(df$value, format = "f", digits = 1, big.mark = ","),
             df$unit), sep = "")

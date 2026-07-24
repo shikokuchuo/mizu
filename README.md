@@ -99,6 +99,60 @@ kio_collect(t)
 #> [1] 500500
 ```
 
+## Parallel map
+
+`kio_map()` maps a function over a vector or list on the pool, returning results in input order.
+It is not a loop over `kio_submit()`: the function, its constant arguments, and the data are staged once in shared memory, a handful of chunk tasks divide the elements, and each worker sets up the map at most once — so the per-element cost approaches `lapply()`’s while the work spreads across workers and balances itself through stealing.
+
+``` r
+kio_map(p, 1:10, function(i) i * 2L)
+#> [[1]]
+#> [1] 2
+#> 
+#> [[2]]
+#> [1] 4
+#> 
+#> [[3]]
+#> [1] 6
+#> 
+#> [[4]]
+#> [1] 8
+#> 
+#> [[5]]
+#> [1] 10
+#> 
+#> [[6]]
+#> [1] 12
+#> 
+#> [[7]]
+#> [1] 14
+#> 
+#> [[8]]
+#> [1] 16
+#> 
+#> [[9]]
+#> [1] 18
+#> 
+#> [[10]]
+#> [1] 20
+```
+
+A `.template` (in the style of `vapply()`’s `FUN.VALUE`) returns an atomic vector or matrix instead of a list, with results written straight into shared memory — moving cross-process exactly once, unserialized:
+
+``` r
+kio_map(p, rnorm(100000), function(x) abs(x), .template = numeric(1))[1:5]
+#> [1] 0.3573208 0.6221294 1.6693877 1.0483457 2.3353666
+```
+
+Random numbers drawn inside the function are not reproducible by default — and cost nothing extra.
+Passing `.seed` gives every element its own L’Ecuyer-CMRG stream, so results are identical for any chunking, worker count, or steal order:
+
+``` r
+identical(kio_map(p, 1:4, function(i) rnorm(2), .seed = 42L),
+          kio_map(p, 1:4, function(i) rnorm(2), .seed = 42L, .chunks = 4L))
+#> [1] TRUE
+```
+
 ## Sizing, sharing and watching a pool
 
 A pool can grow and shrink while it runs.
@@ -152,6 +206,7 @@ Regions belonging to running processes are never touched.
 | `kio_submit()` | send an expression to the pool; returns a task handle immediately |
 | `kio_collect()` | wait for and return a task’s result |
 | `kio_cancel()` | withdraw a task (never interrupts one already running) |
+| `kio_map()` | map a function over a vector on the pool, staged once, in input order |
 | `kio_pool_attach()` | join an existing pool as a submitter, from another process |
 | `kio_spawn_workers()` / `kio_retire_worker()` | grow / shrink the worker set while the pool runs |
 | `kio_pool_status()` / `kio_pool_stats()` / `kio_pool_dump()` | observe a pool: snapshot, cumulative counters, full diagnostic dump |

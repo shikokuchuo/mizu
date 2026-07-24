@@ -758,7 +758,7 @@ SEXP kio_channel_attach(SEXP suffix_sexp) {
 
   kio_chan *c = calloc(1, sizeof(*c));
   if (c == NULL) Rf_error("kioto: allocation failure");
-  if (kio_shm_open_rw(&c->shm, name) != 0) {
+  if (kio_shm_open_rw(&c->shm, name, 1) != 0) {
     free(c);
     Rf_error("kioto: cannot open channel region '%s'", name);
   }
