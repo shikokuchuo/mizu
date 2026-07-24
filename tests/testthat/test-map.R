@@ -5,11 +5,16 @@
 # between submit and collect. Cross-process maps (spawned workers, worker
 # death, stealing) are test-map-process.R.
 
+# collect under a file-wide 30s guard: a chunk missed by the stepping
+# above fails the test loudly instead of hanging CI on an infinite wait
+collect30 <- function(pool, st)
+  kioto:::map_collect(pool, st, deadline = kioto:::mono_time() + 30)
+
 run_map <- function(p, x, f, dots = list(), ..., steps = 256L) {
   st <- kioto:::map_stage(p$ctrl, x, f, dots, ...)
   kioto:::map_submit(p$ctrl, st)
   for (i in seq_len(steps)) if (pool_step(p) != 1L) break
-  kioto:::map_collect(p$ctrl, st)
+  collect30(p$ctrl, st)
 }
 
 test_that("a map returns results in input order with names reapplied", {
@@ -26,7 +31,7 @@ test_that("a map returns results in input order with names reapplied", {
   kioto:::map_submit(p$ctrl, st)
   expect_identical(kio_pool_status(p$ctrl)$injection, 3)
   while (pool_step(p) == 1L) NULL
-  expect_identical(kioto:::map_collect(p$ctrl, st),
+  expect_identical(collect30(p$ctrl, st),
                    as.list(setNames(1:10 * 2L, letters[1:10])))
   pool_end(p)
 })
@@ -39,7 +44,7 @@ test_that("every atomic x type maps, RAWVEC or descriptor as gated", {
     expect_true(st$xraw)
     kioto:::map_submit(p$ctrl, st)
     while (pool_step(p) == 1L) NULL
-    expect_identical(kioto:::map_collect(p$ctrl, st), lapply(x, identity))
+    expect_identical(collect30(p$ctrl, st), lapply(x, identity))
   }
   # character, list, and classed vectors ride the descriptor
   for (x in list(letters[1:5], list(1:3, "a"), factor(c("a", "b")),
@@ -48,7 +53,7 @@ test_that("every atomic x type maps, RAWVEC or descriptor as gated", {
     expect_false(st$xraw)
     kioto:::map_submit(p$ctrl, st)
     while (pool_step(p) == 1L) NULL
-    expect_identical(kioto:::map_collect(p$ctrl, st), lapply(x, identity))
+    expect_identical(collect30(p$ctrl, st), lapply(x, identity))
   }
   # an extra attribute (beyond names) also disqualifies bare-byte slicing,
   # as does ALTREP: a compact 1:n serializes as its compact form — smaller
@@ -103,7 +108,7 @@ test_that("character templates assemble through the generic path", {
   expect_false(st$direct)   # no output area: chunks return lists
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  expect_identical(kioto:::map_collect(p$ctrl, st),
+  expect_identical(collect30(p$ctrl, st),
                    vapply(1:4, function(i) letters[i], character(1)))
   pool_end(p)
 })
@@ -115,7 +120,7 @@ test_that("template type and length checks fail per element, with index", {
                           template = integer(1), chunks = 2)
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  e <- tryCatch(kioto:::map_collect(p$ctrl, st), error = identity)
+  e <- tryCatch(collect30(p$ctrl, st), error = identity)
   expect_match(conditionMessage(e), "type 'integer' and length 1")
   expect_identical(e$kio_map_index, 2)   # first element whose length isn't 1
   # downward type (double into integer template) is refused, as vapply
@@ -123,7 +128,7 @@ test_that("template type and length checks fail per element, with index", {
                           template = integer(1))
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  e <- tryCatch(kioto:::map_collect(p$ctrl, st), error = identity)
+  e <- tryCatch(collect30(p$ctrl, st), error = identity)
   expect_match(conditionMessage(e), "type 'integer'")
   pool_end(p)
 })
@@ -135,7 +140,7 @@ test_that("an error in f re-signals with the failing element's index", {
                           list(), chunks = 2)
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  e <- tryCatch(kioto:::map_collect(p$ctrl, st), error = identity)
+  e <- tryCatch(collect30(p$ctrl, st), error = identity)
   expect_s3_class(e, "simpleError")
   expect_identical(conditionMessage(e), "boom 7")
   expect_identical(e$kio_map_index, 7)
@@ -151,7 +156,7 @@ test_that("classed conditions from f survive the crossing, index attached", {
                           list(cond = cond), chunks = 2)
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  e <- tryCatch(kioto:::map_collect(p$ctrl, st), error = identity)
+  e <- tryCatch(collect30(p$ctrl, st), error = identity)
   expect_s3_class(e, "kio_test_error")
   expect_identical(e$kio_map_index, 3)
   pool_end(p)
@@ -163,7 +168,7 @@ test_that("an observed chunk error cancels the uncollected chunks", {
                           list(), chunks = 3)
   kioto:::map_submit(p$ctrl, st)
   pool_step(p)   # only chunk 1 runs — and errors
-  expect_error(kioto:::map_collect(p$ctrl, st), "now")
+  expect_error(collect30(p$ctrl, st), "now")
   d <- kio_pool_dump(p$ctrl)
   expect_identical(sort(d$tasks$status), c("cancel", "cancel"))
   while (pool_step(p) == 1L) NULL   # cancelled chunks drop at their pop
@@ -189,7 +194,7 @@ test_that("n = 0, n = 1, and n < chunks all behave", {
   expect_identical(st$C, 3L)
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  expect_identical(kioto:::map_collect(p$ctrl, st), as.list(1:3))
+  expect_identical(collect30(p$ctrl, st), as.list(1:3))
   pool_end(p)
 })
 
@@ -204,7 +209,7 @@ test_that("the chunk count clamps to the free result-slot subrange", {
   expect_identical(st$C, 3L)
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  expect_identical(kioto:::map_collect(p$ctrl, st), as.list(1:100))
+  expect_identical(collect30(p$ctrl, st), as.list(1:100))
   for (i in 1:5) expect_identical(kio_collect(held[[i]], timeout = 5), i)
   pool_end(p)
 })
@@ -230,7 +235,7 @@ test_that("zero live workers floors C at 1; a rejoined worker drains it", {
   wk <- .Call(kioto:::kio_pool_worker_join, suffix, 0L)
   .Call(kioto:::kio_pool_set_eval, wk)
   while (pool_step(p, wk = wk) == 1L) NULL
-  expect_identical(kioto:::map_collect(p$ctrl, st), as.list(2:7))
+  expect_identical(collect30(p$ctrl, st), as.list(2:7))
   .Call(kioto:::kio_pool_leave, wk)
   .Call(kioto:::kio_pool_destroy, p$ctrl)
 })
@@ -244,7 +249,7 @@ test_that("a small map rides entirely inline, no region", {
   expect_type(st$blob, "raw")
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  expect_identical(kioto:::map_collect(p$ctrl, st), as.list(2:5))
+  expect_identical(collect30(p$ctrl, st), as.list(2:5))
   pool_end(p)
 })
 
@@ -259,7 +264,7 @@ test_that("the region chunk wrapper fits a slot_size = 256 entry budget", {
   # stayed inline, and the template path publishes NULL chunk results
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
-  expect_identical(kioto:::map_collect(p$ctrl, st),
+  expect_identical(collect30(p$ctrl, st),
                    vapply(1:100, sqrt, numeric(1)))
   expect_identical(kio_pool_stats(p$ctrl)$submitters$spills[1L], 0)
   pool_end(p)
@@ -299,8 +304,8 @@ test_that("two submitters' maps hold two contexts on one worker", {
   for (i in 1:4) expect_identical(pool_step(p), 1L)
   expect_setequal(ls(.Call(kioto:::kio_pool_map_cache, p$wk)),
                   c(st1$name, st2$name))
-  expect_identical(kioto:::map_collect(p$ctrl, st1), as.list(2:5))
-  expect_identical(kioto:::map_collect(s1, st2), as.list(101:104))
+  expect_identical(collect30(p$ctrl, st1), as.list(2:5))
+  expect_identical(collect30(s1, st2), as.list(101:104))
   pool_end(p)
 })
 

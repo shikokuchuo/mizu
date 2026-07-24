@@ -102,7 +102,7 @@ test_that("kio_map reports against serial lapply and per-task dispatch", {
   f <- function(i) i + 1L
   mp <- function() {
     t0 <- proc.time()[[3]]
-    r <- kio_map(p, x, f, .template = numeric(1))
+    r <- kio_map(p, x, f, .template = numeric(1), .timeout = 60)
     us <- (proc.time()[[3]] - t0) / n * 1e6
     expect_identical(r, x + 1)
     us
@@ -122,7 +122,7 @@ test_that("kio_map reports against serial lapply and per-task dispatch", {
     i
   }
   t0 <- proc.time()[[3]]
-  r <- kio_map(p, 1:64, slow)
+  r <- kio_map(p, 1:64, slow, .timeout = 60)
   el <- proc.time()[[3]] - t0
   expect_identical(r, as.list(1:64))
   cat(sprintf("kio_map 64 x 5ms on 2 workers: %.2fs (serial 0.32s)\n", el))
