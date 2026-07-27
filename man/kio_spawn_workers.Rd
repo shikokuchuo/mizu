@@ -32,7 +32,8 @@ the default \code{""} sends worker output to the host's console. Ignored
 when \code{launcher} is supplied.}
 
 \item{startup_timeout}{seconds to wait for all workers to join before
-giving up and destroying the pool.}
+giving up, destroying the pool, and raising \code{kio_error_startup} (see
+\link{kio_error}).}
 
 \item{slot}{the worker's slot index (0-based, as reported by
 \code{\link[=kio_pool_dump]{kio_pool_dump()}}).}

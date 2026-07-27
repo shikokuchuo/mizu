@@ -110,7 +110,8 @@ index among the chunks that ran. Remaining chunks are cancelled
 its result is discarded). The trade-off of in-order collection is that
 an instant failure in a later chunk is not observed while collect
 blocks on an earlier slow chunk. If a worker dies mid-chunk, the map
-errors with that chunk's element range. On \code{.timeout} expiry —
+raises \code{kio_error_worker_died} (see \link{kio_error}) naming that chunk's
+element range, carried as an \code{elements} field. On \code{.timeout} expiry —
 mid-submit or mid-collect — outstanding chunks are cancelled and the
 \code{kio_timeout} sentinel is returned, never raised. Cancellation is
 immediate, but a published-uncollected chunk result's slot is released

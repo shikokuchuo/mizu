@@ -44,7 +44,8 @@
 #'   recorded in the region so both sides use the same files. Defaults to
 #'   [tempdir()].
 #' @param startup_timeout seconds to wait for the peer to attach and signal
-#'   ready before giving up and releasing the channel.
+#'   ready before giving up, releasing the channel, and raising
+#'   `kio_error_startup` (see [kio_error]).
 #'
 #' @return A channel handle (class `"kio_channel"`). Handles are
 #'   process-private and do not survive `fork()`.
@@ -77,8 +78,9 @@ kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
     launcher(suffix)
   if (!.Call(kio_channel_ready_wait, ch, startup_timeout)) {
     .Call(kio_channel_destroy, ch)
-    stop("kioto: child failed to attach within ", format(startup_timeout),
-         " seconds", call. = FALSE)
+    stop_kio("kio_error_startup",
+             paste0("kioto: child failed to attach within ",
+                    format(startup_timeout), " seconds"))
   }
   ch
 }

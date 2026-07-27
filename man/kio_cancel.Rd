@@ -16,5 +16,6 @@ was too late — the task completed, or was already cancelled.
 \description{
 Advisory and discard-only, never preemptive: a task still queued is
 skipped by the worker; a task already executing runs to completion and
-its result is dropped. Collecting a cancelled handle raises an error.
+its result is dropped. Collecting a cancelled handle raises
+\code{kio_error_cancelled} (see \link{kio_error}).
 }

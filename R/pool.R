@@ -49,7 +49,8 @@
 #'   recorded in the region so every participant uses the same files.
 #'   Defaults to [tempdir()].
 #' @param startup_timeout seconds to wait for all workers to join before
-#'   giving up and destroying the pool.
+#'   giving up, destroying the pool, and raising `kio_error_startup` (see
+#'   [kio_error]).
 #'
 #' @return A pool handle (class `"kio_pool"`) holding submitter slot 0.
 #'   Handles are process-private and do not survive `fork()`.
@@ -86,8 +87,9 @@ kio_pool <- function(n_workers = 1L, max_workers = n_workers,
   if (!.Call(kio_pool_ready_wait, p, seq_len(n_workers) - 1L,
              startup_timeout)) {
     .Call(kio_pool_destroy, p)
-    stop("kioto: workers failed to attach within ", format(startup_timeout),
-         " seconds", call. = FALSE)
+    stop_kio("kio_error_startup",
+             paste0("kioto: workers failed to attach within ",
+                    format(startup_timeout), " seconds"))
   }
   p
 }
@@ -135,8 +137,9 @@ kio_spawn_workers <- function(pool, n = 1L, launcher = NULL, stdout = "",
       launcher(suffix, slot)
   }
   if (!.Call(kio_pool_ready_wait, pool, as.integer(slots), startup_timeout))
-    stop("kioto: workers failed to attach within ", format(startup_timeout),
-         " seconds", call. = FALSE)
+    stop_kio("kio_error_startup",
+             paste0("kioto: workers failed to attach within ",
+                    format(startup_timeout), " seconds"))
   invisible(as.integer(slots))
 }
 
@@ -174,15 +177,32 @@ kio_pool_attach <- function(name) {
 #' task's error condition, re-signalled in the collecting process.
 #'
 #' Submission blocks only when the submitter's own injection ring is full —
-#' back-pressure is per-submitter — and errors on `.timeout` expiry rather
-#' than stalling. Collection returns the `kio_timeout` sentinel (class
-#' `c("kio_timeout", "kio_condition")`) if no result arrives within
-#' `timeout`. A task whose handle was cancelled (or whose pool was stopped)
-#' raises an error on collect, as does a task whose executing worker died:
-#' worker death is detected at OS notification latency (a kernel-released
-#' lock is the verdict — no heartbeats, no polling) and fails exactly the
-#' tasks the dead worker had claimed, while work still queued on its deque
-#' is consumed by the surviving workers.
+#' back-pressure is per-submitter — and raises `kio_error_submit_timeout`
+#' on `.timeout` expiry rather than stalling. Collection returns the
+#' `kio_timeout` sentinel (class `c("kio_timeout", "kio_condition")`) if no
+#' result arrives within `timeout`. A task whose handle was cancelled (or
+#' whose pool was stopped) raises `kio_error_cancelled` on collect; a task
+#' whose executing worker died raises `kio_error_worker_died`, carrying the
+#' worker's slot and pid (see [kio_error]): worker death is detected at OS
+#' notification latency (a kernel-released lock is the verdict — no
+#' heartbeats, no polling) and fails exactly the tasks the dead worker had
+#' claimed, while work still queued on its deque is consumed by the
+#' surviving workers.
+#'
+#' @section Outcomes:
+#' Timeout on collect is a normal outcome and is returned; every
+#' exceptional outcome is raised, as a classed condition (see [kio_error]):
+#'
+#' | outcome | surfaced as | class |
+#' |---|---|---|
+#' | result published | the value, returned | — |
+#' | no result within `timeout` | sentinel, returned | `c("kio_timeout", "kio_condition")` |
+#' | ring full past `.timeout` | raised by `kio_submit()` | `kio_error_submit_timeout` |
+#' | result slots exhausted | raised by `kio_submit()` | `kio_error_slots_exhausted` |
+#' | pool stopped, or owner died | raised by `kio_submit()` | `kio_error_stopped` |
+#' | task raised an error | re-signalled on collect | the task's own condition classes |
+#' | cancelled, or pool stopped | raised on collect | `kio_error_cancelled` |
+#' | executing worker died | raised on collect | `kio_error_worker_died` |
 #'
 #' Task expressions see their evaluating worker's own handle as `pool`
 #' (beneath the arguments in `...`), so tasks can submit nested subtasks:
@@ -243,7 +263,8 @@ kio_collect <- function(task, timeout = Inf)
 #'
 #' Advisory and discard-only, never preemptive: a task still queued is
 #' skipped by the worker; a task already executing runs to completion and
-#' its result is dropped. Collecting a cancelled handle raises an error.
+#' its result is dropped. Collecting a cancelled handle raises
+#' `kio_error_cancelled` (see [kio_error]).
 #'
 #' @inheritParams kio_submit
 #'
@@ -256,7 +277,7 @@ kio_cancel <- function(task) invisible(.Call(kio_pool_cancel, task))
 #' Stop a Pool
 #'
 #' Broadcasts shutdown, wakes every parked participant, cancels all pending
-#' tasks (blocked collectors raise "task cancelled or pool stopped"), waits
+#' tasks (blocked collectors raise `kio_error_cancelled`), waits
 #' up to `timeout` seconds for workers to exit cleanly, and unlinks the
 #' region and liveness files. The handle is dead afterwards; stopping it
 #' again is a no-op. Only the creating process can stop a pool.

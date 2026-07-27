@@ -130,9 +130,10 @@ SEXP kio_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   if (rc != MORI_OK) {
     const char *summary, *hint;
     mori_err_describe(rc, &summary, &hint);
-    Rf_error("kioto: cannot create map region (%llu bytes): %s%s%s",
-             (unsigned long long) off, summary,
-             hint[0] != '\0' ? ". " : "", hint);
+    kio_stop_shm((double) off,
+                 "kioto: cannot create map region (%llu bytes): %s%s%s",
+                 (unsigned long long) off, summary,
+                 hint[0] != '\0' ? ". " : "", hint);
   }
   SEXP wrap = PROTECT(kio_shm_wrap_producer(shm));
   unsigned char *b = (unsigned char *) shm->addr;
@@ -198,8 +199,8 @@ SEXP kio_map_open(SEXP name_sexp, SEXP writable_sexp) {
   mori_shm *shm = Rf_asLogical(writable_sexp) == TRUE ?
     kio_shm_open_rw_heap(name, 0) : mori_shm_open_heap(name);
   if (shm == NULL)
-    Rf_error("kioto: cannot open map region '%s' — its submitter died or "
-             "the map ended", name);
+    kio_stop_shm(NA_REAL, "kioto: cannot open map region '%s' — its "
+                 "submitter died or the map ended", name);
   const char *err = map_hdr_validate(shm, NULL);
   if (err != NULL) {
     mori_shm_close(shm, 0);

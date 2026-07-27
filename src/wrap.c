@@ -79,8 +79,9 @@ SEXP kio_region_create(SEXP size) {
   if (rc) {
     const char *summary, *hint;
     mori_err_describe(rc, &summary, &hint);
-    Rf_error("kioto: cannot create region (requested %.0f bytes): %s%s%s",
-             sz, summary, hint[0] != '\0' ? ". " : "", hint);
+    kio_stop_shm(sz,
+                 "kioto: cannot create region (requested %.0f bytes): %s%s%s",
+                 sz, summary, hint[0] != '\0' ? ". " : "", hint);
   }
   return kio_shm_wrap_producer(shm);
 }
@@ -93,7 +94,7 @@ SEXP kio_region_open(SEXP name, SEXP rw) {
   mori_shm *shm = Rf_asLogical(rw) == TRUE ?
     kio_shm_open_rw_heap(nm, 1) : mori_shm_open_heap(nm);
   if (shm == NULL)
-    Rf_error("kioto: cannot open region '%s'", nm);
+    kio_stop_shm(NA_REAL, "kioto: cannot open region '%s'", nm);
   return kio_shm_wrap_consumer(shm);
 }
 

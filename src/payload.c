@@ -48,9 +48,10 @@ SEXP kio_payload_spill_shm(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
   if (rc != MORI_OK) {
     const char *summary, *hint;
     mori_err_describe(rc, &summary, &hint);
-    Rf_error("kioto: cannot create payload region (%llu bytes): %s%s%s",
-             (unsigned long long) n, summary,
-             hint[0] != '\0' ? ". " : "", hint);
+    kio_stop_shm((double) n,
+                 "kioto: cannot create payload region (%llu bytes): %s%s%s",
+                 (unsigned long long) n, summary,
+                 hint[0] != '\0' ? ". " : "", hint);
   }
   SEXP wrap = PROTECT(kio_shm_wrap_producer(shm));
   mori_serialize_into((unsigned char *) shm->addr, n, x);
@@ -115,7 +116,7 @@ SEXP kio_payload_read(const kio_slot_hdr *hdr, const unsigned char *payload,
         *gone = 1;
         return R_NilValue;
       }
-      Rf_error("kioto: cannot open payload region '%s'", name);
+      kio_stop_shm(NA_REAL, "kioto: cannot open payload region '%s'", name);
     }
     PROTECT(kio_shm_wrap_consumer(shm));
     SEXP y = mori_unserialize_from((unsigned char *) shm->addr, shm->size);

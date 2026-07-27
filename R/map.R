@@ -92,7 +92,8 @@ mono_time <- function() proc.time()[[3L]]
 #' its result is discarded). The trade-off of in-order collection is that
 #' an instant failure in a later chunk is not observed while collect
 #' blocks on an earlier slow chunk. If a worker dies mid-chunk, the map
-#' errors with that chunk's element range. On `.timeout` expiry —
+#' raises `kio_error_worker_died` (see [kio_error]) naming that chunk's
+#' element range, carried as an `elements` field. On `.timeout` expiry —
 #' mid-submit or mid-collect — outstanding chunks are cancelled and the
 #' `kio_timeout` sentinel is returned, never raised. Cancellation is
 #' immediate, but a published-uncollected chunk result's slot is released
@@ -251,8 +252,9 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
   # any region is created
   caps <- .Call(kio_pool_map_caps, pool)
   if (caps[[2L]] == 0L)
-    stop("kioto: result slots exhausted \u2014 collect or cancel ",
-         "outstanding tasks first", call. = FALSE)
+    stop_kio("kio_error_slots_exhausted",
+             paste0("kioto: result slots exhausted \u2014 collect or cancel ",
+                    "outstanding tasks first"))
   C <- if (is.null(chunks)) {
     min(n, 8 * caps[[1L]], caps[[2L]], caps[[3L]])
   } else {
@@ -331,7 +333,7 @@ map_submit <- function(pool, st, deadline = Inf) {
                   error = identity)
     if (inherits(h, "error")) {
       map_cancel(st)
-      if (grepl("submission timed out", conditionMessage(h), fixed = TRUE)) {
+      if (inherits(h, "kio_error_submit_timeout")) {
         st$timed_out <- TRUE
         return(invisible(st))
       }
@@ -360,10 +362,12 @@ map_collect <- function(pool, st, deadline = Inf) {
                   error = identity)
     if (inherits(v, "condition")) {
       map_cancel(st)
-      if (identical(conditionMessage(v),
-                    "kioto: worker died while executing this task"))
-        stop(sprintf("kioto: worker died while executing map elements %.0f-%.0f",
-                     st$lo[[k]], st$hi[[k]]), call. = FALSE)
+      if (inherits(v, "kio_error_worker_died"))
+        stop_kio("kio_error_worker_died",
+                 sprintf("kioto: worker died while executing map elements %.0f-%.0f",
+                         st$lo[[k]], st$hi[[k]]),
+                 slot = v$slot, pid = v$pid,
+                 elements = c(st$lo[[k]], st$hi[[k]]))
       stop(v)
     }
     v <- v[[1L]]

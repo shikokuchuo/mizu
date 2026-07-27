@@ -46,15 +46,33 @@ task's error condition, re-signalled in the collecting process.
 }
 \details{
 Submission blocks only when the submitter's own injection ring is full —
-back-pressure is per-submitter — and errors on \code{.timeout} expiry rather
-than stalling. Collection returns the \code{kio_timeout} sentinel (class
-\code{c("kio_timeout", "kio_condition")}) if no result arrives within
-\code{timeout}. A task whose handle was cancelled (or whose pool was stopped)
-raises an error on collect, as does a task whose executing worker died:
-worker death is detected at OS notification latency (a kernel-released
-lock is the verdict — no heartbeats, no polling) and fails exactly the
-tasks the dead worker had claimed, while work still queued on its deque
-is consumed by the surviving workers.
+back-pressure is per-submitter — and raises \code{kio_error_submit_timeout}
+on \code{.timeout} expiry rather than stalling. Collection returns the
+\code{kio_timeout} sentinel (class \code{c("kio_timeout", "kio_condition")}) if no
+result arrives within \code{timeout}. A task whose handle was cancelled (or
+whose pool was stopped) raises \code{kio_error_cancelled} on collect; a task
+whose executing worker died raises \code{kio_error_worker_died}, carrying the
+worker's slot and pid (see \link{kio_error}): worker death is detected at OS
+notification latency (a kernel-released lock is the verdict — no
+heartbeats, no polling) and fails exactly the tasks the dead worker had
+claimed, while work still queued on its deque is consumed by the
+surviving workers.
+}
+\section{Outcomes}{
+
+Timeout on collect is a normal outcome and is returned; every
+exceptional outcome is raised, as a classed condition (see \link{kio_error}):\tabular{lll}{
+   outcome \tab surfaced as \tab class \cr
+   result published \tab the value, returned \tab — \cr
+   no result within \code{timeout} \tab sentinel, returned \tab \code{c("kio_timeout", "kio_condition")} \cr
+   ring full past \code{.timeout} \tab raised by \code{kio_submit()} \tab \code{kio_error_submit_timeout} \cr
+   result slots exhausted \tab raised by \code{kio_submit()} \tab \code{kio_error_slots_exhausted} \cr
+   pool stopped, or owner died \tab raised by \code{kio_submit()} \tab \code{kio_error_stopped} \cr
+   task raised an error \tab re-signalled on collect \tab the task's own condition classes \cr
+   cancelled, or pool stopped \tab raised on collect \tab \code{kio_error_cancelled} \cr
+   executing worker died \tab raised on collect \tab \code{kio_error_worker_died} \cr
+}
+
 
 Task expressions see their evaluating worker's own handle as \code{pool}
 (beneath the arguments in \code{...}), so tasks can submit nested subtasks:
@@ -71,6 +89,7 @@ the pool as the value is returned. Dropping an uncollected handle to the
 garbage collector cancels a still-queued task and discards a published
 result.
 }
+
 \examples{
 \dontrun{
 p <- kio_pool()

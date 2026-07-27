@@ -18,7 +18,7 @@ Invisibly, \code{TRUE} if all workers exited within the timeout,
 }
 \description{
 Broadcasts shutdown, wakes every parked participant, cancels all pending
-tasks (blocked collectors raise "task cancelled or pool stopped"), waits
+tasks (blocked collectors raise \code{kio_error_cancelled}), waits
 up to \code{timeout} seconds for workers to exit cleanly, and unlinks the
 region and liveness files. The handle is dead afterwards; stopping it
 again is a no-op. Only the creating process can stop a pool.

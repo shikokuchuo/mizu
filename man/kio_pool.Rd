@@ -60,7 +60,8 @@ recorded in the region so every participant uses the same files.
 Defaults to \code{\link[=tempdir]{tempdir()}}.}
 
 \item{startup_timeout}{seconds to wait for all workers to join before
-giving up and destroying the pool.}
+giving up, destroying the pool, and raising \code{kio_error_startup} (see
+\link{kio_error}).}
 }
 \value{
 A pool handle (class \code{"kio_pool"}) holding submitter slot 0.

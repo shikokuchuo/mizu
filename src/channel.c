@@ -640,9 +640,10 @@ SEXP kio_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
     free(c);
     const char *summary, *hint;
     mori_err_describe(rc, &summary, &hint);
-    Rf_error("kioto: cannot create channel region (%llu bytes): %s%s%s",
-             (unsigned long long) total, summary,
-             hint[0] != '\0' ? ". " : "", hint);
+    kio_stop_shm((double) total,
+                 "kioto: cannot create channel region (%llu bytes): %s%s%s",
+                 (unsigned long long) total, summary,
+                 hint[0] != '\0' ? ". " : "", hint);
   }
   c->side = KIO_ENTITY_HOST;
   c->self_pid = kio_self_pid();
@@ -761,7 +762,7 @@ SEXP kio_channel_attach(SEXP suffix_sexp) {
   if (c == NULL) Rf_error("kioto: allocation failure");
   if (kio_shm_open_rw(&c->shm, name, 1) != 0) {
     free(c);
-    Rf_error("kioto: cannot open channel region '%s'", name);
+    kio_stop_shm(NA_REAL, "kioto: cannot open channel region '%s'", name);
   }
   c->side = KIO_ENTITY_PEER;
   c->self_pid = kio_self_pid();

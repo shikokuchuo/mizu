@@ -30,8 +30,6 @@ Install the development version from GitHub:
 pak::pak("shikokuchuo/kioto")
 ```
 
-kioto requires 64-bit R, and on Linux a kernel \>= 5.3.
-
 ## Channels
 
 The essential function is `kio_channel()`: it creates a bidirectional shared-memory channel — one lock-free ring per direction — and spawns a child R process connected to its other end.
@@ -88,7 +86,7 @@ A nested submit pushes straight onto the worker’s own work-stealing deque — 
 t <- kio_submit(
   p,
   {
-    subtasks <- lapply(parts, function(part) kio_submit(pool, sum(x), x = part))
+    subtasks <- lapply(parts, \(part) kio_submit(pool, sum(x), x = part))
     do.call(sum, lapply(subtasks, kio_collect))
   },
   parts = split(1:1000, rep(1:4, each = 250))
@@ -103,7 +101,7 @@ kio_collect(t)
 It is not a loop over `kio_submit()`: the function, its constant arguments, and the data are staged once in shared memory, a handful of chunk tasks divide the elements, and each worker sets up the map at most once — so the per-element cost approaches `lapply()`’s while the work spreads across workers and balances itself through stealing.
 
 ``` r
-kio_map(p, 1:10, function(i) i * 2L)
+kio_map(p, 1:5, \(i) i * 2L)
 #> [[1]]
 #> [1] 2
 #> 
@@ -118,36 +116,21 @@ kio_map(p, 1:10, function(i) i * 2L)
 #> 
 #> [[5]]
 #> [1] 10
-#> 
-#> [[6]]
-#> [1] 12
-#> 
-#> [[7]]
-#> [1] 14
-#> 
-#> [[8]]
-#> [1] 16
-#> 
-#> [[9]]
-#> [1] 18
-#> 
-#> [[10]]
-#> [1] 20
 ```
 
 A `.template` (in the style of `vapply()`’s `FUN.VALUE`) returns an atomic vector or matrix instead of a list, with results written straight into shared memory — moving cross-process exactly once, unserialized:
 
 ``` r
-kio_map(p, rnorm(100000), function(x) abs(x), .template = numeric(1))[1:5]
-#> [1] 1.4165742 0.6900896 1.4204285 0.8180850 0.0229823
+kio_map(p, seq.int(-5, 5), abs, .template = numeric(1))
+#>  [1] 5 4 3 2 1 0 1 2 3 4 5
 ```
 
 Random numbers drawn inside the function are not reproducible by default — and cost nothing extra.
 Passing `.seed` gives every element its own L’Ecuyer-CMRG stream, so results are identical for any chunking, worker count, or steal order:
 
 ``` r
-identical(kio_map(p, 1:4, function(i) rnorm(2), .seed = 42L),
-          kio_map(p, 1:4, function(i) rnorm(2), .seed = 42L, .chunks = 4L))
+identical(kio_map(p, 1:4, \(i) rnorm(i), .seed = 123L),
+          kio_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L))
 #> [1] TRUE
 ```
 
@@ -171,7 +154,7 @@ Four read-only tools observe a running pool without disturbing it:
 kio_pool_status(p)  # snapshot: worker states, queued tasks, result slots
 kio_pool_stats(p)   # cumulative counters: tasks run, steals, parks per worker
 kio_pool_dump(p)    # every slot in full detail — the first tool when a pool hangs
-kio_pool_trace(p, function(event, id) message(event, " ", id))  # task lifecycle hook
+kio_pool_trace(p, \(event, id) message(event, " ", id))  # task lifecycle hook
 ```
 
 When you are done, `kio_pool_stop()` cancels pending tasks, waits for the workers to exit cleanly, and releases the shared region:

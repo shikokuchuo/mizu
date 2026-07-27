@@ -131,6 +131,23 @@ SEXP kio_payload_read(const kio_slot_hdr *hdr, const unsigned char *payload,
 /* Terminal-state sentinels (channel.c), shared across the verb surface. */
 extern SEXP kio_sent_full, kio_sent_timeout, kio_sent_closed, kio_sent_gone;
 
+/* Classed error conditions (condition.c): signal an R condition of class
+   c(subclass, "kio_error", "error", "condition") with a NULL call, so
+   handlers dispatch on class instead of parsing messages. The typed
+   variants add structured fields: _shm carries the requested byte count
+   (NA_REAL on opens, where the size is unknown), _died the result slot's
+   claimant record (negative = unknown -> NA) — informational reads, racy
+   against slot reuse exactly as kio_pool_dump is. Never return. */
+#ifndef R_PRINTF_FORMAT                        /* added in R 4.4.0 */
+#define R_PRINTF_FORMAT(M, N)
+#endif
+NORET void kio_stop(const char *subclass, const char *fmt, ...)
+  R_PRINTF_FORMAT(2, 3);
+NORET void kio_stop_shm(double bytes, const char *fmt, ...)
+  R_PRINTF_FORMAT(2, 3);
+NORET void kio_stop_died(int slot, double pid, const char *fmt, ...)
+  R_PRINTF_FORMAT(3, 4);
+
 // Per-entity parker ------------------------------------------------------------
 
 /* One parker per waiting entity: a 32-bit monotonic epoch word in the shared

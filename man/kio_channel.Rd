@@ -51,7 +51,8 @@ recorded in the region so both sides use the same files. Defaults to
 \code{\link[=tempdir]{tempdir()}}.}
 
 \item{startup_timeout}{seconds to wait for the peer to attach and signal
-ready before giving up and releasing the channel.}
+ready before giving up, releasing the channel, and raising
+\code{kio_error_startup} (see \link{kio_error}).}
 }
 \value{
 A channel handle (class \code{"kio_channel"}). Handles are

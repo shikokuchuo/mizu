@@ -60,9 +60,10 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   e <- tryCatch(kioto:::map_collect(p, st,
                                     deadline = kioto:::mono_time() + 30),
                 error = identity)
-  expect_s3_class(e, "error")
+  expect_s3_class(e, "kio_error_worker_died")
   expect_match(conditionMessage(e),
                "worker died while executing map elements 3-4")
+  expect_equal(e$elements, c(3, 4))
   # the pool remains serviceable on the survivor
   expect_identical(kio_map(p, 1:4, function(i) i + 1L, .timeout = 30),
                    as.list(2:5))

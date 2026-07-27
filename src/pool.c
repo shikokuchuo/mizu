@@ -573,9 +573,10 @@ SEXP kio_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
     free(p);
     const char *summary, *hint;
     mori_err_describe(rc, &summary, &hint);
-    Rf_error("kioto: cannot create pool region (%llu bytes): %s%s%s",
-             (unsigned long long) total, summary,
-             hint[0] != '\0' ? ". " : "", hint);
+    kio_stop_shm((double) total,
+                 "kioto: cannot create pool region (%llu bytes): %s%s%s",
+                 (unsigned long long) total, summary,
+                 hint[0] != '\0' ? ". " : "", hint);
   }
   p->role = KIO_ROLE_CONTROLLER;
   p->self_pid = kio_self_pid();
@@ -781,7 +782,7 @@ static kio_pool *pool_open_common(const char *suffix, SEXP *xp_out,
   if (p == NULL) Rf_error("kioto: allocation failure");
   if (kio_shm_open_rw(&p->shm, name, 1) != 0) {
     free(p);
-    Rf_error("kioto: cannot open pool region '%s'", name);
+    kio_stop_shm(NA_REAL, "kioto: cannot open pool region '%s'", name);
   }
   p->self_pid = kio_self_pid();
   p->wk_slot = -1;
@@ -822,7 +823,7 @@ static void pool_owner_check(kio_pool *p) {
     Rf_error("kioto: cannot open owner liveness file '%s'", path);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
       kio_live_try(p->live_owner) == KIO_LIVE_ACQUIRED)
-    Rf_error("kioto: pool stopped or owner dead");
+    kio_stop("kio_error_stopped", "kioto: pool stopped or owner dead");
 }
 
 static void pool_watch_owner(kio_pool *p, kio_parker *own_pk) {
@@ -1111,12 +1112,12 @@ static int pool_ring_space_wait(kio_pool *p, _Atomic int64_t *head,
     }
     if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0) {
       atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
-      Rf_error("kioto: pool stopped");
+      kio_stop("kio_error_stopped", "kioto: pool stopped");
     }
     if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
       atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
       pool_orphan_teardown_try(p);
-      Rf_error("kioto: pool stopped or owner dead");
+      kio_stop("kio_error_stopped", "kioto: pool stopped or owner dead");
     }
     long ms = KIO_INTERRUPT_BOUND_MS;
     if (deadline >= 0) {
@@ -1229,7 +1230,8 @@ static uint32_t pool_alloc_rs(kio_pool *p) {
                              memory_order_acquire) == KIO_RS_FREE)
       return cand;
   }
-  Rf_error("kioto: result slots exhausted — collect or cancel outstanding "
+  kio_stop("kio_error_slots_exhausted",
+           "kioto: result slots exhausted — collect or cancel outstanding "
            "tasks first");
 }
 
@@ -1327,10 +1329,10 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
 SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
   kio_pool *p = pool_get(xp);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
-    Rf_error("kioto: pool stopped");
+    kio_stop("kio_error_stopped", "kioto: pool stopped");
   if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
     pool_orphan_teardown_try(p);
-    Rf_error("kioto: pool stopped or owner dead");
+    kio_stop("kio_error_stopped", "kioto: pool stopped or owner dead");
   }
   if (p->role == KIO_ROLE_WORKER)
     return pool_submit_nested(p, xp, payload);
@@ -1340,7 +1342,8 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
 
   unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
   if (!pool_ring_space_wait(p, ring_head(ring), Rf_asReal(timeout)))
-    Rf_error("kioto: submission timed out (injection ring full)");
+    kio_stop("kio_error_submit_timeout",
+             "kioto: submission timed out (injection ring full)");
 
   uint32_t local = pool_alloc_rs(p);
   uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
@@ -2434,18 +2437,22 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
       SET_VECTOR_ELT(pool_task_keepers(p, pool_xp),
                      (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start),
                      R_NilValue);
+    int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
+    double wpid = (w >= 0 && (uint32_t) w < p->hdr.max_workers) ?
+      (double) p->wk[w].pid : 0;
     int32_t expected = KIO_RS_DIED;
     if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
                                                  KIO_RS_FREE,
                                                  memory_order_seq_cst,
                                                  memory_order_relaxed))
       Rf_error("kioto: task handle already collected");
-    Rf_error("kioto: worker died while executing this task");
+    kio_stop_died((int) w, wpid,
+                  "kioto: worker died while executing this task");
   }
   case KIO_RS_CANCEL:
     /* the task keeper releases at slot reuse, not here — the worker may not
        have materialized yet */
-    Rf_error("kioto: task cancelled or pool stopped");
+    kio_stop("kio_error_cancelled", "kioto: task cancelled or pool stopped");
   case KIO_RS_FREE:
   default:
     Rf_error("kioto: task handle already collected");
@@ -2512,7 +2519,7 @@ SEXP kio_pool_task_state(SEXP xp) {
 SEXP kio_pool_map_caps(SEXP xp) {
   kio_pool *p = pool_get(xp);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
-    Rf_error("kioto: pool stopped");
+    kio_stop("kio_error_stopped", "kioto: pool stopped");
   if (p->role == KIO_ROLE_WORKER && p->wk_slot >= 0 && p->sub_slot < 0) {
     pool_claim_sub_slot(p, &p->live_sub);
     SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 2,
