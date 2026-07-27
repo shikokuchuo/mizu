@@ -441,10 +441,11 @@ static int chan_send1(kio_chan *c, SEXP prot, SEXP x) {
   return KIO_ST_OK;
 }
 
-/* Batched publication: shared stores are an order of magnitude dearer than
-   local ones, so the shared tail moves only here. The wake-register OR is
-   transition-only and the unpark parked-gated, so the steady-state publish
-   is a release store plus two loads and no syscall. */
+/* Publication: shared stores are an order of magnitude dearer than local
+   ones, so the shared tail moves only here — after every send, once per
+   batch. The wake-register OR is transition-only and the unpark
+   parked-gated, so the steady-state publish is a release store plus two
+   loads and no syscall. */
 static void chan_flush(kio_chan *c) {
   kio_chan_ring *r = &c->tx;
   if (r->ptail == r->ltail) return;
@@ -847,11 +848,13 @@ SEXP kio_channel_ready_set(SEXP xp) {
 SEXP kio_channel_send(SEXP xp, SEXP x) {
   kio_chan *c = chan_get(xp);
   int st = chan_send1(c, R_ExternalPtrProtected(xp), x);
+  chan_flush(c);
+  chan_reap(c, chan_keepers(xp));
   return st == KIO_ST_OK ? Rf_ScalarLogical(TRUE) : kio_status_sentinel(st);
 }
 
-/* One .Call, one flush, one wake check; stops at the first message the ring
-   refuses and returns the count accepted (probe why with kio_send). */
+/* One .Call, one flush, one wake check, one reap; stops at the first message
+   the ring refuses and returns the count accepted (probe why with kio_send). */
 SEXP kio_channel_send_batch(SEXP xp, SEXP xs) {
   kio_chan *c = chan_get(xp);
   SEXP prot = R_ExternalPtrProtected(xp);
@@ -861,14 +864,8 @@ SEXP kio_channel_send_batch(SEXP xp, SEXP xs) {
   for (i = 0; i < n; i++)
     if (chan_send1(c, prot, VECTOR_ELT(xs, i)) != KIO_ST_OK) break;
   chan_flush(c);
-  return Rf_ScalarInteger((int) i);
-}
-
-SEXP kio_channel_flush(SEXP xp) {
-  kio_chan *c = chan_get(xp);
-  chan_flush(c);
   chan_reap(c, chan_keepers(xp));
-  return R_NilValue;
+  return Rf_ScalarInteger((int) i);
 }
 
 SEXP kio_channel_recv(SEXP xp, SEXP timeout) {

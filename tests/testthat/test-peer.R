@@ -12,7 +12,6 @@ test_that("a spawned echo peer round-trips every payload kind", {
                  as.list(1:200),                       # ARENA
                  runif(100000))) {                     # SHM_RAW
     kio_send(ch, x)
-    kio_flush(ch)
     expect_identical(kio_recv(ch, 30), x)
   }
   expect_true(kio_close(ch, timeout = 10))
@@ -20,10 +19,9 @@ test_that("a spawned echo peer round-trips every payload kind", {
 
 test_that("the peer evaluates its expression with only ch bound", {
   skip_if_no_child_kioto()
-  ch <- kio_channel(quote({
+  ch <- kio_channel(quote(
     kio_send(ch, list(bindings = ls(), has_kioto = "package:kioto" %in% search()))
-    kio_flush(ch)
-  }))
+  ))
   info <- kio_recv(ch, 30)
   expect_identical(info$bindings, "ch")
   expect_true(info$has_kioto)
@@ -32,10 +30,7 @@ test_that("the peer evaluates its expression with only ch bound", {
 
 test_that("a returning peer expression signals an orderly close", {
   skip_if_no_child_kioto()
-  ch <- kio_channel(quote({
-    kio_send(ch, "done")
-    kio_flush(ch)
-  }))
+  ch <- kio_channel(quote(kio_send(ch, "done")))
   expect_identical(kio_recv(ch, 30), "done")
   expect_s3_class(kio_recv(ch, 30), "kio_closed")
   expect_true(kio_close(ch, timeout = 10))
@@ -52,7 +47,6 @@ test_that("peer death surfaces as a sticky kio_peer_gone after draining", {
   skip_if_no_child_kioto()
   ch <- kio_channel(quote({
     kio_send(ch, "before death")
-    kio_flush(ch)
     Sys.sleep(300)
   }))
   nm <- .Call(kioto:::kio_channel_stat, ch)$name
@@ -77,8 +71,6 @@ test_that("a peer that dies mid-stream loses nothing already published", {
   skip_if_no_child_kioto()
   ch <- kio_channel(quote({
     for (i in 1:5) kio_send(ch, i)
-    kio_flush(ch)
-    kio_send(ch, "unflushed")               # staged, never published
     quit(save = "no")                       # dies without close
   }))
   got <- list()
@@ -112,7 +104,6 @@ test_that("a custom launcher receives the suffix and drives the spawn", {
   })
   expect_match(seen, "^[0-9a-f]+_[0-9a-f]+$")
   kio_send(ch, "via launcher")
-  kio_flush(ch)
   expect_identical(kio_recv(ch, 30), "via launcher")
   expect_true(kio_close(ch, timeout = 10))
 })
@@ -125,11 +116,9 @@ test_that("mori-shared objects map zero-copy in the peer process", {
     kio_send(ch, list(shared = mori::is_shared(x),
                       name = mori::shared_name(x),
                       total = sum(x)))
-    kio_flush(ch)
   }))
   x <- mori::share(runif(1000))
   kio_send(ch, x)
-  kio_flush(ch)
   info <- kio_recv(ch, 30)
   expect_true(info$shared)
   expect_identical(info$name, mori::shared_name(x))

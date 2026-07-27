@@ -17,7 +17,7 @@ Invisibly, \code{TRUE} on rendezvous, \code{FALSE} on timeout (with a
 warning).
 }
 \description{
-Orderly shutdown: flushes staged writes, signals close to the peer, and
+Orderly shutdown: signals close to the peer, and
 waits up to \code{timeout} seconds for the peer's own close (or its death) —
 the rendezvous that makes releasing sent-payload pins safe, since the
 peer sets its bit only after it has finished draining. On rendezvous all

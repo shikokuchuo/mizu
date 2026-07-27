@@ -32,7 +32,8 @@ waiting further.
 }
 \description{
 At target rates the R call boundary is a first-order cost.
-\code{kio_send_batch()} stages a list of payloads and flushes once under a
-single \code{.Call}; \code{kio_recv_batch()} drains up to \code{n} messages under a
-single park cycle and a single batched head publication.
+\code{kio_send_batch()} moves a list of payloads under a single \code{.Call},
+publishing them to the peer in one batched tail store; \code{kio_recv_batch()}
+drains up to \code{n} messages under a single park cycle and a single batched
+head publication.
 }

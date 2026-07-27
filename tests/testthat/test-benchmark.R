@@ -16,7 +16,6 @@ test_that("round-trip latency reports against the socket baseline", {
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
       kio_send(ch, 0L)
-      kio_flush(ch)
       kio_recv(ch, 30)
     }
     (proc.time()[[3]] - t0) / n * 1e6
@@ -38,7 +37,6 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
       total <- total + length(xs)
       if (total >= 200000L) {
         kio_send(ch, total)
-        kio_flush(ch)
         break
       }
     }
@@ -51,7 +49,6 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
     want <- min(4096L, n - sent)
     sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
   }
-  kio_flush(ch)
   expect_identical(kio_recv(ch, 60), n)     # peer's receipt count
   rate <- n / (proc.time()[[3]] - t0)
   cat(sprintf("\none-way: %.0f msg/s (target > 100000)\n", rate))

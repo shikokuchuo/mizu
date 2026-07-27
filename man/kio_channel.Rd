@@ -85,11 +85,9 @@ ch <- kio_channel(quote(
     x <- kio_recv(ch, timeout = 30)
     if (inherits(x, "kio_condition")) break
     kio_send(ch, x)
-    kio_flush(ch)
   }
 ))
 kio_send(ch, 42L)
-kio_flush(ch)
 kio_recv(ch, timeout = 5)
 kio_close(ch)
 }

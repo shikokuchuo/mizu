@@ -2,13 +2,10 @@
 % Please edit documentation in R/channel.R
 \name{kio_send}
 \alias{kio_send}
-\alias{kio_flush}
 \alias{kio_recv}
 \title{Send and Receive over a Channel}
 \usage{
 kio_send(ch, x)
-
-kio_flush(ch)
 
 kio_recv(ch, timeout = Inf)
 }
@@ -24,22 +21,20 @@ remains responsive while waiting.}
 }
 \value{
 \code{kio_send()} returns \code{TRUE} (invisibly) on success, else a
-sentinel. \code{kio_flush()} returns \code{NULL} invisibly. \code{kio_recv()} returns
-the received payload or a sentinel.
+sentinel. \code{kio_recv()} returns the received payload or a sentinel.
 }
 \description{
-\code{kio_send()} stages a message at the producer-local tail; it becomes
-visible to the peer only on \code{kio_flush()}. There is no auto-flush: flush
-after every send for minimum latency, or every N sends for throughput —
-single-message latency is a property of caller code, not ring internals.
-\code{kio_recv()} returns the next message, blocking up to \code{timeout} seconds.
+\code{kio_send()} publishes a message to the peer — visible the moment the
+call returns, with no separate flush step. \code{kio_recv()} returns the next
+message, blocking up to \code{timeout} seconds.
 }
 \details{
 Sends never block for ring space and receives surface every terminal
 state as a class-tagged sentinel rather than an error (dispatch with
 \code{inherits(x, "kio_condition")}, or on the specific classes):
 \itemize{
-\item \code{kio_full} — the ring is full (send); back off, flush, or drop.
+\item \code{kio_full} — the ring is full (send); back off until the peer drains,
+or drop.
 \item \code{kio_timeout} — no message within \code{timeout} (recv).
 \item \code{kio_closed} — the other side closed the channel. recv drains all
 published messages before reporting this.
@@ -57,9 +52,8 @@ via mori's hooks).
 }
 \examples{
 \dontrun{
-ch <- kio_channel(quote(kio_send(ch, kio_recv(ch)) && kio_flush(ch)))
+ch <- kio_channel(quote(kio_send(ch, kio_recv(ch))))
 kio_send(ch, list(1, "a"))
-kio_flush(ch)
 kio_recv(ch, timeout = 5)
 kio_close(ch)
 }

@@ -45,17 +45,15 @@ ch <- kio_channel(quote(
     x <- kio_recv(ch, timeout = 30)
     if (inherits(x, "kio_condition")) break
     kio_send(ch, x * 2)
-    kio_flush(ch)
   }
 ))
 
 kio_send(ch, 21)
-kio_flush(ch)
 kio_recv(ch, timeout = 5)
 #> [1] 42
 ```
 
-`kio_send()` stages a message; `kio_flush()` publishes staged messages to the peer — flush after every send for minimum latency, or every N sends for throughput.
+`kio_send()` publishes a message to the peer, visible the moment the call returns; `kio_recv()` returns the next one.
 `kio_send_batch()` and `kio_recv_batch()` move a whole list of messages under a single call, for rates at which the per-call overhead of R itself starts to matter.
 
 Outcomes that end a conversation — ring full, timeout, orderly close, peer death — are returned as class-tagged sentinel values rather than thrown as errors, so a receive loop tests for them with `inherits(x, "kio_condition")` (or on the specific classes `kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone`) instead of wrapping every call in error handlers.
@@ -141,7 +139,7 @@ A `.template` (in the style of `vapply()`’s `FUN.VALUE`) returns an atomic vec
 
 ``` r
 kio_map(p, rnorm(100000), function(x) abs(x), .template = numeric(1))[1:5]
-#> [1] 0.3573208 0.6221294 1.6693877 1.0483457 2.3353666
+#> [1] 1.4165742 0.6900896 1.4204285 0.8180850 0.0229823
 ```
 
 Random numbers drawn inside the function are not reproducible by default — and cost nothing extra.
@@ -196,7 +194,7 @@ Regions belonging to running processes are never touched.
 |----|----|
 | **Channels** |  |
 | `kio_channel()` | create a channel and spawn the peer process at its other end |
-| `kio_send()` / `kio_flush()` | stage a message / publish staged messages to the peer |
+| `kio_send()` | send a message to the peer |
 | `kio_recv()` | receive the next message, waiting up to a timeout |
 | `kio_send_batch()` / `kio_recv_batch()` | move many messages in one call |
 | `kio_alive()` | is the peer process still running? |

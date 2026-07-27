@@ -61,7 +61,6 @@ SEXP kio_channel_attach(SEXP);
 SEXP kio_channel_ready_set(SEXP);
 SEXP kio_channel_send(SEXP, SEXP);
 SEXP kio_channel_send_batch(SEXP, SEXP);
-SEXP kio_channel_flush(SEXP);
 SEXP kio_channel_recv(SEXP, SEXP);
 SEXP kio_channel_recv_batch(SEXP, SEXP, SEXP);
 SEXP kio_channel_close(SEXP, SEXP);
@@ -135,7 +134,6 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_channel_ready_set",     (DL_FUNC) &kio_channel_ready_set,     1},
   {"kio_channel_send",          (DL_FUNC) &kio_channel_send,          2},
   {"kio_channel_send_batch",    (DL_FUNC) &kio_channel_send_batch,    2},
-  {"kio_channel_flush",         (DL_FUNC) &kio_channel_flush,         1},
   {"kio_channel_recv",          (DL_FUNC) &kio_channel_recv,          2},
   {"kio_channel_recv_batch",    (DL_FUNC) &kio_channel_recv_batch,    3},
   {"kio_channel_close",         (DL_FUNC) &kio_channel_close,         2},

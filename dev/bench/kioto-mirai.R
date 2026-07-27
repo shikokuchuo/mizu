@@ -70,7 +70,6 @@ echo_expr <- quote(
     x <- kio_recv(ch, timeout = 30)
     if (inherits(x, "kio_condition")) break
     kio_send(ch, x)
-    kio_flush(ch)
   }
 )
 
@@ -108,13 +107,11 @@ nc <- 20000L    # channel rt is µs-scale and mclock ticks whole ms: run long
 ch <- kio_channel(echo_expr, capacity = 1024L)
 for (i in seq_len(200L)) {
   kio_send(ch, 1L)
-  kio_flush(ch)
   kio_recv(ch, 30)
 }
 ms <- best_ms(function() timed(
   for (i in seq_len(nc)) {
     kio_send(ch, 1L)
-    kio_flush(ch)
     kio_recv(ch, 30)
   }))
 note("sequential rt", "kioto channel", ms * 1000 / nc, "us/rt")
@@ -150,15 +147,11 @@ k <- 10L        # cycles per rep, again outrunning mclock's ms granularity
 ch <- kio_channel(echo_expr)              # default capacity holds n echoes
 for (i in seq_len(200L)) {
   kio_send(ch, 1L)
-  kio_flush(ch)
   kio_recv(ch, 30)
 }
 ms <- best_ms(function() timed(
   for (j in seq_len(k)) {
-    for (i in seq_len(n)) {
-      kio_send(ch, 1L)
-      kio_flush(ch)
-    }
+    for (i in seq_len(n)) kio_send(ch, 1L)
     for (i in seq_len(n)) kio_recv(ch, 30)
   }))
 note("pipelined", "kioto channel", k * n / ms * 1000, "rt/s")
@@ -261,7 +254,6 @@ ch <- kio_channel(quote({
     total <- total + length(xs)
     if (total >= 200000L) {
       kio_send(ch, total)
-      kio_flush(ch)
       total <- 0L
     }
   }
@@ -273,7 +265,6 @@ stream_round <- function() {
     want <- min(4096L, n - sent)
     sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
   }
-  kio_flush(ch)
   stopifnot(identical(kio_recv(ch, 60), n))
 }
 stream_round()

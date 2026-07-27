@@ -87,7 +87,6 @@ echo_expr <- quote(
     x <- kio_recv(ch, timeout = 30)
     if (inherits(x, "kio_condition")) break
     kio_send(ch, x)
-    kio_flush(ch)
   }
 )
 

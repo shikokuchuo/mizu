@@ -56,11 +56,9 @@
 #'     x <- kio_recv(ch, timeout = 30)
 #'     if (inherits(x, "kio_condition")) break
 #'     kio_send(ch, x)
-#'     kio_flush(ch)
 #'   }
 #' ))
 #' kio_send(ch, 42L)
-#' kio_flush(ch)
 #' kio_recv(ch, timeout = 5)
 #' kio_close(ch)
 #' }
@@ -87,17 +85,16 @@ kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
 
 #' Send and Receive over a Channel
 #'
-#' `kio_send()` stages a message at the producer-local tail; it becomes
-#' visible to the peer only on `kio_flush()`. There is no auto-flush: flush
-#' after every send for minimum latency, or every N sends for throughput —
-#' single-message latency is a property of caller code, not ring internals.
-#' `kio_recv()` returns the next message, blocking up to `timeout` seconds.
+#' `kio_send()` publishes a message to the peer — visible the moment the
+#' call returns, with no separate flush step. `kio_recv()` returns the next
+#' message, blocking up to `timeout` seconds.
 #'
 #' Sends never block for ring space and receives surface every terminal
 #' state as a class-tagged sentinel rather than an error (dispatch with
 #' `inherits(x, "kio_condition")`, or on the specific classes):
 #'
-#' * `kio_full` — the ring is full (send); back off, flush, or drop.
+#' * `kio_full` — the ring is full (send); back off until the peer drains,
+#'   or drop.
 #' * `kio_timeout` — no message within `timeout` (recv).
 #' * `kio_closed` — the other side closed the channel. recv drains all
 #'   published messages before reporting this.
@@ -120,14 +117,12 @@ kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
 #'   remains responsive while waiting.
 #'
 #' @return `kio_send()` returns `TRUE` (invisibly) on success, else a
-#'   sentinel. `kio_flush()` returns `NULL` invisibly. `kio_recv()` returns
-#'   the received payload or a sentinel.
+#'   sentinel. `kio_recv()` returns the received payload or a sentinel.
 #'
 #' @examples
 #' \dontrun{
-#' ch <- kio_channel(quote(kio_send(ch, kio_recv(ch)) && kio_flush(ch)))
+#' ch <- kio_channel(quote(kio_send(ch, kio_recv(ch))))
 #' kio_send(ch, list(1, "a"))
-#' kio_flush(ch)
 #' kio_recv(ch, timeout = 5)
 #' kio_close(ch)
 #' }
@@ -137,18 +132,15 @@ kio_send <- function(ch, x) invisible(.Call(kio_channel_send, ch, x))
 
 #' @rdname kio_send
 #' @export
-kio_flush <- function(ch) invisible(.Call(kio_channel_flush, ch))
-
-#' @rdname kio_send
-#' @export
 kio_recv <- function(ch, timeout = Inf) .Call(kio_channel_recv, ch, timeout)
 
 #' Batched Send and Receive
 #'
 #' At target rates the R call boundary is a first-order cost.
-#' `kio_send_batch()` stages a list of payloads and flushes once under a
-#' single `.Call`; `kio_recv_batch()` drains up to `n` messages under a
-#' single park cycle and a single batched head publication.
+#' `kio_send_batch()` moves a list of payloads under a single `.Call`,
+#' publishing them to the peer in one batched tail store; `kio_recv_batch()`
+#' drains up to `n` messages under a single park cycle and a single batched
+#' head publication.
 #'
 #' @inheritParams kio_send
 #' @param xs a list of payloads.
@@ -172,7 +164,7 @@ kio_recv_batch <- function(ch, n = 256L, timeout = Inf)
 
 #' Close a Channel
 #'
-#' Orderly shutdown: flushes staged writes, signals close to the peer, and
+#' Orderly shutdown: signals close to the peer, and
 #' waits up to `timeout` seconds for the peer's own close (or its death) —
 #' the rendezvous that makes releasing sent-payload pins safe, since the
 #' peer sets its bit only after it has finished draining. On rendezvous all
