@@ -41,7 +41,7 @@ library(kioto)
 ch <- kio_channel(quote(
   repeat {
     x <- kio_recv(ch, timeout = 30)
-    if (inherits(x, "kio_condition")) break
+    if (inherits(x, "kio_sentinel")) break
     kio_send(ch, x * 2)
   }
 ))
@@ -54,7 +54,7 @@ kio_recv(ch, timeout = 5)
 `kio_send()` publishes a message to the peer, visible the moment the call returns; `kio_recv()` returns the next one.
 `kio_send_batch()` and `kio_recv_batch()` move a whole list of messages under a single call, for rates at which the per-call overhead of R itself starts to matter.
 
-Outcomes that end a conversation — ring full, timeout, orderly close, peer death — are returned as class-tagged sentinel values rather than thrown as errors, so a receive loop tests for them with `inherits(x, "kio_condition")` (or on the specific classes `kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone`) instead of wrapping every call in error handlers.
+Outcomes that end a conversation — ring full, timeout, orderly close, peer death — are returned as class-tagged sentinel values rather than thrown as errors, so a receive loop tests for them with `inherits(x, "kio_sentinel")` (or on the specific classes `kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone`) instead of wrapping every call in error handlers.
 If the process at the other end dies, receives first drain the messages it had already published, then report `kio_peer_gone`; `kio_alive(ch)` asks whether the peer is still running at any time, without touching the rings.
 
 `kio_close()` performs an orderly shutdown, waiting for the peer to finish draining before shared resources are released:
@@ -167,6 +167,7 @@ kio_pool_stop(p)
 
 Death of any participant is detected at OS notification latency, with no heartbeats and no polling: every process holds a lock that the kernel releases the instant it exits — for any reason — and that release is the verdict.
 A dead worker fails exactly the tasks it had claimed (collecting them raises an error), while work still queued to it is consumed by the surviving workers; on a channel, the survivor sees `kio_peer_gone`.
+The split is deliberate and holds across the whole surface: transport states — not yet, not now, stream over — return as sentinel values for the receiving loop to handle, while a request that can never be satisfied — a task’s own error, a cancelled task, a dead worker, a child that failed to start — raises a classed condition (see `?kio_error`).
 
 A crashed process cannot clean up after itself: `kio_prune()` removes the shared-memory regions left behind by processes that no longer exist.
 Regions belonging to running processes are never touched.
@@ -194,4 +195,5 @@ Regions belonging to running processes are never touched.
 | `kio_pool_trace()` | register a hook called at each task lifecycle event |
 | `kio_pool_stop()` | shut the pool down |
 | **Housekeeping** |  |
+| `kio_is_sentinel()` | is this one of kioto’s own sentinel values? (identity, not class) |
 | `kio_prune()` | remove shared-memory regions orphaned by crashed processes |

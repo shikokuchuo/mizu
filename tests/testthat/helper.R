@@ -85,7 +85,7 @@ channel_pair <- function(capacity = 64L, slot_size = 256L, arena_size = 4096,
 echo_expr <- quote(
   repeat {
     x <- kio_recv(ch, timeout = 30)
-    if (inherits(x, "kio_condition")) break
+    if (inherits(x, "kio_sentinel")) break
     kio_send(ch, x)
   }
 )

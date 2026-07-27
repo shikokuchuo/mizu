@@ -7,7 +7,8 @@
 #' region name's suffix crosses the process boundary, as a command-line
 #' argument.
 #'
-#' `expr` is a quoted expression, not a closure — it captures nothing. The
+#' `expr` is a quoted expression, not a closure — it captures nothing, and
+#' unlike [kio_submit()] it is not captured for you: pass it pre-quoted. The
 #' peer evaluates it in a fresh environment whose parent is the child's
 #' global environment, with `ch` (the peer-side channel handle) as the only
 #' binding kioto provides; data crosses the ring, and packages are loaded by
@@ -55,7 +56,7 @@
 #' ch <- kio_channel(quote(
 #'   repeat {
 #'     x <- kio_recv(ch, timeout = 30)
-#'     if (inherits(x, "kio_condition")) break
+#'     if (inherits(x, "kio_sentinel")) break
 #'     kio_send(ch, x)
 #'   }
 #' ))
@@ -69,6 +70,9 @@ kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
                         arena_size = 4194304, spin = FALSE, launcher = NULL,
                         stdout = "", stderr = "", liveness_dir = tempdir(),
                         startup_timeout = 30) {
+  if (!is.language(expr))
+    stop("kioto: expr must be a quoted expression (wrap it in quote())",
+         call. = FALSE)
   ch <- .Call(kio_channel_create, expr, capacity, slot_size, arena_size,
               liveness_dir, spin)
   suffix <- .Call(kio_channel_suffix, ch)
@@ -93,7 +97,7 @@ kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
 #'
 #' Sends never block for ring space and receives surface every terminal
 #' state as a class-tagged sentinel rather than an error (dispatch with
-#' `inherits(x, "kio_condition")`, or on the specific classes):
+#' `inherits(x, "kio_sentinel")`, or on the specific classes):
 #'
 #' * `kio_full` — the ring is full (send); back off until the peer drains,
 #'   or drop.
@@ -105,7 +109,9 @@ kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
 #'   latency). recv likewise drains first: a dead peer's published messages
 #'   are complete and valid. Sticky once returned.
 #'
-#' `NULL` is a legal payload; sentinels are identifiable by class alone.
+#' `NULL` is a legal payload; sentinels are identifiable by class alone —
+#' ordinary values, never signalled conditions ([kio_is_sentinel()] checks
+#' identity where payloads are untrusted).
 #' Attribute-free non-ALTREP atomic vectors that fit the inline budget ride
 #' a serialization-free fast path with a byte-identical round-trip; anything
 #' else is R-serialized (mori-shared objects reduce to identifier wire forms

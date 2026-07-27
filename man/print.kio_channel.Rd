@@ -4,7 +4,7 @@
 \alias{print.kio_channel}
 \alias{print.kio_pool}
 \alias{print.kio_task}
-\alias{print.kio_condition}
+\alias{print.kio_sentinel}
 \title{Print Methods for kioto Objects}
 \usage{
 \method{print}{kio_channel}(x, ...)
@@ -13,7 +13,7 @@
 
 \method{print}{kio_task}(x, ...)
 
-\method{print}{kio_condition}(x, ...)
+\method{print}{kio_sentinel}(x, ...)
 }
 \arguments{
 \item{x}{the object.}

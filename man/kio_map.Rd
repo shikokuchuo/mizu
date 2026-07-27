@@ -40,7 +40,7 @@ Reproducible RNG section.}
 
 \item{.timeout}{seconds after which the map gives up, cancels its
 outstanding chunks, and returns the \code{kio_timeout} sentinel (class
-\code{c("kio_timeout", "kio_condition")}); \code{Inf} (the default) waits
+\code{c("kio_timeout", "kio_sentinel")}); \code{Inf} (the default) waits
 indefinitely. One deadline covers submission and collection.}
 }
 \value{

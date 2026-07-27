@@ -51,8 +51,21 @@ Errors of misuse (unnamed task arguments, out-of-range slots, operations
 on a closed handle) remain plain errors: the classed hierarchy covers
 the outcomes a running system produces, not programming mistakes.
 
-Raised \code{kio_error} conditions are distinct from the \code{kio_condition}
-sentinels (\code{\link[=kio_send]{kio_send()}}, \code{\link[=kio_recv]{kio_recv()}}, \code{\link[=kio_collect]{kio_collect()}} timeouts): a
-sentinel is an ordinary return value tagging a terminal state on the hot
-path, not a signalled condition.
+Raised \code{kio_error} conditions are distinct from sentinels (class
+\code{kio_sentinel}, returned by \code{\link[=kio_send]{kio_send()}}, \code{\link[=kio_recv]{kio_recv()}} and
+\code{\link[=kio_collect]{kio_collect()}}): a sentinel is an ordinary return value tagging a
+terminal state on the hot path, not a signalled condition — see
+\code{\link[=kio_is_sentinel]{kio_is_sentinel()}}.
+
+Which discipline applies follows the shape of the call. Verbs that move
+payloads and bounded waits — \code{\link[=kio_send]{kio_send()}}, \code{\link[=kio_recv]{kio_recv()}},
+\code{\link[=kio_collect]{kio_collect()}}, \code{\link[=kio_map]{kio_map()}} — return sentinels for transport states:
+not yet (\code{kio_timeout}), not now (\code{kio_full}), stream over
+(\code{kio_closed}, \code{kio_peer_gone}). Their caller is a loop, and these are
+its normal outcomes. Conditions are raised where a request has failed
+for good: constructors and \code{\link[=kio_submit]{kio_submit()}}, whose return is a handle the
+next line uses, raise on every failure; \code{\link[=kio_collect]{kio_collect()}} raises when the
+value can never arrive — the task's own error re-signalled,
+\code{kio_error_cancelled}, \code{kio_error_worker_died}. A sentinel invites the
+loop's next iteration; a condition means stop and deal with it.
 }

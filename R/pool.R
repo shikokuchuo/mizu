@@ -179,7 +179,7 @@ kio_pool_attach <- function(name) {
 #' Submission blocks only when the submitter's own injection ring is full —
 #' back-pressure is per-submitter — and raises `kio_error_submit_timeout`
 #' on `.timeout` expiry rather than stalling. Collection returns the
-#' `kio_timeout` sentinel (class `c("kio_timeout", "kio_condition")`) if no
+#' `kio_timeout` sentinel (class `c("kio_timeout", "kio_sentinel")`) if no
 #' result arrives within `timeout`. A task whose handle was cancelled (or
 #' whose pool was stopped) raises `kio_error_cancelled` on collect; a task
 #' whose executing worker died raises `kio_error_worker_died`, carrying the
@@ -196,7 +196,7 @@ kio_pool_attach <- function(name) {
 #' | outcome | surfaced as | class |
 #' |---|---|---|
 #' | result published | the value, returned | — |
-#' | no result within `timeout` | sentinel, returned | `c("kio_timeout", "kio_condition")` |
+#' | no result within `timeout` | sentinel, returned | `c("kio_timeout", "kio_sentinel")` |
 #' | ring full past `.timeout` | raised by `kio_submit()` | `kio_error_submit_timeout` |
 #' | result slots exhausted | raised by `kio_submit()` | `kio_error_slots_exhausted` |
 #' | pool stopped, or owner died | raised by `kio_submit()` | `kio_error_stopped` |
@@ -221,7 +221,8 @@ kio_pool_attach <- function(name) {
 #'
 #' @param pool a pool handle from [kio_pool()] or [kio_pool_attach()] — or,
 #'   inside a task, the worker's own handle bound as `pool`.
-#' @param expr an expression, captured unevaluated. It sees only the
+#' @param expr an expression, captured unevaluated — unlike [kio_channel()],
+#'   which requires its expression pre-quoted. It sees only the
 #'   arguments in `...` (plus the worker's global environment); packages
 #'   must be loaded by the expression itself.
 #' @param ... named values bound in the evaluation environment. Values are

@@ -46,7 +46,7 @@ test_that("startup timeout raises kio_error_startup", {
              startup_timeout = 0.5),
     class = "kio_error_startup")
   expect_error(
-    kio_channel(quote(NULL), launcher = function(suffix) NULL,
+    kio_channel(quote({}), launcher = function(suffix) NULL,
                 startup_timeout = 0.5),
     class = "kio_error_startup")
 })

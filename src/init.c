@@ -67,6 +67,7 @@ SEXP kio_channel_close(SEXP, SEXP);
 SEXP kio_channel_close_signal(SEXP);
 SEXP kio_channel_alive(SEXP);
 SEXP kio_channel_stat(SEXP);
+SEXP kio_sentinel_check(SEXP);
 SEXP kio_pool_create(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP kio_pool_suffix(SEXP);
 SEXP kio_pool_ready_wait(SEXP, SEXP, SEXP);
@@ -140,6 +141,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_channel_close_signal",  (DL_FUNC) &kio_channel_close_signal,  1},
   {"kio_channel_alive",         (DL_FUNC) &kio_channel_alive,         1},
   {"kio_channel_stat",          (DL_FUNC) &kio_channel_stat,          1},
+  {"kio_sentinel_check",        (DL_FUNC) &kio_sentinel_check,        1},
   {"kio_pool_create",           (DL_FUNC) &kio_pool_create,           7},
   {"kio_pool_suffix",           (DL_FUNC) &kio_pool_suffix,           1},
   {"kio_pool_ready_wait",       (DL_FUNC) &kio_pool_ready_wait,       3},

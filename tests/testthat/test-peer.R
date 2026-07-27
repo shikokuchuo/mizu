@@ -76,7 +76,7 @@ test_that("a peer that dies mid-stream loses nothing already published", {
   got <- list()
   repeat {
     r <- kio_recv(ch, timeout = 30)
-    if (inherits(r, "kio_condition")) break
+    if (inherits(r, "kio_sentinel")) break
     got <- c(got, list(r))
   }
   expect_identical(got, as.list(1:5))       # drained before the verdict
@@ -87,7 +87,7 @@ test_that("a peer that dies mid-stream loses nothing already published", {
 test_that("the startup deadline walks the channel back", {
   t0 <- proc.time()[[3]]
   err <- tryCatch(
-    kio_channel(quote(NULL), launcher = function(suffix) NULL,
+    kio_channel(quote({}), launcher = function(suffix) NULL,
                 startup_timeout = 0.5),
     error = identity)
   expect_s3_class(err, "error")

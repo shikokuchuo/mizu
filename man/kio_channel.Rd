@@ -67,7 +67,8 @@ region name's suffix crosses the process boundary, as a command-line
 argument.
 }
 \details{
-\code{expr} is a quoted expression, not a closure — it captures nothing. The
+\code{expr} is a quoted expression, not a closure — it captures nothing, and
+unlike \code{\link[=kio_submit]{kio_submit()}} it is not captured for you: pass it pre-quoted. The
 peer evaluates it in a fresh environment whose parent is the child's
 global environment, with \code{ch} (the peer-side channel handle) as the only
 binding kioto provides; data crosses the ring, and packages are loaded by
@@ -84,7 +85,7 @@ form via mori's own hooks and maps zero-copy on the other side.
 ch <- kio_channel(quote(
   repeat {
     x <- kio_recv(ch, timeout = 30)
-    if (inherits(x, "kio_condition")) break
+    if (inherits(x, "kio_sentinel")) break
     kio_send(ch, x)
   }
 ))

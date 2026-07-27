@@ -36,7 +36,7 @@ Every struct in `kioto.h` **is** the wire format — static-asserted sizes, 64-b
 
 ### Cross-cutting invariants (shared by channel and pool)
 
-- **Sentinels, not errors**: terminal states (ring full, timeout, orderly close, peer death) return class-tagged sentinels inheriting `"kio_condition"` (`kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone`) so hot loops stay branch-cheap.
+- **Sentinels, not errors**: terminal states (ring full, timeout, orderly close, peer death) return class-tagged sentinels inheriting `"kio_sentinel"` (`kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone`) so hot loops stay branch-cheap.
 - **Liveness lock is the death verdict**: a kernel-released exclusive flock/LockFileEx held for the process lifetime (`liveness.c`), fd-scoped so PID reuse can't fake "alive". Per-platform death listeners (`wait_linux.c` pidfd+epoll, `wait_macos.c` dispatch sources, `wait_win32.c` thread-pool waits) are *wake triggers only* — the lock probe decides.
 - **Parker protocol**: one epoch word per waiting entity (`entity.c` + platform waiters: futex / `__ulock` / `WaitOnAddress` + named events). Every park site follows snapshot → announce → re-check → sleep-bounded; this handshake is the sole guarantee against lost wakeups — there is no watchdog behind it.
 - **Payload framing tiers** (`payload.c`): 16-byte `kio_slot_hdr` then bytes. `RAWVEC` (attribute-free non-ALTREP atomic vectors, serialization-free), `INLINE` (complete serialized stream), `ARENA` (channel-only spill arena), `SHM_RAW` (fresh region per payload). `bounded.c` does a single-pass serialize that flips to count-only on overflow, so tier choice needs no second pass. Payload lifetime is bridged by "keeper" objects pinned on both sides of every queue.

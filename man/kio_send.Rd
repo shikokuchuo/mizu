@@ -31,7 +31,7 @@ message, blocking up to \code{timeout} seconds.
 \details{
 Sends never block for ring space and receives surface every terminal
 state as a class-tagged sentinel rather than an error (dispatch with
-\code{inherits(x, "kio_condition")}, or on the specific classes):
+\code{inherits(x, "kio_sentinel")}, or on the specific classes):
 \itemize{
 \item \code{kio_full} — the ring is full (send); back off until the peer drains,
 or drop.
@@ -44,7 +44,9 @@ latency). recv likewise drains first: a dead peer's published messages
 are complete and valid. Sticky once returned.
 }
 
-\code{NULL} is a legal payload; sentinels are identifiable by class alone.
+\code{NULL} is a legal payload; sentinels are identifiable by class alone —
+ordinary values, never signalled conditions (\code{\link[=kio_is_sentinel]{kio_is_sentinel()}} checks
+identity where payloads are untrusted).
 Attribute-free non-ALTREP atomic vectors that fit the inline budget ride
 a serialization-free fast path with a byte-identical round-trip; anything
 else is R-serialized (mori-shared objects reduce to identifier wire forms

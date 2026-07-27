@@ -49,7 +49,7 @@ print.kio_task <- function(x, ...) {
 
 #' @rdname print.kio_channel
 #' @export
-print.kio_condition <- function(x, ...) {
+print.kio_sentinel <- function(x, ...) {
   cat(sprintf("<%s>\n", class(x)[1L]))
   invisible(x)
 }

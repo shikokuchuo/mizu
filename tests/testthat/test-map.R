@@ -322,7 +322,7 @@ test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
   # and kio_map itself surfaces this as the sentinel
   r <- kio_map(p$ctrl, 1:4, identity, .chunks = 2, .timeout = 0.2)
   expect_s3_class(r, "kio_timeout")
-  expect_s3_class(r, "kio_condition")
+  expect_s3_class(r, "kio_sentinel")
   while (pool_step(p) == 1L) NULL   # filler runs, dropped chunks free
   expect_identical(kio_collect(filler, timeout = 5), "filler")
   expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))

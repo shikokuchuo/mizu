@@ -154,7 +154,7 @@ mono_time <- function() proc.time()[[3L]]
 #'   Reproducible RNG section.
 #' @param .timeout seconds after which the map gives up, cancels its
 #'   outstanding chunks, and returns the `kio_timeout` sentinel (class
-#'   `c("kio_timeout", "kio_condition")`); `Inf` (the default) waits
+#'   `c("kio_timeout", "kio_sentinel")`); `Inf` (the default) waits
 #'   indefinitely. One deadline covers submission and collection.
 #'
 #' @return A list of `f`'s results in the order of `x`, with `names(x)`

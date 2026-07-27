@@ -105,7 +105,7 @@ static SEXP kio_make_sentinel(const char *value, const char *cls) {
   SEXP s = PROTECT(Rf_mkString(value));
   SEXP klass = PROTECT(Rf_allocVector(STRSXP, 2));
   SET_STRING_ELT(klass, 0, Rf_mkChar(cls));
-  SET_STRING_ELT(klass, 1, Rf_mkChar("kio_condition"));
+  SET_STRING_ELT(klass, 1, Rf_mkChar("kio_sentinel"));
   Rf_setAttrib(s, R_ClassSymbol, klass);
   R_PreserveObject(s);
   UNPROTECT(2);
@@ -166,6 +166,13 @@ static SEXP kio_status_sentinel(int st) {
   case KIO_ST_TIMEOUT: return kio_sent_timeout;
   }
   return R_NilValue;
+}
+
+/* Provenance, not class: TRUE only for the interned singletons themselves,
+   so a payload merely carrying the class never passes. */
+SEXP kio_sentinel_check(SEXP x) {
+  return Rf_ScalarLogical(x == kio_sent_full || x == kio_sent_timeout ||
+                          x == kio_sent_closed || x == kio_sent_gone);
 }
 
 // Handle access -------------------------------------------------------------------

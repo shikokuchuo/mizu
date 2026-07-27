@@ -3,6 +3,12 @@
 # and handle discipline. Ring mechanics are test-ring.R; spawned peers are
 # test-peer.R.
 
+test_that("kio_channel validates expr is a language object", {
+  expect_error(kio_channel(42), "must be a quoted expression")
+  expect_error(kio_channel("kio_recv(ch)"), "must be a quoted expression")
+  expect_error(kio_channel(NULL), "must be a quoted expression")
+})
+
 test_that("kio_channel_create validates its parameters", {
   expect_error(.Call(kioto:::kio_channel_create, quote(NULL), 3L, 256L, 0,
                      tempdir(), FALSE),
@@ -99,6 +105,23 @@ test_that("sentinels are class-tagged package constants", {
   p <- channel_pair()
   t1 <- kio_recv(p$host, 0)
   t2 <- kio_recv(p$host, 0)
-  expect_s3_class(t1, c("kio_timeout", "kio_condition"))
+  expect_s3_class(t1, c("kio_timeout", "kio_sentinel"))
   expect_identical(t1, t2)
+})
+
+test_that("kio_is_sentinel tests provenance, not class", {
+  p <- channel_pair()
+  t <- kio_recv(p$host, 0)
+  expect_true(kio_is_sentinel(t))
+  # class alone is spoofable in-band; identity is not
+  spoof <- structure("timeout", class = c("kio_timeout", "kio_sentinel"))
+  expect_true(inherits(spoof, "kio_sentinel"))
+  expect_false(kio_is_sentinel(spoof))
+  # a forwarded sentinel arrives as a copy: a payload, not a verdict
+  kio_send(p$host, t)
+  fwd <- kio_recv(p$peer, 5)
+  expect_s3_class(fwd, "kio_timeout")
+  expect_false(kio_is_sentinel(fwd))
+  expect_false(kio_is_sentinel(NULL))
+  expect_false(kio_is_sentinel("timeout"))
 })

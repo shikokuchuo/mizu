@@ -38,10 +38,23 @@
 #' on a closed handle) remain plain errors: the classed hierarchy covers
 #' the outcomes a running system produces, not programming mistakes.
 #'
-#' Raised `kio_error` conditions are distinct from the `kio_condition`
-#' sentinels ([kio_send()], [kio_recv()], [kio_collect()] timeouts): a
-#' sentinel is an ordinary return value tagging a terminal state on the hot
-#' path, not a signalled condition.
+#' Raised `kio_error` conditions are distinct from sentinels (class
+#' `kio_sentinel`, returned by [kio_send()], [kio_recv()] and
+#' [kio_collect()]): a sentinel is an ordinary return value tagging a
+#' terminal state on the hot path, not a signalled condition — see
+#' [kio_is_sentinel()].
+#'
+#' Which discipline applies follows the shape of the call. Verbs that move
+#' payloads and bounded waits — [kio_send()], [kio_recv()],
+#' [kio_collect()], [kio_map()] — return sentinels for transport states:
+#' not yet (`kio_timeout`), not now (`kio_full`), stream over
+#' (`kio_closed`, `kio_peer_gone`). Their caller is a loop, and these are
+#' its normal outcomes. Conditions are raised where a request has failed
+#' for good: constructors and [kio_submit()], whose return is a handle the
+#' next line uses, raise on every failure; [kio_collect()] raises when the
+#' value can never arrive — the task's own error re-signalled,
+#' `kio_error_cancelled`, `kio_error_worker_died`. A sentinel invites the
+#' loop's next iteration; a condition means stop and deal with it.
 #'
 #' @name kio_error
 #' @aliases kio_error_submit_timeout kio_error_slots_exhausted kio_error_stopped kio_error_cancelled kio_error_worker_died kio_error_startup kio_error_shm
@@ -52,3 +65,29 @@ NULL
 # (condition.c).
 stop_kio <- function(subclass, message, ...)
   stop(errorCondition(message, ..., class = c(subclass, "kio_error")))
+
+#' Test for a kioto Sentinel
+#'
+#' Identity comparison against the four interned sentinel singletons —
+#' `kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone` — that kioto's
+#' verbs return to tag terminal states. `inherits(x, "kio_sentinel")` tests
+#' the class alone, which any payload can carry — including a genuine
+#' sentinel forwarded over a channel, which arrives as an ordinary copy.
+#' `kio_is_sentinel()` is provenance: `TRUE` only for the exact objects
+#' kioto's own calls return in this process, so code relaying untrusted
+#' values can distinguish its terminal states from look-alike payloads.
+#'
+#' Sentinels are ordinary values, not R conditions: nothing is signalled,
+#' and condition handlers never see them.
+#'
+#' @param x any R object.
+#'
+#' @return `TRUE` or `FALSE`.
+#'
+#' @examples
+#' kio_is_sentinel(42)
+#' # class alone does not make a sentinel:
+#' kio_is_sentinel(structure("x", class = c("kio_timeout", "kio_sentinel")))
+#'
+#' @export
+kio_is_sentinel <- function(x) .Call(kio_sentinel_check, x)

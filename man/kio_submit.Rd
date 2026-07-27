@@ -13,7 +13,8 @@ kio_collect(task, timeout = Inf)
 \item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
 inside a task, the worker's own handle bound as \code{pool}.}
 
-\item{expr}{an expression, captured unevaluated. It sees only the
+\item{expr}{an expression, captured unevaluated — unlike \code{\link[=kio_channel]{kio_channel()}},
+which requires its expression pre-quoted. It sees only the
 arguments in \code{...} (plus the worker's global environment); packages
 must be loaded by the expression itself.}
 
@@ -48,7 +49,7 @@ task's error condition, re-signalled in the collecting process.
 Submission blocks only when the submitter's own injection ring is full —
 back-pressure is per-submitter — and raises \code{kio_error_submit_timeout}
 on \code{.timeout} expiry rather than stalling. Collection returns the
-\code{kio_timeout} sentinel (class \code{c("kio_timeout", "kio_condition")}) if no
+\code{kio_timeout} sentinel (class \code{c("kio_timeout", "kio_sentinel")}) if no
 result arrives within \code{timeout}. A task whose handle was cancelled (or
 whose pool was stopped) raises \code{kio_error_cancelled} on collect; a task
 whose executing worker died raises \code{kio_error_worker_died}, carrying the
@@ -64,7 +65,7 @@ Timeout on collect is a normal outcome and is returned; every
 exceptional outcome is raised, as a classed condition (see \link{kio_error}):\tabular{lll}{
    outcome \tab surfaced as \tab class \cr
    result published \tab the value, returned \tab — \cr
-   no result within \code{timeout} \tab sentinel, returned \tab \code{c("kio_timeout", "kio_condition")} \cr
+   no result within \code{timeout} \tab sentinel, returned \tab \code{c("kio_timeout", "kio_sentinel")} \cr
    ring full past \code{.timeout} \tab raised by \code{kio_submit()} \tab \code{kio_error_submit_timeout} \cr
    result slots exhausted \tab raised by \code{kio_submit()} \tab \code{kio_error_slots_exhausted} \cr
    pool stopped, or owner died \tab raised by \code{kio_submit()} \tab \code{kio_error_stopped} \cr

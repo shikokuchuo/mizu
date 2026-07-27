@@ -78,7 +78,7 @@ test_that("collect times out with the sentinel and later succeeds", {
   p <- pool_pair()
   t <- kio_submit(p$ctrl, "done")
   expect_s3_class(kio_collect(t, timeout = 0), c("kio_timeout",
-                                                 "kio_condition"))
+                                                 "kio_sentinel"))
   expect_s3_class(kio_collect(t, timeout = 0.1), "kio_timeout")
   pool_step(p)
   expect_identical(kio_collect(t, timeout = 5), "done")

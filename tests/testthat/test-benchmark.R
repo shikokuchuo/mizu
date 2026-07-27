@@ -33,7 +33,7 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
     total <- 0L
     repeat {
       xs <- kio_recv_batch(ch, n = 4096L, timeout = 30)
-      if (inherits(xs, "kio_condition")) break
+      if (inherits(xs, "kio_sentinel")) break
       total <- total + length(xs)
       if (total >= 200000L) {
         kio_send(ch, total)

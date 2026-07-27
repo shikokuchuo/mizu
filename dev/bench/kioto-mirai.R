@@ -68,7 +68,7 @@ cat(sprintf("kioto %s | mirai %s | R %s | %s\n", packageVersion("kioto"),
 echo_expr <- quote(
   repeat {
     x <- kio_recv(ch, timeout = 30)
-    if (inherits(x, "kio_condition")) break
+    if (inherits(x, "kio_sentinel")) break
     kio_send(ch, x)
   }
 )
@@ -250,7 +250,7 @@ ch <- kio_channel(quote({
   total <- 0L
   repeat {
     xs <- kio_recv_batch(ch, n = 4096L, timeout = 30)
-    if (inherits(xs, "kio_condition")) break
+    if (inherits(xs, "kio_sentinel")) break
     total <- total + length(xs)
     if (total >= 200000L) {
       kio_send(ch, total)
