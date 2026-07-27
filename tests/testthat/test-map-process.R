@@ -3,32 +3,57 @@
 # chunks, nested maps, .seed invariance across worker counts, and shared-x
 # interop. The blocking kio_map() surface is exercised end-to-end here;
 # where a test must act mid-map (killing a claimant), it drives the
-# composable stages instead.
+# composable stages instead. Distribution assertions rendezvous the
+# workers via a check-in directory and read stats only once both workers
+# are parked, so they never race the drain or a lagging counter mirror.
 
 test_that("a map's chunks spread across the workers", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  r <- kio_map(p, 1:32, function(i) {
-    Sys.sleep(0.02)
+  # The first-claimed chunk holds its worker until a second pid checks in
+  # — only a chunk claimed by the other worker can supply one — so a
+  # starved worker can't lose every claim to a fast drain. Bounded, with a
+  # give-up marker, so a crippled pool fails below rather than hangs.
+  rdv <- tfile()
+  dir.create(rdv)
+  r <- kio_map(p, 1:32, function(i, rdv) {
+    file.create(file.path(rdv, Sys.getpid()))
+    t0 <- Sys.time()
+    while (length(list.files(rdv)) < 2L &&
+           difftime(Sys.time(), t0, units = "secs") < 10) Sys.sleep(0.05)
+    if (length(list.files(rdv)) < 2L) file.create(file.path(rdv, "gave-up"))
     i * 2L
-  }, .chunks = 16L, .timeout = 60)
+  }, rdv = rdv, .chunks = 16L, .timeout = 60)
   expect_identical(r, as.list(1:32 * 2L))
+  # counters mirror into the region at park: a row read mid-drain can lag
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   st <- kio_pool_stats(p)
   expect_true(all(st$workers$tasks > 0))   # both workers claimed chunks
   expect_true(kio_pool_stop(p))
+  unlink(rdv, recursive = TRUE)
 })
 
 test_that("an imbalanced map still returns in order, work balanced", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  # front-loaded cost: the first chunks are slow, the rest instant
-  r <- kio_map(p, 1:16, function(i) {
+  # front-loaded cost — the first elements are slow, the rest instant —
+  # under the same rendezvous and stats gate as above
+  rdv <- tfile()
+  dir.create(rdv)
+  r <- kio_map(p, 1:16, function(i, rdv) {
+    file.create(file.path(rdv, Sys.getpid()))
+    t0 <- Sys.time()
+    while (length(list.files(rdv)) < 2L &&
+           difftime(Sys.time(), t0, units = "secs") < 10) Sys.sleep(0.05)
+    if (length(list.files(rdv)) < 2L) file.create(file.path(rdv, "gave-up"))
     if (i <= 4L) Sys.sleep(0.1)
     i
-  }, .chunks = 16L, .timeout = 60)
+  }, rdv = rdv, .chunks = 16L, .timeout = 60)
   expect_identical(r, as.list(1:16))
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   expect_true(all(kio_pool_stats(p)$workers$tasks > 0))
   expect_true(kio_pool_stop(p))
+  unlink(rdv, recursive = TRUE)
 })
 
 test_that("a worker killed mid-chunk fails the map with its element range", {
@@ -120,14 +145,24 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
 test_that("a nested map fans out over the deque and peers steal it", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  t <- kio_submit(p, kio_map(pool, 1:16, function(i) {
-    Sys.sleep(0.02)
+  # nested chunks live on the outer worker's own deque, so the peer's only
+  # route to its rendezvous check-in is a steal: the count is deterministic
+  rdv <- tfile()
+  dir.create(rdv)
+  t <- kio_submit(p, kio_map(pool, 1:16, function(i, rdv) {
+    file.create(file.path(rdv, Sys.getpid()))
+    t0 <- Sys.time()
+    while (length(list.files(rdv)) < 2L &&
+           difftime(Sys.time(), t0, units = "secs") < 10) Sys.sleep(0.05)
+    if (length(list.files(rdv)) < 2L) file.create(file.path(rdv, "gave-up"))
     i * 10L
-  }, .chunks = 8L))
+  }, rdv = rdv, .chunks = 8L), rdv = rdv)
   expect_identical(kio_collect(t, timeout = 30), as.list(1:16 * 10L))
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   # the outer worker's chunks were stolen by its idle peer
   expect_gte(sum(kio_pool_stats(p)$workers$steals), 1)
   expect_true(kio_pool_stop(p))
+  unlink(rdv, recursive = TRUE)
 })
 
 test_that(".seed maps are identical across worker counts and chunkings", {
