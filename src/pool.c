@@ -1517,6 +1517,35 @@ static void pool_announce_clear(kio_pool *p) {
                         memory_order_relaxed);
 }
 
+/* Claims must copy before their CAS so a dying claimer leaves the entry
+   untouched. Only the fixed header and its framed bytes are meaningful: a
+   large inline slot would otherwise turn every claim into a slot-sized copy.
+   A losing deque thief may see a stale, torn header before its CAS, so that
+   case falls back to the old full-slot copy rather than reporting an error. */
+static size_t pool_entry_copy_bytes(kio_pool *p, const kio_entry_hdr *eh) {
+  size_t len = eh->ph.len;
+  switch (eh->ph.kind) {
+  case KIO_KIND_INLINE:
+  case KIO_KIND_RAWVEC:
+    if (len <= p->inline_entry) return sizeof(*eh) + len;
+    return p->hdr.slot;
+  case KIO_KIND_SHM_RAW:
+    if (len > 0 && len < MORI_NAME_MAX && len <= p->inline_entry)
+      return sizeof(*eh) + len;
+    return p->hdr.slot;
+  default:
+    return p->hdr.slot;             /* ARENA is channel-only */
+  }
+}
+
+static void pool_copy_entry(kio_pool *p, unsigned char *dst,
+                            const unsigned char *src) {
+  memcpy(dst, src, sizeof(kio_entry_hdr));
+  size_t n = pool_entry_copy_bytes(p, (const kio_entry_hdr *) dst);
+  memcpy(dst + sizeof(kio_entry_hdr), src + sizeof(kio_entry_hdr),
+         n - sizeof(kio_entry_hdr));
+}
+
 /* Mirror the local counters into the slot — only at the park announce,
    post-park, the fairness tick, step returns, and leave. Never per task:
    the stat_* fields share line 1 with deque_top, and a per-task write
@@ -1566,7 +1595,7 @@ static int pool_claim_rings(kio_pool *p, int use_mask) {
         }
         break;
       }
-      memcpy(p->scratch, ring_entry(p, ring, (uint64_t) head), p->hdr.slot);
+      pool_copy_entry(p, p->scratch, ring_entry(p, ring, (uint64_t) head));
       pool_announce(p);
       if (atomic_compare_exchange_strong_explicit(hd, &head, head + 1,
                                                   memory_order_seq_cst,
@@ -1602,7 +1631,7 @@ static int pool_deque_push(kio_pool *p, const unsigned char *entry) {
   int64_t b = atomic_load_explicit(&me->deque_bottom, memory_order_relaxed);
   int64_t t = atomic_load_explicit(&me->deque_top, memory_order_acquire);
   if (b - t >= (int64_t) me->deque_cap) return 0;
-  memcpy(deque_entry_at(p, me, b), entry, p->hdr.slot);
+  pool_copy_entry(p, deque_entry_at(p, me, b), entry);
   atomic_store_explicit(&me->deque_bottom, b + 1, memory_order_release);
   return 1;
 }
@@ -1618,7 +1647,7 @@ static int pool_deque_pop(kio_pool *p) {
   int64_t t = atomic_load_explicit(&me->deque_top, memory_order_acquire);
   if (t >= b) return 0;
   b--;
-  memcpy(p->scratch, deque_entry_at(p, me, b), p->hdr.slot);
+  pool_copy_entry(p, p->scratch, deque_entry_at(p, me, b));
   pool_announce(p);
   atomic_store_explicit(&me->deque_bottom, b, memory_order_relaxed);
   atomic_thread_fence(memory_order_seq_cst);
@@ -1667,7 +1696,7 @@ static int pool_steal_from(kio_pool *p, uint32_t v) {
       return KIO_STEAL_ABORT;   /* orphaned and nonempty after all: retry */
     return KIO_STEAL_EMPTY;
   }
-  memcpy(p->scratch, deque_entry_at(p, w, t), p->hdr.slot);
+  pool_copy_entry(p, p->scratch, deque_entry_at(p, w, t));
   pool_announce(p);
   if (!atomic_compare_exchange_strong_explicit(&w->deque_top, &t, t + 1,
                                                memory_order_seq_cst,

@@ -38,6 +38,18 @@ test_that("large task payloads travel by region and round-trip", {
   pool_end(p)
 })
 
+test_that("large inline entries survive ring and deque claims", {
+  p <- pool_pair(max_submitters = 1L, injection_cap = 2L,
+                 per_worker_cap = 2L, result_slots = 2L,
+                 slot_size = 1048576L)
+  big <- runif(100000)
+  t <- kio_submit(p$ctrl, v, v = big)
+  expect_identical(pool_pull(p, 1L), 1L)
+  expect_identical(pool_step(p), 1L)
+  expect_identical(kio_collect(t, timeout = 5), big)
+  pool_end(p)
+})
+
 test_that("a task error is published and re-signalled at collect", {
   p <- pool_pair()
   t <- kio_submit(p$ctrl, stop("boom ", x), x = "today")
