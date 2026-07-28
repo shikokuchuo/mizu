@@ -57,6 +57,15 @@ SEXP kio_shm_wrap_producer(mori_shm *shm) {
   return shm_ptr;
 }
 
+/* Non-erroring unwrap for the spill free list: the region behind a
+   kio_shm-tagged wrap, NULL for anything else (a finalized wrap's cleared
+   pointer included). */
+mori_shm *kio_shm_unwrap(SEXP x) {
+  if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != kio_shm_tag)
+    return NULL;
+  return (mori_shm *) R_ExternalPtrAddr(x);
+}
+
 /* Shared by the .Call test surface across compilation units. */
 mori_shm *kio_region(SEXP xp) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_shm_tag)

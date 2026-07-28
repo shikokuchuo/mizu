@@ -75,6 +75,12 @@ const char *kio_preamble_validate(const void *region, size_t region_size,
 int kio_shm_open_rw(mori_shm *shm, const char *name, int populate);
 mori_shm *kio_shm_open_rw_heap(const char *name, int populate);
 
+/* Read-only open for SHM_RAW payload reads: the vendored consumer open,
+   except populated on Linux — the stream is unserialized in full
+   immediately, so eager PTE install beats a fault per page. Elsewhere it
+   defers to the vendored open. NULL on failure (the gone path). */
+mori_shm *kio_shm_open_ro_heap(const char *name);
+
 /* Create for the pool / channel control regions: pre-faulted on every
    platform (a page-touch pass where mmap has no populate flag), so slot
    walks never zero-fill-fault on the hot path. Payload regions use the
@@ -110,29 +116,86 @@ enum {
 typedef struct kio_slot_hdr_s {
   uint32_t kind;
   uint32_t len;
-  uint64_t aux;
+  uint64_t aux;                    /* SHM_RAW: exact stream length — regions
+                                      recycled from a free list carry slack */
 } kio_slot_hdr;
 
 typedef char kio_slot_hdr_assert[(sizeof(kio_slot_hdr) == 16) ? 1 : -1];
 
+/* Producer spill-region free list: retired SHM_RAW regions recycled by the
+   handle that spilled them, so steady-state spill traffic is region-churn-
+   free (no create / open / unlink / zero-fill per payload). The wraps
+   vector is an R list living in a prot slot on the owning handle, so GC,
+   session-exit, and unlink semantics are inherited unchanged — eviction is
+   just dropping the reference. Reuse is safe only because a region is
+   offered exclusively at the protocol's consumer-done release points
+   (collect, result-slot reuse, the worker keeper sweep). Regions are
+   created at power-of-two sizes (floor 4 KiB) so nearby payload sizes hit;
+   caps are per size class and total bytes, the latter sized to admit one
+   8 MiB entry. */
+#define KIO_SPILL_FL_MAX    16
+#define KIO_SPILL_FL_CLASS  2
+#define KIO_SPILL_FL_BYTES  ((size_t) 32 << 20)
+#define KIO_SPILL_FL_FLOOR  ((size_t) 4096)
+
+typedef struct kio_spill_fl_s {
+  SEXP wraps;                       /* VECSXP(KIO_SPILL_FL_MAX), handle-pinned */
+  size_t size[KIO_SPILL_FL_MAX];    /* region size; 0 = empty entry */
+  uint64_t stamp[KIO_SPILL_FL_MAX]; /* push order: largest-oldest eviction */
+  uint64_t tick;
+  size_t total;
+  uint32_t n;
+  int last_reused;                  /* whether the last spill popped an entry */
+  uint64_t hits;                    /* process-local reuse count (dump-only) */
+} kio_spill_fl;
+
+/* Surrender a dropped keeper's region to the free list: a no-op unless
+   keeper is a spill keeper (identified by pointer identity of a private
+   marker, so no user value staged as its own keeper can alias one). Call
+   only at consumer-done release points, before dropping the keeper. */
+void kio_spill_fl_offer(kio_spill_fl *fl, SEXP keeper);
+
+/* Consumer-side mapping cache, the read counterpart of the free list: once
+   producers repeat region names, a name -> consumer-wrap table skips the
+   open / fstat / mmap (and the munmap at GC) per SHM_RAW payload. Wraps
+   live in a prot slot on the owning handle for inherited lifetime. Names
+   never alias (mori's counter never regenerates one) and a region's size
+   is fixed for its lifetime, so entries cannot go stale — one whose region
+   was evicted producer-side just never matches again and ages out (LRU).
+   Producer death leaves hits readable (the mapping — and on Windows the
+   cached handle — outlives the name); the gone path only ever ran on
+   misses and is unchanged. Counters are process-local, kio_pool_dump-only. */
+#define KIO_OPEN_CACHE_MAX 16
+
+typedef struct kio_open_cache_s {
+  SEXP wraps;                       /* VECSXP(KIO_OPEN_CACHE_MAX), handle-pinned */
+  char names[KIO_OPEN_CACHE_MAX][MORI_NAME_MAX];
+  uint8_t name_len[KIO_OPEN_CACHE_MAX];   /* 0 = empty entry */
+  uint64_t stamp[KIO_OPEN_CACHE_MAX];
+  uint64_t tick;
+  uint64_t hits, misses;
+} kio_open_cache;
+
 void *kio_vec_ptr(SEXP x);
 int kio_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
-/* Serialize x into a fresh kioto region of exactly n bytes (the bounded pass
-   supplied n) and frame it as SHM_RAW. Returns the keeper — list(x, producer
-   wrapper) — freshly allocated: the caller must protect it. */
+/* Serialize x into a kioto region — popped from fl when an entry fits,
+   created fresh otherwise (fl may be NULL: always fresh, exactly n bytes)
+   — and frame it as SHM_RAW. Returns the keeper — list(x, producer
+   wrapper, marker) — freshly allocated: the caller must protect it. */
 SEXP kio_payload_spill_shm(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                           size_t n);
+                           size_t n, kio_spill_fl *fl);
 /* Stage x as RAWVEC, INLINE, or (past the inline budget) SHM_RAW — the pool
    framing, with no arena tier. Returns the keeper to pin: x itself, or the
    fresh SHM_RAW list; the caller must protect it. */
 SEXP kio_payload_stage(kio_slot_hdr *hdr, unsigned char *payload,
-                       uint32_t inline_max, SEXP x);
+                       uint32_t inline_max, SEXP x, kio_spill_fl *fl);
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload (errors on ARENA — the
-   channel resolves its own arena chunks). */
+   channel resolves its own arena chunks). oc may be NULL: open per
+   payload, mapping dropped at GC, as before the cache. */
 /* gone: NULL raises on a vanished out-of-line region; else set to 1 with a
    NULL-value return, for callers that can turn it into a task verdict */
 SEXP kio_payload_read(const kio_slot_hdr *hdr, const unsigned char *payload,
-                      uint32_t inline_max, int *gone);
+                      uint32_t inline_max, int *gone, kio_open_cache *oc);
 
 /* Terminal-state sentinels (channel.c), shared across the verb surface. */
 extern SEXP kio_sent_full, kio_sent_timeout, kio_sent_closed, kio_sent_gone;
@@ -360,8 +423,10 @@ typedef char kio_wk_slot_assert[(sizeof(kio_wk_slot) == 128) ? 1 : -1];
    stat_spills counts payloads staged past the inline budget onto the
    SHM_RAW tier — task payloads at submit, result payloads at publish, both
    attributed to the task's submitter — the visible signal that slot_size
-   is undersized for the traffic. Spill-path-only writes (a fresh region
-   per payload dwarfs the cross-process fetch_add); reset at claim. */
+   is undersized for the traffic. stat_spill_reuse counts the subset that
+   recycled a region from the producer's free list instead of creating one:
+   spills - reuse is the region-churn rate. Spill-path-only writes (even a
+   recycled region dwarfs the cross-process fetch_add); reset at claim. */
 typedef struct kio_sub_slot_s {
   _Atomic int32_t  status;        /* FREE, LIVE, REAPING */
   _Atomic uint32_t park_epoch;    /* parker epoch word */
@@ -371,7 +436,8 @@ typedef struct kio_sub_slot_s {
   uint64_t         live_dev;
   uint64_t         live_ino;
   _Atomic uint64_t stat_spills;
-  uint8_t          pad[16];
+  _Atomic uint64_t stat_spill_reuse;
+  uint8_t          pad[8];
 } kio_sub_slot;
 
 typedef char kio_sub_slot_assert[(sizeof(kio_sub_slot) == 64) ? 1 : -1];
@@ -437,10 +503,14 @@ mori_shm *kio_region(SEXP xp);
 SEXP kio_shm_wrap_producer(mori_shm *shm);
 SEXP kio_shm_wrap_consumer(mori_shm *shm);
 SEXP kio_shm_wrap_host(mori_shm *shm);
+/* The region behind a kio_shm-tagged wrap, or NULL — keeps the tag private
+   to wrap.c (a finalized wrap also reads NULL: its region is gone). */
+mori_shm *kio_shm_unwrap(SEXP x);
 
 // init hooks ----------------------------------------------------------------------
 
 void kio_wrap_init(void);
+void kio_payload_init(void);
 void kio_entity_init(void);
 void kio_channel_init(void);
 void kio_pool_init(void);

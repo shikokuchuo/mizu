@@ -339,8 +339,12 @@ kio_pool_status <- function(pool) {
 #'   slot, status, pid, park_state, parked, deque `top` / `bottom`, and the
 #'   in-flight result slot), `submitters` (data frame: slot, status, pid,
 #'   result-slot subrange, queued injection entries, ready and
-#'   full-waiter mask bits), and `tasks` (data frame of occupied result
-#'   slots: slot, status, sequence, executing worker, parked waiter).
+#'   full-waiter mask bits), `tasks` (data frame of occupied result
+#'   slots: slot, status, sequence, executing worker, parked waiter), and
+#'   `local` — this handle's process-private spill-reuse machinery: the
+#'   producer free list's occupancy (`fl_entries`, `fl_bytes`) and reuse
+#'   count (`fl_hits`), and the consumer mapping cache's `open_hits` /
+#'   `open_misses`.
 #'
 #' @export
 kio_pool_dump <- function(pool) {
@@ -385,11 +389,14 @@ kio_pool_dump <- function(pool) {
 #'   `submitters`: one row per submitter slot with `status`, `pid`,
 #'   `injected` (entries ever published to its injection ring), `claimed`
 #'   (entries workers have taken from it), `spills` (payloads past the
-#'   inline budget that traveled via a fresh region each — task payloads at
+#'   inline budget that traveled via their own region — task payloads at
 #'   submit and result payloads at publish, both attributed to the task's
 #'   submitter; nonzero means `slot_size` is undersized for the traffic),
-#'   and `queued` (`injected - claimed`). Counters reset when a slot is
-#'   reused by a new joiner.
+#'   `spill_reuse` (the subset of `spills` that recycled a retired region
+#'   from the producer's free list instead of creating one — steady-state
+#'   spill traffic should approach `spills`, so `spills - spill_reuse` is
+#'   the region-churn rate), and `queued` (`injected - claimed`). Counters
+#'   reset when a slot is reused by a new joiner.
 #'
 #' @export
 kio_pool_stats <- function(pool) {

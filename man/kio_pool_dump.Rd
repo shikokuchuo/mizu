@@ -15,8 +15,12 @@ A list with elements \code{name}, \code{shutdown}, \code{workers} (data frame:
 slot, status, pid, park_state, parked, deque \code{top} / \code{bottom}, and the
 in-flight result slot), \code{submitters} (data frame: slot, status, pid,
 result-slot subrange, queued injection entries, ready and
-full-waiter mask bits), and \code{tasks} (data frame of occupied result
-slots: slot, status, sequence, executing worker, parked waiter).
+full-waiter mask bits), \code{tasks} (data frame of occupied result
+slots: slot, status, sequence, executing worker, parked waiter), and
+\code{local} — this handle's process-private spill-reuse machinery: the
+producer free list's occupancy (\code{fl_entries}, \code{fl_bytes}) and reuse
+count (\code{fl_hits}), and the consumer mapping cache's \code{open_hits} /
+\code{open_misses}.
 }
 \description{
 A read-only debugging snapshot of the entire pool region, one level

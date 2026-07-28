@@ -65,6 +65,13 @@ typedef struct kio_pool_s {
   uint64_t task_counter;
   int64_t inj_ltail;             /* producer-local tail */
 
+  /* producer spill free list (all staging roles on this handle: task
+     payloads, results, nested submits) and consumer mapping cache (entry
+     reads on workers, result reads on submitters); wraps vectors pinned by
+     prot[6] / prot[7] */
+  kio_spill_fl fl;
+  kio_open_cache oc;
+
   /* worker-local */
   unsigned char *scratch;        /* slot-sized claim copy buffer */
   uint32_t scan_start;           /* rotating ring-scan start */
@@ -385,11 +392,18 @@ static void kio_pool_finalizer(SEXP xp) {
    [3] the worker's evaluation base env (kio_pool_set_eval); [4] the
    handle's trace hook (kio_pool_set_trace); [5] the worker's map-context
    cache env (kio_map; created lazily by kio_pool_map_cache, cleared whole
-   by the idle sweep — clear-all is its entire eviction policy). */
+   by the idle sweep — clear-all is its entire eviction policy); [6] the
+   spill free list's wrap table; [7] the consumer mapping cache's wrap
+   table (both never reassigned — p->fl / p->oc hold the raw pointers for
+   the handle's lifetime). */
 static SEXP pool_make_handle(kio_pool *p, SEXP keepers, SEXP host_ptr) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 8));
   SET_VECTOR_ELT(prot, 0, keepers);
   SET_VECTOR_ELT(prot, 1, host_ptr);
+  SET_VECTOR_ELT(prot, 6, Rf_allocVector(VECSXP, KIO_SPILL_FL_MAX));
+  p->fl.wraps = VECTOR_ELT(prot, 6);
+  SET_VECTOR_ELT(prot, 7, Rf_allocVector(VECSXP, KIO_OPEN_CACHE_MAX));
+  p->oc.wraps = VECTOR_ELT(prot, 7);
   SEXP xp = PROTECT(R_MakeExternalPtr(p, kio_pool_tag, prot));
   R_RegisterCFinalizerEx(xp, kio_pool_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, kio_class_pool);
@@ -875,6 +889,7 @@ static void pool_claim_sub_slot(kio_pool *p, intptr_t *lock_out) {
   me->rs_start = (uint32_t) p->sub_slot * per;
   me->rs_count = per;
   atomic_store_explicit(&me->stat_spills, 0, memory_order_relaxed);
+  atomic_store_explicit(&me->stat_spill_reuse, 0, memory_order_relaxed);
   kio_live_ident(*lock_out, &me->live_dev, &me->live_ino);
 }
 
@@ -1162,15 +1177,21 @@ static void pool_unpark_keeper_drop(kio_pool *p, int32_t w) {
     kio_unpark(pool_wk_pk(p, (uint32_t) w));
 }
 
-/* SHM_RAW staging is the off-ramp from the inline fast path — a fresh
-   region per payload. Counted against the task's submitter for task and
-   result payloads alike, so kio_pool_stats surfaces an undersized
-   slot_size from either direction of the traffic. */
+/* SHM_RAW staging is the off-ramp from the inline fast path — a region per
+   payload, recycled from the handle's free list when steady-state traffic
+   permits. Counted against the task's submitter for task and result
+   payloads alike, so kio_pool_stats surfaces an undersized slot_size from
+   either direction of the traffic; the reuse count alongside says how much
+   of that spill traffic is churn-free. */
 static void pool_count_spill(kio_pool *p, uint32_t sub_slot,
                              const kio_slot_hdr *ph) {
-  if (ph->kind == KIO_KIND_SHM_RAW && sub_slot < p->hdr.max_submitters)
+  if (ph->kind == KIO_KIND_SHM_RAW && sub_slot < p->hdr.max_submitters) {
     atomic_fetch_add_explicit(&p->sub[sub_slot].stat_spills, 1,
                               memory_order_relaxed);
+    if (p->fl.last_reused)
+      atomic_fetch_add_explicit(&p->sub[sub_slot].stat_spill_reuse, 1,
+                                memory_order_relaxed);
+  }
 }
 
 /* The handle finalizer's state machine (also invoked deliberately by
@@ -1220,15 +1241,23 @@ static void kio_task_finalizer(SEXP xp) {
   R_ClearExternalPtr(xp);
 }
 
-/* Result slot from the submitter's own subrange. Reusing a FREE slot drops
-   its previous task keeper — the lazy backstop — by overwrite at commit. */
-static uint32_t pool_alloc_rs(kio_pool *p) {
+/* Result slot from the submitter's own subrange, its previous task keeper
+   dropped en route: reusing a FREE slot is the lazy release backstop for
+   keepers no collect dropped (cancelled or never-collected tasks) — safe
+   because FREE strictly implies the worker is done with the entry — and it
+   runs before staging, so a surrendered spill region can be popped by the
+   very payload that recycles the slot. A longjmp out of staging leaves the
+   keeper dropped early, which any FREE slot already permits. */
+static uint32_t pool_alloc_rs(kio_pool *p, SEXP keepers) {
   kio_sub_slot *me = &p->sub[p->sub_slot];
   for (uint32_t k = 0; k < me->rs_count; k++) {
     uint32_t cand = (p->rs_cursor + k) % me->rs_count;
     if (atomic_load_explicit(&pool_rs(p, me->rs_start + cand)->status,
-                             memory_order_acquire) == KIO_RS_FREE)
+                             memory_order_acquire) == KIO_RS_FREE) {
+      kio_spill_fl_offer(&p->fl, VECTOR_ELT(keepers, (R_xlen_t) cand));
+      SET_VECTOR_ELT(keepers, (R_xlen_t) cand, R_NilValue);
       return cand;
+    }
   }
   kio_stop("kio_error_slots_exhausted",
            "kioto: result slots exhausted — collect or cancel outstanding "
@@ -1291,7 +1320,7 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
       (R_xlen_t) p->sub[p->sub_slot].rs_count));
   }
   SEXP keepers = VECTOR_ELT(prot, 2);
-  uint32_t local = pool_alloc_rs(p);
+  uint32_t local = pool_alloc_rs(p, keepers);
   uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
   kio_rs_hdr *rs = pool_rs(p, rs_index);
 
@@ -1307,7 +1336,7 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
      mutation: an error leaves the entry unpublished and the slot FREE */
   if (inline_exec) (void) pool_eval_env(xp);
   SEXP keep = PROTECT(kio_payload_stage(&eh->ph, e + sizeof(kio_entry_hdr),
-                                        p->inline_entry, payload));
+                                        p->inline_entry, payload, &p->fl));
   pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
@@ -1345,7 +1374,7 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
     kio_stop("kio_error_submit_timeout",
              "kioto: submission timed out (injection ring full)");
 
-  uint32_t local = pool_alloc_rs(p);
+  uint32_t local = pool_alloc_rs(p, keepers);
   uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
   kio_rs_hdr *rs = pool_rs(p, rs_index);
 
@@ -1353,7 +1382,7 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
   unsigned char *e = ring_entry(p, ring, (uint64_t) p->inj_ltail);
   kio_entry_hdr *eh = (kio_entry_hdr *) e;
   SEXP keep = PROTECT(kio_payload_stage(&eh->ph, e + sizeof(kio_entry_hdr),
-                                        p->inline_entry, payload));
+                                        p->inline_entry, payload, &p->fl));
   pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
@@ -1378,14 +1407,18 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
    its directed unpark what re-runs the reap on a parked worker. rk_pos
    keys the table by slot — at most one record per slot, updated in place
    when a reused slot republishes — so a stale record can never alias (and
-   nil) a successor's keeper. Returns 1 when the record at i was retained,
-   0 when it was removed (the swapped-in tail record then sits at i). */
+   nil) a successor's keeper. Every exit from OK/ERR is a consumer-done
+   signal (collect materialized, or the finalizer / submitter reaper freed
+   an uncollectable slot), so a spilled result region surrenders to the
+   free list here. Returns 1 when the record at i was retained, 0 when it
+   was removed (the swapped-in tail record then sits at i). */
 static int pool_rk_visit(kio_pool *p, SEXP keepers, uint32_t i) {
   kio_rs_hdr *rs = pool_rs(p, p->rk[i].idx);
   int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
   uint64_t seq = atomic_load_explicit(&rs->sequence, memory_order_relaxed);
   if ((st == KIO_RS_OK || st == KIO_RS_ERR) && seq == p->rk[i].seq)
     return 1;
+  kio_spill_fl_offer(&p->fl, VECTOR_ELT(keepers, (R_xlen_t) p->rk[i].idx));
   SET_VECTOR_ELT(keepers, (R_xlen_t) p->rk[i].idx, R_NilValue);
   p->rk_pos[p->rk[i].idx] = 0;
   p->rk_n--;
@@ -2010,7 +2043,7 @@ static int pool_publish_result(kio_pool *p, SEXP xp, uint32_t rs_index,
   SEXP keep = PROTECT(kio_payload_stage(&rs->ph,
                                         (unsigned char *) rs +
                                         sizeof(kio_rs_hdr),
-                                        p->inline_rs, value));
+                                        p->inline_rs, value, &p->fl));
   pool_count_spill(p, sub_slot, &rs->ph);
   int32_t expected = KIO_RS_PENDING;
   int published =
@@ -2019,12 +2052,18 @@ static int pool_publish_result(kio_pool *p, SEXP xp, uint32_t rs_index,
                                             memory_order_seq_cst,
                                             memory_order_acquire);
   if (published) {
-    SET_VECTOR_ELT(VECTOR_ELT(R_ExternalPtrProtected(xp), 0),
-                   (R_xlen_t) rs_index, keep);
+    SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
+    /* a same-slot republish can overwrite the previous incarnation's
+       keeper before any reap visit ran; the slot was freed and recommitted
+       in between, so that region surrenders rather than falling to GC */
+    kio_spill_fl_offer(&p->fl, VECTOR_ELT(keepers, (R_xlen_t) rs_index));
+    SET_VECTOR_ELT(keepers, (R_xlen_t) rs_index, keep);
     pool_rk_add(p, rs_index, seq);
     pool_unpark_result_waiter(p, rs);
   } else {
-    /* cancelled while we ran: drop the result, return the slot */
+    /* cancelled while we ran: drop the result, return the slot — a spilled
+       result region was never published, so it recycles immediately */
+    kio_spill_fl_offer(&p->fl, keep);
     expected = KIO_RS_CANCEL;
     atomic_compare_exchange_strong_explicit(&rs->status, &expected,
                                             KIO_RS_FREE,
@@ -2090,7 +2129,7 @@ static void pool_execute(kio_pool *p, SEXP xp, int catching) {
   int gone = 0;
   SEXP pl = PROTECT(kio_payload_read(&eh->ph,
                                      p->scratch + sizeof(kio_entry_hdr),
-                                     p->inline_entry, &gone));
+                                     p->inline_entry, &gone, &p->oc));
   if (gone) {
     int32_t expected = KIO_RS_PENDING;
     if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
@@ -2406,13 +2445,17 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
     SEXP v = PROTECT(kio_payload_read(&rs->ph,
                                       (unsigned char *) rs +
                                       sizeof(kio_rs_hdr), p->inline_rs,
-                                      NULL));
+                                      NULL, &p->oc));
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
     if (t->idx >= p->sub[p->sub_slot].rs_start &&
-        t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count)
-      SET_VECTOR_ELT(pool_task_keepers(p, pool_xp),
-                     (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start),
-                     R_NilValue);
+        t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count) {
+      /* OK/ERR means the worker materialized the task args: the spilled
+         task region (if any) has no reader left and recycles here */
+      SEXP tk = pool_task_keepers(p, pool_xp);
+      R_xlen_t at = (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start);
+      kio_spill_fl_offer(&p->fl, VECTOR_ELT(tk, at));
+      SET_VECTOR_ELT(tk, at, R_NilValue);
+    }
     int32_t expected = st;
     if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
                                                  KIO_RS_FREE,
@@ -2433,10 +2476,14 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
     /* terminal like ERR, but status-word only: the reaper wrote no
        payload (see the DIED note in kioto.h) */
     if (t->idx >= p->sub[p->sub_slot].rs_start &&
-        t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count)
-      SET_VECTOR_ELT(pool_task_keepers(p, pool_xp),
-                     (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start),
-                     R_NilValue);
+        t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count) {
+      /* the claim consumed the entry and its claimant is dead: no reader
+         remains, so the spilled task region recycles like the OK/ERR one */
+      SEXP tk = pool_task_keepers(p, pool_xp);
+      R_xlen_t at = (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start);
+      kio_spill_fl_offer(&p->fl, VECTOR_ELT(tk, at));
+      SET_VECTOR_ELT(tk, at, R_NilValue);
+    }
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
     double wpid = (w >= 0 && (uint32_t) w < p->hdr.max_workers) ?
       (double) p->wk[w].pid : 0;
@@ -2713,11 +2760,11 @@ SEXP kio_pool_stats_call(SEXP xp) {
   }
 
   const char *snames[] = {"status", "pid", "injected", "claimed", "spills",
-                          ""};
+                          "spill_reuse", ""};
   SEXP sb = Rf_mkNamed(VECSXP, snames);
   SET_VECTOR_ELT(out, 1, sb);
   SET_VECTOR_ELT(sb, 0, Rf_allocVector(INTSXP, (R_xlen_t) ms));
-  for (int f = 1; f < 5; f++)
+  for (int f = 1; f < 6; f++)
     SET_VECTOR_ELT(sb, f, Rf_allocVector(REALSXP, (R_xlen_t) ms));
   for (uint32_t j = 0; j < ms; j++) {
     unsigned char *ring = pool_ring(p, j);
@@ -2730,6 +2777,9 @@ SEXP kio_pool_stats_call(SEXP xp) {
       atomic_load_explicit(ring_head(ring), memory_order_acquire);
     REAL(VECTOR_ELT(sb, 4))[j] = (double)
       atomic_load_explicit(&p->sub[j].stat_spills, memory_order_relaxed);
+    REAL(VECTOR_ELT(sb, 5))[j] = (double)
+      atomic_load_explicit(&p->sub[j].stat_spill_reuse,
+                           memory_order_relaxed);
   }
   UNPROTECT(1);
   return out;
@@ -2743,11 +2793,23 @@ SEXP kio_pool_dump_call(SEXP xp) {
   kio_pool *p = pool_get(xp);
   uint32_t mw = p->hdr.max_workers, ms = p->hdr.max_submitters;
   const char *names[] = {"name", "shutdown", "workers", "submitters",
-                         "tasks", ""};
+                         "tasks", "local", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(p->shm.name));
   SET_VECTOR_ELT(out, 1, Rf_ScalarLogical(
     (int) atomic_load_explicit(p->shutdown, memory_order_acquire)));
+
+  /* the spill free list and consumer mapping cache are handle-local, so
+     their counters surface here rather than in the cross-process stats */
+  const char *lnames[] = {"fl_entries", "fl_bytes", "fl_hits", "open_hits",
+                          "open_misses", ""};
+  SEXP lo = Rf_mkNamed(VECSXP, lnames);
+  SET_VECTOR_ELT(out, 5, lo);
+  SET_VECTOR_ELT(lo, 0, Rf_ScalarInteger((int) p->fl.n));
+  SET_VECTOR_ELT(lo, 1, Rf_ScalarReal((double) p->fl.total));
+  SET_VECTOR_ELT(lo, 2, Rf_ScalarReal((double) p->fl.hits));
+  SET_VECTOR_ELT(lo, 3, Rf_ScalarReal((double) p->oc.hits));
+  SET_VECTOR_ELT(lo, 4, Rf_ScalarReal((double) p->oc.misses));
 
   const char *wnames[] = {"status", "pid", "park_state", "parked", "top",
                           "bottom", "in_flight", ""};

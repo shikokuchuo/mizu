@@ -122,7 +122,64 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
   return 0;
 }
 
+#ifdef __linux__
+/* Read-only populated open for SHM_RAW payload reads. The vendored
+   consumer open deliberately skips MAP_POPULATE — right for mori shared
+   objects read lazily, wrong for a payload stream kio_payload_read
+   unserializes in full immediately: 2,048 read faults per 8 MB (each a
+   stage-2 walk under a VM) where one populate syscall does. Linux-only —
+   macOS has no mapping-time populate flag and fault-on-demand there is
+   the vendored position (see the fallback below). NULL on failure, so
+   the caller's gone semantics are unchanged. */
+mori_shm *kio_shm_open_ro_heap(const char *name) {
+  mori_shm *shm = malloc(sizeof(mori_shm));
+  if (shm == NULL) return NULL;
+  shm->addr = NULL;
+  shm->size = 0;
+  size_t nl = strlen(name);
+  if (nl >= sizeof(shm->name)) nl = sizeof(shm->name) - 1;
+  memcpy(shm->name, name, nl);
+  shm->name[nl] = '\0';
+  shm->name_len = (uint8_t) nl;
+
+  char path[64];
+  snprintf(path, sizeof(path), "/dev/shm%s", name);
+  int fd = open(path, O_RDONLY, 0);
+  if (fd < 0) {
+    free(shm);
+    return NULL;
+  }
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    close(fd);
+    free(shm);
+    return NULL;
+  }
+  size_t size = (size_t) st.st_size;
+  void *addr = mmap(NULL, size, PROT_READ, MAP_SHARED | MAP_POPULATE, fd, 0);
+  if (addr == MAP_FAILED) {
+    close(fd);
+    free(shm);
+    return NULL;
+  }
+  close(fd);
+#ifdef MADV_HUGEPAGE
+  if (size >= 2 * 1024 * 1024)
+    madvise(addr, size, MADV_HUGEPAGE);
+#endif
+  shm->addr = addr;
+  shm->size = size;
+  return shm;
+}
+#endif /* __linux__ */
+
 #endif /* _WIN32 */
+
+#ifndef __linux__
+mori_shm *kio_shm_open_ro_heap(const char *name) {
+  return mori_shm_open_heap(name);
+}
+#endif
 
 mori_shm *kio_shm_open_rw_heap(const char *name, int populate) {
   mori_shm *shm = malloc(sizeof(mori_shm));

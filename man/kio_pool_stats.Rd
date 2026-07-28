@@ -20,11 +20,14 @@ while blocked in a nested collect), and the current \code{deque} depth.
 \code{submitters}: one row per submitter slot with \code{status}, \code{pid},
 \code{injected} (entries ever published to its injection ring), \code{claimed}
 (entries workers have taken from it), \code{spills} (payloads past the
-inline budget that traveled via a fresh region each — task payloads at
+inline budget that traveled via their own region — task payloads at
 submit and result payloads at publish, both attributed to the task's
 submitter; nonzero means \code{slot_size} is undersized for the traffic),
-and \code{queued} (\code{injected - claimed}). Counters reset when a slot is
-reused by a new joiner.
+\code{spill_reuse} (the subset of \code{spills} that recycled a retired region
+from the producer's free list instead of creating one — steady-state
+spill traffic should approach \code{spills}, so \code{spills - spill_reuse} is
+the region-churn rate), and \code{queued} (\code{injected - claimed}). Counters
+reset when a slot is reused by a new joiner.
 }
 \description{
 Per-worker and per-submitter counters accumulated since each

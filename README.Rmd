@@ -159,6 +159,11 @@ When you are done, `kio_pool_stop()` cancels pending tasks, waits for the worker
 kio_pool_stop(p)
 ```
 
+## Deploying on Linux
+
+POSIX shared memory on Linux is `/dev/shm`, a bounded tmpfs mount: everything kioto creates — pool and channel regions, and the per-payload regions that carry anything past the in-slot budget — has to fit in it.
+Container runtimes default it to 64 MB (`docker run --shm-size=4g`, or the equivalent in your orchestrator), so size it to your peak in-flight payload traffic.
+
 ## When a process dies
 
 Death of any participant is detected at OS notification latency, with no heartbeats and no polling: every process holds a lock that the kernel releases the instant it exits — for any reason — and that release is the verdict.

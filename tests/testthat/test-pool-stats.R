@@ -96,7 +96,11 @@ test_that("spills count SHM_RAW payloads against the task's submitter", {
   t2 <- kio_submit(p$ctrl, seq_len(n) + 0, n = 100000L)
   pool_step(p)
   kio_collect(t2, 5)
-  expect_identical(kio_pool_stats(p$ctrl)$submitters$spills[1], 2)
+  st <- kio_pool_stats(p$ctrl)$submitters
+  expect_identical(st$spills[1], 2)
+  # one submit-side and one publish-side spill, in different directions and
+  # from cold free lists on both handles: each cost a fresh region
+  expect_identical(st$spill_reuse[1], 0)
   pool_end(p)
 })
 

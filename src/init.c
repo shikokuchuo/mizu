@@ -184,6 +184,7 @@ void R_init_kioto(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
   kio_wrap_init();
+  kio_payload_init();
   kio_entity_init();
   kio_channel_init();
   kio_pool_init();
