@@ -642,7 +642,7 @@ SEXP kio_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
 
   kio_chan *c = calloc(1, sizeof(*c));
   if (c == NULL) Rf_error("kioto: allocation failure");
-  int rc = mori_shm_create(&c->shm, (size_t) total);
+  int rc = kio_shm_create_populate(&c->shm, (size_t) total);
   if (rc != MORI_OK) {
     free(c);
     const char *summary, *hint;

@@ -1,9 +1,10 @@
-/* Writable attach — the one platform delta the vendored core deliberately
-   does not provide. The vendored consumer open maps read-only, which is
-   correct for mori's write-once model and for SHM_RAW payload regions; the
-   channel region is mutable shared state (both sides write ring indices,
-   parker epochs, the control block), so the peer attaches through this
-   instead. Kept outside src/vendor/ so re-vendoring can never clobber it. */
+/* Writable attach and populated create — the platform deltas the vendored
+   core deliberately does not provide. The vendored consumer open maps
+   read-only, which is correct for mori's write-once model and for SHM_RAW
+   payload regions; the channel region is mutable shared state (both sides
+   write ring indices, parker epochs, the control block), so the peer
+   attaches through this instead. Kept outside src/vendor/ so re-vendoring
+   can never clobber it. */
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -16,7 +17,6 @@
 
 int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 
-  (void) populate;   /* no Windows equivalent of MAP_POPULATE */
   shm->addr = NULL;
   shm->size = 0;
   shm->handle = NULL;
@@ -37,6 +37,12 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 
   MEMORY_BASIC_INFORMATION mbi;
   VirtualQuery(addr, &mbi, sizeof(mbi));
+
+  /* No mapping-time flag on Windows: read-touch to populate. Reads only —
+     the region is live, creator-initialized state. */
+  if (populate)
+    for (size_t off = 0; off < mbi.RegionSize; off += 4096)
+      (void) ((const volatile unsigned char *) addr)[off];
 
   shm->addr = addr;
   shm->size = mbi.RegionSize;
@@ -89,10 +95,9 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
   }
   size_t size = (size_t) st.st_size;
 
-  /* MAP_POPULATE (when asked), unlike the vendored read-only consumer
-     open: the whole ring is hot on the peer, so pre-faulting once beats
-     faulting on the hot path. kio_map's template contexts opt out — see
-     kioto.h. */
+  /* Pre-fault when asked, unlike the vendored read-only consumer open:
+     the whole ring is hot on the peer, so pre-faulting once beats faulting
+     on the hot path. kio_map's template contexts opt out — see kioto.h. */
   void *addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
                     MAP_SHARED | (populate ? MAP_POPULATE : 0), fd, 0);
   if (addr == MAP_FAILED) {
@@ -101,6 +106,16 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
   }
 
   close(fd);
+
+#ifndef __linux__
+  /* No MAP_POPULATE here: read-touch is the pre-fault. Reads only — the
+     region is live, creator-initialized state whose pages the creator's
+     populated create already materialized; each touch just fills this
+     process's page table off the hot path. */
+  if (populate)
+    for (size_t off = 0; off < size; off += 4096)
+      (void) ((const volatile unsigned char *) addr)[off];
+#endif
 
   shm->addr = addr;
   shm->size = size;
@@ -117,4 +132,25 @@ mori_shm *kio_shm_open_rw_heap(const char *name, int populate) {
     return NULL;
   }
   return shm;
+}
+
+/* Create + populate, for the pool / channel control regions: slot arrays
+   walked incrementally over thousands of operations, where a lazy first
+   touch is a zero-fill fault inside a µs-scale round trip. The vendored
+   create already maps MAP_POPULATE on Linux; macOS and Windows have no
+   mmap-time flag, so touch one byte per page here — the creator pays the
+   zero-fill once at create, and every later first access on either side
+   is a soft fault against a resident page. Stride 4096 never exceeds a
+   supported page size, so no page is skipped (16 KiB pages on arm64 macOS
+   just take four stores). Payload regions keep the vendored create: they
+   are written in full immediately, so prefault would be a redundant pass. */
+int kio_shm_create_populate(mori_shm *shm, size_t size) {
+  int rc = mori_shm_create(shm, size);
+#ifndef __linux__
+  if (rc == MORI_OK) {
+    volatile unsigned char *b = (volatile unsigned char *) shm->addr;
+    for (size_t off = 0; off < size; off += 4096) b[off] = 0;
+  }
+#endif
+  return rc;
 }

@@ -5,7 +5,11 @@
 #   1. sequential round-trip  evaluate 1L, 1 worker: submit + collect loop
 #   2. pipelined throughput   evaluate 1L, 1 worker: fire n, collect n
 #   3. payload round-trip     identity task on numeric vectors of 8 KB /
-#                             800 KB / 8 MB, 1 worker: data both ways
+#                             800 KB / 8 MB, 1 worker: data both ways.
+#                             kioto slots are sized to the payload where
+#                             the 2^20 slot_size cap allows, so 8 KB and
+#                             800 KB ride in-slot and 8 MB takes the spill
+#                             tier (a fresh region per payload)
 #   4. parallel fan-out       small compute tasks, 4 workers: fire all,
 #                             collect all (in-process loop as the anchor)
 #   5. streaming              one-way 1L messages: channel send_batch /
@@ -38,6 +42,8 @@ library(kioto)
 library(mirai)
 library(nanonext)
 
+# helpers ----------------------------------------------------------------------
+
 REPS <- 3L
 results <- list()
 
@@ -57,12 +63,38 @@ timed <- function(expr) {
 
 best_ms <- function(f) min(vapply(seq_len(REPS), function(i) f(), 0))
 
-new_child <- function(code)
-  system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(code)),
-          wait = FALSE, stdout = FALSE, stderr = FALSE)
+# the two reporting shapes: f() is one rep of `ops` operations, timed
+# best-of-REPS, reported per operation or as a rate. Keep the measured loop
+# inline in f — one closure call is 0.04 us, not nothing against a 1 us row,
+# so there is deliberately no helper for it
+note_us <- function(scenario, framework, ops, f, unit = "us/task")
+  note(scenario, framework, best_ms(function() timed(f())) * 1000 / ops, unit)
 
-cat(sprintf("kioto %s | mirai %s | R %s | %s\n", packageVersion("kioto"),
-            packageVersion("mirai"), getRversion(), R.version$platform))
+note_rate <- function(scenario, framework, ops, f, unit = "tasks/s")
+  note(scenario, framework, ops / best_ms(function() timed(f())) * 1000, unit)
+
+warmup <- function(f, n = 200L) for (i in seq_len(n)) f()
+
+# fire n, then reap n
+pipeline <- function(fire, reap, n) {
+  ts <- vector("list", n)
+  for (i in seq_len(n)) ts[[i]] <- fire()
+  for (i in seq_len(n)) reap(ts[[i]])
+}
+
+# pool up, f(pool), pool down. args reaches kio_pool, for the rows that size
+# slots to the payload
+with_pool <- function(workers, f, args = list()) {
+  p <- do.call(kio_pool, c(list(workers, max_submitters = 2L), args))
+  on.exit(kio_pool_stop(p))
+  f(p)
+}
+
+with_channel <- function(expr, f, ...) {
+  ch <- kio_channel(expr, ...)
+  on.exit(kio_close(ch, timeout = 10))
+  f(ch)
+}
 
 # the canonical echo peer: the raw-transport counterpart of a 1L task
 echo_expr <- quote(
@@ -73,180 +105,191 @@ echo_expr <- quote(
   }
 )
 
+new_child <- function(code)
+  system2(file.path(R.home("bin"), "Rscript"), c("-e", shQuote(code)),
+          wait = FALSE, stdout = FALSE, stderr = FALSE)
+
+# an ipc:// pair with `body` looping in a child peer, f(socket) driving it
+# from here; a 1-byte message is the poison pill that stops the peer
+with_nn_pair <- function(tag, body, f) {
+  url <- sprintf("ipc://%s/kioto-bench-%s-%d", tempdir(), tag, Sys.getpid())
+  s <- socket("pair", listen = url)
+  new_child(sprintf('
+library(nanonext)
+s <- socket("pair", dial = "%s")
+%s
+close(s)
+', url, body))
+  on.exit({
+    invisible(send(s, as.raw(0xff), mode = "raw", block = TRUE))
+    close(s)
+  })
+  f(s)
+}
+
+# every mirai row runs both ways, dispatcher and direct, on a daemon pool
+# torn down after: f gets the framework label to hand note()
+each_daemons <- function(n, prefix, f) {
+  for (disp in c(TRUE, FALSE)) {
+    daemons(n, dispatcher = disp)
+    f(paste(prefix, if (disp) "dispatcher" else "direct"))
+    daemons(0L)
+  }
+}
+
+cat(sprintf("kioto %s | mirai %s | R %s | %s\n", packageVersion("kioto"),
+            packageVersion("mirai"), getRversion(), R.version$platform))
+
 # 1. sequential round-trip -----------------------------------------------------
 
 cat("\n== 1. sequential round-trip (evaluate 1L, 1 worker) ==\n")
 n <- 2000L
 
-url <- sprintf("ipc://%s/kioto-bench-%d", tempdir(), Sys.getpid())
-s <- socket("pair", listen = url)
-new_child(sprintf('
-library(nanonext)
-s <- socket("pair", dial = "%s")
+with_nn_pair("s1", '
 repeat {
   m <- recv(s, mode = "raw", block = TRUE)
   if (length(m) == 1L) break
   send(s, m, mode = "raw", block = TRUE)
-}
-close(s)
-', url))
-for (i in seq_len(200L)) {
-  send(s, 1L, mode = "raw", block = TRUE)
-  recv(s, mode = "integer", block = TRUE)
-}
-ms <- best_ms(function() timed(
-  for (i in seq_len(n)) {
+}', function(s) {
+  warmup(function() {
     send(s, 1L, mode = "raw", block = TRUE)
     recv(s, mode = "integer", block = TRUE)
-  }))
-note("sequential rt", "nanonext pair", ms * 1000 / n, "us/rt")
-invisible(send(s, as.raw(0xff), mode = "raw", block = TRUE))
-close(s)
+  })
+  note_us("sequential rt", "nanonext pair", n, function()
+    for (i in seq_len(n)) {
+      send(s, 1L, mode = "raw", block = TRUE)
+      recv(s, mode = "integer", block = TRUE)
+    }, "us/rt")
+})
 
 nc <- 20000L    # channel rt is µs-scale and mclock ticks whole ms: run long
-ch <- kio_channel(echo_expr, capacity = 1024L)
-for (i in seq_len(200L)) {
-  kio_send(ch, 1L)
-  kio_recv(ch, 30)
-}
-ms <- best_ms(function() timed(
-  for (i in seq_len(nc)) {
+with_channel(echo_expr, function(ch) {
+  warmup(function() {
     kio_send(ch, 1L)
     kio_recv(ch, 30)
-  }))
-note("sequential rt", "kioto channel", ms * 1000 / nc, "us/rt")
-kio_close(ch, timeout = 10)
+  })
+  note_us("sequential rt", "kioto channel", nc, function()
+    for (i in seq_len(nc)) {
+      kio_send(ch, 1L)
+      kio_recv(ch, 30)
+    }, "us/rt")
+}, capacity = 1024L)
 
-p <- kio_pool(1L, max_submitters = 2L)
-for (i in seq_len(200L)) kio_collect(kio_submit(p, 1L), timeout = 30)
-ms <- best_ms(function() timed(
-  for (i in seq_len(n)) kio_collect(kio_submit(p, 1L), timeout = 30)))
-note("sequential rt", "kioto pool", ms * 1000 / n, "us/task")
-kio_pool_stop(p)
+with_pool(1L, function(p) {
+  warmup(function() kio_collect(kio_submit(p, 1L), timeout = 30))
+  note_us("sequential rt", "kioto pool", n, function()
+    for (i in seq_len(n)) kio_collect(kio_submit(p, 1L), timeout = 30))
+})
 
-for (disp in c(TRUE, FALSE)) {
-  daemons(1L, dispatcher = disp)
-  for (i in seq_len(200L)) mirai(1L)[]
-  ms <- best_ms(function() timed(for (i in seq_len(n)) mirai(1L)[]))
-  note("sequential rt", if (disp) "mirai dispatcher" else "mirai direct",
-       ms * 1000 / n, "us/task")
-  daemons(0L)
-}
+each_daemons(1L, "mirai", function(fw) {
+  warmup(function() mirai(1L)[])
+  note_us("sequential rt", fw, n, function()
+    for (i in seq_len(n)) mirai(1L)[])
+})
 
 # 2. pipelined throughput ------------------------------------------------------
 
 cat("\n== 2. pipelined throughput (evaluate 1L, 1 worker) ==\n")
 n <- 10000L
-pipeline <- function(fire, reap) {
-  ts <- vector("list", n)
-  for (i in seq_len(n)) ts[[i]] <- fire()
-  for (i in seq_len(n)) reap(ts[[i]])
-}
-
 k <- 10L        # cycles per rep, again outrunning mclock's ms granularity
-ch <- kio_channel(echo_expr)              # default capacity holds n echoes
-for (i in seq_len(200L)) {
-  kio_send(ch, 1L)
-  kio_recv(ch, 30)
-}
-ms <- best_ms(function() timed(
-  for (j in seq_len(k)) {
-    for (i in seq_len(n)) kio_send(ch, 1L)
-    for (i in seq_len(n)) kio_recv(ch, 30)
-  }))
-note("pipelined", "kioto channel", k * n / ms * 1000, "rt/s")
-kio_close(ch, timeout = 10)
+
+with_channel(echo_expr, function(ch) {            # default capacity holds n
+  warmup(function() {
+    kio_send(ch, 1L)
+    kio_recv(ch, 30)
+  })
+  note_rate("pipelined", "kioto channel", k * n, function()
+    for (j in seq_len(k)) {
+      for (i in seq_len(n)) kio_send(ch, 1L)
+      for (i in seq_len(n)) kio_recv(ch, 30)
+    }, "rt/s")
+})
 
 # a submitter's outstanding tasks are bounded by its result-slot share, so
 # fire-n-then-collect needs result_slots / max_submitters >= n
-p <- kio_pool(1L, max_submitters = 2L, result_slots = 20480L)
-fire <- function() kio_submit(p, 1L)
-reap <- function(t) kio_collect(t, timeout = 30)
-for (i in seq_len(200L)) reap(fire())
-ms <- best_ms(function() timed(pipeline(fire, reap)))
-note("pipelined", "kioto pool", n / ms * 1000, "tasks/s")
-kio_pool_stop(p)
+with_pool(1L, function(p) {
+  fire <- function() kio_submit(p, 1L)
+  reap <- function(t) kio_collect(t, timeout = 30)
+  warmup(function() reap(fire()))
+  note_rate("pipelined", "kioto pool", n, function() pipeline(fire, reap, n))
+}, list(result_slots = 20480L))
 
-for (disp in c(TRUE, FALSE)) {
-  daemons(1L, dispatcher = disp)
-  for (i in seq_len(200L)) mirai(1L)[]
-  ms <- best_ms(function() timed(pipeline(function() mirai(1L),
-                                          function(m) m[])))
-  note("pipelined", if (disp) "mirai dispatcher" else "mirai direct",
-       n / ms * 1000, "tasks/s")
-  daemons(0L)
-}
+each_daemons(1L, "mirai", function(fw) {
+  warmup(function() mirai(1L)[])
+  note_rate("pipelined", fw, n,
+            function() pipeline(function() mirai(1L), function(m) m[], n))
+})
 
 # 3. payload round-trip --------------------------------------------------------
 
 cat("\n== 3. payload round-trip (identity task on a numeric vector) ==\n")
-sizes <- c(1e3, 1e5, 1e6)                          # 8 KB / 800 KB / 8 MB
-ns <- c(1000L, 200L, 30L)
 
-p <- kio_pool(1L, max_submitters = 2L, slot_size = 512L)
-for (k in seq_along(sizes)) {
-  x <- runif(sizes[k])
-  n <- ns[k]
-  scenario <- sprintf("payload %s B",
-                      formatC(8 * sizes[k], format = "d", big.mark = ","))
-  stopifnot(identical(kio_collect(kio_submit(p, x, x = x), timeout = 30), x))
-  ms <- best_ms(function() timed(
-    for (i in seq_len(n)) kio_collect(kio_submit(p, x, x = x), timeout = 30)))
-  note(scenario, "kioto pool", ms * 1000 / n, "us/task")
+# slots sized to the payload where the cap allows: 8 KB and 800 KB ride
+# in-slot (RAWVEC, no spill); 8 MB exceeds 2^20 and takes the spill tier —
+# a fresh region per payload — on default slots
+payloads <- list(
+  list(size = 1e3, n = 1000L, args = list(slot_size = 16384L)),
+  list(size = 1e5, n = 200L,
+       args = list(injection_cap = 16L, per_worker_cap = 16L,
+                   result_slots = 4L, slot_size = 1048576L)),
+  list(size = 1e6, n = 30L, args = list())
+)
+
+payload_label <- function(size)
+  sprintf("payload %s B", formatC(8 * size, format = "d", big.mark = ","))
+
+for (pl in payloads) {
+  x <- runif(pl$size)
+  n <- pl$n
+  with_pool(1L, function(p) {
+    stopifnot(identical(kio_collect(kio_submit(p, x, x = x), timeout = 30), x))
+    note_us(payload_label(pl$size), "kioto pool", n, function()
+      for (i in seq_len(n)) kio_collect(kio_submit(p, x, x = x), timeout = 30))
+  }, pl$args)
 }
-kio_pool_stop(p)
 
-for (disp in c(TRUE, FALSE)) {
-  daemons(1L, dispatcher = disp)
+each_daemons(1L, "mirai", function(fw) {
   mirai(NULL)[]
-  for (k in seq_along(sizes)) {
-    x <- runif(sizes[k])
-    n <- ns[k]
-    scenario <- sprintf("payload %s B",
-                        formatC(8 * sizes[k], format = "d", big.mark = ","))
+  for (pl in payloads) {
+    x <- runif(pl$size)
+    n <- pl$n
     stopifnot(identical(mirai(x, .args = list(x = x))[], x))
-    ms <- best_ms(function() timed(
-      for (i in seq_len(n)) mirai(x, .args = list(x = x))[]))
-    note(scenario, if (disp) "mirai dispatcher" else "mirai direct",
-         ms * 1000 / n, "us/task")
+    note_us(payload_label(pl$size), fw, n, function()
+      for (i in seq_len(n)) mirai(x, .args = list(x = x))[])
   }
-  daemons(0L)
-}
+})
 
 # 4. parallel fan-out ----------------------------------------------------------
 
 cat("\n== 4. parallel fan-out (sum(runif(1e4)) x 2000, 4 workers) ==\n")
 n <- 2000L
 
-ms <- best_ms(function() timed(for (i in seq_len(n)) sum(runif(1e4))))
-note("fan-out", "in-process", n / ms * 1000, "tasks/s")
+note_rate("fan-out", "in-process", n,
+          function() for (i in seq_len(n)) sum(runif(1e4)))
 
-p <- kio_pool(4L, max_submitters = 2L)             # 2048 result slots for us
-fire <- function() kio_submit(p, sum(runif(1e4)))
-reap <- function(t) kio_collect(t, timeout = 30)
-pipeline(fire, reap)
-ms <- best_ms(function() timed(pipeline(fire, reap)))
-note("fan-out", "kioto pool", n / ms * 1000, "tasks/s")
-kio_pool_stop(p)
+with_pool(4L, function(p) {                    # 2048 default slots for us
+  fire <- function() kio_submit(p, sum(runif(1e4)))
+  reap <- function(t) kio_collect(t, timeout = 30)
+  pipeline(fire, reap, n)
+  note_rate("fan-out", "kioto pool", n, function() pipeline(fire, reap, n))
+})
 
-for (disp in c(TRUE, FALSE)) {
-  daemons(4L, dispatcher = disp)
-  pipeline(function() mirai(NULL), function(m) m[])
-  ms <- best_ms(function() timed(pipeline(function() mirai(sum(runif(1e4))),
-                                          function(m) m[])))
-  note("fan-out", if (disp) "mirai dispatcher" else "mirai direct",
-       n / ms * 1000, "tasks/s")
-  daemons(0L)
-}
+each_daemons(4L, "mirai", function(fw) {
+  pipeline(function() mirai(NULL), function(m) m[], n)
+  note_rate("fan-out", fw, n,
+            function() pipeline(function() mirai(sum(runif(1e4))),
+                                function(m) m[], n))
+})
 
 # 5. streaming -----------------------------------------------------------------
 
 cat("\n== 5. streaming (one-way 1L messages, batched) ==\n")
 n <- 200000L
+k <- 10L        # rounds per rep: one round outruns mclock's ms granularity
 
 # the peer counts arrivals and sends one receipt per n, so the same channel
 # serves the warm-up round and every rep
-ch <- kio_channel(quote({
+with_channel(quote({
   total <- 0L
   repeat {
     xs <- kio_recv_batch(ch, n = 4096L, timeout = 30)
@@ -257,28 +300,23 @@ ch <- kio_channel(quote({
       total <- 0L
     }
   }
-}))
-batch <- as.list(rep(1L, 4096L))
-stream_round <- function() {
-  sent <- 0L
-  while (sent < n) {
-    want <- min(4096L, n - sent)
-    sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
+}), function(ch) {
+  batch <- as.list(rep(1L, 4096L))
+  stream_round <- function() {
+    sent <- 0L
+    while (sent < n) {
+      want <- min(4096L, n - sent)
+      sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
+    }
+    stopifnot(identical(kio_recv(ch, 60), n))
   }
-  stopifnot(identical(kio_recv(ch, 60), n))
-}
-stream_round()
-k <- 10L        # rounds per rep: one round outruns mclock's ms granularity
-ms <- best_ms(function() timed(for (j in seq_len(k)) stream_round()))
-note("streaming", "kioto channel", k * n / ms * 1000, "msg/s")
-kio_close(ch, timeout = 10)
+  stream_round()
+  note_rate("streaming", "kioto channel", k * n,
+            function() for (j in seq_len(k)) stream_round(), "msg/s")
+})
 
 # the socket has no batch lever: one send per message is its real cost
-url <- sprintf("ipc://%s/kioto-bench-s5-%d", tempdir(), Sys.getpid())
-s <- socket("pair", listen = url)
-new_child(sprintf('
-library(nanonext)
-s <- socket("pair", dial = "%s")
+with_nn_pair("s5", '
 total <- 0L
 repeat {
   m <- recv(s, mode = "raw", block = TRUE)
@@ -288,30 +326,23 @@ repeat {
     send(s, total, mode = "raw", block = TRUE)
     total <- 0L
   }
-}
-close(s)
-', url))
-nn_round <- function() {
-  for (i in seq_len(n)) send(s, 1L, mode = "raw", block = TRUE)
-  stopifnot(identical(recv(s, mode = "integer", block = TRUE), n))
-}
-nn_round()
-ms <- best_ms(function() timed(nn_round()))
-note("streaming", "nanonext pair", n / ms * 1000, "msg/s")
-invisible(send(s, as.raw(0xff), mode = "raw", block = TRUE))
-close(s)
+}', function(s) {
+  nn_round <- function() {
+    for (i in seq_len(n)) send(s, 1L, mode = "raw", block = TRUE)
+    stopifnot(identical(recv(s, mode = "integer", block = TRUE), n))
+  }
+  nn_round()
+  note_rate("streaming", "nanonext pair", n, nn_round, "msg/s")
+})
 
 n <- 20000L     # a message costs mirai a whole task: 10x fewer keeps the
                 # run short, and the rate is the comparison either way
-for (disp in c(TRUE, FALSE)) {
-  daemons(1L, dispatcher = disp)
-  for (i in seq_len(200L)) mirai(1L)[]
-  ms <- best_ms(function() timed(pipeline(function() mirai(1L),
-                                          function(m) m[])))
-  note("streaming", if (disp) "mirai dispatcher" else "mirai direct",
-       n / ms * 1000, "msg/s")
-  daemons(0L)
-}
+each_daemons(1L, "mirai", function(fw) {
+  warmup(function() mirai(1L)[])
+  note_rate("streaming", fw, n,
+            function() pipeline(function() mirai(1L), function(m) m[], n),
+            "msg/s")
+})
 
 # 6. parallel map ---------------------------------------------------------------
 
@@ -323,52 +354,43 @@ x <- runif(n)
 f <- function(v) v + 1
 
 k <- 10L        # map calls per rep: a trivial map outruns mclock's ms ticks
-ms <- best_ms(function() timed(for (j in seq_len(k)) lapply(x, f)))
-note("map trivial f", "serial lapply", ms * 1000 / (k * n), "us/elt")
+note_us("map trivial f", "serial lapply", k * n,
+        function() for (j in seq_len(k)) lapply(x, f), "us/elt")
 
-p <- kio_pool(4L, max_submitters = 2L)
-invisible(kio_map(p, x, f))
-ms <- best_ms(function() timed(for (j in seq_len(k)) kio_map(p, x, f)))
-note("map trivial f", "kio_map", ms * 1000 / (k * n), "us/elt")
-ms <- best_ms(function() timed(
-  for (j in seq_len(k)) kio_map(p, x, f, .template = numeric(1))))
-note("map trivial f", "kio_map template", ms * 1000 / (k * n), "us/elt")
-# per-element L'Ecuyer-CMRG streams: the price of reproducibility
-ms <- best_ms(function() timed(
-  for (j in seq_len(k)) kio_map(p, x, f, .seed = 42L)))
-note("map trivial f", "kio_map .seed", ms * 1000 / (k * n), "us/elt")
-kio_pool_stop(p)
+with_pool(4L, function(p) {
+  invisible(kio_map(p, x, f))
+  note_us("map trivial f", "kio_map", k * n,
+          function() for (j in seq_len(k)) kio_map(p, x, f), "us/elt")
+  note_us("map trivial f", "kio_map template", k * n, function()
+    for (j in seq_len(k)) kio_map(p, x, f, .template = numeric(1)), "us/elt")
+  # per-element L'Ecuyer-CMRG streams: the price of reproducibility
+  note_us("map trivial f", "kio_map .seed", k * n,
+          function() for (j in seq_len(k)) kio_map(p, x, f, .seed = 42L),
+          "us/elt")
+})
 
-for (disp in c(TRUE, FALSE)) {
-  daemons(4L, dispatcher = disp)
+each_daemons(4L, "mirai_map", function(fw) {
   invisible(mirai_map(x[seq_len(200L)], f)[])
-  ms <- best_ms(function() timed(invisible(mirai_map(x, f)[])))
-  note("map trivial f",
-       if (disp) "mirai_map dispatcher" else "mirai_map direct",
-       ms * 1000 / n, "us/elt")
-  daemons(0L)
-}
+  note_us("map trivial f", fw, n, function() invisible(mirai_map(x, f)[]),
+          "us/elt")
+})
 
 # compute regime: scenario 4's fan-out work as a single map call — the
 # per-element overhead above amortized against real tasks
 n <- 2000L
 g <- function(i) sum(runif(1e4))
 
-p <- kio_pool(4L, max_submitters = 2L)
-invisible(kio_map(p, seq_len(n), g))
-ms <- best_ms(function() timed(kio_map(p, seq_len(n), g)))
-note("map fan-out", "kio_map", n / ms * 1000, "elts/s")
-kio_pool_stop(p)
+with_pool(4L, function(p) {
+  invisible(kio_map(p, seq_len(n), g))
+  note_rate("map fan-out", "kio_map", n, function() kio_map(p, seq_len(n), g),
+            "elts/s")
+})
 
-for (disp in c(TRUE, FALSE)) {
-  daemons(4L, dispatcher = disp)
+each_daemons(4L, "mirai_map", function(fw) {
   invisible(mirai_map(seq_len(200L), g)[])
-  ms <- best_ms(function() timed(invisible(mirai_map(seq_len(n), g)[])))
-  note("map fan-out",
-       if (disp) "mirai_map dispatcher" else "mirai_map direct",
-       n / ms * 1000, "elts/s")
-  daemons(0L)
-}
+  note_rate("map fan-out", fw, n,
+            function() invisible(mirai_map(seq_len(n), g)[]), "elts/s")
+})
 
 # summary ----------------------------------------------------------------------
 

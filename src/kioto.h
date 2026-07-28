@@ -68,12 +68,18 @@ const char *kio_preamble_validate(const void *region, size_t region_size,
 
 // Writable attach (peer side; both sides write ring indices) -------------------
 
-/* populate pre-faults the whole mapping (Linux only: macOS defines
-   MAP_POPULATE away and Windows has no equivalent). The channel and pool
-   attaches populate — the whole ring is hot there; kio_map's template-path
-   contexts don't, so a large RAWVEC x still demand-pages per worker. */
+/* populate pre-faults the whole mapping (MAP_POPULATE on Linux, a read-touch
+   pass on macOS / Windows). The channel and pool attaches populate — the
+   whole ring is hot there; kio_map's template-path contexts don't, so a
+   large RAWVEC x still demand-pages per worker. */
 int kio_shm_open_rw(mori_shm *shm, const char *name, int populate);
 mori_shm *kio_shm_open_rw_heap(const char *name, int populate);
+
+/* Create for the pool / channel control regions: pre-faulted on every
+   platform (a page-touch pass where mmap has no populate flag), so slot
+   walks never zero-fill-fault on the hot path. Payload regions use the
+   vendored mori_shm_create — written in full at stage time. */
+int kio_shm_create_populate(mori_shm *shm, size_t size);
 
 // Bounded single-pass serialize -------------------------------------------------
 

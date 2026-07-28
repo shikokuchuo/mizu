@@ -568,7 +568,7 @@ SEXP kio_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
 
   kio_pool *p = calloc(1, sizeof(*p));
   if (p == NULL) Rf_error("kioto: allocation failure");
-  int rc = mori_shm_create(&p->shm, (size_t) total);
+  int rc = kio_shm_create_populate(&p->shm, (size_t) total);
   if (rc != MORI_OK) {
     free(p);
     const char *summary, *hint;
