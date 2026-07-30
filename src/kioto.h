@@ -154,6 +154,10 @@ typedef struct kio_spill_fl_s {
    marker, so no user value staged as its own keeper can alias one). Call
    only at consumer-done release points, before dropping the keeper. */
 void kio_spill_fl_offer(kio_spill_fl *fl, SEXP keeper);
+/* Offer keepers[at], then nil the slot — the shape of every release point
+   that drops a keeper table entry: offered exactly once, immediately
+   before its sole reference goes. */
+void kio_spill_fl_surrender(kio_spill_fl *fl, SEXP keepers, R_xlen_t at);
 
 /* Consumer-side mapping cache, the read counterpart of the free list: once
    producers repeat region names, a name -> consumer-wrap table skips the

@@ -104,6 +104,11 @@ void kio_spill_fl_offer(kio_spill_fl *fl, SEXP keeper) {
   fl->n++;
 }
 
+void kio_spill_fl_surrender(kio_spill_fl *fl, SEXP keepers, R_xlen_t at) {
+  kio_spill_fl_offer(fl, VECTOR_ELT(keepers, at));
+  SET_VECTOR_ELT(keepers, at, R_NilValue);
+}
+
 /* Smallest entry with size >= n, removed from the list. The wrap's only
    reference is the returned value: the caller must PROTECT before any
    allocation. */

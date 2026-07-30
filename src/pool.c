@@ -957,7 +957,7 @@ SEXP kio_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
 
 static void pool_unpark_result_waiter(kio_pool *p, kio_rs_hdr *rs);
 static void pool_wake_one_worker(kio_pool *p);
-static int pool_reaping_free(kio_pool *p, kio_wk_slot *w);
+static int pool_reaping_free(kio_wk_slot *w);
 static int pool_probe_worker(kio_pool *p, uint32_t slot);
 static void pool_probe_submitter(kio_pool *p, uint32_t j);
 static void pool_orphan_teardown_try(kio_pool *p);
@@ -1007,7 +1007,7 @@ SEXP kio_pool_leave(SEXP xp) {
                                               memory_order_relaxed);
       /* a thief that emptied the deque while we still read LEAVING saw
          nothing to free: re-check now that REAPING is published */
-      if (!pool_reaping_free(p, me))
+      if (!pool_reaping_free(me))
         pool_wake_one_worker(p);
     }
   }
@@ -1254,8 +1254,7 @@ static uint32_t pool_alloc_rs(kio_pool *p, SEXP keepers) {
     uint32_t cand = (p->rs_cursor + k) % me->rs_count;
     if (atomic_load_explicit(&pool_rs(p, me->rs_start + cand)->status,
                              memory_order_acquire) == KIO_RS_FREE) {
-      kio_spill_fl_offer(&p->fl, VECTOR_ELT(keepers, (R_xlen_t) cand));
-      SET_VECTOR_ELT(keepers, (R_xlen_t) cand, R_NilValue);
+      kio_spill_fl_surrender(&p->fl, keepers, (R_xlen_t) cand);
       return cand;
     }
   }
@@ -1418,8 +1417,7 @@ static int pool_rk_visit(kio_pool *p, SEXP keepers, uint32_t i) {
   uint64_t seq = atomic_load_explicit(&rs->sequence, memory_order_relaxed);
   if ((st == KIO_RS_OK || st == KIO_RS_ERR) && seq == p->rk[i].seq)
     return 1;
-  kio_spill_fl_offer(&p->fl, VECTOR_ELT(keepers, (R_xlen_t) p->rk[i].idx));
-  SET_VECTOR_ELT(keepers, (R_xlen_t) p->rk[i].idx, R_NilValue);
+  kio_spill_fl_surrender(&p->fl, keepers, (R_xlen_t) p->rk[i].idx);
   p->rk_pos[p->rk[i].idx] = 0;
   p->rk_n--;
   if (i < p->rk_n) {
@@ -1519,23 +1517,19 @@ static void pool_announce_clear(kio_pool *p) {
 
 /* Claims must copy before their CAS so a dying claimer leaves the entry
    untouched. Only the fixed header and its framed bytes are meaningful: a
-   large inline slot would otherwise turn every claim into a slot-sized copy.
-   A losing deque thief may see a stale, torn header before its CAS, so that
-   case falls back to the old full-slot copy rather than reporting an error. */
+   large inline slot would otherwise turn every claim into a slot-sized
+   copy. A slot is rewritten only once head/top has moved past it, so a
+   winning claim read a coherent header and hdr + len covers every
+   meaningful byte; a loser may read a stale, torn one, but any
+   slot-bounded copy is safe — it is discarded with the failed CAS. */
 static size_t pool_entry_copy_bytes(kio_pool *p, const kio_entry_hdr *eh) {
-  size_t len = eh->ph.len;
   switch (eh->ph.kind) {
   case KIO_KIND_INLINE:
   case KIO_KIND_RAWVEC:
-    if (len <= p->inline_entry) return sizeof(*eh) + len;
-    return p->hdr.slot;
   case KIO_KIND_SHM_RAW:
-    if (len > 0 && len < MORI_NAME_MAX && len <= p->inline_entry)
-      return sizeof(*eh) + len;
-    return p->hdr.slot;
-  default:
-    return p->hdr.slot;             /* ARENA is channel-only */
+    if (eh->ph.len <= p->inline_entry) return sizeof(*eh) + eh->ph.len;
   }
+  return p->hdr.slot;               /* torn or foreign header: full slot */
 }
 
 static void pool_copy_entry(kio_pool *p, unsigned char *dst,
@@ -1671,7 +1665,7 @@ enum { KIO_STEAL_EMPTY = 0, KIO_STEAL_GOT, KIO_STEAL_ABORT };
    top >= bottom then means truly drained, and any observer may free the
    slot — which closes the race where a thief empties the deque while the
    owner still reads LEAVING. Returns 1 when the deque is drained. */
-static int pool_reaping_free(kio_pool *p, kio_wk_slot *w) {
+static int pool_reaping_free(kio_wk_slot *w) {
   if (deque_nonempty(w)) return 0;
   int32_t expected = KIO_WK_REAPING;
   atomic_compare_exchange_strong_explicit(&w->status, &expected, KIO_WK_FREE,
@@ -1692,7 +1686,7 @@ static int pool_steal_from(kio_pool *p, uint32_t v) {
   int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
   if (t >= b) {
     if (atomic_load_explicit(&w->status, memory_order_acquire) ==
-        KIO_WK_REAPING && !pool_reaping_free(p, w))
+        KIO_WK_REAPING && !pool_reaping_free(w))
       return KIO_STEAL_ABORT;   /* orphaned and nonempty after all: retry */
     return KIO_STEAL_EMPTY;
   }
@@ -1706,7 +1700,7 @@ static int pool_steal_from(kio_pool *p, uint32_t v) {
   }
   if (atomic_load_explicit(&w->status, memory_order_acquire) ==
       KIO_WK_REAPING)
-    pool_reaping_free(p, w);
+    pool_reaping_free(w);
   p->st_steals++;
   return KIO_STEAL_GOT;
 }
@@ -2373,6 +2367,17 @@ static kio_task *task_get(SEXP xp, kio_pool **pool_out, SEXP *pool_xp_out) {
   return t;
 }
 
+/* Drop the task keeper of a terminal slot in this submitter's subrange.
+   OK/ERR means the worker materialized the task args, DIED that the entry's
+   claimant is dead: either way no reader remains, so a spilled task region
+   surrenders to the free list with the keeper. */
+static void pool_task_keeper_drop(kio_pool *p, SEXP pool_xp, uint32_t idx) {
+  kio_sub_slot *me = &p->sub[p->sub_slot];
+  if (idx < me->rs_start || idx >= me->rs_start + me->rs_count) return;
+  kio_spill_fl_surrender(&p->fl, pool_task_keepers(p, pool_xp),
+                         (R_xlen_t) (idx - me->rs_start));
+}
+
 SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
   kio_pool *p;
   SEXP pool_xp;
@@ -2476,15 +2481,7 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
                                       sizeof(kio_rs_hdr), p->inline_rs,
                                       NULL, &p->oc));
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
-    if (t->idx >= p->sub[p->sub_slot].rs_start &&
-        t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count) {
-      /* OK/ERR means the worker materialized the task args: the spilled
-         task region (if any) has no reader left and recycles here */
-      SEXP tk = pool_task_keepers(p, pool_xp);
-      R_xlen_t at = (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start);
-      kio_spill_fl_offer(&p->fl, VECTOR_ELT(tk, at));
-      SET_VECTOR_ELT(tk, at, R_NilValue);
-    }
+    pool_task_keeper_drop(p, pool_xp, t->idx);
     int32_t expected = st;
     if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
                                                  KIO_RS_FREE,
@@ -2504,15 +2501,7 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
   case KIO_RS_DIED: {
     /* terminal like ERR, but status-word only: the reaper wrote no
        payload (see the DIED note in kioto.h) */
-    if (t->idx >= p->sub[p->sub_slot].rs_start &&
-        t->idx < p->sub[p->sub_slot].rs_start + p->sub[p->sub_slot].rs_count) {
-      /* the claim consumed the entry and its claimant is dead: no reader
-         remains, so the spilled task region recycles like the OK/ERR one */
-      SEXP tk = pool_task_keepers(p, pool_xp);
-      R_xlen_t at = (R_xlen_t) (t->idx - p->sub[p->sub_slot].rs_start);
-      kio_spill_fl_offer(&p->fl, VECTOR_ELT(tk, at));
-      SET_VECTOR_ELT(tk, at, R_NilValue);
-    }
+    pool_task_keeper_drop(p, pool_xp, t->idx);
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
     double wpid = (w >= 0 && (uint32_t) w < p->hdr.max_workers) ?
       (double) p->wk[w].pid : 0;

@@ -365,11 +365,9 @@ static void chan_reap(kio_chan *c, SEXP keepers) {
   int64_t head = atomic_load_explicit(r->head, memory_order_acquire);
   r->cached_head = head;
   if (head <= r->reaped_head) return;
-  for (int64_t i = r->reaped_head; i < head; i++) {
-    R_xlen_t at = (R_xlen_t) ((uint64_t) i & r->mask);
-    kio_spill_fl_offer(&c->fl, VECTOR_ELT(keepers, at));
-    SET_VECTOR_ELT(keepers, at, R_NilValue);
-  }
+  for (int64_t i = r->reaped_head; i < head; i++)
+    kio_spill_fl_surrender(&c->fl, keepers,
+                           (R_xlen_t) ((uint64_t) i & r->mask));
   r->afree = r->aend[(uint64_t) (head - 1) & r->mask];
   r->reaped_head = head;
 }
