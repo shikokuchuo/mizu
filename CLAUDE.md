@@ -18,7 +18,7 @@ Rscript -e 'devtools::build_readme()'            # README.md is generated from R
 bash tools/vendor-mori.sh                        # re-vendor src/vendor at the pinned mori ref
 ```
 
-Cross-process tests spawn fresh `Rscript` children that `library(kioto)` from the installed library (propagated via `R_LIBS`). Under a bare `load_all()` they skip via `skip_if_no_child_kioto()`; with a stale installed copy the children run different code than the test process. **After changing `src/` or `R/`, run `R CMD INSTALL .` before the test suite.**
+Cross-process tests spawn fresh `Rscript` children that `library(kioto)` from the installed library (propagated via argv). Under a bare `load_all()` they skip via `skip_if_no_child_kioto()`; with a stale installed copy the children run different code than the test process. **After changing `src/` or `R/`, run `R CMD INSTALL .` before the test suite.**
 
 `compile_commands.json` for clangd is regenerated on install (`Config/build/compilation-database` in DESCRIPTION).
 
@@ -44,7 +44,7 @@ Every struct in `kioto.h` **is** the wire format — static-asserted sizes, 64-b
 
 ### Process model
 
-The R layer is a thin `.Call` veneer. Children are spawned via `Rscript -e` (`R/spawn.R`); only the region name's hex suffix crosses the process boundary as argv. Entry points: `kioto:::peer_main(suffix)` (channel peer) and `kioto:::worker_main(suffix, slot)` (pool worker). Handles are process-private and do not survive `fork()`.
+The R layer is a thin `.Call` veneer. Children are spawned through a static `Rscript` runner (`R/spawn.R`, `inst/scripts/kio-child.R`); the entry expression and host library paths cross hex-encoded in argv. Entry points: `kioto:::peer_main(suffix)` (channel peer) and `kioto:::worker_main(suffix, slot)` (pool worker). Handles are process-private and do not survive `fork()`.
 
 ### Pool specifics
 

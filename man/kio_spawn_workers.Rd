@@ -23,7 +23,7 @@ inside a task, the worker's own handle bound as \code{pool}.}
 \item{n}{number of workers to spawn.}
 
 \item{launcher}{\code{NULL} for the default launcher (\code{system2(Rscript, ...)}
-with the host's \code{.libPaths()} propagated via \code{R_LIBS}), or a
+with the host's \code{.libPaths()} propagated via argv), or a
 \verb{function(suffix, slot)} that arranges for an R process to eventually
 call \code{kioto:::worker_main(suffix, slot)}.}
 

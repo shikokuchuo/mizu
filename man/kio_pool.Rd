@@ -47,7 +47,7 @@ typical expression-plus-arguments tasks inline; pools moving only
 scalar payloads can drop to \code{256L}.}
 
 \item{launcher}{\code{NULL} for the default launcher (\code{system2(Rscript, ...)}
-with the host's \code{.libPaths()} propagated via \code{R_LIBS}), or a
+with the host's \code{.libPaths()} propagated via argv), or a
 \verb{function(suffix, slot)} that arranges for an R process to eventually
 call \code{kioto:::worker_main(suffix, slot)}.}
 

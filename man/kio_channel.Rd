@@ -37,7 +37,7 @@ consumer never yields — if a spin-mode consumer did park, the producer
 would never wake it.}
 
 \item{launcher}{\code{NULL} for the default launcher (\code{system2(Rscript, ...)}
-with the host's \code{.libPaths()} propagated via \code{R_LIBS}), or a
+with the host's \code{.libPaths()} propagated via argv), or a
 \verb{function(suffix)} that arranges for an R process to eventually call
 \code{kioto:::peer_main(suffix)} — such a launcher must arrange library paths
 itself.}

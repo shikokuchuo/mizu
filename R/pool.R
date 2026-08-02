@@ -39,7 +39,7 @@
 #'   typical expression-plus-arguments tasks inline; pools moving only
 #'   scalar payloads can drop to `256L`.
 #' @param launcher `NULL` for the default launcher (`system2(Rscript, ...)`
-#'   with the host's `.libPaths()` propagated via `R_LIBS`), or a
+#'   with the host's `.libPaths()` propagated via argv), or a
 #'   `function(suffix, slot)` that arranges for an R process to eventually
 #'   call `kioto:::worker_main(suffix, slot)`.
 #' @param stdout,stderr forwarded to [system2()] by the default launcher;
@@ -443,9 +443,9 @@ kio_pool_stats <- function(pool) {
 kio_pool_trace <- function(pool, fn = NULL)
   invisible(.Call(kio_pool_set_trace, pool, fn))
 
-# Worker entry point: invoked as `Rscript -e 'kioto:::worker_main("<suffix>",
-# <slot>)'` by the launcher. Rebuilds the region name from the compiled-in
-# prefix plus the argv suffix, attaches writable, validates the header,
+# Worker entry point: invoked through the Rscript child runner by the launcher.
+# Rebuilds the region name from the compiled-in prefix plus the passed suffix,
+# attaches writable, validates the header,
 # claims its host-assigned slot (liveness lock before status CAS), points
 # its death listener at the owner, and unparks the creator on reaching
 # LIVE. The loop then lives in kio_pool_step: one claim in tier order

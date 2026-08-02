@@ -34,7 +34,7 @@
 #'   consumer never yields — if a spin-mode consumer did park, the producer
 #'   would never wake it.
 #' @param launcher `NULL` for the default launcher (`system2(Rscript, ...)`
-#'   with the host's `.libPaths()` propagated via `R_LIBS`), or a
+#'   with the host's `.libPaths()` propagated via argv), or a
 #'   `function(suffix)` that arranges for an R process to eventually call
 #'   `kioto:::peer_main(suffix)` — such a launcher must arrange library paths
 #'   itself.
@@ -216,9 +216,9 @@ kio_close <- function(ch, timeout = 5) {
 #' @export
 kio_alive <- function(ch) .Call(kio_channel_alive, ch)
 
-# Peer entry point: invoked as `Rscript -e 'kioto:::peer_main("<suffix>")'` by
-# the launcher. Rebuilds the region name from the compiled-in prefix plus the
-# argv suffix, attaches writable, validates the preamble, takes its liveness
+# Peer entry point: invoked through the Rscript child runner by the launcher.
+# Rebuilds the region name from the compiled-in prefix plus the passed suffix,
+# attaches writable, validates the preamble, takes its liveness
 # lock, points its death listener at the host, and materializes the staged
 # expression *before* signalling ready — the host's kio_channel frame holds
 # the expression (and every region its identifiers name) alive exactly until

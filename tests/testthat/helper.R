@@ -46,7 +46,7 @@ wait_until <- function(expr, timeout = 10) {
 
 # Cross-process tests spawn fresh Rscript children that library(kioto):
 # available under R CMD check (kioto is installed in the check library and
-# kio_spawn propagates it via R_LIBS), but not under a bare load_all().
+# kio_spawn propagates its path via argv), but not under a bare load_all().
 child_kioto_ok <- local({
   val <- NULL
   function() {
