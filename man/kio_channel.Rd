@@ -13,7 +13,6 @@ kio_channel(
   launcher = NULL,
   stdout = "",
   stderr = "",
-  liveness_dir = tempdir(),
   startup_timeout = 30
 )
 }
@@ -46,10 +45,6 @@ itself.}
 the default \code{""} sends peer output (including its error epilogue) to
 the host's console. Ignored when \code{launcher} is supplied.}
 
-\item{liveness_dir}{directory for the channel's two liveness lock files;
-recorded in the region so both sides use the same files. Defaults to
-\code{\link[=tempdir]{tempdir()}}.}
-
 \item{startup_timeout}{seconds to wait for the peer to attach and signal
 ready before giving up, releasing the channel, and raising
 \code{kio_error_startup} (see \link{kio_error}).}
@@ -79,6 +74,13 @@ orderly close and exits.
 Payload contents interoperate transparently with mori: a \code{mori::share()}d
 object anywhere inside a payload serializes to its short identifier wire
 form via mori's own hooks and maps zero-copy on the other side.
+
+The channel's two liveness lock files (the death-detection verdict) are
+created in a per-platform directory resolved at create time: \verb{/dev/shm}
+on Linux, the per-user temporary directory on macOS and Windows. The
+resolved path is recorded in the region so both sides use the same
+files. The environment variable \code{KIOTO_LIVENESS_DIR}, read in the
+creating process, overrides the default.
 }
 \examples{
 \dontrun{

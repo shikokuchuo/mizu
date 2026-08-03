@@ -15,6 +15,27 @@ test_that("the lock excludes other open file descriptions, even in-process", {
   expect_error(.Call(kioto:::kio_live_try_call, h1), "closed")
 })
 
+test_that("lock files land in the resolved per-platform directory", {
+  dir <- .Call(kioto:::kio_live_dir_call)
+  expect_true(dir.exists(dir))
+  p <- channel_pair()
+  suffix <- .Call(kioto:::kio_channel_suffix, p$host)
+  expect_true(file.exists(file.path(dir, sprintf("kio_%s.live.host", suffix))))
+  expect_true(file.exists(file.path(dir, sprintf("kio_%s.live.peer", suffix))))
+})
+
+test_that("KIOTO_LIVENESS_DIR overrides the default, read-through", {
+  d <- tempfile("livedir")
+  dir.create(d)
+  Sys.setenv(KIOTO_LIVENESS_DIR = d)
+  on.exit(Sys.unsetenv("KIOTO_LIVENESS_DIR"))
+  expect_identical(.Call(kioto:::kio_live_dir_call), d)
+  p <- channel_pair()
+  suffix <- .Call(kioto:::kio_channel_suffix, p$host)
+  expect_true(file.exists(file.path(d, sprintf("kio_%s.live.host", suffix))))
+  expect_true(file.exists(file.path(d, sprintf("kio_%s.live.peer", suffix))))
+})
+
 test_that("a holder's death releases the lock to a probing survivor", {
   skip_if_no_child_kioto()
   lf <- tfile()

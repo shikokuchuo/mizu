@@ -55,8 +55,7 @@ test_that("collect's backstop probe reaps with no listener registered", {
   skip_if_no_child_kioto()
   # controller built without ready_wait: no death watches exist, so the
   # only reaper is the probe piggybacked on collect's PENDING wakes
-  ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L,
-                tempdir())
+  ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
   kioto:::spawn_worker(.Call(kioto:::kio_pool_suffix, ctrl), 0L)
   expect_true(wait_until(kio_pool_status(ctrl)$workers == "live"))
   t <- kio_submit(ctrl, Sys.sleep(30))

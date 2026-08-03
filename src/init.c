@@ -50,10 +50,11 @@ SEXP kio_epoch_call(SEXP, SEXP);
 SEXP kio_live_open_call(SEXP);
 SEXP kio_live_try_call(SEXP);
 SEXP kio_live_close_call(SEXP);
+SEXP kio_live_dir_call(void);
 SEXP kio_death_watch_call(SEXP, SEXP, SEXP, SEXP);
 SEXP kio_death_fired_call(SEXP);
 SEXP kio_death_stop_call(SEXP);
-SEXP kio_channel_create(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP kio_channel_create(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP kio_channel_suffix(SEXP);
 SEXP kio_channel_ready_wait(SEXP, SEXP);
 SEXP kio_channel_destroy(SEXP);
@@ -68,7 +69,7 @@ SEXP kio_channel_close_signal(SEXP);
 SEXP kio_channel_alive(SEXP);
 SEXP kio_channel_stat(SEXP);
 SEXP kio_sentinel_check(SEXP);
-SEXP kio_pool_create(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP kio_pool_create(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP kio_pool_suffix(SEXP);
 SEXP kio_pool_ready_wait(SEXP, SEXP, SEXP);
 SEXP kio_pool_destroy(SEXP);
@@ -124,10 +125,11 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_live_open_call",        (DL_FUNC) &kio_live_open_call,        1},
   {"kio_live_try_call",         (DL_FUNC) &kio_live_try_call,         1},
   {"kio_live_close_call",       (DL_FUNC) &kio_live_close_call,       1},
+  {"kio_live_dir_call",         (DL_FUNC) &kio_live_dir_call,         0},
   {"kio_death_watch_call",      (DL_FUNC) &kio_death_watch_call,      4},
   {"kio_death_fired_call",      (DL_FUNC) &kio_death_fired_call,      1},
   {"kio_death_stop_call",       (DL_FUNC) &kio_death_stop_call,       1},
-  {"kio_channel_create",        (DL_FUNC) &kio_channel_create,        6},
+  {"kio_channel_create",        (DL_FUNC) &kio_channel_create,        5},
   {"kio_channel_suffix",        (DL_FUNC) &kio_channel_suffix,        1},
   {"kio_channel_ready_wait",    (DL_FUNC) &kio_channel_ready_wait,    2},
   {"kio_channel_destroy",       (DL_FUNC) &kio_channel_destroy,       1},
@@ -142,7 +144,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_channel_alive",         (DL_FUNC) &kio_channel_alive,         1},
   {"kio_channel_stat",          (DL_FUNC) &kio_channel_stat,          1},
   {"kio_sentinel_check",        (DL_FUNC) &kio_sentinel_check,        1},
-  {"kio_pool_create",           (DL_FUNC) &kio_pool_create,           7},
+  {"kio_pool_create",           (DL_FUNC) &kio_pool_create,           6},
   {"kio_pool_suffix",           (DL_FUNC) &kio_pool_suffix,           1},
   {"kio_pool_ready_wait",       (DL_FUNC) &kio_pool_ready_wait,       3},
   {"kio_pool_destroy",          (DL_FUNC) &kio_pool_destroy,          1},

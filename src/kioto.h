@@ -344,6 +344,13 @@ void kio_death_listener_teardown(void);
 
 enum { KIO_LIVE_ACQUIRED = 0, KIO_LIVE_HELD = 1 };
 
+/* Directory for liveness lock files: the KIOTO_LIVENESS_DIR override
+   (read-through, checked on every call) else a per-platform default
+   resolved once — /dev/shm on Linux, the per-user temp dir on macOS and
+   Windows. Trailing separators trimmed; NULL if unresolvable. Only region
+   creators call this: participants read the embedded copy. */
+const char *kio_live_dir(void);
+
 int kio_live_open(const char *path, intptr_t *out);
 /* Open without creating: ENOENT reads as "indeterminate, treat as alive",
    never a verdict — the probe-by-path discipline (see the pool's worker

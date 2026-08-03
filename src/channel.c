@@ -626,7 +626,7 @@ static int kio_pow2(uint64_t v) {
 }
 
 SEXP kio_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
-                        SEXP arena_sexp, SEXP livedir_sexp, SEXP spin) {
+                        SEXP arena_sexp, SEXP spin) {
   uint64_t cap = (uint64_t) Rf_asInteger(cap_sexp);
   uint64_t slot = (uint64_t) Rf_asInteger(slot_sexp);
   double arena_in = Rf_asReal(arena_sexp);
@@ -638,11 +638,11 @@ SEXP kio_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
       (uint64_t) arena_in % 64 != 0)
     Rf_error("kioto: arena_size must be a non-negative multiple of 64");
   uint64_t arena = (uint64_t) arena_in;
-  if (TYPEOF(livedir_sexp) != STRSXP || XLENGTH(livedir_sexp) != 1)
-    Rf_error("kioto: expected a liveness directory path");
-  const char *livedir = CHAR(STRING_ELT(livedir_sexp, 0));
+  const char *livedir = kio_live_dir();
+  if (livedir == NULL)
+    Rf_error("kioto: cannot resolve liveness lock directory");
   size_t livedir_len = strlen(livedir);
-  if (livedir_len == 0 || livedir_len > 900)
+  if (livedir_len > 900)
     Rf_error("kioto: liveness directory path too long");
 
   /* sized by the vendored count pass: the drop slot has no fixed budget and

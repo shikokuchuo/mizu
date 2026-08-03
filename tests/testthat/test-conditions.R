@@ -23,8 +23,7 @@ test_that("result-slot exhaustion raises kio_error_slots_exhausted", {
 })
 
 test_that("submitting to a stopped pool raises kio_error_stopped", {
-  ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L,
-                tempdir())
+  ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
   sub <- kio_pool_attach(kio_pool_status(ctrl)$name)
   kio_pool_stop(ctrl, timeout = 0)
   expect_error(kio_submit(sub, 1L), class = "kio_error_stopped")

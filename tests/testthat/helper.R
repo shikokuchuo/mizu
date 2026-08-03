@@ -73,7 +73,7 @@ skip_if_no_child_kioto <- function() {
 channel_pair <- function(capacity = 64L, slot_size = 256L, arena_size = 4096,
                          spin = FALSE) {
   host <- .Call(kioto:::kio_channel_create, quote(NULL), capacity, slot_size,
-                arena_size, tempdir(), spin)
+                arena_size, spin)
   att <- .Call(kioto:::kio_channel_attach, .Call(kioto:::kio_channel_suffix, host))
   peer <- att[[1L]]
   .Call(kioto:::kio_channel_ready_set, peer)
@@ -99,7 +99,7 @@ pool_pair <- function(workers = 1L, max_submitters = 8L, injection_cap = 64L,
                       per_worker_cap = 64L, result_slots = 64L,
                       slot_size = 256L) {
   ctrl <- .Call(kioto:::kio_pool_create, workers, max_submitters, injection_cap,
-                per_worker_cap, result_slots, slot_size, tempdir())
+                per_worker_cap, result_slots, slot_size)
   suffix <- .Call(kioto:::kio_pool_suffix, ctrl)
   wks <- lapply(seq_len(workers) - 1L, function(slot) {
     wk <- .Call(kioto:::kio_pool_worker_join, suffix, slot)

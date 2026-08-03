@@ -20,6 +20,13 @@
 #' object anywhere inside a payload serializes to its short identifier wire
 #' form via mori's own hooks and maps zero-copy on the other side.
 #'
+#' The channel's two liveness lock files (the death-detection verdict) are
+#' created in a per-platform directory resolved at create time: `/dev/shm`
+#' on Linux, the per-user temporary directory on macOS and Windows. The
+#' resolved path is recorded in the region so both sides use the same
+#' files. The environment variable `KIOTO_LIVENESS_DIR`, read in the
+#' creating process, overrides the default.
+#'
 #' @param expr a quoted expression (e.g. `quote({ ... })`) evaluated in the
 #'   peer process with `ch` bound to the peer-side channel handle.
 #' @param capacity slots per ring; a power of two between 2 and 2^24.
@@ -41,9 +48,6 @@
 #' @param stdout,stderr forwarded to [system2()] by the default launcher;
 #'   the default `""` sends peer output (including its error epilogue) to
 #'   the host's console. Ignored when `launcher` is supplied.
-#' @param liveness_dir directory for the channel's two liveness lock files;
-#'   recorded in the region so both sides use the same files. Defaults to
-#'   [tempdir()].
 #' @param startup_timeout seconds to wait for the peer to attach and signal
 #'   ready before giving up, releasing the channel, and raising
 #'   `kio_error_startup` (see [kio_error]).
@@ -68,13 +72,12 @@
 #' @export
 kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
                         arena_size = 4194304, spin = FALSE, launcher = NULL,
-                        stdout = "", stderr = "", liveness_dir = tempdir(),
-                        startup_timeout = 30) {
+                        stdout = "", stderr = "", startup_timeout = 30) {
   if (!is.language(expr))
     stop("kioto: expr must be a quoted expression (wrap it in quote())",
          call. = FALSE)
   ch <- .Call(kio_channel_create, expr, capacity, slot_size, arena_size,
-              liveness_dir, spin)
+              spin)
   suffix <- .Call(kio_channel_suffix, ch)
   if (is.null(launcher))
     spawn_peer(suffix, stdout = stdout, stderr = stderr)

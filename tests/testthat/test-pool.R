@@ -4,28 +4,21 @@
 # spawned workers and cross-process submitters are test-pool-process.R.
 
 test_that("kio_pool_create validates its parameters", {
-  expect_error(.Call(kioto:::kio_pool_create, 0L, 8L, 64L, 64L, 64L, 256L,
-                     tempdir()),
+  expect_error(.Call(kioto:::kio_pool_create, 0L, 8L, 64L, 64L, 64L, 256L),
                "max_workers must be")
-  expect_error(.Call(kioto:::kio_pool_create, 1L, 65L, 64L, 64L, 64L, 256L,
-                     tempdir()),
+  expect_error(.Call(kioto:::kio_pool_create, 1L, 65L, 64L, 64L, 64L, 256L),
                "max_submitters must be")
-  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 63L, 64L, 64L, 256L,
-                     tempdir()),
+  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 63L, 64L, 64L, 256L),
                "injection_cap must be a power of two")
-  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 100L, 64L, 256L,
-                     tempdir()),
+  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 100L, 64L, 256L),
                "per_worker_cap must be a power of two")
-  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 32L,
-                     tempdir()),
+  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 32L),
                "slot_size must be a power of two")
   # 64 is a power of two but under the floor: a result slot's inline budget
   # (slot - 40) could not hold a spilled region name
-  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 64L,
-                     tempdir()),
+  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 64L),
                "slot_size must be a power of two between 128")
-  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 4L, 256L,
-                     tempdir()),
+  expect_error(.Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 4L, 256L),
                "result_slots must be")
 })
 

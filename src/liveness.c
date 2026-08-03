@@ -60,6 +60,14 @@ int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
   return 0;
 }
 
+/* Platform default: GetTempPathA — per-user local by default, and a TMP
+   redirected to SMB keeps first-class LockFileEx semantics, degrading in
+   latency only. */
+static int kio_live_dir_default(char *buf, size_t size) {
+  DWORD n = GetTempPathA((DWORD) size, buf);
+  return (n > 0 && (size_t) n < size) ? 0 : -1;
+}
+
 #else /* POSIX */
 
 #include <sys/file.h>
@@ -75,6 +83,15 @@ int kio_live_open(const char *path, intptr_t *out) {
      and manufacture a false ALIVE. */
   int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
   if (fd < 0) return -1;
+  /* The default directory can be world-writable (/dev/shm) and lock-file
+     names are derivable from the region name, so refuse a file another
+     user pre-created: a squatter taking the flock after the holder dies
+     would feed the reaper a permanent false ALIVE. */
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_uid != geteuid()) {
+    close(fd);
+    return -1;
+  }
   *out = (intptr_t) fd;
   return 0;
 }
@@ -107,7 +124,67 @@ int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
   return 0;
 }
 
+/* Platform default: /dev/shm on Linux — guaranteed tmpfs, always local
+   (the vendored shm.c already opens it directly), so the NFS-degraded
+   flock failure mode cannot arise. Elsewhere the per-user temp dir,
+   duplicating the resolution of the vendored mori_log_dir()
+   (vendor/shm.c), which is static. */
+static int kio_live_dir_default(char *buf, size_t size) {
+#ifdef __linux__
+  int n = snprintf(buf, size, "/dev/shm");
+  return (n > 0 && (size_t) n < size) ? 0 : -1;
+#else
+  const char *tmp = getenv("TMPDIR");
+  if (tmp != NULL && tmp[0] != '\0') {
+    int n = snprintf(buf, size, "%s", tmp);
+    return (n > 0 && (size_t) n < size) ? 0 : -1;
+  }
+#ifdef __APPLE__
+  size_t len = confstr(_CS_DARWIN_USER_TEMP_DIR, buf, size);
+  if (len > 0 && len <= size) return 0;
+#endif
+  int n = snprintf(buf, size, "/tmp");
+  return (n > 0 && (size_t) n < size) ? 0 : -1;
+#endif
+}
+
 #endif /* _WIN32 */
+
+// Lock directory ------------------------------------------------------------------
+
+static size_t kio_live_dir_trim(char *buf, size_t n) {
+  while (n > 1 && (buf[n - 1] == '/'
+#ifdef _WIN32
+                   || buf[n - 1] == '\\'
+#endif
+                   )) n--;
+  buf[n] = '\0';
+  return n;
+}
+
+const char *kio_live_dir(void) {
+  /* The override is read-through so tests can set it per-call, and copied
+     out rather than returned from getenv (a later Sys.setenv can invalidate
+     that pointer). Oversized values return truncated, for the callers'
+     >900-byte guard to reject. */
+  static char ovr[1024];
+  static char def[1024];
+  static int resolved = 0;            /* 0 = untried, 1 = valid, -1 = failed */
+
+  const char *env = getenv("KIOTO_LIVENESS_DIR");
+  if (env != NULL && env[0] != '\0') {
+    size_t n = strlen(env);
+    if (n >= sizeof(ovr)) n = sizeof(ovr) - 1;
+    memcpy(ovr, env, n);
+    kio_live_dir_trim(ovr, n);
+    return ovr;
+  }
+  if (resolved == 0) {
+    resolved = kio_live_dir_default(def, sizeof(def)) == 0 ? 1 : -1;
+    if (resolved > 0) kio_live_dir_trim(def, strlen(def));
+  }
+  return resolved > 0 ? def : NULL;
+}
 
 // .Call test surface -----------------------------------------------------------
 
@@ -147,4 +224,10 @@ SEXP kio_live_try_call(SEXP xp) {
 SEXP kio_live_close_call(SEXP xp) {
   kio_live_finalizer(xp);
   return R_NilValue;
+}
+
+SEXP kio_live_dir_call(void) {
+  const char *dir = kio_live_dir();
+  if (dir == NULL) Rf_error("kioto: cannot resolve liveness lock directory");
+  return Rf_mkString(dir);
 }

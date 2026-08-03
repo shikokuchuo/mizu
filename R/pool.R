@@ -19,6 +19,13 @@
 #' short identifier wire form via mori's own hooks and maps zero-copy on the
 #' other side.
 #'
+#' The pool's liveness lock files (the death-detection verdict) are created
+#' in a per-platform directory resolved at create time: `/dev/shm` on
+#' Linux, the per-user temporary directory on macOS and Windows. The
+#' resolved path is recorded in the region so every participant uses the
+#' same files. The environment variable `KIOTO_LIVENESS_DIR`, read in the
+#' creating process, overrides the default.
+#'
 #' @param n_workers number of worker processes to spawn, at most
 #'   `max_workers`.
 #' @param max_workers worker registry capacity (at most 64).
@@ -45,9 +52,6 @@
 #' @param stdout,stderr forwarded to [system2()] by the default launcher;
 #'   the default `""` sends worker output to the host's console. Ignored
 #'   when `launcher` is supplied.
-#' @param liveness_dir directory for the pool's liveness lock files;
-#'   recorded in the region so every participant uses the same files.
-#'   Defaults to [tempdir()].
 #' @param startup_timeout seconds to wait for all workers to join before
 #'   giving up, destroying the pool, and raising `kio_error_startup` (see
 #'   [kio_error]).
@@ -68,15 +72,14 @@ kio_pool <- function(n_workers = 1L, max_workers = n_workers,
                      max_submitters = 8L, injection_cap = 1024L,
                      per_worker_cap = 1024L, result_slots = 4096L,
                      slot_size = 512L, launcher = NULL, stdout = "",
-                     stderr = "", liveness_dir = tempdir(),
-                     startup_timeout = 30) {
+                     stderr = "", startup_timeout = 30) {
   n_workers <- as.integer(n_workers)
   if (is.na(n_workers) || n_workers < 1L)
     stop("kioto: n_workers must be at least 1", call. = FALSE)
   if (n_workers > as.integer(max_workers))
     stop("kioto: n_workers exceeds max_workers", call. = FALSE)
   p <- .Call(kio_pool_create, max_workers, max_submitters, injection_cap,
-             per_worker_cap, result_slots, slot_size, liveness_dir)
+             per_worker_cap, result_slots, slot_size)
   suffix <- .Call(kio_pool_suffix, p)
   for (slot in seq_len(n_workers) - 1L) {
     if (is.null(launcher))

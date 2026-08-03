@@ -11,13 +11,13 @@ test_that("kio_channel validates expr is a language object", {
 
 test_that("kio_channel_create validates its parameters", {
   expect_error(.Call(kioto:::kio_channel_create, quote(NULL), 3L, 256L, 0,
-                     tempdir(), FALSE),
+                     FALSE),
                "capacity must be a power of two")
   expect_error(.Call(kioto:::kio_channel_create, quote(NULL), 64L, 32L, 0,
-                     tempdir(), FALSE),
+                     FALSE),
                "slot_size must be a power of two")
   expect_error(.Call(kioto:::kio_channel_create, quote(NULL), 64L, 256L, 100,
-                     tempdir(), FALSE),
+                     FALSE),
                "arena_size must be a non-negative multiple of 64")
 })
 

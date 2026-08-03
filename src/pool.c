@@ -532,8 +532,7 @@ static int kio_pow2_u64(uint64_t v) {
 }
 
 SEXP kio_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
-                     SEXP deque_sexp, SEXP rslots_sexp, SEXP slot_sexp,
-                     SEXP livedir_sexp) {
+                     SEXP deque_sexp, SEXP rslots_sexp, SEXP slot_sexp) {
   uint64_t maxw = (uint64_t) Rf_asInteger(maxw_sexp);
   uint64_t maxs = (uint64_t) Rf_asInteger(maxs_sexp);
   uint64_t inj_cap = (uint64_t) Rf_asInteger(inj_sexp);
@@ -555,11 +554,11 @@ SEXP kio_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   if (rslots < maxs || rslots > (1u << 24))
     Rf_error("kioto: result_slots must be between max_submitters and 2^24");
   rslots = (rslots + maxs - 1) / maxs * maxs;   /* per-submitter partition */
-  if (TYPEOF(livedir_sexp) != STRSXP || XLENGTH(livedir_sexp) != 1)
-    Rf_error("kioto: expected a liveness directory path");
-  const char *livedir = CHAR(STRING_ELT(livedir_sexp, 0));
+  const char *livedir = kio_live_dir();
+  if (livedir == NULL)
+    Rf_error("kioto: cannot resolve liveness lock directory");
   size_t livedir_len = strlen(livedir);
-  if (livedir_len == 0 || livedir_len > 900)
+  if (livedir_len > 900)
     Rf_error("kioto: liveness directory path too long");
 
   kio_pool_hdr h = {

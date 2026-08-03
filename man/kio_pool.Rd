@@ -15,7 +15,6 @@ kio_pool(
   launcher = NULL,
   stdout = "",
   stderr = "",
-  liveness_dir = tempdir(),
   startup_timeout = 30
 )
 }
@@ -55,10 +54,6 @@ call \code{kioto:::worker_main(suffix, slot)}.}
 the default \code{""} sends worker output to the host's console. Ignored
 when \code{launcher} is supplied.}
 
-\item{liveness_dir}{directory for the pool's liveness lock files;
-recorded in the region so every participant uses the same files.
-Defaults to \code{\link[=tempdir]{tempdir()}}.}
-
 \item{startup_timeout}{seconds to wait for all workers to join before
 giving up, destroying the pool, and raising \code{kio_error_startup} (see
 \link{kio_error}).}
@@ -87,6 +82,13 @@ Payload contents interoperate transparently with mori: a \code{mori::share()}d
 object anywhere inside a task's arguments or its result serializes to its
 short identifier wire form via mori's own hooks and maps zero-copy on the
 other side.
+
+The pool's liveness lock files (the death-detection verdict) are created
+in a per-platform directory resolved at create time: \verb{/dev/shm} on
+Linux, the per-user temporary directory on macOS and Windows. The
+resolved path is recorded in the region so every participant uses the
+same files. The environment variable \code{KIOTO_LIVENESS_DIR}, read in the
+creating process, overrides the default.
 }
 \examples{
 \dontrun{
