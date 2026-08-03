@@ -64,6 +64,9 @@ typedef struct kio_pool_s {
   uint32_t rs_cursor;
   uint64_t task_counter;
   int64_t inj_ltail;             /* producer-local tail */
+  int64_t inj_cached_head;       /* head is monotonic: stale only
+                                    under-reports space; refreshed on
+                                    apparent-full */
 
   /* producer spill free list (all staging roles on this handle: task
      payloads, results, nested submits) and consumer mapping cache (entry
@@ -77,6 +80,8 @@ typedef struct kio_pool_s {
   uint32_t scan_start;           /* rotating ring-scan start */
   uint64_t claims;               /* fairness-tick counter (% 61) */
   uint64_t rng;                  /* xorshift state for victim selection */
+  int announced;                 /* park announce (mask bit + park_state)
+                                    not yet restored: gates the entry heal */
   int help_depth;                /* nested-collect help recursion depth */
   /* identity of the outermost (unwind-path) task eval, for
      kio_pool_fail_inflight: written only by catching = 0 executes — inner
@@ -1058,8 +1063,10 @@ SEXP kio_pool_attach_call(SEXP suffix_sexp) {
   if (pool_parkers_attach(p, 0) != 0)
     Rf_error("kioto: cannot attach pool parkers");
   pool_watch_owner(p, pool_sub_pk(p, (uint32_t) p->sub_slot));
-  p->inj_ltail = atomic_load_explicit(ring_tail(pool_ring(p,
-    (uint32_t) p->sub_slot)), memory_order_acquire);
+  unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
+  p->inj_ltail = atomic_load_explicit(ring_tail(ring), memory_order_acquire);
+  p->inj_cached_head = atomic_load_explicit(ring_head(ring),
+                                            memory_order_acquire);
 
   UNPROTECT(1);
   return xp;
@@ -1107,11 +1114,17 @@ static void pool_wake_one_worker(kio_pool *p) {
 
 /* Block until the submitter's own ring has space (announce-then-rescan on
    full_waiters, parked on the submitter's own parker, woken directly by the
-   worker whose pop freed a slot) or the deadline passes. */
+   worker whose pop freed a slot) or the deadline passes. Space is checked
+   against the producer-local cached head first — workers CAS the shared
+   head once per claim, so a fresh load would miss once per submit; a stale
+   cache only under-reports space and apparent-full refreshes it, as with
+   the channel's cached_head. */
 static int pool_ring_space_wait(kio_pool *p, _Atomic int64_t *head,
                                 double timeout_s) {
-  if (p->inj_ltail - atomic_load_explicit(head, memory_order_acquire) <
-      (int64_t) p->hdr.inj_cap)
+  if (p->inj_ltail - p->inj_cached_head < (int64_t) p->hdr.inj_cap)
+    return 1;
+  p->inj_cached_head = atomic_load_explicit(head, memory_order_acquire);
+  if (p->inj_ltail - p->inj_cached_head < (int64_t) p->hdr.inj_cap)
     return 1;
   uint64_t bit = 1ull << p->sub_slot;
   double deadline = R_FINITE(timeout_s) ? kio_now() + timeout_s : -1;
@@ -1119,8 +1132,8 @@ static int pool_ring_space_wait(kio_pool *p, _Atomic int64_t *head,
     uint32_t e = kio_parker_snapshot(pool_sub_pk(p, (uint32_t) p->sub_slot));
     atomic_fetch_or_explicit(p->full_waiters, bit, memory_order_seq_cst);
     atomic_thread_fence(memory_order_seq_cst);
-    if (p->inj_ltail - atomic_load_explicit(head, memory_order_acquire) <
-        (int64_t) p->hdr.inj_cap) {
+    p->inj_cached_head = atomic_load_explicit(head, memory_order_acquire);
+    if (p->inj_ltail - p->inj_cached_head < (int64_t) p->hdr.inj_cap) {
       atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
       return 1;
     }
@@ -2224,12 +2237,17 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
 
   /* heal any announce (or unwind-path eval flag) left dangling by an
      interrupt longjmp out of a previous step: a stale bit costs the pusher
-     one failed CAS */
+     one failed CAS. Gated on the process-local flag — only this worker
+     ever sets its own bit, so the flag is exact and a clean previous exit
+     skips a per-task seq_cst RMW on the mask line every worker shares. */
   p->in_eval = 0;
-  atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
-                        memory_order_relaxed);
-  atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
-                            memory_order_seq_cst);
+  if (p->announced) {
+    atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
+                          memory_order_relaxed);
+    atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
+                              memory_order_seq_cst);
+    p->announced = 0;
+  }
 
   for (;;) {
     pool_reap_quota(p, keepers);
@@ -2272,6 +2290,7 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
     /* announce-then-rescan (the sleep race): either our rescan sees the
        push or the pusher's mask load sees our bit */
     uint32_t e = kio_parker_snapshot(pool_wk_pk(p, (uint32_t) p->wk_slot));
+    p->announced = 1;
     atomic_store_explicit(&me->park_state, KIO_WPK_IDLE,
                           memory_order_relaxed);
     pool_stats_publish(p);
@@ -2293,6 +2312,7 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
                                 memory_order_seq_cst);
       atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
                             memory_order_relaxed);
+      p->announced = 0;
       continue;
     }
     int32_t expected = KIO_WPK_IDLE;
@@ -2312,6 +2332,7 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
                               memory_order_seq_cst);
     atomic_store_explicit(&me->park_state, KIO_WPK_RUNNING,
                           memory_order_relaxed);
+    p->announced = 0;
     pool_stats_publish(p);
     R_CheckUserInterrupt();
     if (deadline >= 0 && kio_now() >= deadline) {
