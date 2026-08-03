@@ -84,6 +84,7 @@ static int kio_dl_shutdown = 0;
 static int kio_dl_epfd = -1;
 static int kio_dl_evfd = -1;
 static pid_t kio_dl_pid = 0;
+static int kio_dl_atexit_set = 0;
 static struct kio_death_watch_s *kio_dl_watches = NULL;
 
 /* A forked child inherits the parent's bookkeeping but not its thread (and
@@ -168,6 +169,13 @@ static int kio_dl_ensure_started(void) {
   if (pthread_create(&kio_dl_thread, NULL, kio_dl_main, NULL) != 0) goto fail;
   kio_dl_running = 1;
   kio_dl_pid = getpid();
+  /* Join at exit(): normal shutdown never unloads the package, and a thread
+     still live at exit reports its TLS as possibly lost under valgrind.
+     Registered once per DSO lifetime; glibc runs it early on dlclose. */
+  if (!kio_dl_atexit_set) {
+    kio_dl_atexit_set = 1;
+    atexit(kio_death_listener_teardown);
+  }
   return 0;
 
 fail:
