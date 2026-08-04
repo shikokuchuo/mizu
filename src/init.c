@@ -107,6 +107,7 @@ SEXP kio_map_abandon(SEXP, SEXP);
 SEXP kio_map_cancel_set(SEXP);
 SEXP kio_map_cancel_get(SEXP);
 SEXP kio_map_reset(SEXP);
+SEXP kio_map_swap_x(SEXP, SEXP);
 SEXP kio_map_info(SEXP);
 SEXP kio_map_claim_state(SEXP, SEXP);
 SEXP kio_map_timeout_call(void);
@@ -191,6 +192,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_map_cancel_set",        (DL_FUNC) &kio_map_cancel_set,        1},
   {"kio_map_cancel_get",        (DL_FUNC) &kio_map_cancel_get,        1},
   {"kio_map_reset",             (DL_FUNC) &kio_map_reset,             1},
+  {"kio_map_swap_x",            (DL_FUNC) &kio_map_swap_x,            2},
   {"kio_map_info",              (DL_FUNC) &kio_map_info,              1},
   {"kio_map_claim_state",       (DL_FUNC) &kio_map_claim_state,       2},
   {"kio_map_timeout_call",      (DL_FUNC) &kio_map_timeout_call,      0},

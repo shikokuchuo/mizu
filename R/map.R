@@ -296,12 +296,23 @@ kio_map_prepare <- function(pool, x, f, ..., .template = NULL,
   pm
 }
 
+#' @section Replacing x between runs:
+#' `kio_map_run(pm, x = x2)` runs over a replacement `x`. When both the
+#' staged and replacement `x` are bare-byte eligible (atomic, non-ALTREP,
+#' no attributes beyond names) with identical type and length, the new
+#' bytes are copied in place over the region's `x` section — the
+#' iterate-over-same-shape loop (optimizer steps, simulation sweeps) at
+#' memcpy cost, skipping the region create and every worker's re-attach.
+#' Any other change of `x` — a different shape or type, a list, a map
+#' staged inline — restages transparently on the next run.
+#'
 #' @rdname kio_map_prepare
 #' @param pm a prepared-map handle from [kio_map_prepare()].
 #' @export
-kio_map_run <- function(pm, .seed = NULL, .timeout = Inf) {
+kio_map_run <- function(pm, x = NULL, .seed = NULL, .timeout = Inf) {
   if (!inherits(pm, "kio_map_prepared"))
     stop("kioto: not a prepared-map handle", call. = FALSE)
+  if (!is.null(x)) map_swap_x(pm, x)
   if (length(pm$x) == 0L) return(map_empty(pm$x, pm$template))
   st <- pm$st
   if (is.null(st)) {
@@ -320,6 +331,30 @@ kio_map_run <- function(pm, .seed = NULL, .timeout = Inf) {
   r <- map_run(pm$pool, st, .timeout)
   if (!inherits(r, "kio_timeout")) pm$st <- st
   r
+}
+
+# Replace a prepared map's x: an in-place memcpy over the region's x
+# section when the staged and replacement x are both bare-byte eligible
+# with identical type and length (a RAWVEC x is sliced from the mapping
+# per batch, never cached worker-side, so the swap is invisible to the
+# workers) — anything else drops the staged state, and the next run
+# restages with the new x (descriptor-carried x IS cached worker-side,
+# so shape or type changes must re-key the region).
+map_swap_x <- function(pm, x) {
+  st <- pm$st
+  swappable <- !is.null(st) && is.null(st$blob) && isTRUE(st$xraw) &&
+    typeof(x) == typeof(pm$x) && length(x) == length(pm$x) &&
+    .Call(kio_map_eligible, x) >= 0 &&
+    (is.null(attributes(x)) ||
+       identical(names(attributes(x)), "names"))
+  pm$x <- x
+  if (swappable) {
+    .Call(kio_map_swap_x, st$wrap, x)
+    st$nms <- names(x)
+  } else {
+    pm$st <- NULL
+  }
+  invisible(pm)
 }
 
 # Re-arm a staged map state for another run: per-run seed state (it rides

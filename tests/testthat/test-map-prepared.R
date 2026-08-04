@@ -114,3 +114,53 @@ test_that("an unclean run marks the handle stale; the next run restages", {
   expect_error(kio_map_run(pm3), "bad")
   expect_true(kio_pool_stop(p))
 })
+
+test_that("phase B: a same-shape x swaps in place; changes restage", {
+  p <- pool_pair()
+  x1 <- 1:6 + 0
+  pm <- kio_map_prepare(p$ctrl, x1, function(v) v * 10)
+  name1 <- pm$st$name
+  # identical type and length: the new bytes memcpy over the region's x
+  # section — same region, same name, no restage
+  x2 <- rev(x1)
+  kioto:::map_swap_x(pm, x2)
+  expect_identical(pm$st$name, name1)
+  kioto:::map_rearm(p$ctrl, pm$st, NULL)
+  kioto:::map_submit(p$ctrl, pm$st)
+  while (pool_step(p) == 1L) NULL
+  expect_identical(collect30(p$ctrl, pm$st), as.list(x2 * 10))
+  # names never cross the wire: they ride the handle for assembly
+  x3 <- setNames(x1, letters[1:6])
+  kioto:::map_swap_x(pm, x3)
+  expect_identical(pm$st$name, name1)
+  kioto:::map_rearm(p$ctrl, pm$st, NULL)
+  kioto:::map_submit(p$ctrl, pm$st)
+  while (pool_step(p) == 1L) NULL
+  expect_identical(collect30(p$ctrl, pm$st), as.list(x3 * 10))
+  # the C primitive rejects any shape or type mismatch outright
+  expect_error(.Call(kioto:::kio_map_swap_x, pm$st$wrap, 1:6),
+               "must match the staged type and length")
+  expect_error(.Call(kioto:::kio_map_swap_x, pm$st$wrap, c(x1, 7)),
+               "must match the staged type and length")
+  # and the R surface turns those into a transparent restage
+  kioto:::map_swap_x(pm, 1:7)
+  expect_null(pm$st)
+  pool_end(p)
+})
+
+test_that("phase B: kio_map_run(pm, x =) round-trips end to end", {
+  skip_if_no_child_kioto()
+  p <- kio_pool(n_workers = 2L)
+  x1 <- runif(64)
+  pm <- kio_map_prepare(p, x1, function(v) v + 1)
+  name1 <- pm$st$name
+  expect_identical(kio_map_run(pm), as.list(x1 + 1))
+  x2 <- runif(64)
+  expect_identical(kio_map_run(pm, x = x2), as.list(x2 + 1))
+  expect_identical(pm$st$name, name1)          # swapped, not restaged
+  # a shape change restages transparently and still answers
+  x3 <- runif(32)
+  expect_identical(kio_map_run(pm, x = x3), as.list(x3 + 1))
+  expect_false(identical(pm$st$name, name1))
+  expect_true(kio_pool_stop(p))
+})

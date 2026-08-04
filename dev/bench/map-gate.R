@@ -69,9 +69,9 @@ invisible(kio_map(p, xelts(64), function(i) rep(as.raw(1L), 8192)))
 # splice of n list elements) pipelined under compute, while runners
 # publish at exhaustion and the whole consume lands after it. Trivial-f
 # generic maps are consume-bound, so the lost overlap is the whole delta;
-# .template escapes it entirely (row 2). The recorded mitigation is the
-# pre-submitted value-quota lease variant (backlog entry 8), which
-# restores intermediate publishes.
+# .template escapes it entirely (row 2). The band is structural: the
+# value-quota lease (backlog entry 8) is byte-denominated and never trips
+# on trivial results — it covers row 13's shape, not this one.
 n1 <- 10000L
 row(1, "trivial f, generic", 1e6 / n1 *
       best(function() { t0 <- now(); kio_map(p, xelts(n1), trivial)

@@ -73,4 +73,32 @@ cat(sprintf("kio_map, idle-gap:               %8.1f us/run\n",
 cat(sprintf("kio_map_run, idle-gap:           %8.1f us/run\n",
             1e6 * idle_gap(function() kio_map_run(pm))))
 
+# phase B swap row: run over a replacement same-shape 8 MB x — an
+# in-place memcpy over the warm region — against restaging it fresh per
+# run. Measured 2026-08-04 (M4 Pro, quiet): the swap itself costs
+# ~0.2 ms and the full stage ~0.4 ms, both noise against the ~250 ms the
+# run's 1e6 elements cost regardless — the deltas at this shape are
+# inside run variance, exactly the plan's prior. Phase B is kept for its
+# semantics (iterate over new same-shape data on one handle, no restage
+# bookkeeping), not for a measured win. An earlier ~105 ms/run "restage
+# cost" was contaminated by a concurrent build on the same machine;
+# distrust any run of this file that wasn't alone on the box.
+xb <- runif(1e6)                    # 8 MB
+g <- function(v) v > 0.5
+invisible(kio_map(p, xb, g, .template = logical(1)))
+pmb <- kio_map_prepare(p, xb, g, .template = logical(1))
+invisible(kio_map_run(pmb))
+cat(sprintf("8MB x, restage + run:            %8.1f us/run\n",
+            1e6 * best(function() {
+              t0 <- now()
+              kio_map(p, runif(1e6), g, .template = logical(1))
+              now() - t0
+            })))
+cat(sprintf("8MB x, swap + run:               %8.1f us/run\n",
+            1e6 * best(function() {
+              t0 <- now()
+              kio_map_run(pmb, x = runif(1e6))
+              now() - t0
+            })))
+
 kio_pool_stop(p)

@@ -7,7 +7,7 @@
 \usage{
 kio_map_prepare(pool, x, f, ..., .template = NULL, .chunks = NULL)
 
-kio_map_run(pm, .seed = NULL, .timeout = Inf)
+kio_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf)
 }
 \arguments{
 \item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
@@ -73,6 +73,18 @@ and the map region for its lifetime; both release at garbage
 collection when the handle is dropped. Chunking geometry is fixed at
 prepare time; the runner count adapts to the live workers at each run.
 }
+\section{Replacing x between runs}{
+
+\code{kio_map_run(pm, x = x2)} runs over a replacement \code{x}. When both the
+staged and replacement \code{x} are bare-byte eligible (atomic, non-ALTREP,
+no attributes beyond names) with identical type and length, the new
+bytes are copied in place over the region's \code{x} section — the
+iterate-over-same-shape loop (optimizer steps, simulation sweeps) at
+memcpy cost, skipping the region create and every worker's re-attach.
+Any other change of \code{x} — a different shape or type, a list, a map
+staged inline — restages transparently on the next run.
+}
+
 \examples{
 \dontrun{
 p <- kio_pool(n_workers = 4L)

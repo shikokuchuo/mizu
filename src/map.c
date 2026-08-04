@@ -643,6 +643,24 @@ SEXP kio_map_info(SEXP xp) {
   return out;
 }
 
+/* Prepared-map in-place x swap: memcpy a RAWVEC-eligible replacement of
+   identical type and length over the region's x section (the producer
+   mapping is writable). Safe because a RAWVEC x is sliced from the
+   mapping per batch and never cached worker-side. Errors on any
+   mismatch — the R side restages instead of swapping. */
+SEXP kio_map_swap_x(SEXP xp, SEXP x) {
+  kio_map_h *mh = map_h_get(xp);
+  if (mh->h.x_kind != KIO_MAP_X_RAWVEC)
+    Rf_error("kioto: map region has no x section");
+  if ((uint32_t) TYPEOF(x) != mh->h.x_sexptype ||
+      (uint64_t) XLENGTH(x) != mh->h.n ||
+      ALTREP(x) || Rf_isS4(x) || kio_vec_ptr(x) == NULL)
+    Rf_error("kioto: replacement x must match the staged type and length");
+  memcpy((unsigned char *) mh->shm->addr + mh->h.x_off, kio_vec_ptr(x),
+         (size_t) mh->h.x_len);
+  return R_NilValue;
+}
+
 /* One CLAIM word decoded — the protocol tests' view of the handshake. */
 SEXP kio_map_claim_state(SEXP xp, SEXP r_sexp) {
   kio_map_h *mh = map_h_get(xp);
