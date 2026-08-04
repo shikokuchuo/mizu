@@ -525,5 +525,6 @@ void kio_payload_init(void);
 void kio_entity_init(void);
 void kio_channel_init(void);
 void kio_pool_init(void);
+void kio_map_init(void);
 
 #endif /* KIOTO_H */

@@ -16,6 +16,12 @@
 
 #define KIO_MAP_MAGIC 0x4B494F4Du   /* "KIOM" */
 
+static SEXP kio_map_tag;
+
+void kio_map_init(void) {
+  kio_map_tag = Rf_install("kio_map");
+}
+
 enum { KIO_MAP_X_DESC = 0, KIO_MAP_X_RAWVEC };
 
 /* Map-descriptor region header. Not pool wire format — it rides its own
@@ -71,6 +77,44 @@ static const char *map_type_name(int type) {
   return "?";
 }
 
+// Map handle -------------------------------------------------------------------
+
+/* The header is validated exactly once per mapping — at open, or authored
+   at stage — and cached process-local behind this external pointer, so the
+   per-call primitives pay a tag check + bounds instead of a 128-byte
+   memcpy + full re-validation (per element on the template write path).
+   Strictly safer, too: the local copy is immune to concurrent scribbling
+   over shm that per-call re-reads would re-trust. prot pins the region
+   wrap, so the mapping outlives the handle. */
+typedef struct kio_map_h_s {
+  mori_shm *shm;
+  kio_map_hdr h;
+} kio_map_h;
+
+static void map_h_finalizer(SEXP xp) {
+  free(R_ExternalPtrAddr(xp));
+  R_ClearExternalPtr(xp);
+}
+
+static SEXP map_h_make(mori_shm *shm, const kio_map_hdr *h, SEXP wrap) {
+  kio_map_h *mh = calloc(1, sizeof(*mh));
+  if (mh == NULL) Rf_error("kioto: allocation failure");
+  mh->shm = shm;
+  mh->h = *h;
+  SEXP xp = PROTECT(R_MakeExternalPtr(mh, kio_map_tag, wrap));
+  R_RegisterCFinalizerEx(xp, map_h_finalizer, TRUE);
+  UNPROTECT(1);
+  return xp;
+}
+
+static kio_map_h *map_h_get(SEXP xp) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_map_tag)
+    Rf_error("kioto: not a map handle");
+  kio_map_h *mh = (kio_map_h *) R_ExternalPtrAddr(xp);
+  if (mh == NULL) Rf_error("kioto: map handle is closed");
+  return mh;
+}
+
 /* Stage one map call into a fresh region. desc is the single descriptor
    stream's object; x the RAWVEC-section vector or NULL; desc_len the exact
    stream size when the R side already counted it (the region-less probe's
@@ -78,7 +122,8 @@ static const char *map_type_name(int type) {
    pass and one write pass total, never two counts. The write re-verifies
    the count: mori_serialize_into checks no bounds, and a mismatch here
    means heap corruption, not a recoverable condition. Returns list(name,
-   producer wrap); the caller pins the wrap for the map's duration. */
+   map handle pinning the producer wrap); the caller pins the handle for
+   the map's duration. */
 SEXP kio_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
                    SEXP template_sexp) {
   double nd = Rf_asReal(n_sexp);
@@ -144,7 +189,7 @@ SEXP kio_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
     memcpy(b + h.x_off, kio_vec_ptr(x), (size_t) h.x_len);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(out, 0, Rf_mkString(shm->name));
-  SET_VECTOR_ELT(out, 1, wrap);
+  SET_VECTOR_ELT(out, 1, map_h_make(shm, &h, wrap));
   UNPROTECT(2);
   return out;
 }
@@ -201,49 +246,41 @@ SEXP kio_map_open(SEXP name_sexp, SEXP writable_sexp) {
   if (shm == NULL)
     kio_stop_shm(NA_REAL, "kioto: cannot open map region '%s' — its "
                  "submitter died or the map ended", name);
-  const char *err = map_hdr_validate(shm, NULL);
+  kio_map_hdr h;
+  const char *err = map_hdr_validate(shm, &h);
   if (err != NULL) {
     mori_shm_close(shm, 0);
     free(shm);
     Rf_error("kioto: invalid map region: %s", err);
   }
-  return kio_shm_wrap_consumer(shm);
-}
-
-/* Header fetch for the accessors below: one memcpy plus the full validation
-   — cheap, and it makes every accessor total against a stray handle. */
-static kio_map_hdr map_hdr_get(SEXP xp, mori_shm **shm_out) {
-  mori_shm *shm = kio_region(xp);
-  kio_map_hdr h;
-  const char *err = map_hdr_validate(shm, &h);
-  if (err != NULL) Rf_error("kioto: invalid map region: %s", err);
-  *shm_out = shm;
-  return h;
+  SEXP wrap = PROTECT(kio_shm_wrap_consumer(shm));
+  SEXP out = map_h_make(shm, &h, wrap);
+  UNPROTECT(1);
+  return out;
 }
 
 SEXP kio_map_desc(SEXP xp) {
-  mori_shm *shm;
-  kio_map_hdr h = map_hdr_get(xp, &shm);
-  return mori_unserialize_from((unsigned char *) shm->addr + h.desc_off,
-                               (size_t) h.desc_len);
+  kio_map_h *mh = map_h_get(xp);
+  return mori_unserialize_from((unsigned char *) mh->shm->addr +
+                               mh->h.desc_off, (size_t) mh->h.desc_len);
 }
 
 /* RAWVEC x slice [lo, hi]: one allocVector + memcpy straight from the
    mapping — per chunk, not per map, so a worker never holds more than a
    chunk of a huge x. */
 SEXP kio_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
-  mori_shm *shm;
-  kio_map_hdr h = map_hdr_get(xp, &shm);
-  if (h.x_kind != KIO_MAP_X_RAWVEC)
+  kio_map_h *mh = map_h_get(xp);
+  if (mh->h.x_kind != KIO_MAP_X_RAWVEC)
     Rf_error("kioto: map region has no x section");
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
-  if (!(lo >= 1) || !(hi >= lo) || hi > (double) h.n)
+  if (!(lo >= 1) || !(hi >= lo) || hi > (double) mh->h.n)
     Rf_error("kioto: map slice out of range");
-  size_t elt = mori_sizeof_elt((int) h.x_sexptype);
+  size_t elt = mori_sizeof_elt((int) mh->h.x_sexptype);
   R_xlen_t len = (R_xlen_t) (hi - lo + 1);
-  SEXP out = Rf_allocVector((SEXPTYPE) h.x_sexptype, len);
+  SEXP out = Rf_allocVector((SEXPTYPE) mh->h.x_sexptype, len);
   memcpy(kio_vec_ptr(out),
-         (unsigned char *) shm->addr + h.x_off + (size_t) (lo - 1) * elt,
+         (unsigned char *) mh->shm->addr + mh->h.x_off +
+         (size_t) (lo - 1) * elt,
          (size_t) len * elt);
   return out;
 }
@@ -253,26 +290,25 @@ SEXP kio_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
    type memcpys, an upward coercion (logical -> integer -> double ->
    complex) goes through R's own coerceVector so NA semantics match. */
 SEXP kio_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
-  mori_shm *shm;
-  kio_map_hdr h = map_hdr_get(xp, &shm);
-  if (h.out_sexptype == 0)
+  kio_map_h *mh = map_h_get(xp);
+  if (mh->h.out_sexptype == 0)
     Rf_error("kioto: map region has no output area");
   double e = Rf_asReal(e_sexp);
-  if (!(e >= 1) || e > (double) h.n)
+  if (!(e >= 1) || e > (double) mh->h.n)
     Rf_error("kioto: map element index out of range");
-  int vt = TYPEOF(value), ot = (int) h.out_sexptype;
+  int vt = TYPEOF(value), ot = (int) mh->h.out_sexptype;
   int widens = vt == ot ||
     (ot == INTSXP  && vt == LGLSXP) ||
     (ot == REALSXP && (vt == LGLSXP || vt == INTSXP)) ||
     (ot == CPLXSXP && (vt == LGLSXP || vt == INTSXP || vt == REALSXP));
-  if (!widens || Rf_xlength(value) != (R_xlen_t) h.out_m)
+  if (!widens || Rf_xlength(value) != (R_xlen_t) mh->h.out_m)
     Rf_error("kioto: map values must be type '%s' and length %llu",
-             map_type_name(ot), (unsigned long long) h.out_m);
+             map_type_name(ot), (unsigned long long) mh->h.out_m);
   if (vt != ot) value = Rf_coerceVector(value, (SEXPTYPE) ot);
   PROTECT(value);
-  memcpy((unsigned char *) shm->addr + h.out_off +
-         (size_t) (e - 1) * (h.out_m * h.out_elt_size),
-         kio_vec_ptr(value), (size_t) (h.out_m * h.out_elt_size));
+  memcpy((unsigned char *) mh->shm->addr + mh->h.out_off +
+         (size_t) (e - 1) * (mh->h.out_m * mh->h.out_elt_size),
+         kio_vec_ptr(value), (size_t) (mh->h.out_m * mh->h.out_elt_size));
   UNPROTECT(1);
   return R_NilValue;
 }
@@ -281,14 +317,13 @@ SEXP kio_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
    unserialized — one allocVector + one memcpy. Names and dim are the R
    side's. */
 SEXP kio_map_gather(SEXP xp) {
-  mori_shm *shm;
-  kio_map_hdr h = map_hdr_get(xp, &shm);
-  if (h.out_sexptype == 0)
+  kio_map_h *mh = map_h_get(xp);
+  if (mh->h.out_sexptype == 0)
     Rf_error("kioto: map region has no output area");
-  R_xlen_t len = (R_xlen_t) (h.n * h.out_m);
-  SEXP out = Rf_allocVector((SEXPTYPE) h.out_sexptype, len);
-  memcpy(kio_vec_ptr(out), (unsigned char *) shm->addr + h.out_off,
-         (size_t) len * h.out_elt_size);
+  R_xlen_t len = (R_xlen_t) (mh->h.n * mh->h.out_m);
+  SEXP out = Rf_allocVector((SEXPTYPE) mh->h.out_sexptype, len);
+  memcpy(kio_vec_ptr(out), (unsigned char *) mh->shm->addr + mh->h.out_off,
+         (size_t) len * mh->h.out_elt_size);
   return out;
 }
 

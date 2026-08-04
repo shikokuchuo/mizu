@@ -190,4 +190,5 @@ void R_init_kioto(DllInfo *dll) {
   kio_entity_init();
   kio_channel_init();
   kio_pool_init();
+  kio_map_init();
 }
