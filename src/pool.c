@@ -42,6 +42,7 @@ typedef struct kio_pool_s {
   _Atomic uint64_t *full_waiters;
   _Atomic uint32_t *shutdown;
   _Atomic uint64_t *parked_workers;
+  _Atomic uint32_t *help_wanted;
   unsigned char *rings;
   unsigned char *results;
 
@@ -106,12 +107,14 @@ typedef struct kio_pool_s {
 
 static SEXP kio_pool_tag;
 static SEXP kio_task_tag;
+static SEXP kio_sig_tag;
 static SEXP kio_class_pool;
 static SEXP kio_class_task;
 
 void kio_pool_init(void) {
   kio_pool_tag = Rf_install("kio_pool");
   kio_task_tag = Rf_install("kio_task");
+  kio_sig_tag = Rf_install("kio_sig");
   kio_class_pool = Rf_mkString("kio_pool");
   R_PreserveObject(kio_class_pool);
   kio_class_task = Rf_mkString("kio_task");
@@ -134,7 +137,7 @@ static uint64_t pool_fixed_size(const kio_pool_hdr *h) {
     (uint64_t) h->max_submitters * pool_ring_bytes(h) +
     (uint64_t) h->max_workers * ((uint64_t) h->deque_cap * h->slot) +
     (uint64_t) h->result_slots * h->slot +
-    128;
+    192;
 }
 
 static void pool_wire(kio_pool *p) {
@@ -159,6 +162,7 @@ static void pool_wire(kio_pool *p) {
   off += (size_t) h->result_slots * h->slot;
   p->shutdown = (_Atomic uint32_t *) (b + off + KIO_CTRL_SHUTDOWN_OFF);
   p->parked_workers = (_Atomic uint64_t *) (b + off + KIO_CTRL_PARKED_OFF);
+  p->help_wanted = (_Atomic uint32_t *) (b + off + KIO_CTRL_HELP_OFF);
 }
 
 static unsigned char *pool_ring(kio_pool *p, uint32_t s) {
@@ -203,7 +207,7 @@ static const char *pool_hdr_validate(const void *region, size_t region_size,
   if (h.version != KIO_ABI_VERSION)
     return "ABI version mismatch: participant and controller were built "
            "against different kioto wire formats";
-  if (h.max_workers == 0 || h.max_workers > 64 ||
+  if (h.max_workers == 0 || h.max_workers > KIO_MAX_WORKERS ||
       h.max_submitters == 0 || h.max_submitters > 64)
     return "registry capacities out of range";
   if ((h.inj_cap & (h.inj_cap - 1)) != 0 || h.inj_cap < 2 ||
@@ -544,8 +548,8 @@ SEXP kio_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   uint64_t deque_cap = (uint64_t) Rf_asInteger(deque_sexp);
   uint64_t rslots = (uint64_t) Rf_asInteger(rslots_sexp);
   uint64_t slot = (uint64_t) Rf_asInteger(slot_sexp);
-  if (maxw < 1 || maxw > 64)
-    Rf_error("kioto: max_workers must be between 1 and 64");
+  if (maxw < 1 || maxw > KIO_MAX_WORKERS)
+    Rf_error("kioto: max_workers must be between 1 and %d", KIO_MAX_WORKERS);
   if (maxs < 1 || maxs > 64)
     Rf_error("kioto: max_submitters must be between 1 and 64");
   if (!kio_pow2_u64(inj_cap) || inj_cap < 2 || inj_cap > (1u << 24))
@@ -1082,7 +1086,13 @@ static void pool_wake_one_worker_from(kio_pool *p, uint32_t start) {
      worker's rescan sees the push or we see its bit */
   atomic_thread_fence(memory_order_seq_cst);
   uint64_t w = atomic_load_explicit(p->parked_workers, memory_order_relaxed);
-  if (w == 0) return;
+  if (w == 0) {
+    /* every worker busy: ring the doorbell map runners poll once per
+       batch transition, so queued work is picked up within ~a batch
+       instead of at map end (kio_pool_help_once consumes it) */
+    atomic_store_explicit(p->help_wanted, 1u, memory_order_seq_cst);
+    return;
+  }
   uint32_t mw = p->hdr.max_workers;
   for (uint32_t k = 0; k < mw; k++) {
     uint32_t i = (start + k) % mw;
@@ -2630,6 +2640,74 @@ SEXP kio_pool_map_caps(SEXP xp) {
   return out;
 }
 
+/* The pool-signal handle a map runner threads through kio_map_next: three
+   opaque word addresses, loaded relaxed once per batch transition. The
+   extptr protects the worker's pool handle, so the mapping and the
+   process-local struct both outlive it. */
+static void pool_sig_finalizer(SEXP xp) {
+  free(R_ExternalPtrAddr(xp));
+  R_ClearExternalPtr(xp);
+}
+
+SEXP kio_pool_signals(SEXP xp) {
+  kio_pool *p = pool_get(xp);
+  kio_pool_sig *s = calloc(1, sizeof(*s));
+  if (s == NULL) Rf_error("kioto: allocation failure");
+  s->help_wanted = p->help_wanted;
+  s->shutdown = p->shutdown;
+  s->owner_dead = &p->owner_dead;
+  SEXP sig = PROTECT(R_MakeExternalPtr(s, kio_sig_tag, xp));
+  R_RegisterCFinalizerEx(sig, pool_sig_finalizer, TRUE);
+  UNPROTECT(1);
+  return sig;
+}
+
+kio_pool_sig *kio_pool_sig_get(SEXP xp) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_sig_tag)
+    Rf_error("kioto: not a pool-signal handle");
+  kio_pool_sig *s = (kio_pool_sig *) R_ExternalPtrAddr(xp);
+  if (s == NULL) Rf_error("kioto: pool-signal handle is closed");
+  return s;
+}
+
+/* One doorbell-gated help beat at a runner's batch boundary: clear the
+   doorbell, claim one injection entry (unfiltered scan — the bell rang, so
+   a stale ready mask must not hide the task it rang for), execute it under
+   the existing help-mode machinery, then re-check the rings and restore
+   the doorbell if entries remain — the clear -> re-check -> restore
+   discipline pool_claim_rings applies to inj_ready, without which a second
+   submitter's store racing the clear is eaten with it and that task waits
+   until the map ends. Injection-only, the mirror image of collect's help
+   mode (which excludes injection): a blocked collect helps to unblock its
+   own subtree, a runner helps precisely to hand foreign submitters their
+   chunk-boundary interleave back. help_depth bounds recursion when the
+   helped task is itself another map's runner. */
+SEXP kio_pool_help_once(SEXP xp) {
+  kio_pool *p = pool_get(xp);
+  if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
+    Rf_error("kioto: not a worker handle");
+  int got = 0;
+  if (p->help_depth < KIO_HELP_DEPTH_LIMIT) {
+    atomic_store_explicit(p->help_wanted, 0u, memory_order_seq_cst);
+    got = pool_claim_rings(p, 0);
+    if (got) {
+      p->st_helps++;
+      p->help_depth++;
+      pool_execute(p, xp, 1);
+      p->help_depth--;
+    }
+    for (uint32_t s = 0; s < p->hdr.max_submitters; s++) {
+      unsigned char *ring = pool_ring(p, s);
+      if (atomic_load_explicit(ring_head(ring), memory_order_acquire) <
+          atomic_load_explicit(ring_tail(ring), memory_order_acquire)) {
+        atomic_store_explicit(p->help_wanted, 1u, memory_order_seq_cst);
+        break;
+      }
+    }
+  }
+  return Rf_ScalarLogical(got);
+}
+
 /* The worker's map-context cache env (prot[5]), created lazily so pools
    that never map spend nothing on it. The idle sweep clears the slot back
    to NULL; the R side re-creates through here and bounds residency at ~8
@@ -2831,11 +2909,13 @@ SEXP kio_pool_dump_call(SEXP xp) {
   kio_pool *p = pool_get(xp);
   uint32_t mw = p->hdr.max_workers, ms = p->hdr.max_submitters;
   const char *names[] = {"name", "shutdown", "workers", "submitters",
-                         "tasks", "local", ""};
+                         "tasks", "local", "help", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(p->shm.name));
   SET_VECTOR_ELT(out, 1, Rf_ScalarLogical(
     (int) atomic_load_explicit(p->shutdown, memory_order_acquire)));
+  SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(
+    (int) atomic_load_explicit(p->help_wanted, memory_order_acquire)));
 
   /* the spill free list and consumer mapping cache are handle-local, so
      their counters surface here rather than in the cross-process stats */

@@ -93,13 +93,22 @@ SEXP kio_pool_status_call(SEXP);
 SEXP kio_pool_stats_call(SEXP);
 SEXP kio_pool_map_caps(SEXP);
 SEXP kio_pool_map_cache(SEXP);
+SEXP kio_pool_signals(SEXP);
+SEXP kio_pool_help_once(SEXP);
 SEXP kio_map_eligible(SEXP);
-SEXP kio_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP kio_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP kio_map_open(SEXP, SEXP);
 SEXP kio_map_desc(SEXP);
 SEXP kio_map_slice(SEXP, SEXP, SEXP);
 SEXP kio_map_write(SEXP, SEXP, SEXP);
 SEXP kio_map_gather(SEXP);
+SEXP kio_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP kio_map_abandon(SEXP, SEXP);
+SEXP kio_map_cancel_set(SEXP);
+SEXP kio_map_cancel_get(SEXP);
+SEXP kio_map_reset(SEXP);
+SEXP kio_map_info(SEXP);
+SEXP kio_map_claim_state(SEXP, SEXP);
 SEXP kio_map_timeout_call(void);
 SEXP kio_map_rng_base(SEXP);
 SEXP kio_map_rng_seek(SEXP, SEXP);
@@ -168,13 +177,22 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_pool_stats_call",       (DL_FUNC) &kio_pool_stats_call,       1},
   {"kio_pool_map_caps",         (DL_FUNC) &kio_pool_map_caps,         1},
   {"kio_pool_map_cache",        (DL_FUNC) &kio_pool_map_cache,        1},
+  {"kio_pool_signals",          (DL_FUNC) &kio_pool_signals,          1},
+  {"kio_pool_help_once",        (DL_FUNC) &kio_pool_help_once,        1},
   {"kio_map_eligible",          (DL_FUNC) &kio_map_eligible,          1},
-  {"kio_map_stage",             (DL_FUNC) &kio_map_stage,             5},
+  {"kio_map_stage",             (DL_FUNC) &kio_map_stage,             6},
   {"kio_map_open",              (DL_FUNC) &kio_map_open,              2},
   {"kio_map_desc",              (DL_FUNC) &kio_map_desc,              1},
   {"kio_map_slice",             (DL_FUNC) &kio_map_slice,             3},
   {"kio_map_write",             (DL_FUNC) &kio_map_write,             3},
   {"kio_map_gather",            (DL_FUNC) &kio_map_gather,            1},
+  {"kio_map_next",              (DL_FUNC) &kio_map_next,              6},
+  {"kio_map_abandon",           (DL_FUNC) &kio_map_abandon,           2},
+  {"kio_map_cancel_set",        (DL_FUNC) &kio_map_cancel_set,        1},
+  {"kio_map_cancel_get",        (DL_FUNC) &kio_map_cancel_get,        1},
+  {"kio_map_reset",             (DL_FUNC) &kio_map_reset,             1},
+  {"kio_map_info",              (DL_FUNC) &kio_map_info,              1},
+  {"kio_map_claim_state",       (DL_FUNC) &kio_map_claim_state,       2},
   {"kio_map_timeout_call",      (DL_FUNC) &kio_map_timeout_call,      0},
   {"kio_map_rng_base",          (DL_FUNC) &kio_map_rng_base,          1},
   {"kio_map_rng_seek",          (DL_FUNC) &kio_map_rng_seek,          2},

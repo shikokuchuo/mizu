@@ -377,10 +377,14 @@ int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino);
 
 #define KIO_POOL_MAGIC  0x4B494F50u   /* "KIOP" */
 
+/* The worker-slot bound: parked_workers is one bit per slot, and kio_map
+   stages its CLAIM array (one word per runner ordinal) at this count. */
+#define KIO_MAX_WORKERS 64
+
 typedef struct kio_pool_hdr_s {
   uint32_t magic;
   uint32_t version;
-  uint32_t max_workers;      /* <= 64: parked_workers is one bit per slot */
+  uint32_t max_workers;      /* <= KIO_MAX_WORKERS */
   uint32_t max_submitters;   /* <= 64: inj_ready_sub / full_waiters bits */
   uint32_t inj_cap;          /* entries per submitter ring, power of two */
   uint32_t deque_cap;        /* entries per worker deque, power of two */
@@ -501,12 +505,32 @@ enum { KIO_WPK_RUNNING = 0, KIO_WPK_IDLE, KIO_WPK_PARKED, KIO_WPK_WAKING };
 #define KIO_INJ_HEAD_OFF    ((size_t) 64)
 
 /* Injection tier metadata (128 B): inj_ready_sub and full_waiters are two
-   unrelated hot words, one line each. Control block (128 B): shutdown word
-   and parked_workers, one line each. */
+   unrelated hot words, one line each. Control block (192 B): shutdown
+   word, parked_workers, and the help_wanted doorbell — set by a publish
+   that finds every worker busy, polled once per batch transition by map
+   runners — one line each. */
 #define KIO_TIER_READY_OFF  ((size_t) 0)
 #define KIO_TIER_FULL_OFF   ((size_t) 64)
 #define KIO_CTRL_SHUTDOWN_OFF ((size_t) 0)
 #define KIO_CTRL_PARKED_OFF   ((size_t) 64)
+#define KIO_CTRL_HELP_OFF     ((size_t) 128)
+
+/* The opaque pool-signal trio a map runner loads relaxed once per batch
+   transition (kio_pool_signals mints it; map.c dereferences the words and
+   stays pool-layout-free): the help_wanted doorbell, the pool's shared
+   shutdown word, and the handle's process-local listener-written
+   owner_dead flag — set independently in every worker process, which is
+   what keeps owner death visible when no worker is in its step loop to
+   broadcast it. */
+typedef struct kio_pool_sig_s {
+  _Atomic uint32_t *help_wanted;
+  _Atomic uint32_t *shutdown;
+  _Atomic int      *owner_dead;
+} kio_pool_sig;
+
+/* The struct behind a kio_pool_signals extptr, or an error for anything
+   else — pool.c owns the tag; kio_map_next is the consumer. */
+kio_pool_sig *kio_pool_sig_get(SEXP xp);
 
 // GC extptr wrappers (wrap.c) ------------------------------------------------------
 

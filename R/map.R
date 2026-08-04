@@ -33,6 +33,13 @@ map_payload <- function(st, r) {
 
 map_template_types <- c("logical", "integer", "double", "complex", "raw")
 
+# Morsel geometry: target ~256 morsels per runner, clamped to a constant
+# grain (the morsel cap) so the responsiveness floor — cancellation, help,
+# lost-set granularity — stays n-independent. Hard-coded, no user knob;
+# the gate sweep freezes the value ({256, 1024} candidates).
+map_morsel_cap <- 256
+map_morsels_per_runner <- 256
+
 # Monotonic-enough clock for the one deadline that threads through both
 # submit-side ring-space waits and the collect loop.
 mono_time <- function() proc.time()[[3L]]
@@ -305,8 +312,11 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
     # else folded into the one descriptor stream, whose exact size the
     # probe already counted
     desc <- if (st$xraw) list(f, dots) else list(f, dots, x)
+    runners <- min(max(1L, caps[[1L]]), caps[[2L]], caps[[3L]])
+    morsel <- max(1, min(n %/% (runners * map_morsels_per_runner),
+                         map_morsel_cap))
     sr <- .Call(kio_map_stage, desc, if (st$xraw) x, if (!st$xraw) desc_len,
-                n, if (direct) template)
+                n, if (direct) template, morsel)
     st$name <- sr[[1L]]
     st$wrap <- sr[[2L]]
   }

@@ -132,7 +132,16 @@ void kio_channel_init(void) {
 
 double kio_now(void) {
 #ifdef _WIN32
-  return (double) GetTickCount64() / 1000.0;
+  /* QueryPerformanceCounter, not GetTickCount64: the map batch-sizing
+     policy times µs-scale batches, where ~15.6 ms tick granularity is
+     blind. Same monotonic-seconds contract; timeouts just gain
+     resolution. QPF is constant after boot — a racing double-init writes
+     identical values. */
+  static LARGE_INTEGER freq;
+  LARGE_INTEGER count;
+  if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&count);
+  return (double) count.QuadPart / (double) freq.QuadPart;
 #else
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
