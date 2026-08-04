@@ -216,14 +216,140 @@ kio_map <- function(pool, x, f, ..., .template = NULL, .chunks = NULL,
   map_template_check(.template)
   if (length(x) == 0L) return(map_empty(x, .template))
   st <- map_stage(pool, x, f, list(...), .template, .chunks, .seed)
-  deadline <- if (is.finite(.timeout)) mono_time() + .timeout else Inf
-  # the interrupt backstop (Ctrl-C in submit or collect): cancel every
-  # outstanding chunk and drop the references. After a clean collect all
-  # handles are consumed and this is a no-op.
+  map_run(pool, st, .timeout)
+}
+
+# The one run path shared by kio_map (stage + run on an anonymous state)
+# and kio_map_run (a prepared state, re-armed by the caller): submit the
+# tasks, collect against the single deadline, and keep the interrupt
+# backstop armed — Ctrl-C in submit or collect cancels every outstanding
+# task and drops the references; after a clean collect all handles are
+# consumed and the backstop is a no-op.
+map_run <- function(pool, st, timeout) {
+  deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
   on.exit(map_cancel(st))
   map_submit(pool, st, deadline)
   if (st$timed_out) return(.Call(kio_map_timeout_call))
   map_collect(pool, st, deadline)
+}
+
+#' Prepared Maps: Stage Once, Run Many
+#'
+#' `kio_map_prepare()` stages a map — `f`, the constant arguments in
+#' `...`, and `x`, serialized once into a shared map region — without
+#' running it, and returns a prepared-map handle. Each `kio_map_run()`
+#' then costs only task submission and collection: no serialization, no
+#' region create, and — because the region (and its name) stays alive
+#' across runs — workers that ran a previous run reuse their cached map
+#' context instead of re-attaching. Repeated stochastic simulation is the
+#' headline use: `kio_map_run(pm, .seed = i)` varies the RNG streams per
+#' run for free, since seed state rides the runner payloads, not the
+#' region.
+#'
+#' Between runs the region's shared scheduling state is re-armed in O(1):
+#' the cursor and cancel word clear, and the run generation embedded in
+#' every claim word advances — a straggler task from a previous run can
+#' never issue against the new run's cursor. After an unclean run — a
+#' `.timeout` expiry, an error in `f`, a worker death — the handle is
+#' marked stale and the next `kio_map_run()` restages into a fresh region
+#' transparently (the old one unlinks at garbage collection under any
+#' stragglers). A map small enough to ride entirely inline keeps its
+#' staged blob on the handle instead: runs resubmit it, still skipping
+#' the serialization.
+#'
+#' The prepared handle pins the staged `x` (for transparent restaging)
+#' and the map region for its lifetime; both release at garbage
+#' collection when the handle is dropped. Chunking geometry is fixed at
+#' prepare time; the runner count adapts to the live workers at each run.
+#'
+#' @inheritParams kio_map
+#'
+#' @return `kio_map_prepare()`: a prepared-map handle. `kio_map_run()`:
+#'   exactly what [kio_map()] returns for the staged map — a list, a
+#'   templated atomic vector, or the `kio_timeout` sentinel.
+#'
+#' @examples
+#' \dontrun{
+#' p <- kio_pool(n_workers = 4L)
+#' pm <- kio_map_prepare(p, 1:1000, function(i, draws) {
+#'   mean(rnorm(draws)) * i
+#' }, draws = 100L)
+#' runs <- lapply(1:50, function(s) kio_map_run(pm, .seed = s))
+#' kio_pool_stop(p)
+#' }
+#'
+#' @export
+kio_map_prepare <- function(pool, x, f, ..., .template = NULL,
+                            .chunks = NULL) {
+  f <- match.fun(f)
+  map_template_check(.template)
+  pm <- new.env(parent = emptyenv())
+  pm$pool <- pool
+  pm$x <- x
+  pm$f <- f
+  pm$dots <- list(...)
+  pm$template <- .template
+  pm$chunks <- .chunks
+  if (length(x) > 0L)
+    pm$st <- map_stage(pool, x, f, pm$dots, .template, .chunks)
+  class(pm) <- "kio_map_prepared"
+  pm
+}
+
+#' @rdname kio_map_prepare
+#' @param pm a prepared-map handle from [kio_map_prepare()].
+#' @export
+kio_map_run <- function(pm, .seed = NULL, .timeout = Inf) {
+  if (!inherits(pm, "kio_map_prepared"))
+    stop("kioto: not a prepared-map handle", call. = FALSE)
+  if (length(pm$x) == 0L) return(map_empty(pm$x, pm$template))
+  st <- pm$st
+  if (is.null(st)) {
+    # unclean previous run (or a prior restage failure): stage afresh — a
+    # straggler against the old region dies at its exhausted cursor or
+    # stale-generation claim word, and the region unlinks at GC
+    st <- map_stage(pm$pool, pm$x, pm$f, pm$dots, pm$template, pm$chunks,
+                    .seed)
+  } else {
+    # a rearm failure (transient slot exhaustion) raises before the reset
+    # touches anything, so the staged state stays good for a retry; from
+    # the reset on, pessimism rules — restage unless the run ends clean
+    map_rearm(pm$pool, st, .seed)
+    pm$st <- NULL
+  }
+  r <- map_run(pm$pool, st, .timeout)
+  if (!inherits(r, "kio_timeout")) pm$st <- st
+  r
+}
+
+# Re-arm a staged map state for another run: per-run seed state (it rides
+# the runner payloads, never the region), a fresh runner count against
+# the live workers, and — on the region path — the O(1) shared-state
+# reset whose bumped generation fences every straggler from the run
+# before. The staged morsel geometry is inherited: batching absorbs
+# worker-count drift between runs.
+map_rearm <- function(pool, st, seed) {
+  st$seed_state <- if (!is.null(seed)) {
+    seed <- suppressWarnings(as.integer(seed))
+    if (length(seed) != 1L || is.na(seed))
+      stop("kioto: .seed must be a scalar integer", call. = FALSE)
+    .Call(kio_map_rng_base, seed)
+  }
+  if (is.null(st$blob)) {
+    caps <- .Call(kio_pool_map_caps, pool)
+    if (caps[[2L]] == 0L)
+      stop_kio("kio_error_slots_exhausted",
+               paste0("kioto: result slots exhausted \u2014 collect or ",
+                      "cancel outstanding tasks first"))
+    st$gen <- .Call(kio_map_reset, st$wrap)
+    st$R <- as.integer(min(st$nm, max(1L, caps[[1L]]), caps[[2L]],
+                           caps[[3L]]))
+    st$handles <- vector("list", st$R)
+  } else {
+    st$handles <- vector("list", st$C)
+  }
+  st$timed_out <- FALSE
+  invisible(st)
 }
 
 map_template_check <- function(template) {

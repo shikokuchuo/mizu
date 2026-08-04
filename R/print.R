@@ -49,6 +49,15 @@ print.kio_task <- function(x, ...) {
 
 #' @rdname print.kio_channel
 #' @export
+print.kio_map_prepared <- function(x, ...) {
+  cat(sprintf("<kio_map_prepared: %.0f elements, %s>\n", length(x$x),
+              if (is.null(x$st)) "stale (next run restages)"
+              else if (is.null(x$st$blob)) x$st$name else "inline blob"))
+  invisible(x)
+}
+
+#' @rdname print.kio_channel
+#' @export
 print.kio_sentinel <- function(x, ...) {
   cat(sprintf("<%s>\n", class(x)[1L]))
   invisible(x)

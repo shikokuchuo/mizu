@@ -367,6 +367,12 @@ with_pool(4L, function(p) {
   note_us("map trivial f", "kio_map .seed", k * n,
           function() for (j in seq_len(k)) kio_map(p, x, f, .seed = 42L),
           "us/elt")
+  # prepared: stage once, run many — per-run cost is submit + collect,
+  # and back-to-back runs hit the workers' cached map contexts
+  pmap <- kio_map_prepare(p, x, f)
+  invisible(kio_map_run(pmap))
+  note_us("map trivial f", "kio_map_run prepared", k * n,
+          function() for (j in seq_len(k)) kio_map_run(pmap), "us/elt")
 })
 
 each_daemons(4L, "mirai_map", function(fw) {
