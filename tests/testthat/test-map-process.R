@@ -6,10 +6,17 @@
 # composable stages instead. Distribution assertions rendezvous the
 # workers via a check-in directory and read stats only once both workers
 # are parked, so they never race the drain or a lagging counter mirror.
+# Tests that need each runner task claimed by a distinct worker also park
+# both workers *before* submitting: a submit that catches the fresh
+# workers still in their first scan finds nobody parked and rings the
+# doorbell instead of waking anyone — and one worker can then claim
+# runner 0 and help-execute runner 1 nested at its first batch boundary,
+# leaving the other worker idle for the whole map.
 
 test_that("a map's chunks spread across the workers", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   # The first-claimed chunk holds its worker until a second pid checks in
   # — only a chunk claimed by the other worker can supply one — so a
   # starved worker can't lose every claim to a fast drain. Bounded, with a
@@ -36,6 +43,7 @@ test_that("a map's chunks spread across the workers", {
 test_that("an imbalanced map still returns in order, work balanced", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   # front-loaded cost — the first elements are slow, the rest instant —
   # under the same rendezvous and stats gate as above
   rdv <- tfile()
@@ -59,18 +67,23 @@ test_that("an imbalanced map still returns in order, work balanced", {
 test_that("a worker killed mid-chunk fails the map with its element range", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
+  # parked before submit: with each push waking its own worker, exactly
+  # one runner ends up sleeping in elements 3-4 while the other publishes
+  # ok — nested doorbell help would leave both tasks pending on one worker
+  # and the gate below unsatisfiable
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   st <- kioto:::map_stage(p, 1:4, function(i) {
     if (i > 2L) Sys.sleep(30)
     i
   }, list(), chunks = 2)
   kioto:::map_submit(p, st)
-  # Deterministic victim: once chunk 1 (elements 1-2) has published, the
-  # one pending task is chunk 2 (elements 3-4) and its worker field names
-  # its executor. Gating on in-flight counts instead is racy on slow
-  # runners — a poll can catch chunk 1 mid-execution (killing the wrong
-  # worker), or a re-read can catch both workers in flight (killing both:
-  # pskill is vectorized), leaving the follow-up map to hang a workerless
-  # pool.
+  # Deterministic victim: once the fast runner (elements 1-2, or none) has
+  # published, the one pending task holds elements 3-4 and its worker
+  # field names its executor. Gating on in-flight counts instead is racy
+  # on slow runners — a poll can catch elements 1-2 mid-execution (killing
+  # the wrong worker), or a re-read can catch both workers in flight
+  # (killing both: pskill is vectorized), leaving the follow-up map to
+  # hang a workerless pool.
   victim <- -1
   expect_true(wait_until({
     d <- kio_pool_dump(p)
@@ -107,12 +120,14 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
 test_that("worker death on the template path never exposes partial output", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   st <- kioto:::map_stage(p, 1:4, function(i) {
     if (i > 2L) Sys.sleep(30)
     i
   }, list(), template = integer(1), chunks = 2)
   kioto:::map_submit(p, st)
-  # the same deterministic victim selection as the generic-path test above
+  # the same park-gated submit and deterministic victim selection as the
+  # generic-path test above
   victim <- -1
   expect_true(wait_until({
     d <- kio_pool_dump(p)
