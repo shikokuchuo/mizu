@@ -31,15 +31,15 @@ keep that environment small, as with any cross-process map.}
 \item{.template}{\code{NULL} for a list result, or a \code{\link[=vapply]{vapply()}}-style
 \code{FUN.VALUE}: an atomic vector template each result must match.}
 
-\item{.chunks}{number of chunk tasks to split the map into, or \code{NULL}
-for the default; see the Chunking section.}
+\item{.chunks}{the map's morsel count (its scheduling granularity), or
+\code{NULL} for the default; see the Granularity section.}
 
 \item{.seed}{\code{NULL} (default: no RNG guarantees, no cost), or a scalar
 integer deriving reproducible per-element RNG streams; see the
 Reproducible RNG section.}
 
 \item{.timeout}{seconds after which the map gives up, cancels its
-outstanding chunks, and returns the \code{kio_timeout} sentinel (class
+outstanding work, and returns the \code{kio_timeout} sentinel (class
 \code{c("kio_timeout", "kio_sentinel")}); \code{Inf} (the default) waits
 indefinitely. One deadline covers submission and collection.}
 }
@@ -55,32 +55,41 @@ Maps \code{f} over the elements of \code{x} on a pool, returning results in inpu
 order — a list by default, or an atomic vector (or matrix) with
 \code{\link[=vapply]{vapply()}} semantics when \code{.template} is given. Unlike mapping with
 per-element \code{\link[=kio_submit]{kio_submit()}} calls, one \code{kio_map()} call serializes \code{f},
-the constant arguments in \code{...}, and \code{x} exactly once, submits a small
-number of fixed-size chunk tasks (roughly 8 per live worker), and each
-worker materializes that map context at most once — so the per-element
-residual cost is one R closure call, as in \code{\link[=lapply]{lapply()}}. An atomic,
-non-ALTREP \code{x} with no attributes beyond names additionally travels as
-bare bytes: workers slice their chunks straight from shared memory
-without deserializing \code{x}, and no worker ever materializes more than a
-chunk of it.
+the constant arguments in \code{...}, and \code{x} exactly once, submits one
+\emph{runner} task per live worker, and each worker materializes that map
+context at most once — so the per-element residual cost is one R
+closure call, as in \code{\link[=lapply]{lapply()}}. Runners self-schedule: they claim
+contiguous element batches off a shared cursor in the map region,
+sizing each batch adaptively toward a fixed time target, so trivial
+\code{f} runs in large batches at near-zero scheduling overhead while
+expensive or skewed \code{f} self-limits to fine claims that keep the
+workers balanced. An atomic, non-ALTREP \code{x} with no attributes beyond
+names additionally travels as bare bytes: workers slice their batches
+straight from shared memory without deserializing \code{x}, and no worker
+ever materializes more than a batch of it.
 }
 \details{
-Chunks are ordinary pool tasks: they are stolen and balanced like any
-other work, worker death fails only the affected chunks' elements, and
-every pool invariant applies unchanged.
+Runners are ordinary pool tasks: they are stolen and balanced like any
+other work, worker death is detected and reported (see Errors), and
+every pool invariant applies unchanged. Between batches a runner also
+answers a pool-wide doorbell: when another submitter's task arrives
+with every worker busy inside a map, one runner picks it up at its next
+batch boundary — foreign-task pickup latency is time-bounded and
+independent of \code{length(x)}.
 }
-\section{Chunking}{
+\section{Granularity}{
 
-By default \verb{[1, length(x)]} splits into
-\code{min(length(x), 8 * live_workers, free_result_slots, injection_cap)}
-contiguous chunks (at least 1) — enough granularity to absorb imbalanced
-\code{f} while amortizing per-chunk overhead. \code{.chunks} overrides the count
-(up to \code{length(x)} for pathological imbalance) but is clamped silently
-by the same free-result-slot and injection-ring caps. A map submitted
-while no worker is live queues in the injection ring as a single chunk
-and runs when a worker joins. If the submitter's result-slot subrange
-is fully occupied by outstanding tasks, \code{kio_map()} errors immediately,
-before staging anything.
+Elements are claimed in \emph{morsels} — contiguous ranges of
+\code{max(1, min(n \%/\% (workers * 256), 256))} elements, the granularity
+floor for cancellation, help, and loss reporting — and issued to
+runners in adaptively sized batches of consecutive morsels. \code{.chunks}
+overrides the morsel count outright (\code{min(length(x), .chunks)}
+morsels): with no per-morsel shared state, \code{.chunks = length(x)} is
+admissible at zero memory cost for pathological imbalance. A map
+submitted while no worker is live queues a single runner in the
+injection ring and runs when a worker joins. If the submitter's
+result-slot subrange is fully occupied by outstanding tasks,
+\code{kio_map()} errors immediately, before staging anything.
 }
 
 \section{Templates}{
@@ -93,31 +102,37 @@ result serializations. A template of length \code{m > 1} gathers an
 \code{m * length(x)} matrix, with the template's names as row names, as
 \code{vapply()}. Character templates are assembled through the generic
 result path instead (their type checks then surface at assembly, not
-per element on the workers). Note for \code{\link[=kio_pool_stats]{kio_pool_stats()}} readers: a
-map whose \emph{generic} chunk results are large publishes them through the
-ordinary result framing, so such maps can add a handful of result-slot
-\code{spills} per call without the pool's \code{slot_size} being undersized for
-its usual traffic.
+per element on the workers). Big shape-regular results belong on the
+template path: a runner's generic results accumulate on the worker and
+publish once, so \code{.template} both caps worker memory and moves the
+values cross-process without serialization. Note for
+\code{\link[=kio_pool_stats]{kio_pool_stats()}} readers: a map whose \emph{generic} results are large
+publishes them through the ordinary result framing, so such maps can
+add a few result-slot \code{spills} per call without the pool's \code{slot_size}
+being undersized for its usual traffic.
 }
 
 \section{Errors, timeout, and cleanup}{
 
-Chunks are collected in input order. An error raised by \code{f}
-re-signals in the caller as the original condition with a
-\code{kio_map_index} field naming the failing element — the first by element
-index among the chunks that ran. Remaining chunks are cancelled
-(advisory: queued chunks are dropped; an executing chunk finishes and
-its result is discarded). The trade-off of in-order collection is that
-an instant failure in a later chunk is not observed while collect
-blocks on an earlier slow chunk. If a worker dies mid-chunk, the map
-raises \code{kio_error_worker_died} (see \link{kio_error}) naming that chunk's
-element range, carried as an \code{elements} field. On \code{.timeout} expiry —
-mid-submit or mid-collect — outstanding chunks are cancelled and the
-\code{kio_timeout} sentinel is returned, never raised. Cancellation is
-immediate, but a published-uncollected chunk result's slot is released
-only when the dropped handle's finalizer runs at the next garbage
+An error raised by \code{f} re-signals in the caller as the original
+condition with a \code{kio_map_index} field naming the failing element —
+the first by element index among the elements that ran. Failure is
+fail-fast: the erroring runner sets the map's shared cancel word
+before publishing, so every peer stops within about one batch instead
+of draining the remaining elements. If a worker dies mid-map, the map
+raises \code{kio_error_worker_died} (see \link{kio_error}) carrying the lost
+elements as an \code{elements} field — a two-column matrix of inclusive
+\verb{lo, hi} ranges. Loss is reported runner-granular and conservatively:
+a dead runner's results publish only at the end, so everything it had
+completed is reported lost alongside what it was executing — never
+the reverse. On \code{.timeout} expiry — mid-submit or mid-collect —
+outstanding work is cancelled and the \code{kio_timeout} sentinel is
+returned, never raised. Executing runners observe cancellation within
+about one batch (one element where \code{f} is expensive), independent of
+\code{length(x)}; a published-uncollected result's slot is released only
+when the dropped handle's finalizer runs at the next garbage
 collection, and the map's staging region is likewise unlinked at GC —
-transient occupancy a subsequent map absorbs by clamping its chunk
+transient occupancy a subsequent map absorbs by clamping its runner
 count.
 }
 
@@ -129,16 +144,16 @@ option. \code{.seed} opts into reproducible per-element L'Ecuyer-CMRG
 streams: element \code{i} runs under the stream \code{i} jumps of 2^127 steps
 from the base state that \code{set.seed(.seed, "L'Ecuyer-CMRG")} would
 install (the caller's own \code{.Random.seed} is not touched, and each
-worker's RNG state is saved and restored around its chunks). Because
+worker's RNG state is saved and restored around its batches). Because
 streams are per-element, results are identical for any \code{.chunks} value,
-worker count, or steal order.
+batch sizing, worker count, or steal order.
 }
 
 \section{Nested maps}{
 
 \code{kio_map(pool, ...)} inside a task expression uses the evaluating
-worker's own handle (bound as \code{pool}): chunk submissions push onto the
-worker's own deque and the blocked collect executes its own chunks
+worker's own handle (bound as \code{pool}): runner submissions push onto the
+worker's own deque and the blocked collect executes its own runners
 while idle peers steal the rest — fork/join-shaped recursive
 parallelism at deque cost. A worker's first nested map claims a
 submitter slot, so at the default \code{max_submitters = 8} (one held by
@@ -148,11 +163,11 @@ the controller) at most 7 workers can nest concurrently; raise
 
 \section{Very large x}{
 
-The serialized chunk wrapper needs a little over 200 bytes of entry
+The serialized runner wrapper needs a little over 200 bytes of entry
 inline budget, so pools created with \code{slot_size = 256L} (224-byte
 budget) fit it — except when \code{.seed} is given, whose 6-word RNG state
 pushes the wrapper to ~250 bytes: seeded maps on such pools work but
-spill a region per chunk, so keep the default \code{slot_size} on pools
+spill a region per runner, so keep the default \code{slot_size} on pools
 meant for seeded maps. For a very large \code{x}, \code{mori::share()} is the
 recommended path when mori is available: a shared \code{x} reduces to its
 ~30-byte identifier inside the staged descriptor and maps zero-copy on

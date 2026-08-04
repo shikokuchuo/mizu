@@ -23,13 +23,14 @@ test_that("a map returns results in input order with names reapplied", {
   st <- kioto:::map_stage(p$ctrl, x, function(i) i * 2L, list(), chunks = 3)
   # a named atomic x stays on the RAWVEC path: names never cross the wire
   expect_true(st$xraw)
-  expect_identical(st$C, 3L)
-  # the chunk ranges partition [1, n]
-  expect_identical(st$lo[[1L]], 1)
-  expect_identical(st$hi[[st$C]], 10)
-  expect_identical(st$lo[-1L], st$hi[-st$C] + 1)
+  # .chunks is the morsel count: ceiling-sized morsels cover [1, n]
+  expect_identical(st$nm, 3)
+  expect_identical(st$ms, 4)
+  expect_identical(.Call(kioto:::kio_map_info, st$wrap)$n_morsels, 3)
+  # one runner per live worker, not one task per morsel
+  expect_identical(st$R, 1L)
   kioto:::map_submit(p$ctrl, st)
-  expect_identical(kio_pool_status(p$ctrl)$injection, 3)
+  expect_identical(kio_pool_status(p$ctrl)$injection, 1)
   while (pool_step(p) == 1L) NULL
   expect_identical(collect30(p$ctrl, st),
                    as.list(setNames(1:10 * 2L, letters[1:10])))
@@ -162,16 +163,56 @@ test_that("classed conditions from f survive the crossing, index attached", {
   pool_end(p)
 })
 
-test_that("an observed chunk error cancels the uncollected chunks", {
-  p <- pool_pair()
+test_that("a runner error stores the cancel word before its ERR publish", {
+  p <- pool_pair(workers = 2L)
   st <- kioto:::map_stage(p$ctrl, 1:9, function(i) if (i == 1L) stop("now"),
                           list(), chunks = 3)
+  expect_identical(st$R, 2L)
   kioto:::map_submit(p$ctrl, st)
-  pool_step(p)   # only chunk 1 runs — and errors
-  expect_error(collect30(p$ctrl, st), "now")
+  # one step: runner 0's first transition sees the doorbell (rung by the
+  # submits — no in-process worker ever parks) and help-executes runner 1
+  # inline, which completes morsels 2-3; runner 0 then errors at element 1
+  pool_step(p)
+  # the erroring runner stored the cancel word itself, before its ERR
+  # publish: peers observe it without collect being involved
+  expect_true(.Call(kioto:::kio_map_cancel_get, st$wrap))
+  # collect re-raises the minimum-index error among the runners that ran
+  e <- tryCatch(collect30(p$ctrl, st), error = identity)
+  expect_identical(conditionMessage(e), "now")
+  expect_identical(e$kio_map_index, 1)
+  while (pool_step(p) == 1L) NULL
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  pool_end(p)
+})
+
+test_that("collect trims never-claimed runners once the cursor exhausts", {
+  p <- pool_pair(workers = 2L)
+  st <- kioto:::map_stage(p$ctrl, 1:4, function(i) i * 2L, list(),
+                          template = integer(1), chunks = 4)
+  expect_identical(st$R, 2L)
+  kioto:::map_submit(p$ctrl, st)
+  # a third CLAIM lane drains the cursor through the protocol directly —
+  # the stand-in for peers finishing the map while both runner tasks sit
+  # queued behind busy workers (which never step here)
+  repeat {
+    nx <- .Call(kioto:::kio_map_next, st$wrap, 2L, 0, NULL, 64, NULL)
+    if (is.null(nx)) break
+    for (e in nx[[3L]]:nx[[4L]]) .Call(kioto:::kio_map_write, st$wrap,
+                                       e, e * 2L)
+  }
+  expect_identical(.Call(kioto:::kio_map_info, st$wrap)$cursor, 4)
+  # collect must not park on the never-claimed handles: the exhausted
+  # cursor arms the trim, both resolve through abandon, and the gathered
+  # output area carries the results
+  expect_identical(collect30(p$ctrl, st),
+                   vapply(1:4, function(i) i * 2L, integer(1)))
+  for (r in 0:1)
+    expect_identical(.Call(kioto:::kio_map_claim_state, st$wrap, r)$state,
+                     "abandoned")
+  # the trimmed runner tasks were cancelled and drop at their pops
   d <- kio_pool_dump(p$ctrl)
-  expect_identical(sort(d$tasks$status), c("cancel", "cancel"))
-  while (pool_step(p) == 1L) NULL   # cancelled chunks drop at their pop
+  expect_identical(d$tasks$status, c("cancel", "cancel"))
+  while (pool_step(p) == 1L) NULL
   expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
@@ -189,24 +230,23 @@ test_that("n = 0, n = 1, and n < chunks all behave", {
                    vapply(integer(), identity, c(a = 0L, b = 0L)))
   expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   expect_identical(run_map(p, 5, function(i) i * 2), list(10))
-  # more chunks requested than elements: C clamps to n
+  # more morsels requested than elements: the count clamps to n
   st <- kioto:::map_stage(p$ctrl, 1:3, identity, list(), chunks = 8)
-  expect_identical(st$C, 3L)
+  expect_identical(st$nm, 3)
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
   expect_identical(collect30(p$ctrl, st), as.list(1:3))
   pool_end(p)
 })
 
-test_that("the chunk count clamps to the free result-slot subrange", {
-  p <- pool_pair()   # 64 result slots / 8 submitters = 8 per subrange
+test_that("the runner count clamps to live workers and free slots", {
+  p <- pool_pair(workers = 4L)   # 64 result slots / 8 submitters = 8 free
   st <- kioto:::map_stage(p$ctrl, 1:100, identity, list())
-  expect_identical(st$C, 8L)   # min(n, 8 * 1 live worker, 8 free, 64)
-  # occupy five slots: both the default and an explicit .chunks clamp to 3
+  expect_identical(st$R, 4L)     # min(n_morsels, 4 live, 8 free, 64)
+  # occupy five slots: the runner count clamps to the 3 free
   held <- lapply(1:5, function(i) kio_submit(p$ctrl, v, v = i))
-  expect_identical(kioto:::map_stage(p$ctrl, 1:100, identity, list())$C, 3L)
-  st <- kioto:::map_stage(p$ctrl, 1:100, identity, list(), chunks = 8)
-  expect_identical(st$C, 3L)
+  st <- kioto:::map_stage(p$ctrl, 1:100, identity, list())
+  expect_identical(st$R, 3L)
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
   expect_identical(collect30(p$ctrl, st), as.list(1:100))
@@ -224,13 +264,13 @@ test_that("a fully occupied subrange errors before any region exists", {
   pool_end(p)
 })
 
-test_that("zero live workers floors C at 1; a rejoined worker drains it", {
+test_that("zero live workers floors R at 1; a rejoined worker drains it", {
   p <- pool_pair()
   suffix <- .Call(kioto:::kio_pool_suffix, p$ctrl)
   .Call(kioto:::kio_pool_leave, p$wk)
   expect_identical(kio_pool_status(p$ctrl)$workers, "free")
   st <- kioto:::map_stage(p$ctrl, 1:6, function(i) i + 1L, list())
-  expect_identical(st$C, 1L)
+  expect_identical(st$R, 1L)
   kioto:::map_submit(p$ctrl, st)   # queues in the injection ring
   wk <- .Call(kioto:::kio_pool_worker_join, suffix, 0L)
   .Call(kioto:::kio_pool_set_eval, wk)
@@ -253,15 +293,15 @@ test_that("a small map rides entirely inline, no region", {
   pool_end(p)
 })
 
-test_that("the region chunk wrapper fits a slot_size = 256 entry budget", {
+test_that("the region runner wrapper fits a slot_size = 256 entry budget", {
   p <- pool_pair()   # slot_size 256: 224-byte entry inline budget
   st <- kioto:::map_stage(p$ctrl, 1:100, sqrt, list(),
                           template = numeric(1))
   sz <- .Call(kioto:::kio_bounded_call,
-              kioto:::map_payload(st, c(1, 100, 1)), 224L)[[1L]]
+              kioto:::runner_payload(st, 0L), 224L)[[1L]]
   expect_lte(sz, 224)
-  # and indeed nothing spilled over a whole template map: chunk wrappers
-  # stayed inline, and the template path publishes NULL chunk results
+  # and indeed nothing spilled over a whole template map: runner wrappers
+  # stayed inline, and the template path publishes only batch histories
   kioto:::map_submit(p$ctrl, st)
   while (pool_step(p) == 1L) NULL
   expect_identical(collect30(p$ctrl, st),
@@ -270,24 +310,27 @@ test_that("the region chunk wrapper fits a slot_size = 256 entry budget", {
   pool_end(p)
 })
 
-test_that("the idle sweep evicts the context cache; chunks re-attach", {
+test_that("the idle sweep evicts the context cache; runners re-attach", {
   p <- pool_pair()
   st <- kioto:::map_stage(p$ctrl, 1:4, function(i) i * 10L, list(),
                           chunks = 2)
-  # drive the two chunks by hand with an empty step between them: the
+  # drive the two runners by hand with an empty step between them: the
   # empty return runs the full idle sweep, which drops prot[5]
   h1 <- .Call(kioto:::kio_pool_submit, p$ctrl,
-              kioto:::map_payload(st, c(st$lo[[1L]], st$hi[[1L]])), Inf)
+              kioto:::runner_payload(st, 0L), Inf)
   expect_identical(pool_step(p), 1L)
   expect_identical(ls(.Call(kioto:::kio_pool_map_cache, p$wk)), st$name)
   expect_identical(pool_step(p), 0L)   # empty: sweep clears the cache
   expect_length(ls(.Call(kioto:::kio_pool_map_cache, p$wk)), 0L)
   h2 <- .Call(kioto:::kio_pool_submit, p$ctrl,
-              kioto:::map_payload(st, c(st$lo[[2L]], st$hi[[2L]])), Inf)
+              kioto:::runner_payload(st, 1L), Inf)
   expect_identical(pool_step(p), 1L)   # re-attaches the same region
   expect_identical(ls(.Call(kioto:::kio_pool_map_cache, p$wk)), st$name)
-  expect_identical(.Call(kioto:::kio_pool_collect, h1, 5), list(10L, 20L))
-  expect_identical(.Call(kioto:::kio_pool_collect, h2, 5), list(30L, 40L))
+  # runner 0 drained the whole cursor; runner 1 came up empty-handed
+  r1 <- .Call(kioto:::kio_pool_collect, h1, 5)
+  expect_identical(r1[[3L]], list(list(10L, 20L), list(30L, 40L)))
+  r2 <- .Call(kioto:::kio_pool_collect, h2, 5)
+  expect_length(r2[[1L]], 0L)
   pool_end(p)
 })
 
@@ -300,8 +343,9 @@ test_that("two submitters' maps hold two contexts on one worker", {
   st2 <- kioto:::map_stage(s1, 1:4, function(i) i + 100L, list(), chunks = 2)
   kioto:::map_submit(p$ctrl, st1)
   kioto:::map_submit(s1, st2)
-  # exactly four steps: an extra empty step would sweep the cache away
-  for (i in 1:4) expect_identical(pool_step(p), 1L)
+  # one step: the doorbell hands the second map's runner to the same
+  # worker at a batch boundary, so both contexts materialize in one claim
+  expect_identical(pool_step(p), 1L)
   expect_setequal(ls(.Call(kioto:::kio_pool_map_cache, p$wk)),
                   c(st1$name, st2$name))
   expect_identical(collect30(p$ctrl, st1), as.list(2:5))
@@ -310,9 +354,10 @@ test_that("two submitters' maps hold two contexts on one worker", {
 })
 
 test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
-  p <- pool_pair(injection_cap = 2L)
+  p <- pool_pair(workers = 2L, injection_cap = 2L)
   filler <- kio_submit(p$ctrl, "filler")   # ring holds 2: one slot left
   st <- kioto:::map_stage(p$ctrl, 1:4, identity, list(), chunks = 2)
+  expect_identical(st$R, 2L)   # runner 2 will block on the full ring
   t0 <- kioto:::mono_time()
   kioto:::map_submit(p$ctrl, st, deadline = t0 + 0.2)
   expect_true(st$timed_out)

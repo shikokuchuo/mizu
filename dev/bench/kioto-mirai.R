@@ -392,6 +392,25 @@ each_daemons(4L, "mirai_map", function(fw) {
             function() invisible(mirai_map(seq_len(n), g)[]), "elts/s")
 })
 
+# skew regime: 1% of elements cost ~100x the rest, clustered at the head —
+# fine self-scheduled claims keep the workers level where a coarse static
+# split concentrates the heavy heads on one worker
+n <- 4000L
+xs <- seq_len(n) + 0
+h <- function(i) sum(runif(if (i <= 40) 2e5 else 200L))
+
+with_pool(4L, function(p) {
+  invisible(kio_map(p, xs, h))
+  note("map skewed f", "kio_map",
+       best_ms(function() timed(kio_map(p, xs, h))), "ms wall")
+})
+
+each_daemons(4L, "mirai_map", function(fw) {
+  invisible(mirai_map(xs[seq_len(200L)], h)[])
+  note("map skewed f", fw,
+       best_ms(function() timed(invisible(mirai_map(xs, h)[]))), "ms wall")
+})
+
 # summary ----------------------------------------------------------------------
 
 cat("\n== summary ==\n")

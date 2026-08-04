@@ -25,8 +25,10 @@
 #'   [kio_pool_dump()]) and `pid` — the result slot's claimant record read
 #'   at collect time: informational, racy against slot reuse exactly as
 #'   [kio_pool_dump()] is, and `NA` where no claim was recorded.
-#'   [kio_map()] re-signals this class with the failed chunk's element
-#'   range as an additional `elements` field (`c(lo, hi)`).
+#'   [kio_map()] re-signals this class with the lost elements as an
+#'   additional `elements` field: a two-column matrix of inclusive
+#'   `lo, hi` ranges, runner-granular and conservative (see the Errors
+#'   section of [kio_map()]).
 #' * `kio_error_startup` — [kio_channel()], [kio_pool()] and
 #'   [kio_spawn_workers()] when a child process fails to attach within
 #'   `startup_timeout`.

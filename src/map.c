@@ -74,9 +74,13 @@ enum { KIO_MORSEL_IDLE = 0, KIO_MORSEL_RUNNING, KIO_MORSEL_ABANDONED };
    duration, growing at most 2x per step and shrinking immediately on
    overshoot, clamped to the cap — which bounds lost-set coarseness and
    the ramp worst case (a cost jump right after a ramp runs one cap-sized
-   batch to completion). Both to be frozen by the PR 2 gate sweep:
-   T_target from {25, 50, 100, 200} us, the cap from {64, 256}. */
-#define KIO_MAP_T_TARGET  50e-6
+   batch to completion). Frozen by the gate sweep (2026-08-04, M4 Pro,
+   W = 4): T_target from {25, 50, 100, 200} us — trivial-f overhead falls
+   monotonically with T (0.343 -> 0.296 us/elt generic, 0.482 -> 0.409
+   seeded) while cancellation latency stays ~0.1 ms at every setting, so
+   the largest candidate wins; the cap from {64, 256} — within noise on
+   every overhead row, so the tighter ramp / lost-set bound wins. */
+#define KIO_MAP_T_TARGET  200e-6
 #define KIO_MAP_BATCH_CAP 64
 
 /* The map-local RAWVEC gate, deliberately looser than kio_raw_eligible:
@@ -326,13 +330,14 @@ static const char *map_hdr_validate(const mori_shm *shm, kio_map_hdr *out) {
   return NULL;
 }
 
-/* Attach a map region. Generic path: the vendored read-only consumer open,
-   which never populates. Template path: writable for the output-area
-   stores, no-populate so a large RAWVEC x still demand-pages per worker.
-   Both failure modes raise ordinary R errors — they happen inside the task
-   eval, so they publish as the chunk's ERR result (or the CANCEL drop
-   absorbs them on the timeout path, where the submitter unlinked the
-   region under a straggler) — never the fatal infrastructure path. */
+/* Attach a map region. Runners attach writable — every runner CASes the
+   shared morsel state, not just the template path's output-area stores —
+   and no-populate, so a large RAWVEC x still demand-pages per worker; the
+   read-only consumer open remains for passive readers. Both failure modes
+   raise ordinary R errors — they happen inside the task eval, so they
+   publish as the runner's ERR result (or the CANCEL drop absorbs them on
+   the timeout path, where the submitter unlinked the region under a
+   straggler) — never the fatal infrastructure path. */
 SEXP kio_map_open(SEXP name_sexp, SEXP writable_sexp) {
   if (TYPEOF(name_sexp) != STRSXP || XLENGTH(name_sexp) != 1)
     Rf_error("kioto: expected a map region name");

@@ -50,23 +50,40 @@ set.seed(1)
 
 trivial <- function(i) i + 0
 
+# x vectors are materialized (never ALTREP): a compact 1:n — and even a
+# deferred as.numeric(1:n) — serializes to a few dozen bytes, so a huge-n
+# map with a tiny f would pass the region-less blob probe and measure
+# chunk scheduling instead of the region path these rows target. The + 0
+# forces a genuine REALSXP. Row 4 keeps a compact x deliberately — it
+# measures the blob path.
+xelts <- function(n) seq_len(n) + 0
+
 # warm the pool, the worker map caches, and the spill free lists
-invisible(kio_map(p, 1:1000, trivial))
-invisible(kio_map(p, 1:64, function(i) rep(as.raw(1L), 8192)))
+invisible(kio_map(p, xelts(1000), trivial))
+invisible(kio_map(p, xelts(64), function(i) rep(as.raw(1L), 8192)))
 
 # 1-3: trivial-f overhead, us/element -----------------------------------------
+# Measured reality (2026-08-04, M4 Pro, constants frozen): row 2 is at
+# parity, rows 1 and 3 carry ~+10-16% — the single-publish trade: chunks
+# published progressively, so the collector's consume (unserialize +
+# splice of n list elements) pipelined under compute, while runners
+# publish at exhaustion and the whole consume lands after it. Trivial-f
+# generic maps are consume-bound, so the lost overlap is the whole delta;
+# .template escapes it entirely (row 2). The recorded mitigation is the
+# pre-submitted value-quota lease variant (backlog entry 8), which
+# restores intermediate publishes.
 n1 <- 10000L
 row(1, "trivial f, generic", 1e6 / n1 *
-      best(function() { t0 <- now(); kio_map(p, seq_len(n1), trivial)
+      best(function() { t0 <- now(); kio_map(p, xelts(n1), trivial)
                         now() - t0 }), "us/elt")
 row(2, "trivial f, template", 1e6 / n1 *
       best(function() { t0 <- now()
-                        kio_map(p, seq_len(n1), trivial,
+                        kio_map(p, xelts(n1), trivial,
                                 .template = numeric(1))
                         now() - t0 }), "us/elt")
 row(3, "trivial f, .seed", 1e6 / n1 *
       best(function() { t0 <- now()
-                        kio_map(p, seq_len(n1), function(i) runif(1),
+                        kio_map(p, xelts(n1), function(i) runif(1),
                                 .seed = 42L)
                         now() - t0 }), "us/elt")
 
@@ -79,7 +96,7 @@ row(4, "blob map, per call", 1e6 / 100 *
 # 5: fan-out compute as one map -----------------------------------------------
 row(5, "fan-out 2000 x sum(runif(1e4))",
     best(function() { t0 <- now()
-                      kio_map(p, 1:2000, function(i) sum(runif(1e4)))
+                      kio_map(p, xelts(2000), function(i) sum(runif(1e4)))
                       now() - t0 }), "s")
 
 # 6: skewed f, lumpy shape (headline win: strictly better under morsels) ------
@@ -87,24 +104,24 @@ row(5, "fan-out 2000 x sum(runif(1e4))",
 # it on one worker today while fine self-scheduled claims balance it
 f6 <- function(i) sum(runif(if (i <= 40L) 2e5 else 200L))
 row(6, "skewed f, heavy 1% clustered",
-    best(function() { t0 <- now(); kio_map(p, 1:4000, f6); now() - t0 }),
+    best(function() { t0 <- now(); kio_map(p, xelts(4000), f6); now() - t0 }),
     "s")
 
 # 7: big generic results: spill events and free-list reuse --------------------
 f7 <- function(i) rep(as.raw(1L), 8192)
-invisible(kio_map(p, 1:256, f7))              # warm the free list at shape
+invisible(kio_map(p, xelts(256), f7))         # warm the free list at shape
 s0 <- kio_pool_stats(p)$submitters
-invisible(kio_map(p, 1:256, f7))
+invisible(kio_map(p, xelts(256), f7))
 s1 <- kio_pool_stats(p)$submitters
 spills <- sum(s1$spills) - sum(s0$spills)
 reuse <- sum(s1$spill_reuse) - sum(s0$spill_reuse)
-row(7, sprintf("8KB results: churn (%d spills)", spills),
-    spills - reuse, "regions", gate = "record")
+row(7, "8KB results: spill churn", spills - reuse,
+    sprintf("regions (of %d spills)", spills), gate = "record")
 
 # 8: mixed-workload latency: foreign pickup mid-map ---------------------------
 lat_mid <- function(n, settle) {
   best(function() {
-    st <- kioto:::map_stage(p, seq_len(n), trivial, list())
+    st <- kioto:::map_stage(p, xelts(n), trivial, list())
     kioto:::map_submit(p, st)
     Sys.sleep(settle)                        # let workers sink into the map
     t0 <- now()
@@ -122,7 +139,7 @@ row(8, "foreign pickup mid-map, n=1e6", lat_mid(1e6, 0.005) * 1e3, "ms",
 # 9: cancellation latency: .timeout expiry mid-map ----------------------------
 lat_cancel <- function(n, timeout) {
   best(function() {
-    r <- kio_map(p, seq_len(n), trivial, .timeout = timeout)
+    r <- kio_map(p, xelts(n), trivial, .timeout = timeout)
     stopifnot(inherits(r, "kio_timeout"))    # the map must outlive it
     t0 <- now()
     kio_collect(kio_submit(p, NULL))
@@ -141,7 +158,7 @@ row(10, "nested map 4 x 1000",
     best(function() {
       t0 <- now()
       hs <- lapply(1:4, function(i)
-        kio_submit(p, sum(unlist(kio_map(pool, 1:1000,
+        kio_submit(p, sum(unlist(kio_map(pool, 1:1000 + 0,
                                          function(j) j + 0)))))
       for (h in hs) kio_collect(h)
       now() - t0
@@ -154,7 +171,7 @@ row(10, "nested map 4 x 1000",
 f11 <- function(i) { if (i > 256L) Sys.sleep(0.01); i }
 row(11, "post-timeout pickup after cost jump",
     best(function() {
-      r <- kio_map(p, 1:512, f11, .timeout = 0.5)
+      r <- kio_map(p, xelts(512), f11, .timeout = 0.5)
       stopifnot(inherits(r, "kio_timeout"))
       t0 <- now()
       kio_collect(kio_submit(p, NULL))
@@ -168,7 +185,7 @@ row(12, "short map, half the pool pinned",
                    kio_submit(p, Sys.sleep(0.6)))
       Sys.sleep(0.05)                        # both sleepers claimed
       t0 <- now()
-      kio_map(p, 1:2000, trivial)
+      kio_map(p, xelts(2000), trivial)
       lat <- now() - t0
       for (h in pins) kio_collect(h)
       lat
@@ -177,7 +194,7 @@ row(12, "short map, half the pool pinned",
 # 13: collect-tail exposure (recorded, never gated) ---------------------------
 f13 <- function(i) { s <- sum(runif(2e4)); rep(as.raw(1L), 8192) }
 row(13, "medium f, 8KB generic results",
-    best(function() { t0 <- now(); kio_map(p, 1:2000, f13); now() - t0 }),
+    best(function() { t0 <- now(); kio_map(p, xelts(2000), f13); now() - t0 }),
     "s", gate = "record")
 
 kio_pool_stop(p)

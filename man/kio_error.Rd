@@ -37,8 +37,10 @@ worker died. Fields \code{slot} (worker registry slot, 0-based as in
 \code{\link[=kio_pool_dump]{kio_pool_dump()}}) and \code{pid} — the result slot's claimant record read
 at collect time: informational, racy against slot reuse exactly as
 \code{\link[=kio_pool_dump]{kio_pool_dump()}} is, and \code{NA} where no claim was recorded.
-\code{\link[=kio_map]{kio_map()}} re-signals this class with the failed chunk's element
-range as an additional \code{elements} field (\code{c(lo, hi)}).
+\code{\link[=kio_map]{kio_map()}} re-signals this class with the lost elements as an
+additional \code{elements} field: a two-column matrix of inclusive
+\verb{lo, hi} ranges, runner-granular and conservative (see the Errors
+section of \code{\link[=kio_map]{kio_map()}}).
 \item \code{kio_error_startup} — \code{\link[=kio_channel]{kio_channel()}}, \code{\link[=kio_pool]{kio_pool()}} and
 \code{\link[=kio_spawn_workers]{kio_spawn_workers()}} when a child process fails to attach within
 \code{startup_timeout}.

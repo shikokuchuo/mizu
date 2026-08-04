@@ -148,21 +148,21 @@ test_that("batch sizing grows <=2x toward the target and settles", {
   t <- 0
   b <- anxt(h, t)
   expect_identical(b[[2L]], 1)               # first batch k = 1
-  # per-morsel 1us against the 50us target: double until 32, settle at 50
+  # per-morsel 8us against the 200us target: double until 16, settle at 25
   ks <- numeric(8)
   for (i in seq_along(ks)) {
-    t <- t + b[[2L]] * 1e-6
+    t <- t + b[[2L]] * 8e-6
     b <- anxt(h, t)
     ks[i] <- b[[2L]]
   }
-  expect_identical(ks, c(2, 4, 8, 16, 32, 50, 50, 50))
+  expect_identical(ks, c(2, 4, 8, 16, 25, 25, 25, 25))
 })
 
 test_that("cheap morsels ramp to the batch cap; overshoot shrinks at once", {
   h <- stage_h(1e6, 1)
   t <- 0
   b <- anxt(h, t)
-  for (i in 1:8) {                           # 0.1us/morsel: want 500, cap 64
+  for (i in 1:8) {                           # 0.1us/morsel: want 2000, cap 64
     t <- t + b[[2L]] * 1e-7
     b <- anxt(h, t)
   }

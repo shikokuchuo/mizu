@@ -87,8 +87,17 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
                 error = identity)
   expect_s3_class(e, "kio_error_worker_died")
   expect_match(conditionMessage(e),
-               "worker died while executing map elements 3-4")
-  expect_equal(e$elements, c(3, 4))
+               "worker died while executing map elements")
+  # the lost set is runner-granular and conservative: it always contains
+  # the elements the dead worker was executing (3-4), may include the
+  # dead runner's completed batches (its history died unpublished), and
+  # never a surviving runner's published batches or anything outside n
+  el <- e$elements
+  expect_true(is.matrix(el) && ncol(el) == 2L)
+  lost <- unlist(lapply(seq_len(nrow(el)),
+                        function(r) seq.int(el[r, 1L], el[r, 2L])))
+  expect_true(all(c(3, 4) %in% lost))
+  expect_true(all(lost %in% 1:4))
   # the pool remains serviceable on the survivor
   expect_identical(kio_map(p, 1:4, function(i) i + 1L, .timeout = 30),
                    as.list(2:5))
@@ -115,13 +124,18 @@ test_that("worker death on the template path never exposes partial output", {
   }, timeout = 10))
   stopifnot(victim > 0)   # a failed gate must never reach kill(-1)
   kill_hard(victim)
-  # chunk 1's writes landed in the output area, but the map errors as a
-  # whole: nothing is ever gathered
+  # completed writes landed in the output area, but the map errors as a
+  # whole: nothing is ever gathered, and durably written elements from
+  # the dead runner report conservatively as lost
   e <- tryCatch(kioto:::map_collect(p, st,
                                     deadline = kioto:::mono_time() + 30),
                 error = identity)
   expect_match(conditionMessage(e),
-               "worker died while executing map elements 3-4")
+               "worker died while executing map elements")
+  el <- e$elements
+  lost <- unlist(lapply(seq_len(nrow(el)),
+                        function(r) seq.int(el[r, 1L], el[r, 2L])))
+  expect_true(all(c(3, 4) %in% lost))
   expect_true(kio_pool_stop(p))
 })
 
@@ -188,5 +202,59 @@ test_that("a mori-shared x rides the descriptor as its identifier", {
   expect_false(st$xraw)   # ALTREP: reduces via the hooks, never memcpy'd
   r <- kio_map(p, x, function(v) v * 2, .timeout = 60)
   expect_identical(r, lapply(as.numeric(1:100) * 0.5, function(v) v * 2))
+  expect_true(kio_pool_stop(p))
+})
+
+test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
+  skip_if_no_child_kioto()
+  p <- kio_pool(n_workers = 2L)
+  st <- kioto:::map_stage(p, 1:40, function(i) {
+    Sys.sleep(0.05)
+    i
+  }, list())
+  kioto:::map_submit(p, st)
+  Sys.sleep(0.3)                     # both workers deep inside the map
+  t0 <- kioto:::mono_time()
+  h <- kio_submit(p, "quick")
+  expect_identical(kio_collect(h, timeout = 30), "quick")
+  # picked up at a batch boundary (~one 50 ms element via the doorbell),
+  # not at map end (~0.7 s away)
+  expect_lt(kioto:::mono_time() - t0, 0.5)
+  expect_identical(kioto:::map_collect(p, st,
+                                       deadline = kioto:::mono_time() + 30),
+                   as.list(1:40))
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_gte(sum(kio_pool_stats(p)$workers$helps), 1)
+  expect_true(kio_pool_stop(p))
+})
+
+test_that("kio_pool_stop mid-map returns clean within ~a batch", {
+  skip_if_no_child_kioto()
+  p <- kio_pool(n_workers = 2L)
+  st <- kioto:::map_stage(p, 1:200, function(i) {
+    Sys.sleep(0.05)
+    i
+  }, list())
+  kioto:::map_submit(p, st)
+  Sys.sleep(0.3)
+  t0 <- kioto:::mono_time()
+  # runners consume the shutdown word at each batch transition and unwind
+  # to the step loop's clean exit — not at cursor exhaustion, ~4.5 s away
+  expect_true(kio_pool_stop(p))
+  expect_lt(kioto:::mono_time() - t0, 2)
+})
+
+test_that("a short map completes on free workers while a peer is pinned", {
+  skip_if_no_child_kioto()
+  p <- kio_pool(n_workers = 2L)
+  pin <- kio_submit(p, Sys.sleep(2))
+  Sys.sleep(0.2)                     # the sleeper is claimed
+  t0 <- kioto:::mono_time()
+  expect_identical(kio_map(p, 1:100, function(i) i + 1L, .timeout = 30),
+                   as.list(2:101))
+  # bounded by the map's own work on the free worker: the second runner
+  # resolves through the exhausted-cursor trim, never a wait on the peer
+  expect_lt(kioto:::mono_time() - t0, 1)
+  expect_null(kio_collect(pin, timeout = 30))
   expect_true(kio_pool_stop(p))
 })
