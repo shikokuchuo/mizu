@@ -1861,9 +1861,10 @@ static int pool_any_work(kio_pool *p) {
    (a kept-fd flock re-acquire succeeds and re-runs the reap; a LockFileEx
    re-acquire reads HELD and skips — the holding prober's reap suffices). */
 
-/* Fail the dead worker's announced in-flight task, unpark every waiter its
-   orphaned deque names (their help scans then steal from it), and either
-   wake a drainer or free the emptied slot. Read-only walk; resumable. */
+/* Fail the dead worker's tasks — the announced claim, then a worker_slot
+   sweep for whatever it was executing — unpark every waiter its orphaned
+   deque names (their help scans then steal from it), and either wake a
+   drainer or free the emptied slot. Read-only walk; resumable. */
 static void pool_orphan_and_finalize(kio_pool *p, kio_wk_slot *w,
                                      uint32_t slot) {
   int32_t inf = atomic_load_explicit(&w->in_flight_rs, memory_order_acquire);
@@ -1886,6 +1887,33 @@ static void pool_orphan_and_finalize(kio_pool *p, kio_wk_slot *w,
       }
     }
     atomic_store_explicit(&w->in_flight_rs, -1, memory_order_relaxed);
+  }
+  /* The announce covers claimed-but-not-yet-executing (worker_slot still
+     -1); a nested claim overwrites it and its publish clears it, so tasks
+     the worker was executing — at any nesting depth — are found by their
+     worker_slot stamp instead. No sequence check needed: pool_commit_rs
+     resets the stamp before its PENDING release store, so a slot freed
+     and recommitted can never read as the dead worker's. */
+  for (uint32_t i = 0; i < p->hdr.result_slots; i++) {
+    kio_rs_hdr *rs = pool_rs(p, i);
+    int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
+    if ((st != KIO_RS_PENDING && st != KIO_RS_CANCEL) ||
+        atomic_load_explicit(&rs->worker_slot, memory_order_relaxed) !=
+        (int32_t) slot)
+      continue;
+    int32_t expected = KIO_RS_PENDING;
+    if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                KIO_RS_DIED,
+                                                memory_order_seq_cst,
+                                                memory_order_relaxed)) {
+      pool_unpark_result_waiter(p, rs);
+    } else if (expected == KIO_RS_CANCEL) {
+      /* the dead executor owed the CANCEL consume: return the slot */
+      atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                              KIO_RS_FREE,
+                                              memory_order_seq_cst,
+                                              memory_order_relaxed);
+    }
   }
   int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
   for (int64_t i = atomic_load_explicit(&w->deque_top, memory_order_acquire);

@@ -38,6 +38,33 @@ test_that("a worker killed mid-task fails exactly that task", {
   expect_true(kio_pool_stop(p, timeout = 10))
 })
 
+test_that("death inside a nested help-collect fails outer and inner", {
+  skip_if_no_child_kioto()
+  # the nested claim's announce replaced the outer task's, so the reaper's
+  # in-flight branch fails only the inner: the worker_slot sweep is what
+  # fails the outer, which otherwise stayed PENDING forever
+  p <- kio_pool(n_workers = 1L)
+  t <- kio_submit(p, {
+    s <- kio_submit(pool, Sys.sleep(30))
+    kio_collect(s, timeout = 60)
+  })
+  # both slots stamped by worker 0: help mode has claimed the inner off
+  # the own deque and is blocked in its eval
+  expect_true(wait_until({
+    d <- kio_pool_dump(p)
+    nrow(d$tasks) == 2L && all(d$tasks$worker == 0L)
+  }))
+  pid <- kio_pool_dump(p)$workers$pid[1L]
+  kill_hard(pid)
+  expect_true(wait_until(kio_pool_status(p)$tasks[["died"]] == 2L))
+  err <- tryCatch(kio_collect(t, timeout = 10), error = identity)
+  expect_s3_class(err, "kio_error_worker_died")
+  expect_identical(err$slot, 0L)
+  expect_identical(err$pid, pid)
+  # the stop sweep frees the dead worker's orphaned inner slot
+  expect_true(kio_pool_stop(p, timeout = 10))
+})
+
 test_that("a worker killed while parked frees its slot for respawn", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 1L, max_workers = 1L)

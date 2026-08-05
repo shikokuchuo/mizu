@@ -154,6 +154,74 @@ test_that("worker death on the template path never exposes partial output", {
   expect_true(kio_pool_stop(p))
 })
 
+test_that("a lone worker's death reports the whole issued range as lost", {
+  skip_if_no_child_kioto()
+  # single worker: the only runner dies unpublished, so no history survives
+  # — the died branch must still raise kio_error_worker_died (regression:
+  # order(NULL) turned this into a bare "argument 1 is not a vector")
+  p <- kio_pool(n_workers = 1L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 1L))
+  x <- seq_len(40) + 0   # non-ALTREP doubles: the region path
+  st <- kioto:::map_stage(p, x, function(i) {
+    Sys.sleep(0.1)
+    i
+  }, list())
+  kioto:::map_submit(p, st)
+  # kill only once the runner has claimed off the cursor, so the issued
+  # range is non-empty and the kill lands mid-map
+  expect_true(wait_until(.Call(kioto:::kio_map_info, st$wrap)$cursor > 0))
+  pid <- kio_pool_dump(p)$workers$pid[1L]
+  kill_hard(pid)
+  cur <- .Call(kioto:::kio_map_info, st$wrap)$cursor   # frozen by the kill
+  e <- tryCatch(kioto:::map_collect(p, st,
+                                    deadline = kioto:::mono_time() + 30),
+                error = identity)
+  expect_s3_class(e, "kio_error_worker_died")
+  expect_match(conditionMessage(e),
+               "worker died while executing map elements")
+  expect_identical(e$slot, 0L)
+  expect_identical(e$pid, pid)
+  # with no history the lost set is the whole issued range, in one block
+  el <- e$elements
+  expect_true(is.matrix(el) && nrow(el) == 1L)
+  expect_equal(el[[1L, 1L]], 1)
+  expect_equal(el[[1L, 2L]], min(40, cur * st$ms))
+  expect_true(kio_pool_stop(p, timeout = 10))
+})
+
+test_that("a runner's announce lost to a help beat still fails as died", {
+  skip_if_no_child_kioto()
+  # a help beat's nested claim overwrites the runner's announce and its
+  # publish clears it, so the reaper's in-flight branch finds -1: only the
+  # worker_slot sweep fails the runner's slot — before it, this map hung
+  # to its deadline instead of raising kio_error_worker_died
+  p <- kio_pool(n_workers = 1L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 1L))
+  x <- seq_len(40) + 0   # non-ALTREP doubles: the region path
+  st <- kioto:::map_stage(p, x, function(i) {
+    Sys.sleep(0.1)
+    i
+  }, list())
+  kioto:::map_submit(p, st)
+  expect_true(wait_until(.Call(kioto:::kio_map_info, st$wrap)$cursor > 0))
+  # the lone worker is inside the runner, so this task can only complete
+  # through a doorbell help beat — its result proves one ran
+  expect_identical(kio_collect(kio_submit(p, "quick"), timeout = 5), "quick")
+  # the announce is gone: the kill below lands in the lost-announce state
+  expect_true(wait_until(kio_pool_dump(p)$workers$in_flight[1L] == -1L))
+  pid <- kio_pool_dump(p)$workers$pid[1L]
+  kill_hard(pid)
+  e <- tryCatch(kioto:::map_collect(p, st,
+                                    deadline = kioto:::mono_time() + 30),
+                error = identity)
+  expect_s3_class(e, "kio_error_worker_died")
+  expect_match(conditionMessage(e),
+               "worker died while executing map elements")
+  expect_identical(e$slot, 0L)
+  expect_identical(e$pid, pid)
+  expect_true(kio_pool_stop(p, timeout = 10))
+})
+
 test_that(".timeout under executing chunks returns the sentinel, cleans up", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 1L)

@@ -710,8 +710,10 @@ map_collect <- function(pool, st, deadline = Inf) {
       # here too — it publishes only at exhaustion — and durably written
       # template elements report conservatively as lost, never wrong.
       cur <- .Call(kio_map_info, st$wrap)$cursor
-      hm <- unlist(lapply(hists, `[[`, 1L))
-      hk <- unlist(lapply(hists, `[[`, 2L))
+      # as.numeric: empty hists (every runner that ran died) must stay a
+      # zero-length vector — unlist(list()) is NULL and order(NULL) errors
+      hm <- as.numeric(unlist(lapply(hists, `[[`, 1L)))
+      hk <- as.numeric(unlist(lapply(hists, `[[`, 2L)))
       o <- order(hm)
       hm <- hm[o]
       hk <- hk[o]
