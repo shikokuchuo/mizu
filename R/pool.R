@@ -255,7 +255,7 @@ kio_submit <- function(pool, expr, ..., .timeout = Inf) {
   args <- list(...)
   if (length(args) && (is.null(names(args)) || !all(nzchar(names(args)))))
     stop("kioto: all task arguments must be named", call. = FALSE)
-  .Call(kio_pool_submit, pool, list(substitute(expr), args), .timeout)
+  .Call(kio_pool_submit, pool, list(substitute(expr), args), .timeout, 0L)
 }
 
 #' @rdname kio_submit
@@ -420,11 +420,13 @@ kio_pool_stats <- function(pool) {
 #' Registers a hook on a pool handle, called as `fn(event, id)` at each
 #' task lifecycle event this process observes: `"submit"` when a task is
 #' committed, and — on worker handles — `"start"` before a task's
-#' evaluation, `"done"` / `"error"` when its result publishes, or `"drop"`
+#' evaluation, `"done"` / `"error"` when its result publishes, `"drop"`
 #' when a claimed task is discarded (cancelled before or during execution,
-#' or its out-of-line payload died with its enqueuer). `id` identifies the
-#' task as `"<submitter slot>:<counter>"`, stable across processes, so
-#' logs from both sides of a pool can be correlated.
+#' or its out-of-line payload died with its enqueuer), or `"rehome"` when
+#' a doorbell help beat claims a map runner and moves it onto the worker's
+#' own deque — stealable by idle peers — instead of executing it nested.
+#' `id` identifies the task as `"<submitter slot>:<counter>"`, stable
+#' across processes, so logs from both sides of a pool can be correlated.
 #'
 #' Registration is per-handle and per-process. A submitter tracing its own
 #' handle sees only `"submit"`; execution events happen on the workers. To

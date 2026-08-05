@@ -9,9 +9,10 @@
 # Tests that need each runner task claimed by a distinct worker also park
 # both workers *before* submitting: a submit that catches the fresh
 # workers still in their first scan finds nobody parked and rings the
-# doorbell instead of waking anyone — and one worker can then claim
-# runner 0 and help-execute runner 1 nested at its first batch boundary,
-# leaving the other worker idle for the whole map.
+# doorbell instead of waking anyone — a help beat then re-homes the sibling
+# runner onto the first claimant's own deque, which restores joinability
+# but not assignment: which worker ends up executing it stays timing-
+# dependent, so the gates remain for distribution determinism.
 
 test_that("a map's chunks spread across the workers", {
   skip_if_no_child_kioto()
@@ -308,6 +309,87 @@ test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
                    as.list(1:40))
   expect_true(wait_until(kio_pool_status(p)$parked == 2L))
   expect_gte(sum(kio_pool_stats(p)$workers$helps), 1)
+  expect_true(kio_pool_stop(p))
+})
+
+test_that("a map submitted into a busy pool regains freed workers", {
+  skip_if_no_child_kioto()
+  p <- kio_pool(n_workers = 2L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  # pin both workers asymmetrically, then submit the map into the busy
+  # pool: nobody is parked, so the runner pushes ring the doorbell. The
+  # first worker to free claims runner 0 and its first help beat re-homes
+  # runner 1 onto its own deque — where the second worker steals it on
+  # freeing, instead of finding an empty ring and parking for the rest of
+  # the map (the pre-fix nested swallow serialized the map on one worker,
+  # leaving the other at a single task)
+  pin1 <- kio_submit(p, Sys.sleep(0.3))
+  pin2 <- kio_submit(p, Sys.sleep(1))
+  expect_true(wait_until(kio_pool_status(p)$parked == 0L))
+  x <- seq_len(40) + 0   # non-ALTREP doubles: the region path
+  st <- kioto:::map_stage(p, x, function(i) {
+    Sys.sleep(0.05)
+    i
+  }, list())
+  kioto:::map_submit(p, st)
+  expect_identical(kioto:::map_collect(p, st,
+                                       deadline = kioto:::mono_time() + 30),
+                   as.list(x))
+  expect_null(kio_collect(pin1, timeout = 30))
+  expect_null(kio_collect(pin2, timeout = 30))
+  # both workers executed map work: one pin plus at least one map share
+  # each — no wall-time assertions (CI timing, see test-benchmark.R), and
+  # the counters mirror only at park cadence
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(all(kio_pool_stats(p)$workers$tasks >= 2))
+  expect_true(kio_pool_stop(p))
+})
+
+test_that("killing the re-homer leaves no wedge: the survivor drains", {
+  skip_if_no_child_kioto()
+  p <- kio_pool(n_workers = 2L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  # asymmetric pins as above, sized so the re-homer is killed while its
+  # peer is still pinned — the re-homed runner must sit unexecuted in the
+  # dead worker's deque when the kill lands
+  pin1 <- kio_submit(p, Sys.sleep(1))
+  pin2 <- kio_submit(p, Sys.sleep(5))
+  expect_true(wait_until(kio_pool_status(p)$parked == 0L))
+  x <- seq_len(8) + 0    # non-ALTREP doubles: the region path
+  st <- kioto:::map_stage(p, x, function(i) {
+    Sys.sleep(30)        # element 1 holds the window open
+    i
+  }, list())
+  kioto:::map_submit(p, st)
+  # the worker freed by pin1 claims runner 0 and re-homes runner 1 (its
+  # deque depth reaching 1 is the observable); it then enters element 1's
+  # sleep — kill it there
+  victim <- -1
+  expect_true(wait_until({
+    d <- kio_pool_dump(p)
+    dq <- d$workers$bottom - d$workers$top
+    hit <- any(dq == 1)
+    if (hit) victim <- d$workers$pid[which(dq == 1)[1L]]
+    hit
+  }, timeout = 10))
+  stopifnot(victim > 0)   # a failed gate must never reach kill(-1)
+  kill_hard(victim)
+  # the re-homer died mid-runner: its unpublished batch history is lost
+  # and collect raises — the regression under test is no wedge, not
+  # completion
+  e <- tryCatch(kioto:::map_collect(p, st,
+                                    deadline = kioto:::mono_time() + 30),
+                error = identity)
+  expect_s3_class(e, "kio_error_worker_died")
+  expect_null(kio_collect(pin1, timeout = 30))  # published before the kill
+  expect_null(kio_collect(pin2, timeout = 30))
+  # the survivor drains the orphaned deque — the re-homed entry drops at
+  # the CANCEL skip once collect's cancel lands — and the pool empties
+  expect_true(wait_until(
+    identical(unname(kio_pool_status(p)$tasks), rep(0L, 5L)), timeout = 30))
+  d <- kio_pool_dump(p)
+  expect_identical(nrow(d$tasks), 0L)
+  expect_true(all(d$workers$bottom - d$workers$top <= 0))
   expect_true(kio_pool_stop(p))
 })
 

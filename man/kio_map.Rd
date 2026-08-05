@@ -75,7 +75,10 @@ every pool invariant applies unchanged. Between batches a runner also
 answers a pool-wide doorbell: when another submitter's task arrives
 with every worker busy inside a map, one runner picks it up at its next
 batch boundary — foreign-task pickup latency is time-bounded and
-independent of \code{length(x)}.
+independent of \code{length(x)}. A runner claimed off the bell is not
+executed there — a runner is a map's join ticket, so the helper moves
+it onto its own deque instead, where the next worker to free up steals
+it and joins that map.
 }
 \section{Granularity}{
 

@@ -170,17 +170,99 @@ test_that("a runner error stores the cancel word before its ERR publish", {
   expect_identical(st$R, 2L)
   kioto:::map_submit(p$ctrl, st)
   # one step: runner 0's first transition sees the doorbell (rung by the
-  # submits — no in-process worker ever parks) and help-executes runner 1
-  # inline, which completes morsels 2-3; runner 0 then errors at element 1
+  # submits — no in-process worker ever parks) and re-homes runner 1 onto
+  # its own deque (a join ticket, never help-executed); runner 0 then
+  # errors at element 1
   pool_step(p)
   # the erroring runner stored the cancel word itself, before its ERR
   # publish: peers observe it without collect being involved
   expect_true(.Call(kioto:::kio_map_cancel_get, st$wrap))
-  # collect re-raises the minimum-index error among the runners that ran
+  # collect re-raises the minimum-index error among the runners that ran;
+  # the cancel word arms the trim, so re-homed, never-claimed runner 1
+  # resolves through abandon and its handle is cancelled
   e <- tryCatch(collect30(p$ctrl, st), error = identity)
   expect_identical(conditionMessage(e), "now")
   expect_identical(e$kio_map_index, 1)
+  # the drain pops the re-homed entry, which drops at the CANCEL skip
   while (pool_step(p) == 1L) NULL
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  pool_end(p)
+})
+
+test_that("a doorbell help beat re-homes a runner instead of nesting it", {
+  p <- pool_pair(workers = 2L)
+  ev <- character()
+  kio_pool_trace(p$wk, function(e, id) if (e == "rehome") ev <<- c(ev, id))
+  st <- kioto:::map_stage(p$ctrl, 1:2, function(i) i * 10L, list(),
+                          chunks = 2)
+  expect_identical(st$R, 2L)
+  kioto:::map_submit(p$ctrl, st)
+  # one step: wk1 claims runner 0; its first help beat (the submits rang
+  # the bell — no in-process worker ever parks) claims runner 1 and moves
+  # it onto wk1's own deque instead of executing the join ticket nested —
+  # the pre-fix swallow ran both runners on wk1 (tasks 2,0)
+  expect_identical(pool_step(p), 1L)
+  expect_identical(length(ev), 1L)
+  expect_identical(kio_pool_status(p$ctrl)$deque[[1L]], 1)
+  d <- kio_pool_dump(p$ctrl)
+  expect_identical(d$tasks$status, c("ok", "pending"))
+  # the re-homed runner is stealable: wk2 claims and completes it
+  expect_identical(pool_step(p, wk = p$wks[[2L]]), 1L)
+  expect_identical(kio_pool_dump(p$ctrl)$tasks$status, c("ok", "ok"))
+  # empty steps mirror the counters: one task each, the re-home counted as
+  # a ring claim (pool_claim_rings) but never as a help (nothing executed)
+  pool_step(p)
+  pool_step(p, wk = p$wks[[2L]])
+  w <- kio_pool_stats(p$ctrl)$workers
+  expect_identical(w$tasks, c(1, 1))
+  expect_identical(w$steals, c(0, 1))
+  expect_identical(w$helps, c(0, 0))
+  expect_identical(collect30(p$ctrl, st), list(10L, 20L))
+  pool_end(p)
+})
+
+test_that("help re-homes runners but executes ordinary tasks inline", {
+  p <- pool_pair(workers = 2L)
+  st <- kioto:::map_stage(p$ctrl, 1:6, function(i) i, list(), chunks = 6)
+  expect_identical(st$R, 2L)
+  kioto:::map_submit(p$ctrl, st)
+  h <- kio_submit(p$ctrl, quote("ordinary"))   # queued behind runner 1
+  # one step: runner 0's first help beat re-homes runner 1 — clearing the
+  # FIFO head — and restores the bell for the entry behind it; the second
+  # beat claims the ordinary task and executes it inline, mid-map
+  expect_identical(pool_step(p), 1L)
+  d <- kio_pool_dump(p$ctrl)
+  expect_identical(d$tasks$status, c("ok", "pending", "ok"))
+  expect_identical(kio_pool_status(p$ctrl)$deque[[1L]], 1)
+  expect_identical(kio_collect(h), "ordinary")
+  # drain wk1's re-homed runner; the closing empty step mirrors the
+  # counters — helps counted the ordinary execute only, not the re-home
+  while (pool_step(p) == 1L) NULL
+  expect_identical(kio_pool_stats(p$ctrl)$workers$helps[[1L]], 1)
+  expect_identical(collect30(p$ctrl, st), as.list(1:6))
+  pool_end(p)
+})
+
+test_that("a full deque falls back to executing the claimed runner inline", {
+  # deque_cap = 2: the fallback is reachable by configuration, not only
+  # under nested-submit saturation
+  p <- pool_pair(workers = 2L, per_worker_cap = 2L)
+  h1 <- kio_submit(p$ctrl, quote(1L))
+  h2 <- kio_submit(p$ctrl, quote(2L))
+  expect_identical(pool_pull(p, 2L), 2L)     # wk1's deque now at cap
+  st <- kioto:::map_stage(p$ctrl, 1:2, function(i) i * 10L, list(),
+                          chunks = 2)
+  expect_identical(st$R, 2L)
+  kioto:::map_submit(p$ctrl, st)
+  # a direct help beat claims runner 0 with no deque space to re-home
+  # into: the inline fallback executes it nested, announce intact
+  expect_true(.Call(kioto:::kio_pool_help_once, p$wk))
+  expect_identical(.Call(kioto:::kio_map_info, st$wrap)$cursor, 2)
+  expect_identical(kio_pool_status(p$ctrl)$deque[[1L]], 2)
+  while (pool_step(p) == 1L) NULL
+  expect_identical(kio_collect(h1), 1L)
+  expect_identical(kio_collect(h2), 2L)
+  expect_identical(collect30(p$ctrl, st), list(10L, 20L))
   expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
   pool_end(p)
 })
@@ -317,13 +399,13 @@ test_that("the idle sweep evicts the context cache; runners re-attach", {
   # drive the two runners by hand with an empty step between them: the
   # empty return runs the full idle sweep, which drops prot[5]
   h1 <- .Call(kioto:::kio_pool_submit, p$ctrl,
-              kioto:::runner_payload(st, 0L), Inf)
+              kioto:::runner_payload(st, 0L), Inf, 1L)
   expect_identical(pool_step(p), 1L)
   expect_identical(ls(.Call(kioto:::kio_pool_map_cache, p$wk)), st$name)
   expect_identical(pool_step(p), 0L)   # empty: sweep clears the cache
   expect_length(ls(.Call(kioto:::kio_pool_map_cache, p$wk)), 0L)
   h2 <- .Call(kioto:::kio_pool_submit, p$ctrl,
-              kioto:::runner_payload(st, 1L), Inf)
+              kioto:::runner_payload(st, 1L), Inf, 1L)
   expect_identical(pool_step(p), 1L)   # re-attaches the same region
   expect_identical(ls(.Call(kioto:::kio_pool_map_cache, p$wk)), st$name)
   # runner 0 drained the whole cursor; runner 1 came up empty-handed
@@ -343,8 +425,11 @@ test_that("two submitters' maps hold two contexts on one worker", {
   st2 <- kioto:::map_stage(s1, 1:4, function(i) i + 100L, list(), chunks = 2)
   kioto:::map_submit(p$ctrl, st1)
   kioto:::map_submit(s1, st2)
-  # one step: the doorbell hands the second map's runner to the same
-  # worker at a batch boundary, so both contexts materialize in one claim
+  # first step: map 1's runner runs, and its doorbell help beat re-homes
+  # map 2's runner onto this worker's own deque (a join ticket is never
+  # executed nested); the second step pops it — both contexts resident,
+  # with no empty step (and so no idle sweep) in between
+  expect_identical(pool_step(p), 1L)
   expect_identical(pool_step(p), 1L)
   expect_setequal(ls(.Call(kioto:::kio_pool_map_cache, p$wk)),
                   c(st1$name, st2$name))

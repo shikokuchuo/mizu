@@ -475,16 +475,27 @@ typedef char kio_rs_hdr_assert[(sizeof(kio_rs_hdr) == 40) ? 1 : -1];
 
 /* Injection ring / deque entry header; payload framing at offset 16 and
    payload bytes at 32. task_id is submitter slot in the high 16 bits, a
-   per-submitter counter below — debug/tracing only. */
+   per-submitter counter below — debug/tracing only. flags was the always-
+   zeroed pad word, so repurposing it is backward-consistent (the ABI
+   version gate rejects mixed builds regardless). */
 typedef struct kio_entry_hdr_s {
   uint64_t task_id;
   uint32_t rs_index;
   uint16_t submitter_slot;
-  uint16_t pad;
+  uint16_t flags;
   kio_slot_hdr ph;
 } kio_entry_hdr;
 
 typedef char kio_entry_hdr_assert[(sizeof(kio_entry_hdr) == 32) ? 1 : -1];
+
+/* RUNNER marks a map runner task — a map's join ticket: a worker joins the
+   map's shared cursor exactly by executing one runner, so a doorbell help
+   beat that claims one re-homes it onto the helper's own deque (stealable
+   by idle peers) instead of executing it nested, which would silently
+   serialize the map. Runner-only by design: a runner lost in the re-home
+   death window is backstopped by kio_map_abandon's lane trim; an ordinary
+   task has no such backstop and must execute inline where it is claimed. */
+#define KIO_ENTRY_RUNNER 1u
 
 enum { KIO_WK_FREE = 0, KIO_WK_CLAIMING, KIO_WK_LIVE, KIO_WK_LEAVING,
        KIO_WK_REAPING };

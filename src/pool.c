@@ -505,10 +505,10 @@ static SEXP pool_eval_task(kio_pool *p, SEXP xp, SEXP payload, int catching,
 
 /* Per-handle, per-process trace hook: fn(event, id), with id the entry
    header's task_id (reserved for exactly this) as "<submitter>:<counter>".
-   Emitting sites exist only on the pool's per-task paths — submit and
-   pool_execute — never in the channel, whose per-message budget has no
-   room even for a clock read. Disabled cost is one pointer check per
-   site. */
+   Emitting sites exist only on the pool's per-task paths — submit,
+   pool_execute, and the help beat's runner re-home — never in the channel,
+   whose per-message budget has no room even for a clock read. Disabled
+   cost is one pointer check per site. */
 SEXP kio_pool_set_trace(SEXP xp, SEXP fn) {
   (void) pool_get(xp);
   if (fn != R_NilValue && TYPEOF(fn) != CLOSXP)
@@ -964,7 +964,7 @@ SEXP kio_pool_worker_join(SEXP suffix_sexp, SEXP slot_sexp) {
 }
 
 static void pool_unpark_result_waiter(kio_pool *p, kio_rs_hdr *rs);
-static void pool_wake_one_worker(kio_pool *p);
+static void pool_unpark_one_worker(kio_pool *p);
 static int pool_reaping_free(kio_wk_slot *w);
 static int pool_probe_worker(kio_pool *p, uint32_t slot);
 static void pool_probe_submitter(kio_pool *p, uint32_t j);
@@ -1016,7 +1016,7 @@ SEXP kio_pool_leave(SEXP xp) {
       /* a thief that emptied the deque while we still read LEAVING saw
          nothing to free: re-check now that REAPING is published */
       if (!pool_reaping_free(me))
-        pool_wake_one_worker(p);
+        pool_unpark_one_worker(p);
     }
   }
   /* the slot's own lock releases now, so the slot reads properly departed
@@ -1078,21 +1078,22 @@ SEXP kio_pool_attach_call(SEXP suffix_sexp) {
 
 // Submit --------------------------------------------------------------------------------
 
-/* The explicit-start variant exists for the reap paths, which run on the
-   death listener's callback thread and must not touch the handle's
-   process-local scan rotation. */
-static void pool_wake_one_worker_from(kio_pool *p, uint32_t start) {
+/* Directed-unpark half of the pusher wake: find a parked (or announcing)
+   worker and unpark it. Returns 0 only when the mask read empty — every
+   worker busy. Deque pushes (nested submit, help re-home, orphan drains)
+   use this half alone: help beats scan injection rings only, so a
+   doorbell rung for deque work buys nothing but one wasted no-op beat at
+   some runner's next transition — idle workers reach deque work through
+   their steal tiers, and the pre-park rescan (pool_any_work) guarantees
+   nobody parks past it. The explicit-start variants exist for the reap
+   paths, which run on the death listener's callback thread and must not
+   touch the handle's process-local scan rotation. */
+static int pool_unpark_worker_from(kio_pool *p, uint32_t start) {
   /* pusher protocol: push, fence, then the mask load — either the parking
      worker's rescan sees the push or we see its bit */
   atomic_thread_fence(memory_order_seq_cst);
   uint64_t w = atomic_load_explicit(p->parked_workers, memory_order_relaxed);
-  if (w == 0) {
-    /* every worker busy: ring the doorbell map runners poll once per
-       batch transition, so queued work is picked up within ~a batch
-       instead of at map end (kio_pool_help_once consumes it) */
-    atomic_store_explicit(p->help_wanted, 1u, memory_order_seq_cst);
-    return;
-  }
+  if (w == 0) return 0;
   uint32_t mw = p->hdr.max_workers;
   for (uint32_t k = 0; k < mw; k++) {
     uint32_t i = (start + k) % mw;
@@ -1103,7 +1104,7 @@ static void pool_wake_one_worker_from(kio_pool *p, uint32_t start) {
                                                 memory_order_seq_cst,
                                                 memory_order_relaxed)) {
       kio_unpark(pool_wk_pk(p, i));
-      return;
+      return 1;
     }
     if (expected == KIO_WPK_IDLE) {
       /* announced but not yet parked — its rescan may already have missed
@@ -1111,15 +1112,29 @@ static void pool_wake_one_worker_from(kio_pool *p, uint32_t start) {
          snapshot predates the announce, so this unpark turns the upcoming
          sleep into an immediate return; at worst one spurious wake. */
       kio_unpark(pool_wk_pk(p, i));
-      return;
+      return 1;
     }
     /* RUNNING or WAKING: the worker transitioned away or another pusher
        claimed the wake; try the next set bit */
   }
+  return 1;   /* someone was mid-transition: no doorbell, as ever */
+}
+
+/* The injection-publish wake: the unpark half, falling through to the
+   doorbell when every worker is busy — map runners poll it once per batch
+   transition, so queued injection work is picked up within ~a batch
+   instead of at map end (kio_pool_help_once consumes it). */
+static void pool_wake_one_worker_from(kio_pool *p, uint32_t start) {
+  if (!pool_unpark_worker_from(p, start))
+    atomic_store_explicit(p->help_wanted, 1u, memory_order_seq_cst);
 }
 
 static void pool_wake_one_worker(kio_pool *p) {
   pool_wake_one_worker_from(p, p->scan_start++);
+}
+
+static void pool_unpark_one_worker(kio_pool *p) {
+  (void) pool_unpark_worker_from(p, p->scan_start++);
 }
 
 /* Block until the submitter's own ring has space (announce-then-rescan on
@@ -1315,11 +1330,11 @@ static void pool_commit_rs(kio_pool *p, SEXP keepers, uint32_t local,
 }
 
 static void pool_fill_entry(kio_pool *p, kio_entry_hdr *eh,
-                            uint32_t rs_index) {
+                            uint32_t rs_index, uint16_t flags) {
   eh->task_id = ((uint64_t) p->sub_slot << 48) | ++p->task_counter;
   eh->rs_index = rs_index;
   eh->submitter_slot = (uint16_t) p->sub_slot;
-  eh->pad = 0;
+  eh->flags = flags;   /* assign, never OR: ring and deque slots are reused */
 }
 
 static void pool_execute(kio_pool *p, SEXP xp, int catching);
@@ -1331,7 +1346,8 @@ static void pool_announce(kio_pool *p);
    slots on workers. The entry is staged directly into the worker's own
    deque slot and published by the bottom store; a full deque executes the
    task inline instead (work-first), so nested submit never blocks. */
-static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
+static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload,
+                               uint16_t flags) {
   if (p->wk_slot < 0)
     Rf_error("kioto: not a worker handle");
   SEXP prot = R_ExternalPtrProtected(xp);
@@ -1361,11 +1377,11 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
   pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
-  pool_fill_entry(p, eh, rs_index);
+  pool_fill_entry(p, eh, rs_index, flags);
   uint64_t tid = eh->task_id;
   if (!inline_exec) {
     atomic_store_explicit(&w->deque_bottom, b + 1, memory_order_release);
-    if (b <= t) pool_wake_one_worker(p);   /* empty -> non-empty */
+    if (b <= t) pool_unpark_one_worker(p);   /* empty -> non-empty */
     pool_trace_emit(xp, "submit", tid);
   } else {
     pool_trace_emit(xp, "submit", tid);
@@ -1376,8 +1392,9 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload) {
   return txp;
 }
 
-SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
+SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
   kio_pool *p = pool_get(xp);
+  uint16_t flags = (uint16_t) Rf_asInteger(flags_sexp);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
     kio_stop("kio_error_stopped", "kioto: pool stopped");
   if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
@@ -1385,7 +1402,7 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
     kio_stop("kio_error_stopped", "kioto: pool stopped or owner dead");
   }
   if (p->role == KIO_ROLE_WORKER)
-    return pool_submit_nested(p, xp, payload);
+    return pool_submit_nested(p, xp, payload, flags);
   if (p->sub_slot < 0)
     Rf_error("kioto: not a submitter handle");
   SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
@@ -1407,7 +1424,7 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout) {
   pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, local, keep, rs);
-  pool_fill_entry(p, eh, rs_index);
+  pool_fill_entry(p, eh, rs_index, flags);
   uint64_t tid = eh->task_id;
   p->inj_ltail++;
   atomic_store_explicit(ring_tail(ring), p->inj_ltail, memory_order_release);
@@ -1923,8 +1940,9 @@ static void pool_orphan_and_finalize(kio_pool *p, kio_wk_slot *w,
       pool_unpark_result_waiter(p, pool_rs(p, eh->rs_index));
   }
   if (atomic_load_explicit(&w->deque_top, memory_order_acquire) < b) {
-    /* orphaned work must drain even when no waiter is parked */
-    pool_wake_one_worker_from(p, slot);
+    /* orphaned work must drain even when no waiter is parked; deque work
+       is help-unreachable, so the unpark half suffices */
+    (void) pool_unpark_worker_from(p, slot);
   } else {
     int32_t expected = KIO_WK_REAPING;
     atomic_compare_exchange_strong_explicit(&w->status, &expected,
@@ -2384,9 +2402,10 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
    worker's own deque instead of executing them — the deterministic way to
    populate a deque before Phase 3's nested submit exists. The full check
    precedes the claim (space only grows once we own the bottom), so a
-   claimed entry can always be queued; the announce clears once the entry
-   is safely in the deque, where worker death hands it to the REAPING
-   consumption path instead of the in-flight reap. */
+   claimed entry can always be queued; the announce clears *before* the
+   push, the re-home discipline this call templates — the reverse order
+   leaves the entry both announced and deque-published, a double-recovery
+   state no production path produces. */
 SEXP kio_pool_deque_pull(SEXP xp, SEXP n_sexp) {
   kio_pool *p = pool_get(xp);
   if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
@@ -2401,13 +2420,13 @@ SEXP kio_pool_deque_pull(SEXP xp, SEXP n_sexp) {
         (int64_t) me->deque_cap)
       break;
     if (!pool_claim_rings(p, 1)) break;
-    pool_deque_push(p, p->scratch);
     pool_announce_clear(p);
+    pool_deque_push(p, p->scratch);
     moved++;
   }
   /* the nested-submit wake rule: a push taking the deque from empty to
      non-empty wakes one parked peer */
-  if (moved > 0 && was_empty) pool_wake_one_worker(p);
+  if (moved > 0 && was_empty) pool_unpark_one_worker(p);
   return Rf_ScalarInteger(moved);
 }
 
@@ -2700,16 +2719,36 @@ kio_pool_sig *kio_pool_sig_get(SEXP xp) {
 
 /* One doorbell-gated help beat at a runner's batch boundary: clear the
    doorbell, claim one injection entry (unfiltered scan — the bell rang, so
-   a stale ready mask must not hide the task it rang for), execute it under
-   the existing help-mode machinery, then re-check the rings and restore
-   the doorbell if entries remain — the clear -> re-check -> restore
-   discipline pool_claim_rings applies to inj_ready, without which a second
-   submitter's store racing the clear is eaten with it and that task waits
-   until the map ends. Injection-only, the mirror image of collect's help
-   mode (which excludes injection): a blocked collect helps to unblock its
-   own subtree, a runner helps precisely to hand foreign submitters their
-   chunk-boundary interleave back. help_depth bounds recursion when the
-   helped task is itself another map's runner. */
+   a stale ready mask must not hide the task it rang for), then re-check
+   the rings and restore the doorbell if entries remain — the clear ->
+   re-check -> restore discipline pool_claim_rings applies to inj_ready,
+   without which a second submitter's store racing the clear is eaten with
+   it and that task waits until the map ends. Injection-only, the mirror
+   image of collect's help mode (which excludes injection): a blocked
+   collect helps to unblock its own subtree, a runner helps precisely to
+   hand foreign submitters their chunk-boundary interleave back.
+
+   An ordinary claim executes inline under the help-mode machinery
+   (help_depth bounds the recursion). A runner-flagged claim must not: a
+   map's runners are its join tickets, and a helper nested inside its own
+   cursor drain adds zero parallelism while consuming one — left alone it
+   swallows the whole runner set within microseconds (the bell restore
+   re-arms it each beat) and silently serializes the map. The claim itself
+   stays unfiltered — the ring is SPSC FIFO, so refusing a runner would
+   block ordinary tasks queued behind it — but the runner is re-homed onto
+   this worker's own deque instead, where an idle peer is woken (bell-less:
+   deque work is help-unreachable) or steals it at its next scan, and the
+   owner's own pop after its current runner bounds the worst case at
+   today's serialization. The flag is read only after the winning head CAS
+   (a loser may copy a torn header; a winner's is coherent by the rs_index
+   argument), and the announce is cleared *before* the deque push: the
+   reverse order would leave the entry both announced and deque-published,
+   so a death in that window fires both recovery paths and the survivor's
+   late publish can land in a recommitted slot. Clear-first shrinks the
+   window to a lost entry, which is benign for runners only — the lane
+   never claims the cursor, so kio_map_abandon trims it — which is why the
+   flag stays runner-only. A full deque (reachable at deque_cap = 2) falls
+   back to today's inline execute, announce intact. */
 SEXP kio_pool_help_once(SEXP xp) {
   kio_pool *p = pool_get(xp);
   if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
@@ -2719,10 +2758,28 @@ SEXP kio_pool_help_once(SEXP xp) {
     atomic_store_explicit(p->help_wanted, 0u, memory_order_seq_cst);
     got = pool_claim_rings(p, 0);
     if (got) {
-      p->st_helps++;
-      p->help_depth++;
-      pool_execute(p, xp, 1);
-      p->help_depth--;
+      kio_entry_hdr *eh = (kio_entry_hdr *) p->scratch;
+      kio_wk_slot *me = &p->wk[p->wk_slot];
+      int64_t b = atomic_load_explicit(&me->deque_bottom,
+                                       memory_order_relaxed);
+      int64_t t = atomic_load_explicit(&me->deque_top,
+                                       memory_order_acquire);
+      if ((eh->flags & KIO_ENTRY_RUNNER) &&
+          b - t < (int64_t) me->deque_cap) {
+        /* the space pre-check cannot be invalidated — only the owner
+           pushes to its own deque, thieves only free space — so the push
+           below cannot fail */
+        uint64_t tid = eh->task_id;
+        pool_announce_clear(p);
+        pool_deque_push(p, p->scratch);
+        if (b <= t) pool_unpark_one_worker(p);   /* empty -> non-empty */
+        pool_trace_emit(xp, "rehome", tid);
+      } else {
+        p->st_helps++;                 /* helps = executed foreign work */
+        p->help_depth++;
+        pool_execute(p, xp, 1);
+        p->help_depth--;
+      }
     }
     for (uint32_t s = 0; s < p->hdr.max_submitters; s++) {
       unsigned char *ring = pool_ring(p, s);

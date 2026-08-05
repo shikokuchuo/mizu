@@ -20,11 +20,13 @@ Invisibly, \code{NULL}.
 Registers a hook on a pool handle, called as \code{fn(event, id)} at each
 task lifecycle event this process observes: \code{"submit"} when a task is
 committed, and — on worker handles — \code{"start"} before a task's
-evaluation, \code{"done"} / \code{"error"} when its result publishes, or \code{"drop"}
+evaluation, \code{"done"} / \code{"error"} when its result publishes, \code{"drop"}
 when a claimed task is discarded (cancelled before or during execution,
-or its out-of-line payload died with its enqueuer). \code{id} identifies the
-task as \code{"<submitter slot>:<counter>"}, stable across processes, so
-logs from both sides of a pool can be correlated.
+or its out-of-line payload died with its enqueuer), or \code{"rehome"} when
+a doorbell help beat claims a map runner and moves it onto the worker's
+own deque — stealable by idle peers — instead of executing it nested.
+\code{id} identifies the task as \code{"<submitter slot>:<counter>"}, stable
+across processes, so logs from both sides of a pool can be correlated.
 }
 \details{
 Registration is per-handle and per-process. A submitter tracing its own

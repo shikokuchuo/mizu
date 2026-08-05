@@ -83,7 +83,10 @@ mono_time <- function() proc.time()[[3L]]
 #' answers a pool-wide doorbell: when another submitter's task arrives
 #' with every worker busy inside a map, one runner picks it up at its next
 #' batch boundary — foreign-task pickup latency is time-bounded and
-#' independent of `length(x)`.
+#' independent of `length(x)`. A runner claimed off the bell is not
+#' executed there — a runner is a map's join ticket, so the helper moves
+#' it onto its own deque instead, where the next worker to free up steals
+#' it and joins that map.
 #'
 #' @section Granularity:
 #' Elements are claimed in *morsels* — contiguous ranges of
@@ -535,7 +538,10 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
 # map's one deadline. A deadline expiring mid-submit (before a task, or
 # inside a ring-space wait) cancels the tasks already in and marks the
 # state timed out — the caller returns the sentinel. Runners are ordinary
-# tasks: stolen, balanced, reaped, and helped like any other work.
+# tasks — stolen, balanced, reaped like any other work — except flagged
+# KIO_ENTRY_RUNNER on the wire, so a doorbell help beat re-homes one onto
+# the helper's own deque instead of executing a join ticket nested. Chunk
+# tasks stay unflagged: bounded work, no cursor to drain.
 map_submit <- function(pool, st, deadline = Inf) {
   blob <- !is.null(st$blob)
   for (k in seq_along(st$handles)) {
@@ -547,7 +553,8 @@ map_submit <- function(pool, st, deadline = Inf) {
     }
     payload <- if (blob) map_payload(st, c(st$lo[[k]], st$hi[[k]]))
                else runner_payload(st, k - 1L)
-    h <- tryCatch(.Call(kio_pool_submit, pool, payload, rem),
+    h <- tryCatch(.Call(kio_pool_submit, pool, payload, rem,
+                        if (blob) 0L else 1L),
                   error = identity)
     if (inherits(h, "error")) {
       map_cancel(st)
