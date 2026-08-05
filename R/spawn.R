@@ -27,19 +27,47 @@ kio_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
   invisible()
 }
 
-# Spawn the peer for a channel region. The region name's suffix — the <pid
-# hex>_<counter hex> tail after the platform prefix — is carried in the entry
-# expression; the child prepends its own compiled-in prefix.
-spawn_peer <- function(suffix, stdout = "", stderr = "") {
-  stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", suffix))
-  kio_spawn(sprintf('kioto:::peer_main("%s")', suffix),
+# Spawn the peer for a channel region. The join token — the region name's
+# <pid hex>_<counter hex> tail after the platform prefix — is carried in the
+# entry expression; the child prepends its own compiled-in prefix.
+spawn_peer <- function(token, stdout = "", stderr = "") {
+  stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", token))
+  kio_spawn(sprintf('kioto:::peer_main("%s")', token),
             stdout = stdout, stderr = stderr)
 }
 
-# Spawn a pool worker: the region-name suffix and the host-assigned slot
-# index travel as argv, under the same rules as spawn_peer.
-spawn_worker <- function(suffix, slot, stdout = "", stderr = "") {
-  stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", suffix), slot >= 0)
-  kio_spawn(sprintf('kioto:::worker_main("%s",%dL)', suffix, as.integer(slot)),
+# Spawn a pool worker: the join token and the host-assigned slot index
+# travel as argv, under the same rules as spawn_peer.
+spawn_worker <- function(token, slot, stdout = "", stderr = "") {
+  stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", token), slot >= 0)
+  kio_spawn(sprintf('kioto:::worker_main("%s",%dL)', token, as.integer(slot)),
             stdout = stdout, stderr = stderr)
+}
+
+#' Default Child Process Launcher
+#'
+#' Returns the launcher [kio_channel()], [kio_pool()] and
+#' [kio_spawn_workers()] use unless given a custom one: it spawns a
+#' detached child R process through a static `Rscript` runner, with the
+#' entry expression and the host's `.libPaths()` hex-encoded in argv.
+#'
+#' @param stdout,stderr forwarded to [system2()]; the default `""` sends
+#'   child output (for a channel peer, including its error epilogue) to
+#'   the host's console, `FALSE` discards it, and a file name collects it
+#'   in that file.
+#'
+#' @return A `function(token, slot)`. [kio_pool()] and
+#'   [kio_spawn_workers()] call it with both arguments to spawn the worker
+#'   for `slot`; [kio_channel()] calls it with `token` alone to spawn the
+#'   peer.
+#'
+#' @export
+kio_launcher <- function(stdout = "", stderr = "") {
+  force(stdout)
+  force(stderr)
+  function(token, slot)
+    if (missing(slot))
+      spawn_peer(token, stdout = stdout, stderr = stderr)
+    else
+      spawn_worker(token, slot, stdout = stdout, stderr = stderr)
 }

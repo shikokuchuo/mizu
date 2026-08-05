@@ -12,9 +12,7 @@ kio_pool(
   per_worker_cap = 1024L,
   result_slots = 4096L,
   slot_size = 512L,
-  launcher = NULL,
-  stdout = "",
-  stderr = "",
+  launcher = kio_launcher(),
   startup_timeout = 30
 )
 }
@@ -45,14 +43,11 @@ order-of-magnitude latency cliff, surfaced per submitter as
 typical expression-plus-arguments tasks inline; pools moving only
 scalar payloads can drop to \code{256L}.}
 
-\item{launcher}{\code{NULL} for the default launcher (\code{system2(Rscript, ...)}
-with the host's \code{.libPaths()} propagated via argv), or a
-\verb{function(suffix, slot)} that arranges for an R process to eventually
-call \code{kioto:::worker_main(suffix, slot)}.}
-
-\item{stdout, stderr}{forwarded to \code{\link[=system2]{system2()}} by the default launcher;
-the default \code{""} sends worker output to the host's console. Ignored
-when \code{launcher} is supplied.}
+\item{launcher}{a \verb{function(token, slot)} that arranges for an R
+process to eventually call \code{kioto:::worker_main(token, slot)}. The
+default \code{\link[=kio_launcher]{kio_launcher()}} spawns \code{Rscript} with the host's
+\code{.libPaths()} propagated (its \code{stdout}/\code{stderr} arguments direct
+worker output); a custom launcher must arrange library paths itself.}
 
 \item{startup_timeout}{seconds to wait for all workers to join before
 giving up, destroying the pool, and raising \code{kio_error_startup} (see

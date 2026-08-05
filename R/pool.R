@@ -45,13 +45,11 @@
 #'   [kio_pool_stats()]`$submitters$spills`. The default `512L` keeps
 #'   typical expression-plus-arguments tasks inline; pools moving only
 #'   scalar payloads can drop to `256L`.
-#' @param launcher `NULL` for the default launcher (`system2(Rscript, ...)`
-#'   with the host's `.libPaths()` propagated via argv), or a
-#'   `function(suffix, slot)` that arranges for an R process to eventually
-#'   call `kioto:::worker_main(suffix, slot)`.
-#' @param stdout,stderr forwarded to [system2()] by the default launcher;
-#'   the default `""` sends worker output to the host's console. Ignored
-#'   when `launcher` is supplied.
+#' @param launcher a `function(token, slot)` that arranges for an R
+#'   process to eventually call `kioto:::worker_main(token, slot)`. The
+#'   default [kio_launcher()] spawns `Rscript` with the host's
+#'   `.libPaths()` propagated (its `stdout`/`stderr` arguments direct
+#'   worker output); a custom launcher must arrange library paths itself.
 #' @param startup_timeout seconds to wait for all workers to join before
 #'   giving up, destroying the pool, and raising `kio_error_startup` (see
 #'   [kio_error]).
@@ -71,8 +69,8 @@
 kio_pool <- function(n_workers = 1L, max_workers = n_workers,
                      max_submitters = 8L, injection_cap = 1024L,
                      per_worker_cap = 1024L, result_slots = 4096L,
-                     slot_size = 512L, launcher = NULL, stdout = "",
-                     stderr = "", startup_timeout = 30) {
+                     slot_size = 512L, launcher = kio_launcher(),
+                     startup_timeout = 30) {
   n_workers <- as.integer(n_workers)
   if (is.na(n_workers) || n_workers < 1L)
     stop("kioto: n_workers must be at least 1", call. = FALSE)
@@ -80,13 +78,9 @@ kio_pool <- function(n_workers = 1L, max_workers = n_workers,
     stop("kioto: n_workers exceeds max_workers", call. = FALSE)
   p <- .Call(kio_pool_create, max_workers, max_submitters, injection_cap,
              per_worker_cap, result_slots, slot_size)
-  suffix <- .Call(kio_pool_suffix, p)
-  for (slot in seq_len(n_workers) - 1L) {
-    if (is.null(launcher))
-      spawn_worker(suffix, slot, stdout = stdout, stderr = stderr)
-    else
-      launcher(suffix, slot)
-  }
+  token <- .Call(kio_pool_suffix, p)
+  for (slot in seq_len(n_workers) - 1L)
+    launcher(token, slot)
   if (!.Call(kio_pool_ready_wait, p, seq_len(n_workers) - 1L,
              startup_timeout)) {
     .Call(kio_pool_destroy, p)
@@ -122,8 +116,8 @@ kio_pool <- function(n_workers = 1L, max_workers = n_workers,
 #'   spawned into. `kio_retire_worker()` invisibly returns `NULL`.
 #'
 #' @export
-kio_spawn_workers <- function(pool, n = 1L, launcher = NULL, stdout = "",
-                              stderr = "", startup_timeout = 30) {
+kio_spawn_workers <- function(pool, n = 1L, launcher = kio_launcher(),
+                              startup_timeout = 30) {
   n <- as.integer(n)
   if (is.na(n) || n < 1L)
     stop("kioto: n must be at least 1", call. = FALSE)
@@ -132,13 +126,9 @@ kio_spawn_workers <- function(pool, n = 1L, launcher = NULL, stdout = "",
     stop("kioto: not enough free worker slots (", length(free), " free)",
          call. = FALSE)
   slots <- free[seq_len(n)]
-  suffix <- .Call(kio_pool_suffix, pool)
-  for (slot in slots) {
-    if (is.null(launcher))
-      spawn_worker(suffix, slot, stdout = stdout, stderr = stderr)
-    else
-      launcher(suffix, slot)
-  }
+  token <- .Call(kio_pool_suffix, pool)
+  for (slot in slots)
+    launcher(token, slot)
   if (!.Call(kio_pool_ready_wait, pool, as.integer(slots), startup_timeout))
     stop_kio("kio_error_startup",
              paste0("kioto: workers failed to attach within ",
@@ -450,8 +440,8 @@ kio_pool_trace <- function(pool, fn = NULL)
   invisible(.Call(kio_pool_set_trace, pool, fn))
 
 # Worker entry point: invoked through the Rscript child runner by the launcher.
-# Rebuilds the region name from the compiled-in prefix plus the passed suffix,
-# attaches writable, validates the header,
+# Rebuilds the region name from the compiled-in prefix plus the token (the
+# name's suffix), attaches writable, validates the header,
 # claims its host-assigned slot (liveness lock before status CAS), points
 # its death listener at the owner, and unparks the creator on reaching
 # LIVE. The loop then lives in kio_pool_step: one claim in tier order
@@ -461,9 +451,9 @@ kio_pool_trace <- function(pool, fn = NULL)
 # kio_pool_fail_inflight publishes the caught condition as that task's ERR
 # result — FALSE marks an error from outside any task eval, which is
 # infrastructure failure and takes the worker down.
-worker_main <- function(suffix, slot) {
+worker_main <- function(token, slot) {
   if (!"package:kioto" %in% search()) attachNamespace("kioto")
-  h <- .Call(kio_pool_worker_join, suffix, slot)
+  h <- .Call(kio_pool_worker_join, token, slot)
   .Call(kio_pool_set_eval, h)
   status <- 0L
   rc <- -1L

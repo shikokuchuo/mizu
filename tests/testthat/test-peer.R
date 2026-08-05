@@ -38,7 +38,7 @@ test_that("a returning peer expression signals an orderly close", {
 
 test_that("a peer error is an orderly close, not a death", {
   skip_if_no_child_kioto()
-  ch <- kio_channel(quote(stop("boom")), stderr = FALSE)
+  ch <- kio_channel(quote(stop("boom")), launcher = kio_launcher(stderr = FALSE))
   expect_s3_class(kio_recv(ch, 30), "kio_closed")
   expect_true(kio_close(ch, timeout = 10))
 })
@@ -87,7 +87,7 @@ test_that("a peer that dies mid-stream loses nothing already published", {
 test_that("the startup deadline walks the channel back", {
   t0 <- proc.time()[[3]]
   err <- tryCatch(
-    kio_channel(quote({}), launcher = function(suffix) NULL,
+    kio_channel(quote({}), launcher = function(token) NULL,
                 startup_timeout = 0.5),
     error = identity)
   expect_s3_class(err, "error")
@@ -95,12 +95,12 @@ test_that("the startup deadline walks the channel back", {
   expect_lt(proc.time()[[3]] - t0, 10)
 })
 
-test_that("a custom launcher receives the suffix and drives the spawn", {
+test_that("a custom launcher receives the token and drives the spawn", {
   skip_if_no_child_kioto()
   seen <- NULL
-  ch <- kio_channel(echo_expr, launcher = function(suffix) {
-    seen <<- suffix
-    kioto:::spawn_peer(suffix)
+  ch <- kio_channel(echo_expr, launcher = function(token) {
+    seen <<- token
+    kioto:::spawn_peer(token)
   })
   expect_match(seen, "^[0-9a-f]+_[0-9a-f]+$")
   kio_send(ch, "via launcher")

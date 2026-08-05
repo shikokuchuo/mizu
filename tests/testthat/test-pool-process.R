@@ -84,21 +84,21 @@ test_that("mori-shared task arguments map zero-copy in the worker", {
 test_that("the startup deadline walks the pool back", {
   t0 <- proc.time()[[3]]
   err <- tryCatch(
-    kio_pool(launcher = function(suffix, slot) NULL, startup_timeout = 0.5),
+    kio_pool(launcher = function(token, slot) NULL, startup_timeout = 0.5),
     error = identity)
   expect_s3_class(err, "error")
   expect_match(conditionMessage(err), "failed to attach")
   expect_lt(proc.time()[[3]] - t0, 10)
 })
 
-test_that("a custom launcher receives the suffix and slot", {
+test_that("a custom launcher receives the token and slot", {
   skip_if_no_child_kioto()
   seen <- NULL
-  p <- kio_pool(launcher = function(suffix, slot) {
-    seen <<- list(suffix = suffix, slot = slot)
-    kioto:::spawn_worker(suffix, slot)
+  p <- kio_pool(launcher = function(token, slot) {
+    seen <<- list(token = token, slot = slot)
+    kioto:::spawn_worker(token, slot)
   })
-  expect_match(seen$suffix, "^[0-9a-f]+_[0-9a-f]+$")
+  expect_match(seen$token, "^[0-9a-f]+_[0-9a-f]+$")
   expect_identical(seen$slot, 0L)
   t <- kio_submit(p, "via launcher")
   expect_identical(kio_collect(t, timeout = 30), "via launcher")

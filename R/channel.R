@@ -3,9 +3,9 @@
 #' Creates a shared-memory SPSC channel — one lock-free ring per direction —
 #' and spawns a child R process connected to its other end. The channel is
 #' bidirectional after spawn: the returned handle produces on the host-to-peer
-#' ring and consumes the peer-to-host ring. Setup is one-sided: only the
-#' region name's suffix crosses the process boundary, as a command-line
-#' argument.
+#' ring and consumes the peer-to-host ring. Setup is one-sided: only a short
+#' join token (the region name's suffix) crosses the process boundary, as a
+#' command-line argument.
 #'
 #' `expr` is a quoted expression, not a closure — it captures nothing, and
 #' unlike [kio_submit()] it is not captured for you: pass it pre-quoted. The
@@ -40,14 +40,12 @@
 #'   and producers skip the wake check on publish. Only for callers whose
 #'   consumer never yields — if a spin-mode consumer did park, the producer
 #'   would never wake it.
-#' @param launcher `NULL` for the default launcher (`system2(Rscript, ...)`
-#'   with the host's `.libPaths()` propagated via argv), or a
-#'   `function(suffix)` that arranges for an R process to eventually call
-#'   `kioto:::peer_main(suffix)` — such a launcher must arrange library paths
-#'   itself.
-#' @param stdout,stderr forwarded to [system2()] by the default launcher;
-#'   the default `""` sends peer output (including its error epilogue) to
-#'   the host's console. Ignored when `launcher` is supplied.
+#' @param launcher a `function(token)` that arranges for an R process to
+#'   eventually call `kioto:::peer_main(token)`. The default
+#'   [kio_launcher()] spawns `Rscript` with the host's `.libPaths()`
+#'   propagated (its `stdout`/`stderr` arguments direct peer output,
+#'   including its error epilogue); a custom launcher must arrange library
+#'   paths itself.
 #' @param startup_timeout seconds to wait for the peer to attach and signal
 #'   ready before giving up, releasing the channel, and raising
 #'   `kio_error_startup` (see [kio_error]).
@@ -71,18 +69,15 @@
 #'
 #' @export
 kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
-                        arena_size = 4194304, spin = FALSE, launcher = NULL,
-                        stdout = "", stderr = "", startup_timeout = 30) {
+                        arena_size = 4194304, spin = FALSE,
+                        launcher = kio_launcher(), startup_timeout = 30) {
   if (!is.language(expr))
     stop("kioto: expr must be a quoted expression (wrap it in quote())",
          call. = FALSE)
   ch <- .Call(kio_channel_create, expr, capacity, slot_size, arena_size,
               spin)
-  suffix <- .Call(kio_channel_suffix, ch)
-  if (is.null(launcher))
-    spawn_peer(suffix, stdout = stdout, stderr = stderr)
-  else
-    launcher(suffix)
+  token <- .Call(kio_channel_suffix, ch)
+  launcher(token)
   if (!.Call(kio_channel_ready_wait, ch, startup_timeout)) {
     .Call(kio_channel_destroy, ch)
     stop_kio("kio_error_startup",
@@ -220,15 +215,15 @@ kio_close <- function(ch, timeout = 5) {
 kio_alive <- function(ch) .Call(kio_channel_alive, ch)
 
 # Peer entry point: invoked through the Rscript child runner by the launcher.
-# Rebuilds the region name from the compiled-in prefix plus the passed suffix,
-# attaches writable, validates the preamble, takes its liveness
+# Rebuilds the region name from the compiled-in prefix plus the token (the
+# name's suffix), attaches writable, validates the preamble, takes its liveness
 # lock, points its death listener at the host, and materializes the staged
 # expression *before* signalling ready — the host's kio_channel frame holds
 # the expression (and every region its identifiers name) alive exactly until
 # then. The epilogue is the peer half of the close protocol.
-peer_main <- function(suffix) {
+peer_main <- function(token) {
   if (!"package:kioto" %in% search()) attachNamespace("kioto")
-  att <- .Call(kio_channel_attach, suffix)
+  att <- .Call(kio_channel_attach, token)
   ch <- att[[1L]]
   expr <- att[[2L]]
   .Call(kio_channel_ready_set, ch)

@@ -41,11 +41,11 @@ test_that("cancelled collect raises kio_error_cancelled; kio_error catches", {
 
 test_that("startup timeout raises kio_error_startup", {
   expect_error(
-    kio_pool(n_workers = 1L, launcher = function(suffix, slot) NULL,
+    kio_pool(n_workers = 1L, launcher = function(token, slot) NULL,
              startup_timeout = 0.5),
     class = "kio_error_startup")
   expect_error(
-    kio_channel(quote({}), launcher = function(suffix) NULL,
+    kio_channel(quote({}), launcher = function(token) NULL,
                 startup_timeout = 0.5),
     class = "kio_error_startup")
 })

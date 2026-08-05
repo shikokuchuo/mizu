@@ -10,9 +10,7 @@ kio_channel(
   slot_size = 256L,
   arena_size = 4194304,
   spin = FALSE,
-  launcher = NULL,
-  stdout = "",
-  stderr = "",
+  launcher = kio_launcher(),
   startup_timeout = 30
 )
 }
@@ -35,15 +33,12 @@ and producers skip the wake check on publish. Only for callers whose
 consumer never yields — if a spin-mode consumer did park, the producer
 would never wake it.}
 
-\item{launcher}{\code{NULL} for the default launcher (\code{system2(Rscript, ...)}
-with the host's \code{.libPaths()} propagated via argv), or a
-\verb{function(suffix)} that arranges for an R process to eventually call
-\code{kioto:::peer_main(suffix)} — such a launcher must arrange library paths
-itself.}
-
-\item{stdout, stderr}{forwarded to \code{\link[=system2]{system2()}} by the default launcher;
-the default \code{""} sends peer output (including its error epilogue) to
-the host's console. Ignored when \code{launcher} is supplied.}
+\item{launcher}{a \verb{function(token)} that arranges for an R process to
+eventually call \code{kioto:::peer_main(token)}. The default
+\code{\link[=kio_launcher]{kio_launcher()}} spawns \code{Rscript} with the host's \code{.libPaths()}
+propagated (its \code{stdout}/\code{stderr} arguments direct peer output,
+including its error epilogue); a custom launcher must arrange library
+paths itself.}
 
 \item{startup_timeout}{seconds to wait for the peer to attach and signal
 ready before giving up, releasing the channel, and raising
@@ -57,9 +52,9 @@ process-private and do not survive \code{fork()}.
 Creates a shared-memory SPSC channel — one lock-free ring per direction —
 and spawns a child R process connected to its other end. The channel is
 bidirectional after spawn: the returned handle produces on the host-to-peer
-ring and consumes the peer-to-host ring. Setup is one-sided: only the
-region name's suffix crosses the process boundary, as a command-line
-argument.
+ring and consumes the peer-to-host ring. Setup is one-sided: only a short
+join token (the region name's suffix) crosses the process boundary, as a
+command-line argument.
 }
 \details{
 \code{expr} is a quoted expression, not a closure — it captures nothing, and
