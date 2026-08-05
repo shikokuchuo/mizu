@@ -583,10 +583,15 @@ SEXP kio_map_abandon(SEXP xp, SEXP r_sexp) {
 
 /* The cancel word: set by the submitter on timeout / cancel / death, and
    by an erroring runner itself before its ERR publish — the fail-fast
-   store that stops every peer within ~a batch. Idempotent. */
+   store that stops every peer within ~a batch. Idempotent, and total —
+   it runs from unwind paths (map_cancel under on.exit, a runner's error
+   handler), so a closed or foreign handle no-ops. */
 SEXP kio_map_cancel_set(SEXP xp) {
-  atomic_store_explicit(map_cancel_word(map_h_get(xp)), 1u,
-                        memory_order_seq_cst);
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_map_tag)
+    return R_NilValue;
+  kio_map_h *mh = (kio_map_h *) R_ExternalPtrAddr(xp);
+  if (mh == NULL) return R_NilValue;
+  atomic_store_explicit(map_cancel_word(mh), 1u, memory_order_seq_cst);
   return R_NilValue;
 }
 

@@ -48,6 +48,29 @@ NORET void kio_stop(const char *subclass, const char *fmt, ...) {
   kio_cond_signal(cond);
 }
 
+/* Sentinel-mode wrap: the condition boxed in a length-1 list of class
+   "kio_caught", so a collect loop branches on class instead of arming a
+   tryCatch handler. Only C wraps — a task value that is itself a
+   condition comes back bare and is never mistaken for one. */
+SEXP kio_caught(SEXP cond) {
+  PROTECT(cond);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, 1));
+  SET_VECTOR_ELT(out, 0, cond);
+  Rf_setAttrib(out, R_ClassSymbol, Rf_mkString("kio_caught"));
+  UNPROTECT(2);
+  return out;
+}
+
+SEXP kio_caught_cond(const char *subclass, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  SEXP cond = kio_cond(subclass, NULL, 0, fmt, ap);
+  va_end(ap);
+  SEXP out = kio_caught(cond);
+  UNPROTECT(1);
+  return out;
+}
+
 NORET void kio_stop_shm(double bytes, const char *fmt, ...) {
   static const char *fnames[] = { "bytes" };
   va_list ap;
@@ -58,13 +81,29 @@ NORET void kio_stop_shm(double bytes, const char *fmt, ...) {
   kio_cond_signal(cond);
 }
 
-NORET void kio_stop_died(int slot, double pid, const char *fmt, ...) {
+static SEXP kio_cond_died(int slot, double pid, const char *fmt,
+                          va_list ap) {
   static const char *fnames[] = { "slot", "pid" };
-  va_list ap;
-  va_start(ap, fmt);
   SEXP cond = kio_cond("kio_error_worker_died", fnames, 2, fmt, ap);
-  va_end(ap);
   SET_VECTOR_ELT(cond, 2, Rf_ScalarInteger(slot < 0 ? NA_INTEGER : slot));
   SET_VECTOR_ELT(cond, 3, Rf_ScalarReal(pid <= 0 ? NA_REAL : pid));
+  return cond;
+}
+
+NORET void kio_stop_died(int slot, double pid, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  SEXP cond = kio_cond_died(slot, pid, fmt, ap);
+  va_end(ap);
   kio_cond_signal(cond);
+}
+
+SEXP kio_caught_died(int slot, double pid, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  SEXP cond = kio_cond_died(slot, pid, fmt, ap);
+  va_end(ap);
+  SEXP out = kio_caught(cond);
+  UNPROTECT(1);
+  return out;
 }

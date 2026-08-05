@@ -220,6 +220,15 @@ NORET void kio_stop_shm(double bytes, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
 NORET void kio_stop_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
+/* Sentinel-mode variants: the same conditions returned boxed in a
+   length-1 list of class "kio_caught" instead of signalled, for hot
+   loops that branch on class rather than arm a tryCatch handler. Only C
+   boxes, so a task value that is itself a condition stays bare. */
+SEXP kio_caught(SEXP cond);
+SEXP kio_caught_cond(const char *subclass, const char *fmt, ...)
+  R_PRINTF_FORMAT(2, 3);
+SEXP kio_caught_died(int slot, double pid, const char *fmt, ...)
+  R_PRINTF_FORMAT(3, 4);
 
 // Per-entity parker ------------------------------------------------------------
 

@@ -1392,7 +1392,12 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload,
   return txp;
 }
 
-SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
+/* tryflag: ring-full-past-timeout returns the kio_timeout sentinel
+   (unambiguous — success returns an external pointer) instead of raising
+   kio_error_submit_timeout, so the map submit loop needs no handler.
+   Fatal outcomes (stopped, slots exhausted) raise in both modes. */
+static SEXP pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp,
+                        int tryflag) {
   kio_pool *p = pool_get(xp);
   uint16_t flags = (uint16_t) Rf_asInteger(flags_sexp);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
@@ -1408,9 +1413,11 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
   SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
 
   unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
-  if (!pool_ring_space_wait(p, ring_head(ring), Rf_asReal(timeout)))
+  if (!pool_ring_space_wait(p, ring_head(ring), Rf_asReal(timeout))) {
+    if (tryflag) return kio_sent_timeout;
     kio_stop("kio_error_submit_timeout",
              "kioto: submission timed out (injection ring full)");
+  }
 
   uint32_t local = pool_alloc_rs(p, keepers);
   uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
@@ -1436,6 +1443,15 @@ SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
 
   UNPROTECT(2);
   return txp;
+}
+
+SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
+  return pool_submit(xp, payload, timeout, flags_sexp, 0);
+}
+
+SEXP kio_pool_submit_try(SEXP xp, SEXP payload, SEXP timeout,
+                         SEXP flags_sexp) {
+  return pool_submit(xp, payload, timeout, flags_sexp, 1);
 }
 
 // Worker step ----------------------------------------------------------------------------
@@ -2455,7 +2471,11 @@ static void pool_task_keeper_drop(kio_pool *p, SEXP pool_xp, uint32_t idx) {
                          (R_xlen_t) (idx - me->rs_start));
 }
 
-SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
+/* tryflag: the expected terminal outcomes (ERR payload, DIED, CANCEL)
+   return kio_caught-boxed instead of signalling, so the map collect loops
+   need no handler; contract violations (stale or already-collected
+   handles) raise in both modes. */
+static SEXP pool_collect(SEXP xp, SEXP timeout, int tryflag) {
   kio_pool *p;
   SEXP pool_xp;
   kio_task *t = task_get(xp, &p, &pool_xp);
@@ -2569,6 +2589,11 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
     }
     pool_unpark_keeper_drop(p, w);
     if (st == KIO_RS_ERR) {
+      if (tryflag) {
+        SEXP out = kio_caught(v);
+        UNPROTECT(1);
+        return out;
+      }
       SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), v));
       Rf_eval(call, R_BaseEnv);                  /* no return */
     }
@@ -2588,12 +2613,18 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
                                                  memory_order_seq_cst,
                                                  memory_order_relaxed))
       Rf_error("kioto: task handle already collected");
+    if (tryflag)
+      return kio_caught_died((int) w, wpid,
+                             "kioto: worker died while executing this task");
     kio_stop_died((int) w, wpid,
                   "kioto: worker died while executing this task");
   }
   case KIO_RS_CANCEL:
     /* the task keeper releases at slot reuse, not here — the worker may not
        have materialized yet */
+    if (tryflag)
+      return kio_caught_cond("kio_error_cancelled",
+                             "kioto: task cancelled or pool stopped");
     kio_stop("kio_error_cancelled", "kioto: task cancelled or pool stopped");
   case KIO_RS_FREE:
   default:
@@ -2601,12 +2632,28 @@ SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
   }
 }
 
+SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
+  return pool_collect(xp, timeout, 0);
+}
+
+SEXP kio_pool_collect_try(SEXP xp, SEXP timeout) {
+  return pool_collect(xp, timeout, 1);
+}
+
 /* Advisory and discard-only, never preemptive: a task already executing runs
    to completion and its result is dropped by the worker's failed publish
-   CAS. */
+   CAS. Total past the tag check — cancel runs from unwind paths
+   (map_cancel under on.exit), so a stale handle, a closed pool, or a
+   forked child answers FALSE instead of raising. */
 SEXP kio_pool_cancel(SEXP xp) {
-  kio_pool *p;
-  kio_task *t = task_get(xp, &p, NULL);
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != kio_task_tag)
+    Rf_error("kioto: not a task handle");
+  kio_task *t = (kio_task *) R_ExternalPtrAddr(xp);
+  if (t == NULL) return Rf_ScalarLogical(FALSE);
+  SEXP pool_xp = R_ExternalPtrProtected(xp);
+  kio_pool *p = (kio_pool *) R_ExternalPtrAddr(pool_xp);
+  if (p == NULL || p->released || p->self_pid != kio_self_pid())
+    return Rf_ScalarLogical(FALSE);
   kio_rs_hdr *rs = pool_rs(p, t->idx);
   if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
     return Rf_ScalarLogical(FALSE);

@@ -273,7 +273,8 @@ kio_collect <- function(task, timeout = Inf)
 #' @inheritParams kio_submit
 #'
 #' @return Invisibly, `TRUE` if this call cancelled the task, `FALSE` if it
-#'   was too late — the task completed, or was already cancelled.
+#'   was too late — the task completed, was already cancelled, or its pool
+#'   is gone.
 #'
 #' @export
 kio_cancel <- function(task) invisible(.Call(kio_pool_cancel, task))

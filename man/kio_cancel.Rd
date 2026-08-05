@@ -11,7 +11,8 @@ kio_cancel(task)
 }
 \value{
 Invisibly, \code{TRUE} if this call cancelled the task, \code{FALSE} if it
-was too late — the task completed, or was already cancelled.
+was too late — the task completed, was already cancelled, or its pool
+is gone.
 }
 \description{
 Advisory and discard-only, never preemptive: a task still queued is

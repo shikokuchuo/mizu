@@ -544,28 +544,27 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
 # tasks stay unflagged: bounded work, no cursor to drain.
 map_submit <- function(pool, st, deadline = Inf) {
   blob <- !is.null(st$blob)
+  # armed across the loop: a timed-out return or a fatal submit error
+  # (stopped, slots exhausted) longjmping through cancels the tasks
+  # already in; disarmed once every task is submitted
+  on.exit(map_cancel(st))
   for (k in seq_along(st$handles)) {
     rem <- deadline - mono_time()
     if (rem <= 0) {
       st$timed_out <- TRUE
-      map_cancel(st)
       return(invisible(st))
     }
     payload <- if (blob) map_payload(st, c(st$lo[[k]], st$hi[[k]]))
                else runner_payload(st, k - 1L)
-    h <- tryCatch(.Call(kio_pool_submit, pool, payload, rem,
-                        if (blob) 0L else 1L),
-                  error = identity)
-    if (inherits(h, "error")) {
-      map_cancel(st)
-      if (inherits(h, "kio_error_submit_timeout")) {
-        st$timed_out <- TRUE
-        return(invisible(st))
-      }
-      stop(h)
+    h <- .Call(kio_pool_submit_try, pool, payload, rem,
+               if (blob) 0L else 1L)
+    if (inherits(h, "kio_timeout")) {
+      st$timed_out <- TRUE
+      return(invisible(st))
     }
     st$handles[[k]] <- h
   }
+  on.exit()
   invisible(st)
 }
 
@@ -589,11 +588,11 @@ map_collect <- function(pool, st, deadline = Inf) {
         map_cancel(st)
         return(.Call(kio_map_timeout_call))
       }
-      # list-wrap so an OK result is never mistaken for a raised condition
-      # (f may legitimately return one)
-      v <- tryCatch(list(.Call(kio_pool_collect, st$handles[[k]], rem)),
-                    error = identity)
-      if (inherits(v, "condition")) {
+      # terminal outcomes come back kio_caught-boxed (only C boxes, so an
+      # OK result that is itself a condition stays bare) — no handler frame
+      v <- .Call(kio_pool_collect_try, st$handles[[k]], rem)
+      if (inherits(v, "kio_caught")) {
+        v <- v[[1L]]
         map_cancel(st)
         if (inherits(v, "kio_error_worker_died")) {
           elts <- cbind(lo = st$lo[[k]], hi = st$hi[[k]])
@@ -604,7 +603,6 @@ map_collect <- function(pool, st, deadline = Inf) {
         }
         stop(v)
       }
-      v <- v[[1L]]
       if (inherits(v, "kio_timeout")) {
         map_cancel(st)
         return(v)
@@ -632,16 +630,14 @@ map_collect <- function(pool, st, deadline = Inf) {
     # consume one runner handle: FALSE when the park slice (or the map
     # deadline) expired with the slot still pending
     consume <- function(k, timeout) {
-      v <- tryCatch(list(.Call(kio_pool_collect, st$handles[[k]], timeout)),
-                    error = identity)
-      if (!inherits(v, "condition") && inherits(v[[1L]], "kio_timeout"))
-        return(FALSE)
+      v <- .Call(kio_pool_collect_try, st$handles[[k]], timeout)
+      if (inherits(v, "kio_timeout")) return(FALSE)
       st$handles[k] <- list(NULL)
-      if (inherits(v, "condition")) {
+      if (inherits(v, "kio_caught")) {
+        v <- v[[1L]]
         # fail fast: peers stop within ~a batch (idempotent — an erroring
         # runner already stored this before its ERR publish)
-        tryCatch(.Call(kio_map_cancel_set, st$wrap),
-                 error = function(e) NULL)
+        .Call(kio_map_cancel_set, st$wrap)
         if (inherits(v, "kio_error_worker_died")) {
           if (is.null(died)) died <<- v
         } else if (!is.null(v$kio_map_index)) {
@@ -656,7 +652,6 @@ map_collect <- function(pool, st, deadline = Inf) {
         }
         return(TRUE)
       }
-      v <- v[[1L]]
       hists[[length(hists) + 1L]] <<- v[1:2]
       if (!st$direct)
         for (b in seq_along(v[[3L]])) {
@@ -680,8 +675,7 @@ map_collect <- function(pool, st, deadline = Inf) {
           # never started and never will: cancel and drop — a claim that
           # lands anyway loses its first-call CAS and publishes empty
           h <- st$handles[[k]]
-          if (!is.null(h)) tryCatch(.Call(kio_pool_cancel, h),
-                                    error = function(e) NULL)
+          if (!is.null(h)) .Call(kio_pool_cancel, h)
           st$handles[k] <- list(NULL)
           TRUE
         } else if (verdict == "running") {
@@ -776,14 +770,12 @@ map_collect <- function(pool, st, deadline = Inf) {
 # within ~a batch of their next transition), then cancel every outstanding
 # (uncollected) task — the PENDING -> CANCEL arm; an executing task's
 # publish CAS discards — and drop the handle references, so slot release
-# completes at the next GC. Total: it must be safe from on.exit while an
-# error (or pool shutdown) unwinds.
+# completes at the next GC. Total: it runs from on.exit while an error
+# (or pool shutdown) unwinds — both C entries no-op on closed handles.
 map_cancel <- function(st) {
-  if (!is.null(st$wrap))
-    tryCatch(.Call(kio_map_cancel_set, st$wrap), error = function(e) NULL)
+  if (!is.null(st$wrap)) .Call(kio_map_cancel_set, st$wrap)
   for (h in st$handles)
-    if (!is.null(h)) tryCatch(.Call(kio_pool_cancel, h),
-                              error = function(e) NULL)
+    if (!is.null(h)) .Call(kio_pool_cancel, h)
   st$handles <- vector("list", length(st$handles))
   invisible()
 }
@@ -931,7 +923,7 @@ map_runner <- function(pool, n, a, s = NULL) {
       }
       # the fail-fast store, ahead of the ERR publish: peers observe it
       # within ~a batch instead of draining the cursor first
-      tryCatch(.Call(kio_map_cancel_set, xp), error = function(e2) NULL)
+      .Call(kio_map_cancel_set, xp)
       stop(e)
     }
   )
