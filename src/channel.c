@@ -149,6 +149,13 @@ double kio_now(void) {
 #endif
 }
 
+/* R-visible read of the shared clock: the map deadline R threads through
+   the pool's _try entries is computed against the same timescale the C
+   wait loops park against. */
+SEXP kio_now_call(void) {
+  return Rf_ScalarReal(kio_now());
+}
+
 long kio_self_pid(void) {
 #ifdef _WIN32
   return (long) GetCurrentProcessId();

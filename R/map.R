@@ -57,9 +57,11 @@ map_template_types <- c("logical", "integer", "double", "complex", "raw")
 map_morsel_cap <- 256
 map_morsels_per_runner <- 256
 
-# Monotonic-enough clock for the one deadline that threads through both
-# submit-side ring-space waits and the collect loop.
-mono_time <- function() proc.time()[[3L]]
+# The pool's own monotonic clock. The one map deadline is computed against
+# it once and threaded through submit and collect absolute — the _try
+# entries convert to a remaining budget at entry — so R-side expiry checks
+# and C-side waits read a single timescale, with no per-call allocation.
+mono_time <- function() .Call(kio_now_call)
 
 #' Parallel Map Over a Pool
 #'
@@ -626,8 +628,10 @@ map_submit <- function(pool, st, deadline = Inf) {
   # already in; disarmed once every task is submitted
   on.exit(map_cancel(st))
   for (k in seq_along(st$handles)) {
-    rem <- deadline - mono_time()
-    if (rem <= 0) {
+    # pre-check, not just the C entry's: a nested (worker-side) submit
+    # never waits on ring space, so an expired deadline must be caught
+    # here, before the payload is built
+    if (mono_time() >= deadline) {
       st$timed_out <- TRUE
       return(invisible(st))
     }
@@ -636,7 +640,13 @@ map_submit <- function(pool, st, deadline = Inf) {
     } else {
       runner_payload(st, k - 1L)
     }
-    h <- .Call(kio_pool_submit_try, pool, payload, rem, if (blob) 0L else 1L)
+    h <- .Call(
+      kio_pool_submit_try,
+      pool,
+      payload,
+      deadline,
+      if (blob) 0L else 1L
+    )
     if (inherits(h, "kio_timeout")) {
       st$timed_out <- TRUE
       return(invisible(st))
@@ -664,14 +674,9 @@ map_collect <- function(pool, st, deadline = Inf) {
   if (!is.null(st$blob)) {
     # blob path: in-order chunk collection, as ever
     for (k in seq_len(st$C)) {
-      rem <- deadline - mono_time()
-      if (rem <= 0) {
-        map_cancel(st)
-        return(.Call(kio_map_timeout_call))
-      }
       # terminal outcomes come back kio_caught-boxed (only C boxes, so an
       # OK result that is itself a condition stays bare) — no handler frame
-      v <- .Call(kio_pool_collect_try, st$handles[[k]], rem)
+      v <- .Call(kio_pool_collect_try, st$handles[[k]], deadline)
       if (inherits(v, "kio_caught")) {
         v <- v[[1L]]
         map_cancel(st)
@@ -716,8 +721,8 @@ map_collect <- function(pool, st, deadline = Inf) {
     hists <- list()
     # consume one runner handle: FALSE when the park slice (or the map
     # deadline) expired with the slot still pending
-    consume <- function(k, timeout) {
-      v <- .Call(kio_pool_collect_try, st$handles[[k]], timeout)
+    consume <- function(k, deadline) {
+      v <- .Call(kio_pool_collect_try, st$handles[[k]], deadline)
       if (inherits(v, "kio_timeout")) {
         return(FALSE)
       }
@@ -756,8 +761,7 @@ map_collect <- function(pool, st, deadline = Inf) {
     while (length(pending)) {
       progress <- FALSE
       for (k in pending) {
-        rem <- deadline - mono_time()
-        if (rem <= 0) {
+        if (mono_time() >= deadline) {
           map_cancel(st)
           return(.Call(kio_map_timeout_call))
         }
@@ -772,7 +776,7 @@ map_collect <- function(pool, st, deadline = Inf) {
           st$handles[k] <- list(NULL)
           TRUE
         } else if (verdict == "running") {
-          consume(k, rem)
+          consume(k, deadline)
         } else {
           FALSE # idle: defer, the trim trigger unarmed
         }
@@ -786,12 +790,12 @@ map_collect <- function(pool, st, deadline = Inf) {
         # pre-first-claim, or every worker pinned): park on one in bounded
         # slices, so a claim landing on a different handle — or exhaustion
         # reached while parked — is picked up within a slice
-        rem <- deadline - mono_time()
-        if (rem <= 0) {
+        now <- mono_time()
+        if (now >= deadline) {
           map_cancel(st)
           return(.Call(kio_map_timeout_call))
         }
-        if (consume(pending[[1L]], min(rem, 0.05))) {
+        if (consume(pending[[1L]], min(deadline, now + 0.05))) {
           pending <- setdiff(pending, pending[[1L]])
         }
       }

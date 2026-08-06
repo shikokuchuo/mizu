@@ -1399,8 +1399,8 @@ static SEXP pool_submit_nested(kio_pool *p, SEXP xp, SEXP payload,
    (unambiguous — success returns an external pointer) instead of raising
    kio_error_submit_timeout, so the map submit loop needs no handler.
    Fatal outcomes (stopped, slots exhausted) raise in both modes. */
-static SEXP pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp,
-                        int tryflag) {
+static SEXP pool_submit(SEXP xp, SEXP payload, double timeout_s,
+                        SEXP flags_sexp, int tryflag) {
   kio_pool *p = pool_get(xp);
   uint16_t flags = (uint16_t) Rf_asInteger(flags_sexp);
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
@@ -1416,7 +1416,7 @@ static SEXP pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp,
   SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
 
   unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
-  if (!pool_ring_space_wait(p, ring_head(ring), Rf_asReal(timeout))) {
+  if (!pool_ring_space_wait(p, ring_head(ring), timeout_s)) {
     if (tryflag) return kio_sent_timeout;
     kio_stop("kio_error_submit_timeout",
              "kioto: submission timed out (injection ring full)");
@@ -1449,12 +1449,18 @@ static SEXP pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp,
 }
 
 SEXP kio_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
-  return pool_submit(xp, payload, timeout, flags_sexp, 0);
+  return pool_submit(xp, payload, Rf_asReal(timeout), flags_sexp, 0);
 }
 
-SEXP kio_pool_submit_try(SEXP xp, SEXP payload, SEXP timeout,
+/* The map path's entries take the map's one deadline absolute (kio_now()
+   timescale, Inf waits indefinitely) and convert once, at entry: R
+   threads a single deadline through submit and collect instead of
+   re-deriving a relative timeout per call against a second clock. */
+SEXP kio_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
                          SEXP flags_sexp) {
-  return pool_submit(xp, payload, timeout, flags_sexp, 1);
+  double d = Rf_asReal(deadline);
+  return pool_submit(xp, payload, R_FINITE(d) ? d - kio_now() : R_PosInf,
+                     flags_sexp, 1);
 }
 
 // Worker step ----------------------------------------------------------------------------
@@ -2478,14 +2484,13 @@ static void pool_task_keeper_drop(kio_pool *p, SEXP pool_xp, uint32_t idx) {
    return kio_caught-boxed instead of signalling, so the map collect loops
    need no handler; contract violations (stale or already-collected
    handles) raise in both modes. */
-static SEXP pool_collect(SEXP xp, SEXP timeout, int tryflag) {
+static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
   kio_pool *p;
   SEXP pool_xp;
   kio_task *t = task_get(xp, &p, &pool_xp);
   if (p->sub_slot < 0)
     Rf_error("kioto: not a submitter's task handle");
   kio_rs_hdr *rs = pool_rs(p, t->idx);
-  double timeout_s = Rf_asReal(timeout);
   double deadline = -1;
 
   int32_t st;
@@ -2636,11 +2641,13 @@ static SEXP pool_collect(SEXP xp, SEXP timeout, int tryflag) {
 }
 
 SEXP kio_pool_collect(SEXP xp, SEXP timeout) {
-  return pool_collect(xp, timeout, 0);
+  return pool_collect(xp, Rf_asReal(timeout), 0);
 }
 
-SEXP kio_pool_collect_try(SEXP xp, SEXP timeout) {
-  return pool_collect(xp, timeout, 1);
+/* absolute deadline, as kio_pool_submit_try */
+SEXP kio_pool_collect_try(SEXP xp, SEXP deadline) {
+  double d = Rf_asReal(deadline);
+  return pool_collect(xp, R_FINITE(d) ? d - kio_now() : R_PosInf, 1);
 }
 
 /* Advisory and discard-only, never preemptive: a task already executing runs
