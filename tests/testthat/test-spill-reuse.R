@@ -131,3 +131,34 @@ test_that("consumer mapping caches skip the open once names repeat", {
   expect_identical(ctrl$open_hits, 2)
   pool_end(p)
 })
+
+test_that("surrender past the free list's byte cap evicts the oldest", {
+  p <- pool_pair()
+  v <- runif(3e6)   # a ~24 MB stream lands in the 32 MB size class
+  # both submits find an empty list, so two distinct regions exist at once
+  t1 <- kio_submit(p$ctrl, sum(v), v = v)
+  t2 <- kio_submit(p$ctrl, sum(v), v = v)
+  pool_step(p)
+  pool_step(p)
+  expect_identical(kio_collect(t1, 5), sum(v))
+  expect_identical(kio_collect(t2, 5), sum(v))
+  # t2's surrender would put the list past its 32 MB cap: t1's region —
+  # equal size, older stamp — was evicted to make room
+  local <- kio_pool_dump(p$ctrl)$local
+  expect_identical(local$fl_entries, 1L)
+  expect_lte(local$fl_bytes, 32 * 2^20)
+  pool_end(p)
+})
+
+test_that("a seventeenth distinct region evicts from the mapping cache", {
+  p <- pool_pair(result_slots = 256L)   # 32 per submitter: all outstanding
+  v <- runif(100)
+  # no collect until the end: no surrender, so every spill is a fresh
+  # region and the worker's 16-entry mapping cache must evict at the 17th
+  hs <- lapply(1:17, function(i) kio_submit(p$ctrl, sum(v) + i, v = v,
+                                            i = i))
+  for (i in 1:17) pool_step(p)
+  expect_identical(kio_pool_dump(p$wk)$local$open_misses, 17)
+  for (i in 1:17) expect_identical(kio_collect(hs[[i]], 5), sum(v) + i)
+  pool_end(p)
+})

@@ -44,6 +44,8 @@ test_that("invalid creates and opens error cleanly", {
                "cannot open")
   expect_error(.Call(kioto:::kio_region_name, new.env()),
                "not a kioto region handle")
+  expect_error(.Call(kioto:::kio_region_open, 42L, FALSE),
+               "expected a region name")
 })
 
 test_that("producer GC releases the name; live consumers keep reading", {

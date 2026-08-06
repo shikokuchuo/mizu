@@ -148,6 +148,24 @@ test_that("phase B: a same-shape x swaps in place; changes restage", {
   pool_end(p)
 })
 
+test_that("kio_map_run validates .seed and surfaces rearm slot exhaustion", {
+  p <- pool_pair()
+  pm <- kio_map_prepare(p$ctrl, 1:4, identity)
+  expect_error(kio_map_run(pm, .seed = "x"), ".seed must be")
+  held <- lapply(1:8, function(i) kio_submit(p$ctrl, v, v = i))
+  expect_error(kio_map_run(pm), class = "kio_error_slots_exhausted")
+  # both raised before the reset touched anything: the staged state is
+  # intact for a retry
+  expect_false(is.null(pm$st))
+  while (pool_step(p) == 1L) NULL
+  for (i in 1:8) expect_identical(kio_collect(held[[i]], timeout = 5), i)
+  kioto:::map_rearm(p$ctrl, pm$st, NULL)
+  kioto:::map_submit(p$ctrl, pm$st)
+  while (pool_step(p) == 1L) NULL
+  expect_identical(collect30(p$ctrl, pm$st), as.list(1:4))
+  pool_end(p)
+})
+
 test_that("phase B: kio_map_run(pm, x =) round-trips end to end", {
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)

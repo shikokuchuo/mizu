@@ -549,6 +549,113 @@ test_that("large generic chunk results spill and materialize intact", {
   pool_end(p)
 })
 
+test_that("a deadline already expired at submit stages no tasks", {
+  p <- pool_pair()
+  st <- kioto:::map_stage(p$ctrl, 1:4, identity, list())
+  kioto:::map_submit(p$ctrl, st, deadline = kioto:::mono_time() - 1)
+  expect_true(st$timed_out)
+  expect_true(all(vapply(st$handles, is.null, NA)))
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  pool_end(p)
+})
+
+test_that("blob-path collect times out, cancels, and re-signals f's errors", {
+  p <- pool_pair(slot_size = 512L)
+  f <- function(i) stop("blob boom")   # a conditional f overflows the budget
+  environment(f) <- globalenv()
+  # a deadline expiring before the loop enters cancels everything
+  st <- kioto:::map_stage(p$ctrl, 1:4, f, list(), chunks = 2)
+  expect_type(st$blob, "raw")
+  kioto:::map_submit(p$ctrl, st)
+  r <- kioto:::map_collect(p$ctrl, st, deadline = kioto:::mono_time() - 1)
+  expect_s3_class(r, "kio_timeout")
+  while (pool_step(p) == 1L) NULL     # dropped chunks free their slots
+  # one expiring while parked on an unpublished chunk returns it too
+  st <- kioto:::map_stage(p$ctrl, 1:4, f, list(), chunks = 2)
+  kioto:::map_submit(p$ctrl, st)
+  r <- kioto:::map_collect(p$ctrl, st, deadline = kioto:::mono_time() + 0.05)
+  expect_s3_class(r, "kio_timeout")
+  while (pool_step(p) == 1L) NULL
+  # f's error re-signals from the blob path with its element index
+  st <- kioto:::map_stage(p$ctrl, 1:4, f, list(), chunks = 2)
+  kioto:::map_submit(p$ctrl, st)
+  while (pool_step(p) == 1L) NULL
+  e <- tryCatch(collect30(p$ctrl, st), error = identity)
+  expect_identical(conditionMessage(e), "blob boom")
+  expect_identical(e$kio_map_index, 1)
+  gc()   # chunk 2's discarded ERR result frees with its dropped handle
+  expect_identical(unname(kio_pool_status(p$ctrl)$tasks), rep(0L, 5L))
+  pool_end(p)
+})
+
+test_that("seeded blob-path chunks draw the same per-element streams", {
+  p <- pool_pair(slot_size = 512L)
+  f <- function(i) rnorm(2)
+  environment(f) <- globalenv()
+  st <- kioto:::map_stage(p$ctrl, 1:4, f, list(), chunks = 2, seed = 42L)
+  expect_type(st$blob, "raw")
+  set.seed(1)
+  before <- .Random.seed
+  kioto:::map_submit(p$ctrl, st)
+  while (pool_step(p) == 1L) NULL
+  r <- collect30(p$ctrl, st)
+  # the evaluating process's RNG state is restored exactly ...
+  expect_identical(.Random.seed, before)
+  # ... and the draws match the region (template) path's for the same seed
+  rt <- run_map(p, 1:4, f, template = numeric(2), chunks = 4, seed = 42L)
+  for (j in 1:4) expect_identical(unname(rt[, j]), r[[j]])
+  # a worker with no .Random.seed yet is left with none, results unchanged
+  rm(".Random.seed", envir = globalenv())
+  st <- kioto:::map_stage(p$ctrl, 1:4, f, list(), chunks = 2, seed = 42L)
+  kioto:::map_submit(p$ctrl, st)
+  while (pool_step(p) == 1L) NULL
+  expect_identical(collect30(p$ctrl, st), r)
+  expect_false(exists(".Random.seed", envir = globalenv(),
+                      inherits = FALSE))
+  pool_end(p)
+})
+
+test_that("a ninth resident map context clears the worker cache whole", {
+  p <- pool_pair()
+  # nine maps with no empty step in between: no idle sweep runs, so the
+  # ninth miss finds eight resident contexts and drops them all first
+  for (k in 1:9) {
+    st <- kioto:::map_stage(p$ctrl, 1:2, identity, list())
+    kioto:::map_submit(p$ctrl, st)
+    expect_identical(pool_step(p), 1L)
+    expect_identical(collect30(p$ctrl, st), list(1L, 2L))
+  }
+  expect_identical(ls(.Call(kioto:::kio_pool_map_cache, p$wk)), st$name)
+  pool_end(p)
+})
+
+test_that("a runner failure outside f is fatal to the collect", {
+  p <- pool_pair()
+  st <- kioto:::map_stage(p$ctrl, 1:8, identity, list())
+  rw <- .Call(kioto:::kio_region_open, st$name, TRUE)
+  .Call(kioto:::kio_poke, rw, 0, as.raw(0))   # corrupt the region magic
+  kioto:::map_submit(p$ctrl, st)
+  pool_step(p)                # map_ctx's attach fails: no element index
+  e <- tryCatch(collect30(p$ctrl, st), error = identity)
+  expect_match(conditionMessage(e), "invalid map region")
+  expect_null(e$kio_map_index)
+  while (pool_step(p) == 1L) NULL
+  pool_end(p)
+})
+
+test_that("RNG stream arguments are validated; an empty lost set labels", {
+  base <- .Call(kioto:::kio_map_rng_base, 1L)
+  expect_error(.Call(kioto:::kio_map_rng_seek, 1:5, 1),
+               "invalid RNG stream state")
+  expect_error(.Call(kioto:::kio_map_rng_install, 1:5),
+               "invalid RNG stream state")
+  expect_error(.Call(kioto:::kio_map_rng_seek, base, -1),
+               "invalid stream index")
+  expect_identical(kioto:::map_ranges_label(cbind(lo = numeric(0),
+                                                  hi = numeric(0))),
+                   "(none)")
+})
+
 test_that("kio_map validates its arguments", {
   p <- pool_pair()
   expect_error(kio_map(p$ctrl, 1:4, identity, .template = list()),

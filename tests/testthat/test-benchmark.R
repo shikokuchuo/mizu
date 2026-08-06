@@ -87,6 +87,7 @@ test_that("pool task dispatch reports against the mirai baseline", {
 })
 
 test_that("kio_map reports against serial lapply and per-task dispatch", {
+  skip_on_cran()   # host + 2 workers exceeds 2 cores
   skip_if_no_child_kioto()
   p <- kio_pool(2L)
 

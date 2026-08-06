@@ -146,3 +146,64 @@ test_that("non-pool handles are rejected across the verb surface", {
   expect_error(kio_collect(NULL), "not a task handle")
   expect_error(kio_cancel(1L), "not a task handle")
 })
+
+test_that("attach rejects each corrupted pool header field", {
+  ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
+  suffix <- .Call(kioto:::kio_pool_suffix, ctrl)
+  rw <- .Call(kioto:::kio_region_open, kio_pool_status(ctrl)$name, TRUE)
+  hdr <- .Call(kioto:::kio_peek, rw, 0, 64)
+  corrupt <- function(off, bytes, msg) {
+    .Call(kioto:::kio_poke, rw, off, as.raw(bytes))
+    expect_error(.Call(kioto:::kio_pool_attach_call, suffix), msg)
+    .Call(kioto:::kio_poke, rw, 0, hdr)
+  }
+  corrupt(4, 99, "ABI version mismatch")
+  corrupt(8, 0, "registry capacities out of range")           # max_workers 0
+  corrupt(16, 3, "not valid powers of two")                    # inj_cap 3
+  corrupt(24, 63, "not a multiple of the submitter capacity")  # result_slots
+  corrupt(24, c(0, 0, 0, 1), "sections exceed the mapped region") # 2^24 slots
+  corrupt(48, 0, "liveness-dir string")                        # livedir_size 0
+  .Call(kioto:::kio_pool_destroy, ctrl)
+})
+
+test_that("dropping the controller handle shuts the pool down at GC", {
+  ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
+  suffix <- .Call(kioto:::kio_pool_suffix, ctrl)
+  rm(ctrl)
+  gc()
+  expect_error(.Call(kioto:::kio_pool_attach_call, suffix), "cannot open")
+})
+
+test_that("stop warns and reports FALSE when workers outlive the wait", {
+  p <- pool_pair()
+  # the in-process worker cannot exit: the bounded wait must expire
+  expect_warning(ok <- kio_pool_stop(p$ctrl, timeout = 0.2), "timed out")
+  expect_false(ok)
+  # the worker observes shutdown and leaves on its own path, as worker_main
+  expect_identical(.Call(kioto:::kio_pool_step, p$wk, 0), -1L)
+  .Call(kioto:::kio_pool_leave, p$wk)
+})
+
+test_that("kio_spawn_workers validates n and walks back a failed startup", {
+  ctrl <- .Call(kioto:::kio_pool_create, 2L, 8L, 64L, 64L, 64L, 256L)
+  expect_error(kio_spawn_workers(ctrl, 0L), "at least 1")
+  expect_error(kio_spawn_workers(ctrl, 3L), "not enough free worker slots")
+  expect_error(
+    kio_spawn_workers(ctrl, 1L, launcher = function(token, slot) NULL,
+                      startup_timeout = 0.2),
+    class = "kio_error_startup")
+  # the slot was never claimed: a later spawn can still take it
+  expect_identical(kio_pool_status(ctrl)$workers, c("free", "free"))
+  .Call(kioto:::kio_pool_destroy, ctrl)
+})
+
+test_that("worker-only entry points reject unfit handles", {
+  ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
+  expect_error(.Call(kioto:::kio_pool_set_eval, ctrl), "not a worker handle")
+  # a worker that never registered an evaluator refuses to step
+  wk <- .Call(kioto:::kio_pool_worker_join,
+              .Call(kioto:::kio_pool_suffix, ctrl), 0L)
+  expect_error(.Call(kioto:::kio_pool_step, wk, 0), "no evaluator registered")
+  .Call(kioto:::kio_pool_leave, wk)
+  .Call(kioto:::kio_pool_destroy, ctrl)
+})

@@ -329,6 +329,9 @@ static void pool_release(kio_pool *p) {
    caller's business (the finalizer cannot wait). */
 static void pool_shutdown_broadcast(kio_pool *p) {
   atomic_store_explicit(p->shutdown, 1u, memory_order_seq_cst);
+  /* no parkers means a create walked back before attaching them: the token
+     never left the process, so there is nobody to wake (and p->pks is NULL) */
+  if (!p->pk_ok) return;
   for (uint32_t i = 0; i < p->hdr.max_workers; i++)
     kio_unpark(pool_wk_pk(p, i));
   for (uint32_t j = 0; j < p->hdr.max_submitters; j++)

@@ -10,6 +10,7 @@
 # targets are always spawned processes, never children of fork.
 
 test_that("a worker killed mid-task fails exactly that task", {
+  skip_on_cran()   # host + 2 workers exceeds 2 cores
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   t <- kio_submit(p, {
@@ -96,6 +97,7 @@ test_that("collect's backstop probe reaps with no listener registered", {
 })
 
 test_that("a dead worker's queued deque work is consumed in place", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   # entries must stay inline for in-place consumption to be possible
   # everywhere: an out-of-line payload dies with its enqueuer on Windows
@@ -130,6 +132,7 @@ test_that("a dead worker's queued deque work is consumed in place", {
 })
 
 test_that("orphaned entries with spilled payloads drain without thief loss", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   d <- tfile()
@@ -170,6 +173,7 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
 })
 
 test_that("a worker's failed publish reaps the dead submitter", {
+  skip_on_cran()   # host + worker + attached submitter exceeds 2 cores
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 1L)
   f <- tfile()
@@ -199,6 +203,7 @@ test_that("a worker's failed publish reaps the dead submitter", {
 })
 
 test_that("the stop sweep reaps a killed submitter's published results", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 1L)
   f <- tfile()
@@ -218,6 +223,7 @@ test_that("the stop sweep reaps a killed submitter's published results", {
 })
 
 test_that("a killed controller's worker tears the orphan pool down", {
+  skip_on_cran()   # host + spawned controller + its worker exceeds 2 cores
   skip_if_no_child_kioto()
   f <- tfile()
   kioto:::kio_spawn(sprintf('
@@ -238,6 +244,7 @@ test_that("a killed controller's worker tears the orphan pool down", {
 })
 
 test_that("retire frees the slot; the pool keeps working and respawns", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   kio_retire_worker(p, 1L)

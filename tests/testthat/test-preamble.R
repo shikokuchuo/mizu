@@ -62,6 +62,11 @@ test_that("each corruption is caught before the ring protocol is engaged", {
                "rings exceed")
 
   xp <- new_channel_region()
+  poke(xp, 24, as.raw(c(0x00, 0x08)))           # arena -> 2048: arenas overflow
+  expect_error(.Call(kioto:::kio_preamble_validate_call, xp),
+               "arenas exceed")
+
+  xp <- new_channel_region()
   poke(xp, 36, as.raw(0x01))                    # drop offset past region end
   expect_error(.Call(kioto:::kio_preamble_validate_call, xp),
                "drop slot lies outside")

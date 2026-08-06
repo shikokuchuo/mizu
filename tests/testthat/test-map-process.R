@@ -15,6 +15,7 @@
 # dependent, so the gates remain for distribution determinism.
 
 test_that("a map's chunks spread across the workers", {
+  skip_on_cran()   # host + 2 workers exceeds 2 cores
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   expect_true(wait_until(kio_pool_status(p)$parked == 2L))
@@ -42,6 +43,7 @@ test_that("a map's chunks spread across the workers", {
 })
 
 test_that("an imbalanced map still returns in order, work balanced", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   expect_true(wait_until(kio_pool_status(p)$parked == 2L))
@@ -66,6 +68,7 @@ test_that("an imbalanced map still returns in order, work balanced", {
 })
 
 test_that("a worker killed mid-chunk fails the map with its element range", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   # parked before submit: with each push waking its own worker, exactly
@@ -118,7 +121,44 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   expect_true(kio_pool_stop(p))
 })
 
+test_that("worker death fails a blob-path map with the chunk's exact range", {
+  skip_on_cran()
+  skip_if_no_child_kioto()
+  # slot_size 1024: this f's chunk payload overflows the default budget
+  p <- kio_pool(n_workers = 2L, slot_size = 1024L)
+  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  f <- function(i) {
+    if (i > 2L) Sys.sleep(30)
+    i
+  }
+  environment(f) <- globalenv()
+  st <- kioto:::map_stage(p, 1:4, f, list(), chunks = 2)
+  expect_type(st$blob, "raw")
+  kioto:::map_submit(p, st)
+  # the same park-gated submit and deterministic victim selection as the
+  # region-path test above
+  victim <- -1
+  expect_true(wait_until({
+    d <- kio_pool_dump(p)
+    pend <- d$tasks[d$tasks$status == "pending", ]
+    hit <- any(d$tasks$status == "ok") && nrow(pend) == 1L &&
+      pend$worker >= 0L
+    if (hit) victim <- d$workers$pid[pend$worker + 1L]
+    hit
+  }, timeout = 10))
+  stopifnot(victim > 0)   # a failed gate must never reach kill(-1)
+  kill_hard(victim)
+  e <- tryCatch(kioto:::map_collect(p, st,
+                                    deadline = kioto:::mono_time() + 30),
+                error = identity)
+  expect_s3_class(e, "kio_error_worker_died")
+  # blob chunks are fixed ranges: the lost set is the dead chunk, exactly
+  expect_identical(e$elements, cbind(lo = 3, hi = 4))
+  expect_true(kio_pool_stop(p))
+})
+
 test_that("worker death on the template path never exposes partial output", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   expect_true(wait_until(kio_pool_status(p)$parked == 2L))
@@ -241,6 +281,7 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
 })
 
 test_that("a nested map fans out over the deque and peers steal it", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   # nested chunks live on the outer worker's own deque, so the peer's only
@@ -264,6 +305,7 @@ test_that("a nested map fans out over the deque and peers steal it", {
 })
 
 test_that(".seed maps are identical across worker counts and chunkings", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   f <- function(i) rnorm(2L)
   p1 <- kio_pool(n_workers = 1L)
@@ -278,6 +320,7 @@ test_that(".seed maps are identical across worker counts and chunkings", {
 })
 
 test_that("a mori-shared x rides the descriptor as its identifier", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   skip_if_not_installed("mori")
   x <- mori::share(as.numeric(1:100) * 0.5)
@@ -290,6 +333,7 @@ test_that("a mori-shared x rides the descriptor as its identifier", {
 })
 
 test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   st <- kioto:::map_stage(p, 1:40, function(i) {
@@ -313,6 +357,7 @@ test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
 })
 
 test_that("a map submitted into a busy pool regains freed workers", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   expect_true(wait_until(kio_pool_status(p)$parked == 2L))
@@ -346,6 +391,7 @@ test_that("a map submitted into a busy pool regains freed workers", {
 })
 
 test_that("killing the re-homer leaves no wedge: the survivor drains", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   expect_true(wait_until(kio_pool_status(p)$parked == 2L))
@@ -394,6 +440,7 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
 })
 
 test_that("kio_pool_stop mid-map returns clean within ~a batch", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   st <- kioto:::map_stage(p, 1:200, function(i) {
@@ -410,6 +457,7 @@ test_that("kio_pool_stop mid-map returns clean within ~a batch", {
 })
 
 test_that("a short map completes on free workers while a peer is pinned", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   pin <- kio_submit(p, Sys.sleep(2))

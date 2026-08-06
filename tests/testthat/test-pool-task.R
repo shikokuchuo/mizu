@@ -206,3 +206,47 @@ test_that("a destroyed pool invalidates outstanding task handles", {
   pool_end(p)                            # broadcast CANCELs it
   expect_error(kio_collect(t, timeout = 5), "pool handle is closed")
 })
+
+test_that("collect_try boxes a cancellation instead of raising", {
+  p <- pool_pair()
+  t <- kio_submit(p$ctrl, 1L)
+  kio_cancel(t)
+  v <- .Call(kioto:::kio_pool_collect_try, t, 0)
+  expect_s3_class(v, "kio_caught")
+  expect_s3_class(v[[1L]], "kio_error_cancelled")
+  pool_step(p)
+  pool_end(p)
+})
+
+test_that("a corrupt task payload is infrastructure failure, not the task's", {
+  p <- pool_pair()
+  t1 <- .Call(kioto:::kio_pool_submit, p$ctrl, list(quote(1L), "args"),
+              Inf, 0L)
+  t2 <- .Call(kioto:::kio_pool_submit, p$ctrl,
+              list(quote(1L), list(2L)), Inf, 0L)   # unnamed argument list
+  # the shape check fires before the in_eval gate arms: the error is not
+  # attributable to the task and stays fatal to the step
+  expect_error(pool_step(p), "corrupt task payload")
+  expect_error(pool_step(p), "corrupt task payload")
+  # the claims were consumed but never published: cancel the stranded slots
+  kio_cancel(t1)
+  kio_cancel(t2)
+  # the next step heals the dangling announce; the worker keeps serving
+  t3 <- kio_submit(p$ctrl, "alive")
+  pool_step(p)
+  expect_identical(kio_collect(t3, timeout = 5), "alive")
+  pool_end(p)
+})
+
+test_that("a trace-hook error outside any task eval is not attributed", {
+  p <- pool_pair()
+  kio_pool_trace(p$wk, function(event, id)
+    if (event == "done") stop("hook boom"))
+  t <- kio_submit(p$ctrl, 42L)
+  # the hook fires after the publish: fail_inflight refuses the error and
+  # the step's caller must treat it as infrastructure failure
+  expect_error(pool_step(p), "hook boom")
+  expect_identical(kio_collect(t, timeout = 5), 42L)
+  kio_pool_trace(p$wk, NULL)
+  pool_end(p)
+})

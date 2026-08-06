@@ -52,6 +52,7 @@ test_that("a task error carries its condition across processes", {
 })
 
 test_that("a second process attaches as a submitter and collects", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool()
   suffix <- .Call(kioto:::kio_pool_suffix, p)
@@ -63,6 +64,33 @@ test_that("a second process attaches as a submitter and collects", {
   ', suffix, deparse(f)))
   expect_true(wait_for_file(f, timeout = 30))
   expect_true(wait_until(identical(readLines(f), "42")))
+  expect_true(kio_pool_stop(p, timeout = 10))
+})
+
+test_that("two processes submit concurrently to one pool", {
+  skip_on_cran()   # host + attached submitter + 2 workers exceeds 2 cores
+  skip_if_no_child_kioto()
+  p <- kio_pool(2L)
+  suffix <- .Call(kioto:::kio_pool_suffix, p)
+  ready <- tfile()
+  done <- tfile()
+  kioto:::kio_spawn(sprintf('
+    q <- kioto::kio_pool_attach("%s")
+    file.create(%s)
+    r <- vapply(1:20, function(i)
+      kioto::kio_collect(kioto::kio_submit(q, x + 1L, x = i), timeout = 30),
+      integer(1))
+    writeLines(as.character(sum(r)), %s)
+  ', suffix, deparse(ready), deparse(done)))
+  # the handshake guarantees overlap: the host's round trips below run
+  # while the attached submitter drives its own, each ring consumed by
+  # both workers, results routed to each submitter's own slot partition
+  expect_true(wait_for_file(ready, timeout = 30))
+  r <- vapply(1:20, function(i)
+    kio_collect(kio_submit(p, x * 2L, x = i), timeout = 30), integer(1))
+  expect_identical(r, (1:20) * 2L)
+  expect_true(wait_for_file(done, timeout = 30))
+  expect_true(wait_until(identical(readLines(done), "230")))
   expect_true(kio_pool_stop(p, timeout = 10))
 })
 
@@ -116,6 +144,7 @@ test_that("stop cancels a pending task and the worker exits cleanly", {
 })
 
 test_that("a second worker picks up tasks while the first is busy", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   expect_identical(kio_pool_status(p)$workers, c("live", "live"))
@@ -132,6 +161,7 @@ test_that("a second worker picks up tasks while the first is busy", {
 })
 
 test_that("repeated submit/collect cycles park and wake without loss", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   # an idle pool parks both workers; each cycle below is a fresh wake —
@@ -145,6 +175,7 @@ test_that("repeated submit/collect cycles park and wake without loss", {
 })
 
 test_that("nested fan-out runs with help mode and stealing live", {
+  skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
   # the outer worker pushes eight subtasks and help-pops from its bottom
@@ -158,6 +189,24 @@ test_that("nested fan-out runs with help mode and stealing live", {
     sum(vapply(subs, function(s) kio_collect(s, timeout = 30), integer(1)))
   })
   expect_identical(kio_collect(t, timeout = 30), 72L)
+  expect_true(kio_pool_stop(p, timeout = 10))
+})
+
+test_that("a trace-hook error takes the worker down as infrastructure", {
+  skip_if_no_child_kioto()
+  errfile <- tfile()
+  p <- kio_pool(launcher = kio_launcher(stderr = errfile))
+  t <- kio_submit(p, kio_pool_trace(pool, function(event, id)
+    if (event == "done") stop("hook boom")))
+  # the install task's own publish fires the hook it installed: the result
+  # is already out, then the error — outside any task eval — is fatal
+  expect_null(kio_collect(t, timeout = 30))
+  expect_true(wait_until(file.exists(errfile) &&
+                           any(grepl("kioto worker error: hook boom",
+                                     readLines(errfile, warn = FALSE))),
+                         timeout = 30))
+  # the dying worker released its slot on the way out
+  expect_true(wait_until(kio_pool_status(p)$workers == "free", timeout = 30))
   expect_true(kio_pool_stop(p, timeout = 10))
 })
 
