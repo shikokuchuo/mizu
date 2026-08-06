@@ -85,7 +85,7 @@ typedef struct kio_pool_s {
                                     not yet restored: gates the entry heal */
   int help_depth;                /* nested-collect help recursion depth */
   /* identity of the outermost (unwind-path) task eval, for
-     kio_pool_fail_inflight: written only by catching = 0 executes — inner
+     kio_pool_run_outcome: written only by catching = 0 executes — inner
      help / inline recursion clears the shm announce, so it cannot serve
      the unwind path */
   int in_eval;
@@ -459,7 +459,7 @@ static SEXP pool_eval_env(SEXP xp) {
    Two error disciplines, chosen by the caller. The worker loop's hot path
    (catching = 0) arms no handler at all: a user error longjmps out of
    kio_pool_step and worker_main publishes the caught condition as this
-   task's ERR result through kio_pool_fail_inflight — the in_eval flag is
+   task's ERR result through kio_pool_run_outcome — the in_eval flag is
    what separates those errors from infrastructure failure, which stays
    fatal. Help mode and nested submit's inline execute (catching = 1) run
    inside a task's own evaluation, where an escaping error would land in
@@ -1598,10 +1598,10 @@ static size_t pool_entry_copy_bytes(kio_pool *p, const kio_entry_hdr *eh) {
 
 static void pool_copy_entry(kio_pool *p, unsigned char *dst,
                             const unsigned char *src) {
-  memcpy(dst, src, sizeof(kio_entry_hdr));
-  size_t n = pool_entry_copy_bytes(p, (const kio_entry_hdr *) dst);
-  memcpy(dst + sizeof(kio_entry_hdr), src + sizeof(kio_entry_hdr),
-         n - sizeof(kio_entry_hdr));
+  kio_entry_hdr hdr;
+  memcpy(&hdr, src, sizeof(hdr));
+  size_t n = pool_entry_copy_bytes(p, &hdr);
+  memcpy(dst, src, n);
 }
 
 /* Mirror the local counters into the slot — only at the park announce,
@@ -2145,7 +2145,7 @@ static void pool_orphan_teardown_try(kio_pool *p) {
 }
 
 /* The publish tail shared by pool_execute and the unwind path
-   (kio_pool_fail_inflight): stage the outcome into the result slot, CAS it
+   (kio_pool_run_outcome): stage the outcome into the result slot, CAS it
    OK/ERR, pin the keeper, wake the waiter — or consume a concurrent CANCEL
    and probe the (possibly dead) submitter. Retires the in-flight announce.
    Payload writes are plain stores into a slot no allocator can touch
@@ -2278,34 +2278,45 @@ static void pool_execute(kio_pool *p, SEXP xp, int catching) {
   pool_trace_emit(xp, published ? (ok ? "done" : "error") : "drop", task_id);
 }
 
-/* The unwind path's publisher, called from R — worker_main, or the test
-   harness's step wrapper — with the condition caught after a task's eval
-   longjmped out of kio_pool_step. Publishes it as that task's ERR result
-   and reports TRUE; FALSE means the error did not come from inside a task
-   eval and the caller must treat it as fatal infrastructure failure. The
-   in_eval gate is what keeps errors from staging, payload reads, or trace
-   hooks on the fatal path. */
-SEXP kio_pool_fail_inflight(SEXP xp, SEXP cond) {
+/* worker_main's dispatcher for whatever kio_pool_run produced, and the
+   test harness's unwind-path publisher. An integer is the run's exit
+   code — no error at all — and passes through for R to end its loop on
+   (a caught condition is never INTSXP, so the dispatch is exact). A
+   condition's task eval longjmped out of the loop: publish it as that
+   task's ERR result and return 0 to continue. 1 means the error did not
+   come from inside a task eval and the caller must treat it as fatal
+   infrastructure failure. The in_eval gate is what keeps errors from
+   staging, payload reads, or trace hooks on the fatal path. */
+SEXP kio_pool_run_outcome(SEXP xp, SEXP cond) {
   kio_pool *p = pool_get(xp);
   if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
     Rf_error("kioto: not a worker handle");
+  if (TYPEOF(cond) == INTSXP)
+    return cond;
   if (!p->in_eval)
-    return Rf_ScalarLogical(0);
+    return Rf_ScalarInteger(1);
   p->in_eval = 0;
   p->st_tasks++;
   int published = pool_publish_result(p, xp, p->cur_rs_index,
                                       p->cur_sub_slot, p->cur_seq, 0, cond);
   pool_trace_emit(xp, published ? "error" : "drop", p->cur_task_id);
-  return Rf_ScalarLogical(1);
+  return Rf_ScalarInteger(0);
 }
 
-/* One worker-loop iteration: reap keepers, check flags, claim + execute one
-   task or park. Returns 1 after executing a task, 0 on timeout / spurious
-   wake, -1 on shutdown or owner death. The R-level worker_main loops over
-   this; the in-process test harness single-steps it. The evaluator comes
-   from the handle (kio_pool_set_eval), checked up front so a claim can
-   never outrun a missing evaluator. */
-SEXP kio_pool_step(SEXP xp, SEXP timeout) {
+/* The worker loop, shared by its two entry points. kio_pool_step
+   (single = 1) runs one iteration — claim + execute one task or park —
+   returning 1 after a task, 0 on timeout, -1 on shutdown or owner death,
+   -2 on retire; the in-process test harness single-steps it. kio_pool_run
+   (single = 0), worker_main's loop, stays in C across tasks and returns
+   only the negative exits; a task error still longjmps to worker_main's
+   tryCatch, which publishes through kio_pool_run_outcome and re-enters.
+   Two per-task disciplines replace what the R round-trip provided
+   implicitly: an interrupt check after each execute (the R repeat's
+   back-edge check) and a deadline recompute at park-timeout expiry (the
+   re-entry's fresh timeout). The evaluator comes from the handle
+   (kio_pool_set_eval), checked up front so a claim can never outrun a
+   missing evaluator. */
+static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
   kio_pool *p = pool_get(xp);
   if (p->role != KIO_ROLE_WORKER || p->wk_slot < 0)
     Rf_error("kioto: not a worker handle");
@@ -2350,7 +2361,9 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
 
     if (pool_next_task(p)) {
       pool_execute(p, xp, 0);
-      return Rf_ScalarInteger(1);
+      if (single) return Rf_ScalarInteger(1);
+      R_CheckUserInterrupt();
+      continue;
     }
 
     if (timeout_s <= 0) {
@@ -2418,9 +2431,18 @@ SEXP kio_pool_step(SEXP xp, SEXP timeout) {
     R_CheckUserInterrupt();
     if (deadline >= 0 && kio_now() >= deadline) {
       pool_idle_sweep(p, xp);
-      return Rf_ScalarInteger(0);
+      if (single) return Rf_ScalarInteger(0);
+      deadline = kio_now() + timeout_s;
     }
   }
+}
+
+SEXP kio_pool_step(SEXP xp, SEXP timeout) {
+  return pool_step_impl(xp, timeout, 1);
+}
+
+SEXP kio_pool_run(SEXP xp, SEXP timeout) {
+  return pool_step_impl(xp, timeout, 0);
 }
 
 /* Test-only: claim up to n injection entries and queue them on this

@@ -82,7 +82,8 @@ SEXP kio_pool_attach_call(SEXP);
 SEXP kio_pool_submit(SEXP, SEXP, SEXP, SEXP);
 SEXP kio_pool_submit_try(SEXP, SEXP, SEXP, SEXP);
 SEXP kio_pool_step(SEXP, SEXP);
-SEXP kio_pool_fail_inflight(SEXP, SEXP);
+SEXP kio_pool_run(SEXP, SEXP);
+SEXP kio_pool_run_outcome(SEXP, SEXP);
 SEXP kio_pool_set_eval(SEXP);
 SEXP kio_pool_set_trace(SEXP, SEXP);
 SEXP kio_pool_deque_pull(SEXP, SEXP);
@@ -172,7 +173,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_pool_submit",           (DL_FUNC) &kio_pool_submit,           4},
   {"kio_pool_submit_try",       (DL_FUNC) &kio_pool_submit_try,       4},
   {"kio_pool_step",             (DL_FUNC) &kio_pool_step,             2},
-  {"kio_pool_fail_inflight",    (DL_FUNC) &kio_pool_fail_inflight,    2},
+  {"kio_pool_run",              (DL_FUNC) &kio_pool_run,              2},
+  {"kio_pool_run_outcome",      (DL_FUNC) &kio_pool_run_outcome,      2},
   {"kio_pool_set_eval",         (DL_FUNC) &kio_pool_set_eval,         1},
   {"kio_pool_set_trace",        (DL_FUNC) &kio_pool_set_trace,        2},
   {"kio_pool_deque_pull",       (DL_FUNC) &kio_pool_deque_pull,       2},

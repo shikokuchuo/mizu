@@ -491,13 +491,17 @@ kio_pool_trace <- function(pool, fn = NULL) {
 # name's suffix), attaches writable, validates the header,
 # claims its host-assigned slot (liveness lock before status CAS), points
 # its death listener at the owner, and unparks the creator on reaching
-# LIVE. The loop then lives in kio_pool_step: one claim in tier order
-# (fairness tick, own deque, steal, injection) per task, parked indefinitely
-# when idle, returning negative on shutdown or owner death. The eval hot
-# path arms no error handler: a task error longjmps out of the step and
-# kio_pool_fail_inflight publishes the caught condition as that task's ERR
-# result — FALSE marks an error from outside any task eval, which is
-# infrastructure failure and takes the worker down.
+# LIVE. The loop then lives in kio_pool_run: claims in tier order
+# (fairness tick, own deque, steal, injection), parked indefinitely when
+# idle, returning only on shutdown, owner death, or retire — the per-task
+# R round-trip is replaced by an interrupt check and a deadline recompute
+# in C. kio_pool_step remains for the test harness's single-stepping. The
+# eval hot path arms no error handler: a task error longjmps out of the
+# run, and kio_pool_run_outcome dispatches on what the run produced —
+# an exit code passes through to end the loop, a caught condition is
+# published as that task's ERR result, and 1 marks an error from outside
+# any task eval, which is infrastructure failure and takes the worker
+# down.
 worker_main <- function(token, slot) {
   if (!"package:kioto" %in% search()) {
     attachNamespace("kioto")
@@ -507,20 +511,12 @@ worker_main <- function(token, slot) {
   status <- 0L
   rc <- -1L
   repeat {
-    e <- tryCatch(
-      {
-        repeat {
-          rc <- .Call(kio_pool_step, h, 3600)
-          if (rc < 0L) break
-        }
-        NULL
-      },
-      error = function(e) e
-    )
-    if (is.null(e)) {
+    e <- tryCatch(.Call(kio_pool_run, h, 3600), error = function(e) e)
+    rc <- .Call(kio_pool_run_outcome, h, e)
+    if (rc < 0L) {
       break
     }
-    if (!.Call(kio_pool_fail_inflight, h, e)) {
+    if (rc > 0L) {
       cat(
         "kioto worker error: ",
         conditionMessage(e),
