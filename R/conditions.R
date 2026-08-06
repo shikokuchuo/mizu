@@ -65,8 +65,9 @@ NULL
 # Raise a classed kioto error — class c(subclass, "kio_error", "error",
 # "condition"), structured fields in `...` — matching the C-side kio_stop
 # (condition.c).
-stop_kio <- function(subclass, message, ...)
+stop_kio <- function(subclass, message, ...) {
   stop(errorCondition(message, ..., class = c(subclass, "kio_error")))
+}
 
 #' Test for a kioto Sentinel
 #'

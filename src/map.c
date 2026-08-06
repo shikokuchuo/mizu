@@ -17,9 +17,11 @@
 #define KIO_MAP_MAGIC 0x4B494F4Du   /* "KIOM" */
 
 static SEXP kio_map_tag;
+static SEXP kio_rs_sym;
 
 void kio_map_init(void) {
   kio_map_tag = Rf_install("kio_map");
+  kio_rs_sym = Rf_install(".Random.seed");
 }
 
 enum { KIO_MAP_X_DESC = 0, KIO_MAP_X_RAWVEC };
@@ -393,12 +395,10 @@ SEXP kio_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
 /* Template-path write of element e's value at its disjoint output-area
    offset. "Like vapply" means exactly vapply, coercions included: exact
    type memcpys, an upward coercion (logical -> integer -> double ->
-   complex) goes through R's own coerceVector so NA semantics match. */
-SEXP kio_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
-  kio_map_h *mh = map_h_get(xp);
-  if (mh->h.out_sexptype == 0)
-    Rf_error("kioto: map region has no output area");
-  double e = Rf_asReal(e_sexp);
+   complex) goes through R's own coerceVector so NA semantics match.
+   Shared by kio_map_write and the batch loop; protects value itself, so
+   an unprotected Rf_eval result can ride in. */
+static void map_write_value(kio_map_h *mh, double e, SEXP value) {
   if (!(e >= 1) || e > (double) mh->h.n)
     Rf_error("kioto: map element index out of range");
   int vt = TYPEOF(value), ot = (int) mh->h.out_sexptype;
@@ -409,13 +409,122 @@ SEXP kio_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
   if (!widens || Rf_xlength(value) != (R_xlen_t) mh->h.out_m)
     Rf_error("kioto: map values must be type '%s' and length %llu",
              map_type_name(ot), (unsigned long long) mh->h.out_m);
-  if (vt != ot) value = Rf_coerceVector(value, (SEXPTYPE) ot);
   PROTECT(value);
+  if (vt != ot) value = PROTECT(Rf_coerceVector(value, (SEXPTYPE) ot));
   memcpy((unsigned char *) mh->shm->addr + mh->h.out_off +
          (size_t) (e - 1) * (mh->h.out_m * mh->h.out_elt_size),
          kio_vec_ptr(value), (size_t) (mh->h.out_m * mh->h.out_elt_size));
-  UNPROTECT(1);
+  UNPROTECT(vt != ot ? 2 : 1);
+}
+
+SEXP kio_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
+  kio_map_h *mh = map_h_get(xp);
+  if (mh->h.out_sexptype == 0)
+    Rf_error("kioto: map region has no output area");
+  map_write_value(mh, Rf_asReal(e_sexp), value);
   return R_NilValue;
+}
+
+/* One batch's whole element loop, in C — what lapply does: the call
+   f(elt, ...) is built once with the constant dots spliced in (names
+   preserved), and only the element cell's CAR is swapped per iteration
+   under Rf_eval in the caller's frame (rho), matching do.call's
+   parent.frame() semantics. Absorbs the two other per-element .Calls:
+   template writes go straight to the output area (xp NULL — the blob
+   path — is always generic), and the seeded path installs and jumps the
+   CMRG state inline, exactly kio_map_rng_install's per-element step.
+   ei_sexp is an R-allocated REALSXP(1) cell the loop stamps with the
+   in-flight element index before each eval, so the R side's one
+   tryCatch per batch annotates an escaping error with the failing
+   element — the "first by element index" contract. x is the batch's
+   source vector (the RAWVEC slice, or the descriptor x) and base its
+   0-based offset of element lo. Returns the batch's value list, or NULL
+   on the template path. */
+SEXP kio_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
+                   SEXP lo_sexp, SEXP hi_sexp, SEXP sr, SEXP ei_sexp,
+                   SEXP rho) {
+  kio_map_h *mh = xp == R_NilValue ? NULL : map_h_get(xp);
+  int tmpl = mh != NULL && mh->h.out_sexptype != 0;
+  double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
+  double base = Rf_asReal(base_sexp);
+  if (!(lo >= 1) || !(hi >= lo) || !(base >= 0) ||
+      base + (hi - lo + 1) > (double) XLENGTH(x) ||
+      (tmpl && hi > (double) mh->h.n))
+    Rf_error("kioto: invalid map batch range");
+  if (dots != R_NilValue && TYPEOF(dots) != VECSXP)
+    Rf_error("kioto: invalid map dots");
+  if (TYPEOF(ei_sexp) != REALSXP || XLENGTH(ei_sexp) != 1)
+    Rf_error("kioto: invalid element-index cell");
+  if (TYPEOF(rho) != ENVSXP)
+    Rf_error("kioto: invalid evaluation environment");
+  double *ei = REAL(ei_sexp);
+  R_xlen_t len = (R_xlen_t) (hi - lo + 1);
+  R_xlen_t base0 = (R_xlen_t) base;
+
+  int state[6];
+  int seeded = sr != R_NilValue;
+  if (seeded) {
+    if (TYPEOF(sr) != INTSXP || XLENGTH(sr) != 6)
+      Rf_error("kioto: invalid RNG stream state");
+    memcpy(state, INTEGER(sr), 6 * sizeof(int));
+  }
+
+  R_xlen_t ndots = dots == R_NilValue ? 0 : XLENGTH(dots);
+  SEXP args = PROTECT(Rf_allocList((int) (1 + ndots)));
+  SEXP elt_cell = args;
+  SEXP tail = elt_cell;
+  SEXP dnames = ndots > 0 ? Rf_getAttrib(dots, R_NamesSymbol) : R_NilValue;
+  for (R_xlen_t j = 0; j < ndots; j++) {
+    tail = CDR(tail);
+    SETCAR(tail, VECTOR_ELT(dots, j));
+    if (dnames != R_NilValue) {
+      SEXP nm = STRING_ELT(dnames, j);
+      if (nm != NA_STRING && CHAR(nm)[0] != '\0')
+        SET_TAG(tail, Rf_install(CHAR(nm)));
+    }
+  }
+  SEXP call = PROTECT(Rf_lcons(f, args));
+
+  SEXP out = R_NilValue;
+  int np = 2;
+  if (!tmpl) {
+    out = PROTECT(Rf_allocVector(VECSXP, len));
+    np++;
+  }
+  const int xt = TYPEOF(x);
+  for (R_xlen_t i = 0; i < len; i++) {
+    if ((i & 63) == 0) R_CheckUserInterrupt();
+    double e = lo + (double) i;
+    *ei = e;
+    if (seeded) {
+      SEXP seedv = PROTECT(Rf_allocVector(INTSXP, 7));
+      INTEGER(seedv)[0] = 10407;
+      memcpy(INTEGER(seedv) + 1, state, 6 * sizeof(int));
+      Rf_defineVar(kio_rs_sym, seedv, R_GlobalEnv);
+      UNPROTECT(1);
+      kio_rng_jump(state);
+    }
+    R_xlen_t idx = base0 + i;
+    SEXP elt;
+    switch (xt) {
+    case VECSXP: case EXPRSXP:
+      elt = VECTOR_ELT(x, idx);
+      break;
+    case LGLSXP:  elt = Rf_ScalarLogical(LOGICAL(x)[idx]); break;
+    case INTSXP:  elt = Rf_ScalarInteger(INTEGER(x)[idx]); break;
+    case REALSXP: elt = Rf_ScalarReal(REAL(x)[idx]); break;
+    case CPLXSXP: elt = Rf_ScalarComplex(COMPLEX(x)[idx]); break;
+    case RAWSXP:  elt = Rf_ScalarRaw(RAW(x)[idx]); break;
+    case STRSXP:  elt = Rf_ScalarString(STRING_ELT(x, idx)); break;
+    default:      Rf_error("kioto: unsupported map element type");
+    }
+    SETCAR(elt_cell, elt);
+    SEXP v = Rf_eval(call, rho);
+    if (tmpl) map_write_value(mh, e, v);
+    else SET_VECTOR_ELT(out, i, v);
+  }
+  UNPROTECT(np);
+  return out;
 }
 
 /* Submitter-side assembly: n × m results move cross-process exactly once,

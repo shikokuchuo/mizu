@@ -303,6 +303,10 @@ void kio_parker_detach(kio_parker *pk);
 double kio_now(void);
 long kio_self_pid(void);
 
+/* One 2^127-step CMRG stream jump in place (rng.c); the map batch loop's
+   per-element step. */
+void kio_rng_jump(int *seed);
+
 static inline uint32_t kio_parker_snapshot(const kio_parker *pk) {
   return atomic_load_explicit(pk->epoch, memory_order_acquire);
 }

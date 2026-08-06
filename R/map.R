@@ -28,8 +28,10 @@ map_runner_ref <- str2lang("kioto:::map_runner")
 # One blob-path chunk task's wire payload: map_chunk(pool, r, b[, s]).
 map_payload <- function(st, r) {
   seeded <- !is.null(st$seed_state)
-  expr <- as.call(c(list(map_chunk_ref, quote(pool), r, st$blob),
-                    if (seeded) list(st$seed_state)))
+  expr <- as.call(c(
+    list(map_chunk_ref, quote(pool), r, st$blob),
+    if (seeded) list(st$seed_state)
+  ))
   list(expr, list())
 }
 
@@ -39,9 +41,10 @@ map_payload <- function(st, r) {
 # fitting a slot_size = 256 entry budget and not).
 runner_payload <- function(st, r) {
   seeded <- !is.null(st$seed_state)
-  expr <- as.call(c(list(map_runner_ref, quote(pool), st$name,
-                         c(r, st$gen, if (st$direct) 1)),
-                    if (seeded) list(st$seed_state)))
+  expr <- as.call(c(
+    list(map_runner_ref, quote(pool), st$name, c(r, st$gen, if (st$direct) 1)),
+    if (seeded) list(st$seed_state)
+  ))
   list(expr, list())
 }
 
@@ -213,11 +216,21 @@ mono_time <- function() proc.time()[[3L]]
 #'
 #' @importFrom utils removeSource
 #' @export
-kio_map <- function(pool, x, f, ..., .template = NULL, .chunks = NULL,
-                    .seed = NULL, .timeout = Inf) {
+kio_map <- function(
+  pool,
+  x,
+  f,
+  ...,
+  .template = NULL,
+  .chunks = NULL,
+  .seed = NULL,
+  .timeout = Inf
+) {
   f <- match.fun(f)
   map_template_check(.template)
-  if (length(x) == 0L) return(map_empty(x, .template))
+  if (length(x) == 0L) {
+    return(map_empty(x, .template))
+  }
   st <- map_stage(pool, x, f, list(...), .template, .chunks, .seed)
   map_run(pool, st, .timeout)
 }
@@ -232,7 +245,9 @@ map_run <- function(pool, st, timeout) {
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
   on.exit(map_cancel(st))
   map_submit(pool, st, deadline)
-  if (st$timed_out) return(.Call(kio_map_timeout_call))
+  if (st$timed_out) {
+    return(.Call(kio_map_timeout_call))
+  }
   map_collect(pool, st, deadline)
 }
 
@@ -282,8 +297,7 @@ map_run <- function(pool, st, timeout) {
 #' }
 #'
 #' @export
-kio_map_prepare <- function(pool, x, f, ..., .template = NULL,
-                            .chunks = NULL) {
+kio_map_prepare <- function(pool, x, f, ..., .template = NULL, .chunks = NULL) {
   f <- match.fun(f)
   map_template_check(.template)
   pm <- new.env(parent = emptyenv())
@@ -293,8 +307,9 @@ kio_map_prepare <- function(pool, x, f, ..., .template = NULL,
   pm$dots <- list(...)
   pm$template <- .template
   pm$chunks <- .chunks
-  if (length(x) > 0L)
+  if (length(x) > 0L) {
     pm$st <- map_stage(pool, x, f, pm$dots, .template, .chunks)
+  }
   class(pm) <- "kio_map_prepared"
   pm
 }
@@ -313,17 +328,21 @@ kio_map_prepare <- function(pool, x, f, ..., .template = NULL,
 #' @param pm a prepared-map handle from [kio_map_prepare()].
 #' @export
 kio_map_run <- function(pm, x = NULL, .seed = NULL, .timeout = Inf) {
-  if (!inherits(pm, "kio_map_prepared"))
+  if (!inherits(pm, "kio_map_prepared")) {
     stop("kioto: not a prepared-map handle", call. = FALSE)
-  if (!is.null(x)) map_swap_x(pm, x)
-  if (length(pm$x) == 0L) return(map_empty(pm$x, pm$template))
+  }
+  if (!is.null(x)) {
+    map_swap_x(pm, x)
+  }
+  if (length(pm$x) == 0L) {
+    return(map_empty(pm$x, pm$template))
+  }
   st <- pm$st
   if (is.null(st)) {
     # unclean previous run (or a prior restage failure): stage afresh — a
     # straggler against the old region dies at its exhausted cursor or
     # stale-generation claim word, and the region unlinks at GC
-    st <- map_stage(pm$pool, pm$x, pm$f, pm$dots, pm$template, pm$chunks,
-                    .seed)
+    st <- map_stage(pm$pool, pm$x, pm$f, pm$dots, pm$template, pm$chunks, .seed)
   } else {
     # a rearm failure (transient slot exhaustion) raises before the reset
     # touches anything, so the staged state stays good for a retry; from
@@ -332,7 +351,9 @@ kio_map_run <- function(pm, x = NULL, .seed = NULL, .timeout = Inf) {
     pm$st <- NULL
   }
   r <- map_run(pm$pool, st, .timeout)
-  if (!inherits(r, "kio_timeout")) pm$st <- st
+  if (!inherits(r, "kio_timeout")) {
+    pm$st <- st
+  }
   r
 }
 
@@ -345,11 +366,14 @@ kio_map_run <- function(pm, x = NULL, .seed = NULL, .timeout = Inf) {
 # so shape or type changes must re-key the region).
 map_swap_x <- function(pm, x) {
   st <- pm$st
-  swappable <- !is.null(st) && is.null(st$blob) && isTRUE(st$xraw) &&
-    typeof(x) == typeof(pm$x) && length(x) == length(pm$x) &&
+  swappable <- !is.null(st) &&
+    is.null(st$blob) &&
+    isTRUE(st$xraw) &&
+    typeof(x) == typeof(pm$x) &&
+    length(x) == length(pm$x) &&
     .Call(kio_map_eligible, x) >= 0 &&
     (is.null(attributes(x)) ||
-       identical(names(attributes(x)), "names"))
+      identical(names(attributes(x)), "names"))
   pm$x <- x
   if (swappable) {
     .Call(kio_map_swap_x, st$wrap, x)
@@ -369,19 +393,24 @@ map_swap_x <- function(pm, x) {
 map_rearm <- function(pool, st, seed) {
   st$seed_state <- if (!is.null(seed)) {
     seed <- suppressWarnings(as.integer(seed))
-    if (length(seed) != 1L || is.na(seed))
+    if (length(seed) != 1L || is.na(seed)) {
       stop("kioto: .seed must be a scalar integer", call. = FALSE)
+    }
     .Call(kio_map_rng_base, seed)
   }
   if (is.null(st$blob)) {
     caps <- .Call(kio_pool_map_caps, pool)
-    if (caps[[2L]] == 0L)
-      stop_kio("kio_error_slots_exhausted",
-               paste0("kioto: result slots exhausted \u2014 collect or ",
-                      "cancel outstanding tasks first"))
+    if (caps[[2L]] == 0L) {
+      stop_kio(
+        "kio_error_slots_exhausted",
+        paste0(
+          "kioto: result slots exhausted \u2014 collect or ",
+          "cancel outstanding tasks first"
+        )
+      )
+    }
     st$gen <- .Call(kio_map_reset, st$wrap)
-    st$R <- as.integer(min(st$nm, max(1L, caps[[1L]]), caps[[2L]],
-                           caps[[3L]]))
+    st$R <- as.integer(min(st$nm, max(1L, caps[[1L]]), caps[[2L]], caps[[3L]]))
     st$handles <- vector("list", st$R)
   } else {
     st$handles <- vector("list", st$C)
@@ -391,11 +420,19 @@ map_rearm <- function(pool, st, seed) {
 }
 
 map_template_check <- function(template) {
-  if (is.null(template)) return(invisible())
-  if (!typeof(template) %in% c(map_template_types, "character") ||
-      length(template) == 0L)
-    stop("kioto: .template must be a logical, integer, double, complex, ",
-         "raw or character vector of positive length", call. = FALSE)
+  if (is.null(template)) {
+    return(invisible())
+  }
+  if (
+    !typeof(template) %in% c(map_template_types, "character") ||
+      length(template) == 0L
+  ) {
+    stop(
+      "kioto: .template must be a logical, integer, double, complex, ",
+      "raw or character vector of positive length",
+      call. = FALSE
+    )
+  }
   invisible()
 }
 
@@ -422,15 +459,26 @@ map_empty <- function(x, template) {
 # errors before anything exists. Returns the mutable map state the other
 # stages share; kio_map's frame holds it (and with it the region's
 # producer wrap) for the map's duration.
-map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
-                      seed = NULL) {
+map_stage <- function(
+  pool,
+  x,
+  f,
+  dots,
+  template = NULL,
+  chunks = NULL,
+  seed = NULL
+) {
   # srcrefs would serialize each closure's source (and its srcfile
   # environment) into the descriptor: stripping them keeps staged sizes
   # deterministic across keep.source settings — often the difference
   # between the region-less path and a region
-  if (typeof(f) == "closure") f <- removeSource(f)
+  if (typeof(f) == "closure") {
+    f <- removeSource(f)
+  }
   # lapply's coercion rule, so [[ on the workers sees what lapply's would
-  if (!is.vector(x) || is.object(x)) x <- as.list(x)
+  if (!is.vector(x) || is.object(x)) {
+    x <- as.list(x)
+  }
   n <- length(x)
   map_template_check(template)
   direct <- !is.null(template) && typeof(template) %in% map_template_types
@@ -442,8 +490,9 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
   st$direct <- direct
   st$seed_state <- if (!is.null(seed)) {
     seed <- suppressWarnings(as.integer(seed))
-    if (length(seed) != 1L || is.na(seed))
+    if (length(seed) != 1L || is.na(seed)) {
       stop("kioto: .seed must be a scalar integer", call. = FALSE)
+    }
     .Call(kio_map_rng_base, seed)
   }
 
@@ -451,22 +500,32 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
   # worker's submitter slot on nested first use); zero errors here, before
   # any region is created
   caps <- .Call(kio_pool_map_caps, pool)
-  if (caps[[2L]] == 0L)
-    stop_kio("kio_error_slots_exhausted",
-             paste0("kioto: result slots exhausted \u2014 collect or cancel ",
-                    "outstanding tasks first"))
+  if (caps[[2L]] == 0L) {
+    stop_kio(
+      "kio_error_slots_exhausted",
+      paste0(
+        "kioto: result slots exhausted \u2014 collect or cancel ",
+        "outstanding tasks first"
+      )
+    )
+  }
   if (!is.null(chunks)) {
     chunks <- as.numeric(chunks)
-    if (length(chunks) != 1L || is.na(chunks) || chunks < 1)
+    if (length(chunks) != 1L || is.na(chunks) || chunks < 1) {
       stop("kioto: .chunks must be a positive number", call. = FALSE)
+    }
   }
 
   # the names-tolerant RAWVEC gate: C checks type / ALTREP / S4, the
   # attribute condition (none, or names only) is cheaper here
   xlen <- .Call(kio_map_eligible, x)
-  if (xlen >= 0 && !is.null(attributes(x)) &&
-      !identical(names(attributes(x)), "names"))
+  if (
+    xlen >= 0 &&
+      !is.null(attributes(x)) &&
+      !identical(names(attributes(x)), "names")
+  ) {
     xlen <- -1
+  }
   st$xraw <- xlen >= 0
 
   # Region-less probe (generic maps only — the template path needs the
@@ -483,22 +542,34 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
     desc_len <- bl[[1L]]
     if (!is.null(bl[[2L]])) {
       st$blob <- bl[[2L]]
-      if (is.null(.Call(kio_bounded_call, map_payload(st, c(1, 1)),
-                        inline_entry)[[2L]]))
+      if (
+        is.null(.Call(
+          kio_bounded_call,
+          map_payload(st, c(1, 1)),
+          inline_entry
+        )[[2L]])
+      ) {
         st$blob <- NULL
+      }
     }
   }
 
   if (!is.null(st$blob)) {
     # region-less blob path: today's fixed chunks — the morsel state needs
     # the region, and at these sizes chunk overhead is already negligible
-    C <- min(n, if (is.null(chunks)) 8 * caps[[1L]] else chunks,
-             caps[[2L]], caps[[3L]])
+    C <- min(
+      n,
+      if (is.null(chunks)) 8 * caps[[1L]] else chunks,
+      caps[[2L]],
+      caps[[3L]]
+    )
     st$C <- max(1L, as.integer(C))
     size <- n %/% st$C
     sizes <- rep.int(size, st$C)
     extra <- n %% st$C
-    if (extra > 0) sizes[seq_len(extra)] <- size + 1
+    if (extra > 0) {
+      sizes[seq_len(extra)] <- size + 1
+    }
     st$hi <- cumsum(sizes)
     st$lo <- st$hi - sizes + 1
     st$handles <- vector("list", st$C)
@@ -519,14 +590,20 @@ map_stage <- function(pool, x, f, dots, template = NULL, chunks = NULL,
     st$nm <- ceiling(n / st$ms)
     st$gen <- 0
     desc <- if (st$xraw) list(f, dots) else list(f, dots, x)
-    sr <- .Call(kio_map_stage, desc, if (st$xraw) x, if (!st$xraw) desc_len,
-                n, if (direct) template, st$ms)
+    sr <- .Call(
+      kio_map_stage,
+      desc,
+      if (st$xraw) x,
+      if (!st$xraw) desc_len,
+      n,
+      if (direct) template,
+      st$ms
+    )
     st$name <- sr[[1L]]
     st$wrap <- sr[[2L]]
     # one runner per live worker (floored at 1 so a workerless map still
     # queues), clamped by the free slots and the ring as chunks were
-    st$R <- as.integer(min(st$nm, max(1L, caps[[1L]]), caps[[2L]],
-                           caps[[3L]]))
+    st$R <- as.integer(min(st$nm, max(1L, caps[[1L]]), caps[[2L]], caps[[3L]]))
     st$handles <- vector("list", st$R)
   }
   st$timed_out <- FALSE
@@ -554,10 +631,12 @@ map_submit <- function(pool, st, deadline = Inf) {
       st$timed_out <- TRUE
       return(invisible(st))
     }
-    payload <- if (blob) map_payload(st, c(st$lo[[k]], st$hi[[k]]))
-               else runner_payload(st, k - 1L)
-    h <- .Call(kio_pool_submit_try, pool, payload, rem,
-               if (blob) 0L else 1L)
+    payload <- if (blob) {
+      map_payload(st, c(st$lo[[k]], st$hi[[k]]))
+    } else {
+      runner_payload(st, k - 1L)
+    }
+    h <- .Call(kio_pool_submit_try, pool, payload, rem, if (blob) 0L else 1L)
     if (inherits(h, "kio_timeout")) {
       st$timed_out <- TRUE
       return(invisible(st))
@@ -569,7 +648,9 @@ map_submit <- function(pool, st, deadline = Inf) {
 }
 
 map_ranges_label <- function(elts) {
-  if (nrow(elts) == 0L) return("(none)")
+  if (nrow(elts) == 0L) {
+    return("(none)")
+  }
   paste(sprintf("%.0f-%.0f", elts[, 1L], elts[, 2L]), collapse = ", ")
 }
 
@@ -596,10 +677,16 @@ map_collect <- function(pool, st, deadline = Inf) {
         map_cancel(st)
         if (inherits(v, "kio_error_worker_died")) {
           elts <- cbind(lo = st$lo[[k]], hi = st$hi[[k]])
-          stop_kio("kio_error_worker_died",
-                   sprintf("kioto: worker died while executing map elements %s",
-                           map_ranges_label(elts)),
-                   slot = v$slot, pid = v$pid, elements = elts)
+          stop_kio(
+            "kio_error_worker_died",
+            sprintf(
+              "kioto: worker died while executing map elements %s",
+              map_ranges_label(elts)
+            ),
+            slot = v$slot,
+            pid = v$pid,
+            elements = elts
+          )
         }
         stop(v)
       }
@@ -631,7 +718,9 @@ map_collect <- function(pool, st, deadline = Inf) {
     # deadline) expired with the slot still pending
     consume <- function(k, timeout) {
       v <- .Call(kio_pool_collect_try, st$handles[[k]], timeout)
-      if (inherits(v, "kio_timeout")) return(FALSE)
+      if (inherits(v, "kio_timeout")) {
+        return(FALSE)
+      }
       st$handles[k] <- list(NULL)
       if (inherits(v, "kio_caught")) {
         v <- v[[1L]]
@@ -644,8 +733,9 @@ map_collect <- function(pool, st, deadline = Inf) {
           errs[[length(errs) + 1L]] <<- v
           # the erroring runner's completed batches still count against
           # the lost set; only its uncompleted batch reports lost
-          if (!is.null(v$kio_map_hist))
+          if (!is.null(v$kio_map_hist)) {
             hists[[length(hists) + 1L]] <<- v$kio_map_hist
+          }
         } else {
           map_cancel(st)
           stop(v)
@@ -653,12 +743,13 @@ map_collect <- function(pool, st, deadline = Inf) {
         return(TRUE)
       }
       hists[[length(hists) + 1L]] <<- v[1:2]
-      if (!st$direct)
+      if (!st$direct) {
         for (b in seq_along(v[[3L]])) {
           lo <- v[[1L]][[b]] * ms + 1
           hi <- min(st$n, (v[[1L]][[b]] + v[[2L]][[b]]) * ms)
           out[seq.int(lo, hi)] <<- v[[3L]][[b]]
         }
+      }
       TRUE
     }
     pending <- seq_len(st$R)
@@ -675,13 +766,15 @@ map_collect <- function(pool, st, deadline = Inf) {
           # never started and never will: cancel and drop — a claim that
           # lands anyway loses its first-call CAS and publishes empty
           h <- st$handles[[k]]
-          if (!is.null(h)) .Call(kio_pool_cancel, h)
+          if (!is.null(h)) {
+            .Call(kio_pool_cancel, h)
+          }
           st$handles[k] <- list(NULL)
           TRUE
         } else if (verdict == "running") {
           consume(k, rem)
         } else {
-          FALSE                     # idle: defer, the trim trigger unarmed
+          FALSE # idle: defer, the trim trigger unarmed
         }
         if (done) {
           pending <- setdiff(pending, k)
@@ -698,8 +791,9 @@ map_collect <- function(pool, st, deadline = Inf) {
           map_cancel(st)
           return(.Call(kio_map_timeout_call))
         }
-        if (consume(pending[[1L]], min(rem, 0.05)))
+        if (consume(pending[[1L]], min(rem, 0.05))) {
           pending <- setdiff(pending, pending[[1L]])
+        }
       }
     }
     if (!is.null(died)) {
@@ -733,10 +827,16 @@ map_collect <- function(pool, st, deadline = Inf) {
         hi <- c(hi, cur - 1)
       }
       elts <- cbind(lo = lo * ms + 1, hi = pmin(st$n, (hi + 1) * ms))
-      stop_kio("kio_error_worker_died",
-               sprintf("kioto: worker died while executing map elements %s",
-                       map_ranges_label(elts)),
-               slot = died$slot, pid = died$pid, elements = elts)
+      stop_kio(
+        "kio_error_worker_died",
+        sprintf(
+          "kioto: worker died while executing map elements %s",
+          map_ranges_label(elts)
+        ),
+        slot = died$slot,
+        pid = died$pid,
+        elements = elts
+      )
     }
     if (length(errs)) {
       map_cancel(st)
@@ -753,8 +853,11 @@ map_collect <- function(pool, st, deadline = Inf) {
   }
   # template assembly: one memcpy from the output area — or, for a
   # character template (generic chunk results), vapply's own checks
-  res <- if (st$direct) .Call(kio_map_gather, st$wrap)
-         else vapply(out, identity, st$template, USE.NAMES = FALSE)
+  res <- if (st$direct) {
+    .Call(kio_map_gather, st$wrap)
+  } else {
+    vapply(out, identity, st$template, USE.NAMES = FALSE)
+  }
   m <- length(st$template)
   if (m > 1L) {
     dim(res) <- c(m, st$n)
@@ -773,9 +876,12 @@ map_collect <- function(pool, st, deadline = Inf) {
 # completes at the next GC. Total: it runs from on.exit while an error
 # (or pool shutdown) unwinds — both C entries no-op on closed handles.
 map_cancel <- function(st) {
-  if (!is.null(st$wrap)) .Call(kio_map_cancel_set, st$wrap)
-  for (h in st$handles)
+  if (!is.null(st$wrap)) {
+    .Call(kio_map_cancel_set, st$wrap)
+  }
+  for (h in st$handles) {
     if (!is.null(h)) .Call(kio_pool_cancel, h)
+  }
   st$handles <- vector("list", length(st$handles))
   invisible()
 }
@@ -790,43 +896,51 @@ map_chunk <- function(pool, r, b, s = NULL) {
   lo <- r[[1L]]
   hi <- r[[2L]]
   d <- .Call(kio_unserialize_call, b)
-  f <- d[[1L]]
-  dots <- d[[2L]]
-  xs <- d[[3L]]
-  len <- hi - lo + 1
-  out <- vector("list", len)
+  sr <- NULL
   if (!is.null(s)) {
     # per-element streams: seek to element lo's stream in O(log lo), then
-    # one jump per element; the worker's own RNG state (possibly absent —
-    # workers seed lazily) is restored either way
+    # one jump per element inside the batch loop; the worker's own RNG
+    # state (possibly absent — workers seed lazily) is restored either way
     os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
     on.exit(
       if (is.null(os)) {
-        if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+        if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
           rm(".Random.seed", envir = globalenv())
+        }
       } else {
         assign(".Random.seed", os, envir = globalenv())
       }
     )
     sr <- .Call(kio_map_rng_seek, s, lo)
   }
-  # one tryCatch per chunk, not per element: it annotates an escaping
-  # error with the failing element's index before re-signalling — a plain
-  # longjmp would leave "first by element index" with nothing to report —
-  # and costs nothing off the error path
-  ei <- lo
+  # the element loop is one .Call (kio_map_batch builds the f call once
+  # and swaps only the element cell per iteration, lapply's discipline);
+  # one tryCatch per chunk, not per element, annotates an escaping error
+  # with the failing element's index — stamped into eic by the loop
+  # before each eval — a plain longjmp would leave "first by element
+  # index" with nothing to report
+  eic <- numeric(1L)
   tryCatch(
-    for (i in seq_len(len)) {
-      ei <- lo + i - 1
-      if (!is.null(s)) sr <- .Call(kio_map_rng_install, sr)
-      out[i] <- list(do.call(f, c(list(xs[[lo - 1 + i]]), dots)))
-    },
+    .Call(
+      kio_map_batch,
+      NULL,
+      d[[1L]],
+      d[[2L]],
+      d[[3L]],
+      lo - 1,
+      lo,
+      hi,
+      sr,
+      eic,
+      environment()
+    ),
     error = function(e) {
-      e$kio_map_index <- ei
+      if (eic[[1L]] >= 1) {
+        e$kio_map_index <- eic[[1L]]
+      }
       stop(e)
     }
   )
-  out
 }
 
 # Worker-side morsel runner, riding each runner task as
@@ -863,41 +977,67 @@ map_runner <- function(pool, n, a, s = NULL) {
     os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
     on.exit(
       if (is.null(os)) {
-        if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+        if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
           rm(".Random.seed", envir = globalenv())
+        }
       } else {
         assign(".Random.seed", os, envir = globalenv())
       }
     )
   }
-  ei <- NA_real_
   tryCatch(
     repeat {
       nx <- .Call(kio_map_next, xp, r, g, sig, NULL, NULL)
-      if (is.null(nx)) break
+      if (is.null(nx)) {
+        break
+      }
       # doorbell: one foreign injection task between batches hands
       # concurrent submitters their chunk-boundary interleave back
-      if (nx[[6L]]) .Call(kio_pool_help_once, pool)
+      if (nx[[6L]]) {
+        .Call(kio_pool_help_once, pool)
+      }
       lo <- nx[[3L]]
       hi <- nx[[4L]]
-      len <- hi - lo + 1
       xs <- nx[[5L]]
       base <- if (is.null(xs)) {
         xs <- ctx$x
         lo - 1
-      } else 0
-      # per-element streams stay per-element: one O(log lo) seek per
-      # batch, one jump per element — results invariant across morsel
-      # size, batch sizing, runner count, and issue order
-      if (!is.null(s)) sr <- .Call(kio_map_rng_seek, s, lo)
-      out <- if (!tmpl) vector("list", len)
-      for (i in seq_len(len)) {
-        ei <- lo + i - 1
-        if (!is.null(s)) sr <- .Call(kio_map_rng_install, sr)
-        v <- do.call(f, c(list(xs[[base + i]]), dots))
-        if (tmpl) .Call(kio_map_write, xp, ei, v)
-        else out[i] <- list(v)
+      } else {
+        0
       }
+      # per-element streams stay per-element: one O(log lo) seek per
+      # batch, one jump per element inside the batch loop — results
+      # invariant across morsel size, batch sizing, runner count, and
+      # issue order
+      sr <- if (!is.null(s)) .Call(kio_map_rng_seek, s, lo)
+      # the element loop itself is one .Call per batch: kio_map_batch
+      # builds the f call once and swaps only the element cell per
+      # iteration (lapply's discipline), with template writes and RNG
+      # installs inline. eic is the loop's in-flight element index, so
+      # the one tryCatch per batch annotates an escaping error with the
+      # failing element before the outer handler re-signals it
+      eic <- numeric(1L)
+      out <- tryCatch(
+        .Call(
+          kio_map_batch,
+          xp,
+          f,
+          dots,
+          xs,
+          base,
+          lo,
+          hi,
+          sr,
+          eic,
+          environment()
+        ),
+        error = function(e) {
+          if (eic[[1L]] >= 1) {
+            e$kio_map_index <- eic[[1L]]
+          }
+          stop(e)
+        }
+      )
       if (tmpl && nb > 0L && hm[[nb]] + hk[[nb]] == nx[[1L]]) {
         hk[[nb]] <- hk[[nb]] + nx[[2L]]
       } else {
@@ -913,12 +1053,11 @@ map_runner <- function(pool, n, a, s = NULL) {
       if (!tmpl) vals[[nb]] <- out
     },
     error = function(e) {
-      # an NA index means the error is not f's (a transition or help
-      # failure): leave it unannotated so collect treats it as fatal
-      if (!is.na(ei)) {
-        e$kio_map_index <- ei
-        # completed batches ride the condition, so a death lost-set scan
-        # counts only this runner's uncompleted batch
+      # an unannotated error is not f's (a transition or help failure):
+      # leave it so collect treats it as fatal. An annotated one carries
+      # the completed batches, so a death lost-set scan counts only this
+      # runner's uncompleted batch
+      if (!is.null(e$kio_map_index)) {
         e$kio_map_hist <- list(hm[seq_len(nb)], hk[seq_len(nb)])
       }
       # the fail-fast store, ahead of the ERR publish: peers observe it
@@ -944,11 +1083,17 @@ map_ctx <- function(pool, name) {
   cache <- .Call(kio_pool_map_cache, pool)
   ctx <- get0(name, envir = cache, inherits = FALSE)
   if (is.null(ctx)) {
-    if (length(ls(cache)) >= 8L) rm(list = ls(cache), envir = cache)
+    if (length(ls(cache)) >= 8L) {
+      rm(list = ls(cache), envir = cache)
+    }
     xp <- .Call(kio_map_open, name, TRUE)
     d <- .Call(kio_map_desc, xp)
-    ctx <- list(f = d[[1L]], dots = d[[2L]],
-                x = if (length(d) >= 3L) d[[3L]], xp = xp)
+    ctx <- list(
+      f = d[[1L]],
+      dots = d[[2L]],
+      x = if (length(d) >= 3L) d[[3L]],
+      xp = xp
+    )
     assign(name, ctx, envir = cache)
   }
   ctx

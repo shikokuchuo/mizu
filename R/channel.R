@@ -68,21 +68,34 @@
 #' }
 #'
 #' @export
-kio_channel <- function(expr, capacity = 16384L, slot_size = 256L,
-                        arena_size = 4194304, spin = FALSE,
-                        launcher = kio_launcher(), startup_timeout = 30) {
-  if (!is.language(expr))
-    stop("kioto: expr must be a quoted expression (wrap it in quote())",
-         call. = FALSE)
-  ch <- .Call(kio_channel_create, expr, capacity, slot_size, arena_size,
-              spin)
+kio_channel <- function(
+  expr,
+  capacity = 16384L,
+  slot_size = 256L,
+  arena_size = 4194304,
+  spin = FALSE,
+  launcher = kio_launcher(),
+  startup_timeout = 30
+) {
+  if (!is.language(expr)) {
+    stop(
+      "kioto: expr must be a quoted expression (wrap it in quote())",
+      call. = FALSE
+    )
+  }
+  ch <- .Call(kio_channel_create, expr, capacity, slot_size, arena_size, spin)
   token <- .Call(kio_channel_suffix, ch)
   launcher(token)
   if (!.Call(kio_channel_ready_wait, ch, startup_timeout)) {
     .Call(kio_channel_destroy, ch)
-    stop_kio("kio_error_startup",
-             paste0("kioto: child failed to attach within ",
-                    format(startup_timeout), " seconds"))
+    stop_kio(
+      "kio_error_startup",
+      paste0(
+        "kioto: child failed to attach within ",
+        format(startup_timeout),
+        " seconds"
+      )
+    )
   }
   ch
 }
@@ -165,8 +178,9 @@ kio_send_batch <- function(ch, xs) .Call(kio_channel_send_batch, ch, xs)
 
 #' @rdname kio_send_batch
 #' @export
-kio_recv_batch <- function(ch, n = 256L, timeout = Inf)
+kio_recv_batch <- function(ch, n = 256L, timeout = Inf) {
   .Call(kio_channel_recv_batch, ch, n, timeout)
+}
 
 #' Close a Channel
 #'
@@ -192,9 +206,13 @@ kio_recv_batch <- function(ch, n = 256L, timeout = Inf)
 #' @export
 kio_close <- function(ch, timeout = 5) {
   ok <- .Call(kio_channel_close, ch, timeout)
-  if (!ok)
-    warning("kioto: close timed out waiting for the peer; resources release ",
-            "when the handle is garbage collected", call. = FALSE)
+  if (!ok) {
+    warning(
+      "kioto: close timed out waiting for the peer; resources release ",
+      "when the handle is garbage collected",
+      call. = FALSE
+    )
+  }
   invisible(ok)
 }
 
@@ -222,7 +240,9 @@ kio_alive <- function(ch) .Call(kio_channel_alive, ch)
 # the expression (and every region its identifiers name) alive exactly until
 # then. The epilogue is the peer half of the close protocol.
 peer_main <- function(token) {
-  if (!"package:kioto" %in% search()) attachNamespace("kioto")
+  if (!"package:kioto" %in% search()) {
+    attachNamespace("kioto")
+  }
   att <- .Call(kio_channel_attach, token)
   ch <- att[[1L]]
   expr <- att[[2L]]
@@ -233,8 +253,13 @@ peer_main <- function(token) {
   tryCatch(
     eval(expr, envir = env),
     error = function(e) {
-      cat("kioto peer error: ", conditionMessage(e), "\n", sep = "",
-          file = stderr())
+      cat(
+        "kioto peer error: ",
+        conditionMessage(e),
+        "\n",
+        sep = "",
+        file = stderr()
+      )
       status <<- 1L
     },
     interrupt = function(e) status <<- 2L

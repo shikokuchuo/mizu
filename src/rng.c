@@ -84,8 +84,9 @@ static void mat_pow_mod(const unsigned long long A[3][3], uint64_t k,
 }
 
 /* One 2^127-step stream jump in place over a 6-word CMRG state, stored as
-   R stores it: signed ints holding values in [0, m). */
-static void kio_rng_jump(int *seed) {
+   R stores it: signed ints holding values in [0, m). Non-static: the map
+   batch loop (map.c) jumps its local state per element. */
+void kio_rng_jump(int *seed) {
   unsigned long long v1[3] = { (unsigned int) seed[0], (unsigned int) seed[1],
                                (unsigned int) seed[2] };
   unsigned long long v2[3] = { (unsigned int) seed[3], (unsigned int) seed[4],

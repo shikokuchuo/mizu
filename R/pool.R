@@ -66,27 +66,49 @@
 #' }
 #'
 #' @export
-kio_pool <- function(n_workers = 1L, max_workers = n_workers,
-                     max_submitters = 8L, injection_cap = 1024L,
-                     per_worker_cap = 1024L, result_slots = 4096L,
-                     slot_size = 512L, launcher = kio_launcher(),
-                     startup_timeout = 30) {
+kio_pool <- function(
+  n_workers = 1L,
+  max_workers = n_workers,
+  max_submitters = 8L,
+  injection_cap = 1024L,
+  per_worker_cap = 1024L,
+  result_slots = 4096L,
+  slot_size = 512L,
+  launcher = kio_launcher(),
+  startup_timeout = 30
+) {
   n_workers <- as.integer(n_workers)
-  if (is.na(n_workers) || n_workers < 1L)
+  if (is.na(n_workers) || n_workers < 1L) {
     stop("kioto: n_workers must be at least 1", call. = FALSE)
-  if (n_workers > as.integer(max_workers))
+  }
+  if (n_workers > as.integer(max_workers)) {
     stop("kioto: n_workers exceeds max_workers", call. = FALSE)
-  p <- .Call(kio_pool_create, max_workers, max_submitters, injection_cap,
-             per_worker_cap, result_slots, slot_size)
+  }
+  p <- .Call(
+    kio_pool_create,
+    max_workers,
+    max_submitters,
+    injection_cap,
+    per_worker_cap,
+    result_slots,
+    slot_size
+  )
   token <- .Call(kio_pool_suffix, p)
-  for (slot in seq_len(n_workers) - 1L)
+  for (slot in seq_len(n_workers) - 1L) {
     launcher(token, slot)
-  if (!.Call(kio_pool_ready_wait, p, seq_len(n_workers) - 1L,
-             startup_timeout)) {
+  }
+  if (
+    !.Call(kio_pool_ready_wait, p, seq_len(n_workers) - 1L, startup_timeout)
+  ) {
     .Call(kio_pool_destroy, p)
-    stop_kio("kio_error_startup",
-             paste0("kioto: workers failed to attach within ",
-                    format(startup_timeout), " seconds"))
+    stop_kio(
+      "kio_error_startup",
+      paste0(
+        "kioto: workers failed to attach within ",
+        format(startup_timeout),
+        " seconds"
+      )
+    )
   }
   p
 }
@@ -116,30 +138,48 @@ kio_pool <- function(n_workers = 1L, max_workers = n_workers,
 #'   spawned into. `kio_retire_worker()` invisibly returns `NULL`.
 #'
 #' @export
-kio_spawn_workers <- function(pool, n = 1L, launcher = kio_launcher(),
-                              startup_timeout = 30) {
+kio_spawn_workers <- function(
+  pool,
+  n = 1L,
+  launcher = kio_launcher(),
+  startup_timeout = 30
+) {
   n <- as.integer(n)
-  if (is.na(n) || n < 1L)
+  if (is.na(n) || n < 1L) {
     stop("kioto: n must be at least 1", call. = FALSE)
+  }
   free <- which(kio_pool_status(pool)$workers == "free") - 1L
-  if (length(free) < n)
-    stop("kioto: not enough free worker slots (", length(free), " free)",
-         call. = FALSE)
+  if (length(free) < n) {
+    stop(
+      "kioto: not enough free worker slots (",
+      length(free),
+      " free)",
+      call. = FALSE
+    )
+  }
   slots <- free[seq_len(n)]
   token <- .Call(kio_pool_suffix, pool)
-  for (slot in slots)
+  for (slot in slots) {
     launcher(token, slot)
-  if (!.Call(kio_pool_ready_wait, pool, as.integer(slots), startup_timeout))
-    stop_kio("kio_error_startup",
-             paste0("kioto: workers failed to attach within ",
-                    format(startup_timeout), " seconds"))
+  }
+  if (!.Call(kio_pool_ready_wait, pool, as.integer(slots), startup_timeout)) {
+    stop_kio(
+      "kio_error_startup",
+      paste0(
+        "kioto: workers failed to attach within ",
+        format(startup_timeout),
+        " seconds"
+      )
+    )
+  }
   invisible(as.integer(slots))
 }
 
 #' @rdname kio_spawn_workers
 #' @export
-kio_retire_worker <- function(pool, slot)
+kio_retire_worker <- function(pool, slot) {
   invisible(.Call(kio_pool_retire, pool, as.integer(slot)))
+}
 
 #' Attach to a Pool as a Submitter
 #'
@@ -243,15 +283,17 @@ kio_pool_attach <- function(name) {
 #' @export
 kio_submit <- function(pool, expr, ..., .timeout = Inf) {
   args <- list(...)
-  if (length(args) && (is.null(names(args)) || !all(nzchar(names(args)))))
+  if (length(args) && (is.null(names(args)) || !all(nzchar(names(args))))) {
     stop("kioto: all task arguments must be named", call. = FALSE)
+  }
   .Call(kio_pool_submit, pool, list(substitute(expr), args), .timeout, 0L)
 }
 
 #' @rdname kio_submit
 #' @export
-kio_collect <- function(task, timeout = Inf)
+kio_collect <- function(task, timeout = Inf) {
   .Call(kio_pool_collect, task, timeout)
+}
 
 #' Cancel a Task
 #'
@@ -286,9 +328,13 @@ kio_cancel <- function(task) invisible(.Call(kio_pool_cancel, task))
 #' @export
 kio_pool_stop <- function(pool, timeout = 5) {
   ok <- .Call(kio_pool_stop_call, pool, timeout)
-  if (!ok)
-    warning("kioto: pool stop timed out waiting for workers; they exit on ",
-            "their own once they observe shutdown", call. = FALSE)
+  if (!ok) {
+    warning(
+      "kioto: pool stop timed out waiting for workers; they exit on ",
+      "their own once they observe shutdown",
+      call. = FALSE
+    )
+  }
   invisible(ok)
 }
 
@@ -309,8 +355,9 @@ kio_pool_stop <- function(pool, timeout = 5) {
 #' @export
 kio_pool_status <- function(pool) {
   st <- .Call(kio_pool_status_call, pool)
-  st$workers <- c("free", "claiming", "live", "leaving",
-                  "reaping")[st$workers + 1L]
+  st$workers <- c("free", "claiming", "live", "leaving", "reaping")[
+    st$workers + 1L
+  ]
   st$submitters <- c("free", "live", "reaping")[st$submitters + 1L]
   names(st$tasks) <- c("pending", "ok", "err", "cancel", "died")
   st
@@ -344,16 +391,16 @@ kio_pool_status <- function(pool) {
 kio_pool_dump <- function(pool) {
   d <- .Call(kio_pool_dump_call, pool)
   w <- d$workers
-  w$status <- c("free", "claiming", "live", "leaving",
-                "reaping")[w$status + 1L]
+  w$status <- c("free", "claiming", "live", "leaving", "reaping")[w$status + 1L]
   w$park_state <- c("running", "idle", "parked", "waking")[w$park_state + 1L]
   d$workers <- data.frame(slot = seq_along(w$status) - 1L, w)
   s <- d$submitters
   s$status <- c("free", "live", "reaping")[s$status + 1L]
   d$submitters <- data.frame(slot = seq_along(s$status) - 1L, s)
   tk <- lapply(d$tasks, `[`, !is.na(d$tasks$slot))
-  tk$status <- c("free", "pending", "ok", "err", "cancel",
-                 "died")[tk$status + 1L]
+  tk$status <- c("free", "pending", "ok", "err", "cancel", "died")[
+    tk$status + 1L
+  ]
   d$tasks <- data.frame(tk)
   d
 }
@@ -396,8 +443,7 @@ kio_pool_dump <- function(pool) {
 kio_pool_stats <- function(pool) {
   st <- .Call(kio_pool_stats_call, pool)
   w <- st$workers
-  w$status <- c("free", "claiming", "live", "leaving",
-                "reaping")[w$status + 1L]
+  w$status <- c("free", "claiming", "live", "leaving", "reaping")[w$status + 1L]
   st$workers <- data.frame(slot = seq_along(w$status) - 1L, w)
   s <- st$submitters
   s$status <- c("free", "live", "reaping")[s$status + 1L]
@@ -436,8 +482,9 @@ kio_pool_stats <- function(pool) {
 #' @return Invisibly, `NULL`.
 #'
 #' @export
-kio_pool_trace <- function(pool, fn = NULL)
+kio_pool_trace <- function(pool, fn = NULL) {
   invisible(.Call(kio_pool_set_trace, pool, fn))
+}
 
 # Worker entry point: invoked through the Rscript child runner by the launcher.
 # Rebuilds the region name from the compiled-in prefix plus the token (the
@@ -452,23 +499,35 @@ kio_pool_trace <- function(pool, fn = NULL)
 # result — FALSE marks an error from outside any task eval, which is
 # infrastructure failure and takes the worker down.
 worker_main <- function(token, slot) {
-  if (!"package:kioto" %in% search()) attachNamespace("kioto")
+  if (!"package:kioto" %in% search()) {
+    attachNamespace("kioto")
+  }
   h <- .Call(kio_pool_worker_join, token, slot)
   .Call(kio_pool_set_eval, h)
   status <- 0L
   rc <- -1L
   repeat {
-    e <- tryCatch({
-      repeat {
-        rc <- .Call(kio_pool_step, h, 3600)
-        if (rc < 0L) break
-      }
-      NULL
-    }, error = function(e) e)
-    if (is.null(e)) break
+    e <- tryCatch(
+      {
+        repeat {
+          rc <- .Call(kio_pool_step, h, 3600)
+          if (rc < 0L) break
+        }
+        NULL
+      },
+      error = function(e) e
+    )
+    if (is.null(e)) {
+      break
+    }
     if (!.Call(kio_pool_fail_inflight, h, e)) {
-      cat("kioto worker error: ", conditionMessage(e), "\n", sep = "",
-          file = stderr())
+      cat(
+        "kioto worker error: ",
+        conditionMessage(e),
+        "\n",
+        sep = "",
+        file = stderr()
+      )
       status <- 1L
       break
     }
@@ -477,7 +536,10 @@ worker_main <- function(token, slot) {
   # a retired worker (-2) lingers as a lifetime anchor for its uncollected
   # results: plain bounded sleeps, since no unpark can reach a released
   # slot; shutdown or owner death ends the linger
-  if (rc == -2L)
-    while (!.Call(kio_pool_lame_duck, h)) Sys.sleep(1)
+  if (rc == -2L) {
+    while (!.Call(kio_pool_lame_duck, h)) {
+      Sys.sleep(1)
+    }
+  }
   quit(save = "no", status = status)
 }

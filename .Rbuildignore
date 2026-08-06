@@ -12,3 +12,4 @@
 ^src/vendor/.*\.o$
 ^compile_commands\.json$
 ^.*\.Rproj$
+^\.posit$

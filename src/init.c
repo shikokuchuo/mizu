@@ -105,6 +105,8 @@ SEXP kio_map_slice(SEXP, SEXP, SEXP);
 SEXP kio_map_write(SEXP, SEXP, SEXP);
 SEXP kio_map_gather(SEXP);
 SEXP kio_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP kio_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                   SEXP);
 SEXP kio_map_abandon(SEXP, SEXP);
 SEXP kio_map_cancel_set(SEXP);
 SEXP kio_map_cancel_get(SEXP);
@@ -192,6 +194,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_map_write",             (DL_FUNC) &kio_map_write,             3},
   {"kio_map_gather",            (DL_FUNC) &kio_map_gather,            1},
   {"kio_map_next",              (DL_FUNC) &kio_map_next,              6},
+  {"kio_map_batch",             (DL_FUNC) &kio_map_batch,             10},
   {"kio_map_abandon",           (DL_FUNC) &kio_map_abandon,           2},
   {"kio_map_cancel_set",        (DL_FUNC) &kio_map_cancel_set,        1},
   {"kio_map_cancel_get",        (DL_FUNC) &kio_map_cancel_get,        1},

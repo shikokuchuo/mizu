@@ -10,9 +10,10 @@ src/symbols.rds
 .Rproj.user/
 *.Rproj
 compile_commands.json
-# Claude Code
+# Agents
 .claude/
 .cache/
+.posit/
 # OS
 .DS_Store
 dev/bench/*.rds
