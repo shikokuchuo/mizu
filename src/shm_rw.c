@@ -117,6 +117,16 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
       (void) ((const volatile unsigned char *) addr)[off];
 #endif
 
+#if defined(__linux__) && defined(MADV_COLLAPSE)
+  /* Collapse works on shm under shmem_enabled=[never] (kernel >= 6.1; see
+     the spill-reuse note in payload.c) and installs PMD mappings for this
+     process even when the creator already collapsed the folios. Populated
+     attaches only: a lazy attach (kio_map contexts) must keep demand
+     paging. Failure is benign. */
+  if (populate && size >= ((size_t) 2 << 20))
+    (void) madvise(addr, size, MADV_COLLAPSE);
+#endif
+
   shm->addr = addr;
   shm->size = size;
   return 0;
@@ -208,6 +218,13 @@ int kio_shm_create_populate(mori_shm *shm, size_t size) {
     volatile unsigned char *b = (volatile unsigned char *) shm->addr;
     for (size_t off = 0; off < size; off += 4096) b[off] = 0;
   }
+#endif
+#if defined(__linux__) && defined(MADV_COLLAPSE)
+  /* The vendored create's MADV_HUGEPAGE is inert under the stock
+     shmem_enabled=[never]; a synchronous collapse works regardless, and
+     the MAP_POPULATE pages already exist. Failure is benign. */
+  if (rc == MORI_OK && size >= ((size_t) 2 << 20))
+    (void) madvise(shm->addr, size, MADV_COLLAPSE);
 #endif
   return rc;
 }
