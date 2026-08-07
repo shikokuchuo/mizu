@@ -4,7 +4,6 @@
 ^\.claude$
 ^\.cache$
 ^\.github$
-^CLAUDE\.md$
 ^README\.Rmd$
 ^LICENSE\.md$
 ^tools$
@@ -13,3 +12,4 @@
 ^compile_commands\.json$
 ^.*\.Rproj$
 ^\.posit$
+^AGENTS\.md$
