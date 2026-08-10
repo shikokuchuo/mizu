@@ -6,6 +6,14 @@
 #' hot path entirely in user space. Inter-process communication cheap enough
 #' that work can be divided at granularities usually reserved for threads.
 #'
+#' @section Linux allocator tuning:
+#' On glibc Linux, loading kioto raises the C library allocator's mmap and
+#' trim thresholds (to 32 MB and 128 MB): payloads crossing a process
+#' boundary are materialized as fresh vectors, and glibc's defaults would
+#' otherwise map, fault, and unmap every large one. A process that set its
+#' own malloc tunables via 'GLIBC_TUNABLES' is left untouched; other
+#' platforms are unaffected.
+#'
 #' @useDynLib kioto, .registration = TRUE
 #'
 #' @keywords internal

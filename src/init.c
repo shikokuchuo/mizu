@@ -216,6 +216,7 @@ static const R_CallMethodDef CallEntries[] = {
 void R_init_kioto(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
+  kio_tune_malloc();
   kio_wrap_init();
   kio_payload_init();
   kio_entity_init();

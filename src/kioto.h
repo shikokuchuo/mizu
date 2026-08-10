@@ -574,5 +574,6 @@ void kio_entity_init(void);
 void kio_channel_init(void);
 void kio_pool_init(void);
 void kio_map_init(void);
+void kio_tune_malloc(void);
 
 #endif /* KIOTO_H */
