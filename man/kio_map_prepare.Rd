@@ -10,33 +10,33 @@ kio_map_prepare(pool, x, f, ..., .template = NULL, .chunks = NULL)
 kio_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
-inside a task, the worker's own handle bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
+inside a task — the own handle of the worker, bound as \code{pool}.}
 
-\item{x}{a vector (atomic or list) to map over; anything else is
+\item{x}{a vector (atomic or list) to map over. Anything else is
 coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
 
 \item{f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
-\code{f(x[[i]], ...)}. Serialized once with its enclosing environment —
-keep that environment small, as with any cross-process map.}
+\code{f(x[[i]], ...)}. Serialized once with its enclosing environment.
+Keep that environment small, as with any cross-process map.}
 
 \item{...}{further constant arguments to \code{f}, staged once.}
 
 \item{.template}{\code{NULL} for a list result, or a \code{\link[=vapply]{vapply()}}-style
-\code{FUN.VALUE}: an atomic vector template each result must match.}
+\code{FUN.VALUE}: an atomic vector template that each result must match.}
 
-\item{.chunks}{the map's morsel count (its scheduling granularity), or
-\code{NULL} for the default; see the Granularity section.}
+\item{.chunks}{the morsel count of the map (its scheduling
+granularity), or \code{NULL} for the default. See the Granularity section.}
 
 \item{pm}{a prepared-map handle from \code{\link[=kio_map_prepare]{kio_map_prepare()}}.}
 
 \item{.seed}{\code{NULL} (default: no RNG guarantees, no cost), or a scalar
-integer deriving reproducible per-element RNG streams; see the
+integer that derives reproducible per-element RNG streams. See the
 Reproducible RNG section.}
 
 \item{.timeout}{seconds after which the map gives up, cancels its
 outstanding work, and returns the \code{kio_timeout} sentinel (class
-\code{c("kio_timeout", "kio_sentinel")}); \code{Inf} (the default) waits
+\code{c("kio_timeout", "kio_sentinel")}). \code{Inf} (the default) waits
 indefinitely. One deadline covers submission and collection.}
 }
 \value{
@@ -46,43 +46,43 @@ templated atomic vector, or the \code{kio_timeout} sentinel.
 }
 \description{
 \code{kio_map_prepare()} stages a map — \code{f}, the constant arguments in
-\code{...}, and \code{x}, serialized once into a shared map region — without
-running it, and returns a prepared-map handle. Each \code{kio_map_run()}
-then costs only task submission and collection: no serialization, no
-region create, and — because the region (and its name) stays alive
-across runs — workers that ran a previous run reuse their cached map
-context instead of re-attaching. Repeated stochastic simulation is the
-headline use: \code{kio_map_run(pm, .seed = i)} varies the RNG streams per
-run for free, since seed state rides the runner payloads, not the
-region.
+\code{...}, and \code{x} — serialized once into a shared map region, without
+running it. It returns a prepared-map handle. Each \code{kio_map_run()}
+then costs only task submission and collection: no serialization and
+no region create. Because the region (and its name) stays alive across
+runs, workers that ran a previous run reuse their cached map context
+instead of re-attaching. Repeated stochastic simulation is the headline
+use. \code{kio_map_run(pm, .seed = i)} varies the RNG streams per run for
+free: the seed state rides the runner payloads, not the region.
 }
 \details{
-Between runs the region's shared scheduling state is re-armed in O(1):
-the cursor and cancel word clear, and the run generation embedded in
-every claim word advances — a straggler task from a previous run can
-never issue against the new run's cursor. After an unclean run — a
+Between runs, the shared scheduling state of the region is re-armed in
+O(1). The cursor and cancel word clear, and the run generation embedded
+in every claim word advances. A straggler task from a previous run can
+never issue against the cursor of the new run. After an unclean run — a
 \code{.timeout} expiry, an error in \code{f}, a worker death — the handle is
-marked stale and the next \code{kio_map_run()} restages into a fresh region
+marked stale. The next \code{kio_map_run()} restages into a fresh region
 transparently (the old one unlinks at garbage collection under any
 stragglers). A map small enough to ride entirely inline keeps its
 staged blob on the handle instead: runs resubmit it, still skipping
 the serialization.
 
-The prepared handle pins the staged \code{x} (for transparent restaging)
-and the map region for its lifetime; both release at garbage
-collection when the handle is dropped. Chunking geometry is fixed at
-prepare time; the runner count adapts to the live workers at each run.
+The prepared handle pins the staged \code{x} (for transparent restaging) and
+the map region for its lifetime. Both release at garbage collection
+when the handle is dropped. The chunking geometry is fixed at prepare
+time. The runner count adapts to the live workers at each run.
 }
 \section{Replacing x between runs}{
 
 \code{kio_map_run(pm, x = x2)} runs over a replacement \code{x}. When both the
-staged and replacement \code{x} are bare-byte eligible (atomic, non-ALTREP,
-no attributes beyond names) with identical type and length, the new
-bytes are copied in place over the region's \code{x} section — the
-iterate-over-same-shape loop (optimizer steps, simulation sweeps) at
-memcpy cost, skipping the region create and every worker's re-attach.
-Any other change of \code{x} — a different shape or type, a list, a map
-staged inline — restages transparently on the next run.
+staged and the replacement \code{x} are bare-byte eligible (atomic,
+non-ALTREP, no attributes beyond names) with identical type and length,
+the swap is in place. The new bytes are copied over the \code{x} section of
+the region. This runs the iterate-over-same-shape loop (optimizer
+steps, simulation sweeps) at memcpy cost, skipping the region create
+and the re-attach of every worker. Any other change of \code{x} — a
+different shape or type, a list, a map staged inline — restages
+transparently on the next run.
 }
 
 \examples{

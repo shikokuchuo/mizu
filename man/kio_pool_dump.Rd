@@ -2,33 +2,33 @@
 % Please edit documentation in R/pool.R
 \name{kio_pool_dump}
 \alias{kio_pool_dump}
-\title{Dump a Pool's Distributed State}
+\title{Dump the Distributed State of a Pool}
 \usage{
 kio_pool_dump(pool)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
-inside a task, the worker's own handle bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
+inside a task — the own handle of the worker, bound as \code{pool}.}
 }
 \value{
 A list with elements \code{name}, \code{shutdown}, \code{workers} (data frame:
-slot, status, pid, park_state, parked, deque \code{top} / \code{bottom}, and the
-in-flight result slot), \code{submitters} (data frame: slot, status, pid,
-result-slot subrange, queued injection entries, ready and
-full-waiter mask bits), \code{tasks} (data frame of occupied result
-slots: slot, status, sequence, executing worker, parked waiter), and
-\code{local} — this handle's process-private spill-reuse machinery: the
-producer free list's occupancy (\code{fl_entries}, \code{fl_bytes}) and reuse
-count (\code{fl_hits}), and the consumer mapping cache's \code{open_hits} /
-\code{open_misses}.
+slot, status, pid, park_state, parked, deque \code{top} and \code{bottom}, and
+the in-flight result slot), \code{submitters} (data frame: slot, status,
+pid, result-slot subrange, queued injection entries, ready and
+full-waiter mask bits), \code{tasks} (data frame of occupied result slots:
+slot, status, sequence, executing worker, parked waiter), and \code{local}.
+\code{local} is the process-private spill-reuse machinery of this handle:
+the occupancy of the producer free list (\code{fl_entries}, \code{fl_bytes}),
+its reuse count (\code{fl_hits}), and the \code{open_hits} and \code{open_misses} of
+the consumer mapping cache.
 }
 \description{
 A read-only debugging snapshot of the entire pool region, one level
-deeper than \code{\link[=kio_pool_status]{kio_pool_status()}}: per-slot registry detail, the park /
-ready / back-pressure masks unpacked per slot, and every occupied result
-slot. State is distributed across processes and execution is
-non-deterministic, so this is the first tool to reach for when a pool
-hangs. The scan takes no locks and can race in-flight transitions;
-each field is a consistent single read, rows need not be mutually
+deeper than \code{\link[=kio_pool_status]{kio_pool_status()}}. It shows per-slot registry detail, the
+park, ready, and back-pressure masks unpacked per slot, and every
+occupied result slot. State is distributed across processes and
+execution is non-deterministic, so reach for this tool first when a
+pool hangs. The scan takes no locks and can race in-flight transitions.
+Each field is a consistent single read. The rows need not be mutually
 consistent.
 }

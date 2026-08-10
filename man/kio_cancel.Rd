@@ -10,13 +10,13 @@ kio_cancel(task)
 \item{task}{a task handle from \code{kio_submit()}.}
 }
 \value{
-Invisibly, \code{TRUE} if this call cancelled the task, \code{FALSE} if it
-was too late — the task completed, was already cancelled, or its pool
-is gone.
+Invisibly, \code{TRUE} if this call cancelled the task. \code{FALSE} if
+the call was too late: the task completed, was already cancelled, or
+its pool is gone.
 }
 \description{
-Advisory and discard-only, never preemptive: a task still queued is
-skipped by the worker; a task already executing runs to completion and
+Advisory and discard-only, never preemptive. The worker skips a task
+that is still queued. A task already executing runs to completion, and
 its result is dropped. Collecting a cancelled handle raises
 \code{kio_error_cancelled} (see \link{kio_error}).
 }

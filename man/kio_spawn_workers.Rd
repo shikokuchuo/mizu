@@ -3,7 +3,7 @@
 \name{kio_spawn_workers}
 \alias{kio_spawn_workers}
 \alias{kio_retire_worker}
-\title{Grow or Shrink a Pool's Worker Set}
+\title{Grow or Shrink the Worker Set of a Pool}
 \usage{
 kio_spawn_workers(
   pool,
@@ -15,22 +15,22 @@ kio_spawn_workers(
 kio_retire_worker(pool, slot)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
-inside a task, the worker's own handle bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
+inside a task — the own handle of the worker, bound as \code{pool}.}
 
 \item{n}{number of workers to spawn.}
 
-\item{launcher}{a \verb{function(token, slot)} that arranges for an R
-process to eventually call \code{kioto:::worker_main(token, slot)}. The
-default \code{\link[=kio_launcher]{kio_launcher()}} spawns \code{Rscript} with the host's
-\code{.libPaths()} propagated (its \code{stdout}/\code{stderr} arguments direct
-worker output); a custom launcher must arrange library paths itself.}
+\item{launcher}{a \verb{function(token, slot)} that arranges for an R process
+to call \code{kioto:::worker_main(token, slot)}. The default
+\code{\link[=kio_launcher]{kio_launcher()}} spawns \code{Rscript} and propagates the \code{.libPaths()} of
+the host. Its \code{stdout} and \code{stderr} arguments direct the worker
+output. A custom launcher must arrange the library paths itself.}
 
-\item{startup_timeout}{seconds to wait for all workers to join before
-giving up, destroying the pool, and raising \code{kio_error_startup} (see
+\item{startup_timeout}{seconds to wait for all workers to join. On
+expiry, kioto destroys the pool and raises \code{kio_error_startup} (see
 \link{kio_error}).}
 
-\item{slot}{the worker's slot index (0-based, as reported by
+\item{slot}{the slot index of the worker (0-based, as reported by
 \code{\link[=kio_pool_dump]{kio_pool_dump()}}).}
 }
 \value{
@@ -39,16 +39,16 @@ spawned into. \code{kio_retire_worker()} invisibly returns \code{NULL}.
 }
 \description{
 \code{kio_spawn_workers()} spawns additional workers into free registry
-slots, up to the pool's \code{max_workers}, and waits for them to join.
-\code{kio_retire_worker()} asks one worker to exit cleanly: the request is
-non-blocking and never preemptive — the worker observes it between
-tasks, releases its slot, and any work still queued on its deque is
-consumed in place by the remaining workers. A retired worker's process
-may linger briefly as a lifetime anchor for results it produced that
-have not yet been collected.
+slots, up to the \code{max_workers} of the pool, and waits for them to join.
+\code{kio_retire_worker()} asks one worker to exit cleanly. The request is
+non-blocking and never preemptive. The worker observes it between tasks
+and releases its slot. The remaining workers consume in place any work
+still queued on its deque. The process of a retired worker can linger
+briefly as a lifetime anchor for the results it produced that are not
+yet collected.
 }
 \details{
 Slots free up when workers retire, exit at shutdown, or die and are
-reaped, so a pool can cycle workers within its registry capacity for
+reaped. So a pool can cycle workers within its registry capacity for
 its whole lifetime. Only the creating process can resize a pool.
 }

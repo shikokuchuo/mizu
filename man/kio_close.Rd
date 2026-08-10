@@ -10,24 +10,24 @@ kio_close(ch, timeout = 5)
 \item{ch}{a channel handle from \code{\link[=kio_channel]{kio_channel()}} (or the \code{ch} binding
 inside a peer expression).}
 
-\item{timeout}{seconds to wait for the peer's close.}
+\item{timeout}{seconds to wait for the close of the peer.}
 }
 \value{
 Invisibly, \code{TRUE} on rendezvous, \code{FALSE} on timeout (with a
 warning).
 }
 \description{
-Orderly shutdown: signals close to the peer, and
-waits up to \code{timeout} seconds for the peer's own close (or its death) —
-the rendezvous that makes releasing sent-payload pins safe, since the
-peer sets its bit only after it has finished draining. On rendezvous all
-resources are released and the region name unlinked; the handle is dead
-afterwards (closing it again is a no-op). On timeout the handle stays
-usable and resources release when it is garbage collected, re-running the
-same rendezvous check.
+Orderly shutdown. Signals close to the peer, then waits up to \code{timeout}
+seconds for the close of the peer (or its death). This rendezvous makes
+it safe to release the sent-payload pins: the peer sets its bit only
+after it finishes draining. On rendezvous, all resources are released
+and the region name is unlinked. The handle is dead afterwards, and
+closing it again is a no-op. On timeout the handle stays usable, and the
+resources release at garbage collection, which runs the same rendezvous
+check again.
 }
 \details{
-Once either side has signalled close, sends on both sides return the
-\code{kio_closed} sentinel and receives drain remaining messages before doing
-the same.
+After either side signals close, sends on both sides return the
+\code{kio_closed} sentinel, and receives drain the remaining messages before
+they return the same.
 }

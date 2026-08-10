@@ -65,144 +65,144 @@ mono_time <- function() .Call(kio_now_call)
 
 #' Parallel Map Over a Pool
 #'
-#' Maps `f` over the elements of `x` on a pool, returning results in input
-#' order — a list by default, or an atomic vector (or matrix) with
-#' [vapply()] semantics when `.template` is given. Unlike mapping with
-#' per-element [kio_submit()] calls, one `kio_map()` call serializes `f`,
-#' the constant arguments in `...`, and `x` exactly once, submits one
-#' *runner* task per live worker, and each worker materializes that map
-#' context at most once — so the per-element residual cost is one R
-#' closure call, as in [lapply()]. Runners self-schedule: they claim
-#' contiguous element batches off a shared cursor in the map region,
-#' sizing each batch adaptively toward a fixed time target, so trivial
-#' `f` runs in large batches at near-zero scheduling overhead while
+#' Maps `f` over the elements of `x` on a pool and returns the results in
+#' input order. The result is a list by default, or an atomic vector (or
+#' matrix) with [vapply()] semantics when `.template` is given. Unlike
+#' mapping with per-element [kio_submit()] calls, one `kio_map()` call
+#' serializes `f`, the constant arguments in `...`, and `x` exactly once.
+#' It submits one *runner* task per live worker, and each worker
+#' materializes that map context at most once. The per-element residual
+#' cost is one R closure call, as in [lapply()]. Runners self-schedule:
+#' they claim contiguous element batches off a shared cursor in the map
+#' region and size each batch adaptively toward a fixed time target. A
+#' trivial `f` runs in large batches at near-zero scheduling overhead. An
 #' expensive or skewed `f` self-limits to fine claims that keep the
 #' workers balanced. An atomic, non-ALTREP `x` with no attributes beyond
-#' names additionally travels as bare bytes: workers slice their batches
+#' names also travels as bare bytes. The workers slice their batches
 #' straight from shared memory without deserializing `x`, and no worker
 #' ever materializes more than a batch of it.
 #'
 #' Runners are ordinary pool tasks: they are stolen and balanced like any
-#' other work, worker death is detected and reported (see Errors), and
-#' every pool invariant applies unchanged. Between batches a runner also
-#' answers a pool-wide doorbell: when another submitter's task arrives
-#' with every worker busy inside a map, one runner picks it up at its next
-#' batch boundary — foreign-task pickup latency is time-bounded and
-#' independent of `length(x)`. A runner claimed off the bell is not
-#' executed there — a runner is a map's join ticket, so the helper moves
-#' it onto its own deque instead, where the next worker to free up steals
-#' it and joins that map.
+#' other work. Worker death is detected and reported (see Errors), and
+#' every pool invariant applies unchanged. Between batches, a runner also
+#' answers a pool-wide doorbell. When the task of another submitter
+#' arrives with every worker busy inside a map, one runner picks it up at
+#' its next batch boundary. Foreign-task pickup latency is time-bounded
+#' and independent of `length(x)`. A runner claimed off the bell is not
+#' executed there: a runner is the join ticket of a map. The helper moves
+#' it onto its own deque instead, where the next free worker steals it and
+#' joins that map.
 #'
 #' @section Granularity:
-#' Elements are claimed in *morsels* — contiguous ranges of
-#' `max(1, min(n %/% (workers * 256), 256))` elements, the granularity
-#' floor for cancellation, help, and loss reporting — and issued to
-#' runners in adaptively sized batches of consecutive morsels. `.chunks`
-#' overrides the morsel count outright (`min(length(x), .chunks)`
-#' morsels): with no per-morsel shared state, `.chunks = length(x)` is
+#' Elements are claimed in *morsels*: contiguous ranges of
+#' `max(1, min(n %/% (workers * 256), 256))` elements. The morsel is the
+#' granularity floor for cancellation, help, and loss reporting. Morsels
+#' go to runners in adaptively sized batches of consecutive morsels.
+#' `.chunks` overrides the morsel count outright (`min(length(x), .chunks)`
+#' morsels). With no per-morsel shared state, `.chunks = length(x)` is
 #' admissible at zero memory cost for pathological imbalance. A map
 #' submitted while no worker is live queues a single runner in the
-#' injection ring and runs when a worker joins. If the submitter's
-#' result-slot subrange is fully occupied by outstanding tasks,
-#' `kio_map()` errors immediately, before staging anything.
+#' injection ring and runs when a worker joins. If the result-slot
+#' subrange of the submitter is fully occupied by outstanding tasks,
+#' `kio_map()` errors immediately, before it stages anything.
 #'
 #' @section Templates:
 #' `.template` gives `vapply()` semantics: every result must match its
-#' type and length exactly, or coerce upward (logical -> integer -> double
-#' -> complex; checked on the workers, per element). Results are written
-#' directly into a shared output area and gathered in one copy — zero
-#' result serializations. A template of length `m > 1` gathers an
-#' `m * length(x)` matrix, with the template's names as row names, as
-#' `vapply()`. Character templates are assembled through the generic
-#' result path instead (their type checks then surface at assembly, not
-#' per element on the workers). Big shape-regular results belong on the
-#' template path: a runner's generic results accumulate on the worker and
-#' publish once, so `.template` both caps worker memory and moves the
-#' values cross-process without serialization. Note for
-#' [kio_pool_stats()] readers: a map whose *generic* results are large
-#' publishes them through the ordinary result framing, so such maps can
-#' add a few result-slot `spills` per call without the pool's `slot_size`
-#' being undersized for its usual traffic.
+#' type and length exactly, or coerce upward (logical -> integer ->
+#' double -> complex, checked on the workers per element). Results are
+#' written directly into a shared output area and gathered in one copy:
+#' zero result serializations. A template of length `m > 1` gathers an
+#' `m * length(x)` matrix, with the names of the template as row names, as
+#' `vapply()` does. Character templates are assembled through the generic
+#' result path instead. Their type checks then surface at assembly, not
+#' per element on the workers. Big shape-regular results belong on the
+#' template path: the generic results of a runner accumulate on the worker
+#' and publish once, so `.template` both caps worker memory and moves the
+#' values cross-process without serialization. Note for readers of
+#' [kio_pool_stats()]: a map with large *generic* results publishes them
+#' through the ordinary result framing. Such a map can add a few
+#' result-slot `spills` per call even when the `slot_size` of the pool is
+#' right for its usual traffic.
 #'
 #' @section Errors, timeout, and cleanup:
-#' An error raised by `f` re-signals in the caller as the original
-#' condition with a `kio_map_index` field naming the failing element —
-#' the first by element index among the elements that ran. Failure is
-#' fail-fast: the erroring runner sets the map's shared cancel word
-#' before publishing, so every peer stops within about one batch instead
-#' of draining the remaining elements. If a worker dies mid-map, the map
-#' raises `kio_error_worker_died` (see [kio_error]) carrying the lost
-#' elements as an `elements` field — a two-column matrix of inclusive
-#' `lo, hi` ranges. Loss is reported runner-granular and conservatively:
-#' a dead runner's results publish only at the end, so everything it had
-#' completed is reported lost alongside what it was executing — never
-#' the reverse. On `.timeout` expiry — mid-submit or mid-collect —
+#' An error raised by `f` signals again in the caller as the original
+#' condition. A `kio_map_index` field names the failing element: the first
+#' by element index among the elements that ran. Failure is fail-fast. The
+#' erroring runner sets the shared cancel word of the map before it
+#' publishes. So every peer stops within about one batch instead of
+#' draining the remaining elements. If a worker dies mid-map, the map
+#' raises `kio_error_worker_died` (see [kio_error]), carrying the lost
+#' elements as an `elements` field: a two-column matrix of inclusive
+#' `lo, hi` ranges. Loss is reported runner-granular and conservatively.
+#' The results of a dead runner publish only at the end, so everything it
+#' completed is reported lost alongside what it was executing, never the
+#' reverse. On `.timeout` expiry, mid-submit or mid-collect, the
 #' outstanding work is cancelled and the `kio_timeout` sentinel is
 #' returned, never raised. Executing runners observe cancellation within
 #' about one batch (one element where `f` is expensive), independent of
-#' `length(x)`; a published-uncollected result's slot is released only
-#' when the dropped handle's finalizer runs at the next garbage
-#' collection, and the map's staging region is likewise unlinked at GC —
-#' transient occupancy a subsequent map absorbs by clamping its runner
+#' `length(x)`. The slot of a published-uncollected result is released
+#' only when the finalizer of the dropped handle runs at the next garbage
+#' collection. The staging region of the map is likewise unlinked at GC. A
+#' subsequent map absorbs this transient occupancy by clamping its runner
 #' count.
 #'
 #' @section Reproducible RNG:
-#' By default nothing is guaranteed about random draws inside `f`: workers
-#' seed lazily and independently, and the fast path pays nothing for the
-#' option. `.seed` opts into reproducible per-element L'Ecuyer-CMRG
-#' streams: element `i` runs under the stream `i` jumps of 2^127 steps
-#' from the base state that `set.seed(.seed, "L'Ecuyer-CMRG")` would
-#' install (the caller's own `.Random.seed` is not touched, and each
-#' worker's RNG state is saved and restored around its batches). Because
-#' streams are per-element, results are identical for any `.chunks` value,
-#' batch sizing, worker count, or steal order.
+#' By default nothing is guaranteed about random draws inside `f`: the
+#' workers seed lazily and independently, and the fast path pays nothing
+#' for the option. `.seed` opts into reproducible per-element
+#' L'Ecuyer-CMRG streams: element `i` runs under the stream `i` jumps of
+#' 2^127 steps from the base state that `set.seed(.seed, "L'Ecuyer-CMRG")`
+#' installs. The own `.Random.seed` of the caller is not touched, and the
+#' RNG state of each worker is saved and restored around its batches.
+#' Because the streams are per-element, the results are identical for any
+#' `.chunks` value, batch sizing, worker count, or steal order.
 #'
 #' @section Nested maps:
-#' `kio_map(pool, ...)` inside a task expression uses the evaluating
-#' worker's own handle (bound as `pool`): runner submissions push onto the
-#' worker's own deque and the blocked collect executes its own runners
-#' while idle peers steal the rest — fork/join-shaped recursive
-#' parallelism at deque cost. A worker's first nested map claims a
-#' submitter slot, so at the default `max_submitters = 8` (one held by
-#' the controller) at most 7 workers can nest concurrently; raise
+#' `kio_map(pool, ...)` inside a task expression uses the own handle of
+#' the evaluating worker (bound as `pool`). Runner submissions push onto
+#' the own deque of the worker. The blocked collect executes its own
+#' runners while idle peers steal the rest: fork/join-shaped recursive
+#' parallelism at deque cost. The first nested map of a worker claims a
+#' submitter slot. So at the default `max_submitters = 8` (one held by the
+#' controller) at most 7 workers can nest concurrently. Raise
 #' `max_submitters` for wider nested fan-outs.
 #'
 #' @section Very large x:
 #' The serialized runner wrapper needs a little over 200 bytes of entry
 #' inline budget, so pools created with `slot_size = 256L` (224-byte
-#' budget) fit it — except when `.seed` is given, whose 6-word RNG state
-#' pushes the wrapper to ~250 bytes: seeded maps on such pools work but
+#' budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
+#' the wrapper to about 250 bytes. Seeded maps on such pools work but
 #' spill a region per runner, so keep the default `slot_size` on pools
 #' meant for seeded maps. For a very large `x`, `mori::share()` is the
-#' recommended path when mori is available: a shared `x` reduces to its
+#' recommended path when mori is available. A shared `x` reduces to its
 #' ~30-byte identifier inside the staged descriptor and maps zero-copy on
 #' each worker with OS demand paging (`kio_map` itself never calls mori).
 #'
-#' As `lapply()`, `x` is indexed with `[[` on the workers after an
-#' `as.list()` coercion of anything that is not a plain vector — so a
+#' As in [lapply()], `x` is indexed with `[[` on the workers after an
+#' `as.list()` coercion of anything that is not a plain vector. So a
 #' data.frame maps over its columns, and a factor over its elements.
 #'
 #' @inheritParams kio_submit
-#' @param x a vector (atomic or list) to map over; anything else is
+#' @param x a vector (atomic or list) to map over. Anything else is
 #'   coerced with `as.list()`, as [lapply()] does.
 #' @param f a function (or, as [match.fun()] accepts, its name) applied as
-#'   `f(x[[i]], ...)`. Serialized once with its enclosing environment —
-#'   keep that environment small, as with any cross-process map.
+#'   `f(x[[i]], ...)`. Serialized once with its enclosing environment.
+#'   Keep that environment small, as with any cross-process map.
 #' @param ... further constant arguments to `f`, staged once.
 #' @param .template `NULL` for a list result, or a [vapply()]-style
-#'   `FUN.VALUE`: an atomic vector template each result must match.
-#' @param .chunks the map's morsel count (its scheduling granularity), or
-#'   `NULL` for the default; see the Granularity section.
+#'   `FUN.VALUE`: an atomic vector template that each result must match.
+#' @param .chunks the morsel count of the map (its scheduling
+#'   granularity), or `NULL` for the default. See the Granularity section.
 #' @param .seed `NULL` (default: no RNG guarantees, no cost), or a scalar
-#'   integer deriving reproducible per-element RNG streams; see the
+#'   integer that derives reproducible per-element RNG streams. See the
 #'   Reproducible RNG section.
 #' @param .timeout seconds after which the map gives up, cancels its
 #'   outstanding work, and returns the `kio_timeout` sentinel (class
-#'   `c("kio_timeout", "kio_sentinel")`); `Inf` (the default) waits
+#'   `c("kio_timeout", "kio_sentinel")`). `Inf` (the default) waits
 #'   indefinitely. One deadline covers submission and collection.
 #'
-#' @return A list of `f`'s results in the order of `x`, with `names(x)`
-#'   reapplied — or, with `.template`, an atomic vector of type
+#' @return A list of the results of `f` in the order of `x`, with
+#'   `names(x)` reapplied. With `.template`, an atomic vector of type
 #'   `typeof(.template)` (an `m * length(x)` matrix when
 #'   `length(.template) > 1`). On `.timeout` expiry, the `kio_timeout`
 #'   sentinel.
@@ -256,31 +256,30 @@ map_run <- function(pool, st, timeout) {
 #' Prepared Maps: Stage Once, Run Many
 #'
 #' `kio_map_prepare()` stages a map — `f`, the constant arguments in
-#' `...`, and `x`, serialized once into a shared map region — without
-#' running it, and returns a prepared-map handle. Each `kio_map_run()`
-#' then costs only task submission and collection: no serialization, no
-#' region create, and — because the region (and its name) stays alive
-#' across runs — workers that ran a previous run reuse their cached map
-#' context instead of re-attaching. Repeated stochastic simulation is the
-#' headline use: `kio_map_run(pm, .seed = i)` varies the RNG streams per
-#' run for free, since seed state rides the runner payloads, not the
-#' region.
+#' `...`, and `x` — serialized once into a shared map region, without
+#' running it. It returns a prepared-map handle. Each `kio_map_run()`
+#' then costs only task submission and collection: no serialization and
+#' no region create. Because the region (and its name) stays alive across
+#' runs, workers that ran a previous run reuse their cached map context
+#' instead of re-attaching. Repeated stochastic simulation is the headline
+#' use. `kio_map_run(pm, .seed = i)` varies the RNG streams per run for
+#' free: the seed state rides the runner payloads, not the region.
 #'
-#' Between runs the region's shared scheduling state is re-armed in O(1):
-#' the cursor and cancel word clear, and the run generation embedded in
-#' every claim word advances — a straggler task from a previous run can
-#' never issue against the new run's cursor. After an unclean run — a
+#' Between runs, the shared scheduling state of the region is re-armed in
+#' O(1). The cursor and cancel word clear, and the run generation embedded
+#' in every claim word advances. A straggler task from a previous run can
+#' never issue against the cursor of the new run. After an unclean run — a
 #' `.timeout` expiry, an error in `f`, a worker death — the handle is
-#' marked stale and the next `kio_map_run()` restages into a fresh region
+#' marked stale. The next `kio_map_run()` restages into a fresh region
 #' transparently (the old one unlinks at garbage collection under any
 #' stragglers). A map small enough to ride entirely inline keeps its
 #' staged blob on the handle instead: runs resubmit it, still skipping
 #' the serialization.
 #'
-#' The prepared handle pins the staged `x` (for transparent restaging)
-#' and the map region for its lifetime; both release at garbage
-#' collection when the handle is dropped. Chunking geometry is fixed at
-#' prepare time; the runner count adapts to the live workers at each run.
+#' The prepared handle pins the staged `x` (for transparent restaging) and
+#' the map region for its lifetime. Both release at garbage collection
+#' when the handle is dropped. The chunking geometry is fixed at prepare
+#' time. The runner count adapts to the live workers at each run.
 #'
 #' @inheritParams kio_map
 #'
@@ -318,13 +317,14 @@ kio_map_prepare <- function(pool, x, f, ..., .template = NULL, .chunks = NULL) {
 
 #' @section Replacing x between runs:
 #' `kio_map_run(pm, x = x2)` runs over a replacement `x`. When both the
-#' staged and replacement `x` are bare-byte eligible (atomic, non-ALTREP,
-#' no attributes beyond names) with identical type and length, the new
-#' bytes are copied in place over the region's `x` section — the
-#' iterate-over-same-shape loop (optimizer steps, simulation sweeps) at
-#' memcpy cost, skipping the region create and every worker's re-attach.
-#' Any other change of `x` — a different shape or type, a list, a map
-#' staged inline — restages transparently on the next run.
+#' staged and the replacement `x` are bare-byte eligible (atomic,
+#' non-ALTREP, no attributes beyond names) with identical type and length,
+#' the swap is in place. The new bytes are copied over the `x` section of
+#' the region. This runs the iterate-over-same-shape loop (optimizer
+#' steps, simulation sweeps) at memcpy cost, skipping the region create
+#' and the re-attach of every worker. Any other change of `x` — a
+#' different shape or type, a list, a map staged inline — restages
+#' transparently on the next run.
 #'
 #' @rdname kio_map_prepare
 #' @param pm a prepared-map handle from [kio_map_prepare()].

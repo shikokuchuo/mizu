@@ -1,17 +1,18 @@
 #' kioto: Lock-Free Shared-Memory Channels and Task Pools
 #'
 #' Parallel computation and data exchange between R processes on the same
-#' machine: lock-free channels and work-stealing task pools over 'POSIX'
-#' shared memory (Linux, macOS) or 'Win32' file mappings (Windows), with the
-#' hot path entirely in user space. Inter-process communication cheap enough
-#' that work can be divided at granularities usually reserved for threads.
+#' machine. Lock-free channels and work-stealing task pools over 'POSIX'
+#' shared memory (Linux, macOS) or 'Win32' file mappings (Windows), with
+#' the hot path entirely in user space. Inter-process communication cheap
+#' enough that work can be divided at granularities usually reserved for
+#' threads.
 #'
 #' @section Linux allocator tuning:
-#' On glibc Linux, loading kioto raises the C library allocator's mmap and
-#' trim thresholds (to 32 MB and 128 MB): payloads crossing a process
-#' boundary are materialized as fresh vectors, and glibc's defaults would
-#' otherwise map, fault, and unmap every large one. A process that set its
-#' own malloc tunables via 'GLIBC_TUNABLES' is left untouched; other
+#' On glibc Linux, loading kioto raises the mmap and trim thresholds of
+#' the C library allocator (to 32 MB and 128 MB). Payloads that cross a
+#' process boundary are materialized as fresh vectors, and the glibc
+#' defaults map, fault, and unmap every large one. A process that set its
+#' own malloc tunables via 'GLIBC_TUNABLES' is left untouched. Other
 #' platforms are unaffected.
 #'
 #' @useDynLib kioto, .registration = TRUE

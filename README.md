@@ -14,13 +14,17 @@
     \  /   t o /
      \/_______/
 
-Parallel computation and data exchange between R processes on the same machine: lock-free channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
-A channel is a two-way message link between an R session and a helper process it spawns; a pool is a set of worker processes that divide submitted tasks among themselves.
-In both, data written by one process is read in place by the other — never copied through a socket, pipe, or file — and the hot path stays entirely in user space: single-producer single-consumer rings with batched publication, hybrid spin-then-park waiting, and event-driven peer-death detection.
+Parallel computation and data exchange between R processes on the same machine.
+Lock-free channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
+A channel is a two-way message link between an R session and a helper process that it spawns.
+A pool is a set of worker processes that divide submitted tasks among themselves.
+In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.
+The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
 R evaluates code on a single thread, so parallelism in R means multiple processes.
-kioto makes the communication between them cheap enough that work can be divided at granularities usually reserved for threads.
-It is a complement to [mirai](https://mirai.r-lib.org), the general solution for parallel and distributed computing in R; payload contents interoperate transparently with [mori](https://github.com/r-lib/mori) shared objects.
+kioto makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
+kioto complements [mirai](https://mirai.r-lib.org), the general solution for parallel and distributed computing in R.
+Payload contents interoperate transparently with [mori](https://github.com/r-lib/mori) shared objects.
 
 ## Installation
 
@@ -32,8 +36,10 @@ pak::pak("shikokuchuo/kioto")
 
 ## Channels
 
-The essential function is `kio_channel()`: it creates a bidirectional shared-memory channel — one lock-free ring per direction — and spawns a child R process connected to its other end.
-The child evaluates a quoted expression with `ch` bound to its side of the channel; all data crosses the rings, not the process boundary.
+The essential function is `kio_channel()`.
+It creates a two-way shared-memory channel — one lock-free ring per direction — and spawns a child R process connected to the other end.
+The child evaluates a quoted expression with `ch` bound to its side of the channel.
+All data crosses the rings, not the process boundary.
 
 ``` r
 library(kioto)
@@ -51,13 +57,19 @@ kio_recv(ch, timeout = 5)
 #> [1] 42
 ```
 
-`kio_send()` publishes a message to the peer, visible the moment the call returns; `kio_recv()` returns the next one.
-`kio_send_batch()` and `kio_recv_batch()` move a whole list of messages under a single call, for rates at which the per-call overhead of R itself starts to matter.
+`kio_send()` publishes a message to the peer, visible the moment the call returns.
+`kio_recv()` returns the next message.
+`kio_send_batch()` and `kio_recv_batch()` move a whole list of messages in one call.
+Use them at rates where the per-call overhead of R itself starts to matter.
 
-Outcomes that end a conversation — ring full, timeout, orderly close, peer death — are returned as class-tagged sentinel values rather than thrown as errors, so a receive loop tests for them with `inherits(x, "kio_sentinel")` (or on the specific classes `kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone`) instead of wrapping every call in error handlers.
-If the process at the other end dies, receives first drain the messages it had already published, then report `kio_peer_gone`; `kio_alive(ch)` asks whether the peer is still running at any time, without touching the rings.
+Outcomes that end a conversation — ring full, timeout, orderly close, peer death — come back as class-tagged sentinel values, not errors.
+A receive loop tests for them with `inherits(x, "kio_sentinel")`, or with the specific classes `kio_full`, `kio_timeout`, `kio_closed`, `kio_peer_gone`.
+No call needs an error handler.
+If the process at the other end dies, receives first drain the messages that it already published, then report `kio_peer_gone`.
+`kio_alive(ch)` reports at any time whether the peer still runs, without touching the rings.
 
-`kio_close()` performs an orderly shutdown, waiting for the peer to finish draining before shared resources are released:
+`kio_close()` performs an orderly shutdown.
+It waits for the peer to finish draining before it releases the shared resources:
 
 ``` r
 kio_close(ch)
@@ -65,8 +77,13 @@ kio_close(ch)
 
 ## Task pools
 
-Built on the same transport, `kio_pool()` spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop: a submitted task goes straight from the submitting process into shared memory, where a worker claims it — and idle workers steal from busy ones, so load balances itself.
-`kio_submit()` captures an expression together with the values it needs and returns a task handle immediately, leaving your session free to continue; `kio_collect()` waits for that task’s result:
+`kio_pool()` builds on the same transport.
+It spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop.
+A submitted task goes straight from the submitting process into shared memory, where a worker claims it.
+Idle workers steal from busy ones, so the load balances itself.
+`kio_submit()` captures an expression together with the values it needs and returns a task handle immediately.
+Your session stays free to continue.
+`kio_collect()` waits for the result of that task:
 
 ``` r
 p <- kio_pool(n_workers = 4L)
@@ -76,11 +93,16 @@ kio_collect(t)
 #> [1] 155
 ```
 
-An error raised inside a task is captured and re-signalled in your session when you collect it.
-`kio_cancel(t)` withdraws a task: one still queued is skipped, while one already running completes and its result is discarded — cancellation never interrupts executing code.
+If a task raises an error, the pool captures it and signals it again in your session when you collect the result.
+`kio_cancel(t)` withdraws a task.
+A task still queued is skipped.
+A task already running completes, and its result is discarded.
+Cancellation never interrupts executing code.
 
-Inside a task, the evaluating worker’s own handle is available as `pool`, so a task can split itself into subtasks.
-A nested submit pushes straight onto the worker’s own work-stealing deque — no ring, no wake — and a worker waiting on a nested result executes other work instead of sleeping, so divide-and-conquer runs at fork/join cost and never deadlocks the pool:
+Inside a task, the handle of the evaluating worker is available as `pool`, so a task can split itself into subtasks.
+A nested submit pushes straight onto the own work-stealing deque of the worker — no ring, no wake.
+A worker that waits on a nested result executes other work instead of sleeping.
+Divide-and-conquer runs at fork/join cost and never deadlocks the pool:
 
 ``` r
 t <- kio_submit(
@@ -97,8 +119,11 @@ kio_collect(t)
 
 ## Parallel map
 
-`kio_map()` maps a function over a vector or list on the pool, returning results in input order.
-It is not a loop over `kio_submit()`: the function, its constant arguments, and the data are staged once in shared memory, a handful of chunk tasks divide the elements, and each worker sets up the map at most once — so the per-element cost approaches `lapply()`’s while the work spreads across workers and balances itself through stealing.
+`kio_map()` maps a function over a vector or list on the pool and returns the results in input order.
+It is not a loop over `kio_submit()`.
+The function, its constant arguments, and the data are staged once in shared memory.
+A handful of chunk tasks divide the elements, and each worker sets up the map at most once.
+The per-element cost approaches the cost of `lapply()`, while the work spreads across workers and balances itself through stealing.
 
 ``` r
 kio_map(p, 1:5, \(i) i * 2L)
@@ -118,15 +143,17 @@ kio_map(p, 1:5, \(i) i * 2L)
 #> [1] 10
 ```
 
-A `.template` (in the style of `vapply()`’s `FUN.VALUE`) returns an atomic vector or matrix instead of a list, with results written straight into shared memory — moving cross-process exactly once, unserialized:
+A `.template` (in the style of the `FUN.VALUE` argument of `vapply()`) returns an atomic vector or matrix instead of a list.
+The workers write the results straight into shared memory: each result crosses the process boundary exactly once, unserialized:
 
 ``` r
 kio_map(p, seq.int(-5, 5), abs, .template = numeric(1))
 #>  [1] 5 4 3 2 1 0 1 2 3 4 5
 ```
 
-Random numbers drawn inside the function are not reproducible by default — and cost nothing extra.
-Passing `.seed` gives every element its own L’Ecuyer-CMRG stream, so results are identical for any chunking, worker count, or steal order:
+Random numbers drawn inside the function are not reproducible by default, and cost nothing extra.
+Pass `.seed` to give every element its own L’Ecuyer-CMRG stream.
+Then the results are identical for any chunking, worker count, or steal order:
 
 ``` r
 identical(kio_map(p, 1:4, \(i) rnorm(i), .seed = 123L),
@@ -137,8 +164,8 @@ identical(kio_map(p, 1:4, \(i) rnorm(i), .seed = 123L),
 ## Sizing, sharing and watching a pool
 
 A pool can grow and shrink while it runs.
-Retirement is graceful: the worker finishes what it is doing, and anything still queued to it is consumed by the remaining workers.
-Other R processes can join a running pool as submitters — the pool’s name is the only thing that needs to be communicated to them:
+Retirement is graceful: the worker finishes its current task, and the remaining workers consume anything still queued to it.
+Other R processes can join a running pool as submitters — the name of the pool is the only thing they need:
 
 ``` r
 kio_spawn_workers(p, n = 2L)     # two more workers join the pool
@@ -157,7 +184,7 @@ kio_pool_dump(p)    # every slot in full detail — the first tool when a pool h
 kio_pool_trace(p, \(event, id) message(event, " ", id))  # task lifecycle hook
 ```
 
-When you are done, `kio_pool_stop()` cancels pending tasks, waits for the workers to exit cleanly, and releases the shared region:
+When you are done, `kio_pool_stop()` cancels the pending tasks, waits for the workers to exit cleanly, and releases the shared region:
 
 ``` r
 kio_pool_stop(p)
@@ -165,33 +192,44 @@ kio_pool_stop(p)
 
 ## Deploying on Linux
 
-POSIX shared memory on Linux is `/dev/shm`, a bounded tmpfs mount: everything kioto creates — pool and channel regions, and the per-payload regions that carry anything past the in-slot budget — has to fit in it.
-Container runtimes default it to 64 MB (`docker run --shm-size=4g`, or the equivalent in your orchestrator), so size it to your peak in-flight payload traffic.
+On Linux, POSIX shared memory is `/dev/shm`, a bounded tmpfs mount.
+Everything kioto creates must fit in it: pool and channel regions, plus the per-payload regions that carry anything past the in-slot budget.
+Container runtimes set it to 64 MB by default.
+Use `docker run --shm-size=4g`, or the equivalent in your orchestrator.
+Size it to your peak in-flight payload traffic.
 
 ## When a process dies
 
-Death of any participant is detected at OS notification latency, with no heartbeats and no polling: every process holds a lock that the kernel releases the instant it exits — for any reason — and that release is the verdict.
-A dead worker fails exactly the tasks it had claimed (collecting them raises an error), while work still queued to it is consumed by the surviving workers; on a channel, the survivor sees `kio_peer_gone`.
-The split is deliberate and holds across the whole surface: transport states — not yet, not now, stream over — return as sentinel values for the receiving loop to handle, while a request that can never be satisfied — a task’s own error, a cancelled task, a dead worker, a child that failed to start — raises a classed condition (see `?kio_error`).
+The death of any participant is detected at OS notification latency, with no heartbeats and no polling.
+Every process holds a lock that the kernel releases the instant the process exits, for any reason.
+That release is the verdict.
+A dead worker fails exactly the tasks that it claimed, and collecting one of them raises an error.
+The surviving workers consume the work still queued to the dead worker.
+On a channel, the survivor sees `kio_peer_gone`.
+This split is deliberate and holds across the whole surface.
+Transport states — not yet, not now, stream over — return as sentinel values for the receiving loop to handle.
+A request that can never be satisfied raises a classed condition instead (see `?kio_error`).
+Examples: the error of the task itself, a cancelled task, a dead worker, a child that failed to start.
 
-A crashed process cannot clean up after itself: `kio_prune()` removes the shared-memory regions left behind by processes that no longer exist.
-Regions belonging to running processes are never touched.
+A crashed process cannot clean up after itself.
+`kio_prune()` removes the shared-memory regions that dead processes leave behind.
+Regions of running processes are never touched.
 
 ## Functions at a glance
 
 | Function | Purpose |
 |----|----|
 | **Channels** |  |
-| `kio_channel()` | create a channel and spawn the peer process at its other end |
+| `kio_channel()` | create a channel and spawn the peer process at the other end |
 | `kio_send()` | send a message to the peer |
-| `kio_recv()` | receive the next message, waiting up to a timeout |
+| `kio_recv()` | receive the next message (waits up to a timeout) |
 | `kio_send_batch()` / `kio_recv_batch()` | move many messages in one call |
 | `kio_alive()` | is the peer process still running? |
 | `kio_close()` | orderly shutdown of a channel |
 | **Task pools** |  |
 | `kio_pool()` | create a pool and spawn its workers |
-| `kio_submit()` | send an expression to the pool; returns a task handle immediately |
-| `kio_collect()` | wait for and return a task’s result |
+| `kio_submit()` | submit an expression to the pool, get a task handle immediately |
+| `kio_collect()` | wait for and return the result of a task |
 | `kio_cancel()` | withdraw a task (never interrupts one already running) |
 | `kio_map()` | map a function over a vector on the pool, staged once, in input order |
 | `kio_pool_attach()` | join an existing pool as a submitter, from another process |
@@ -200,5 +238,5 @@ Regions belonging to running processes are never touched.
 | `kio_pool_trace()` | register a hook called at each task lifecycle event |
 | `kio_pool_stop()` | shut the pool down |
 | **Housekeeping** |  |
-| `kio_is_sentinel()` | is this one of kioto’s own sentinel values? (identity, not class) |
+| `kio_is_sentinel()` | is this one of the sentinel values of kioto? (identity, not class) |
 | `kio_prune()` | remove shared-memory regions orphaned by crashed processes |

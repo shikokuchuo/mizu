@@ -11,13 +11,13 @@ kio_alive(ch)
 inside a peer expression).}
 }
 \value{
-\code{TRUE} while the peer process is alive, \code{FALSE} once it has died
-(at which point the survivor has unlinked the channel's names).
+\code{TRUE} while the peer process is alive, \code{FALSE} after it dies.
+At that point the survivor unlinked the names of the channel.
 }
 \description{
-An explicit probe for supervisors: reports whether the peer process holds
-its liveness lock (\code{~1} microsecond, no waiting). \code{\link[=kio_recv]{kio_recv()}} and
-\code{\link[=kio_send]{kio_send()}} surface peer death automatically as \code{kio_peer_gone}; this is
-for callers that want to ask without touching the rings. A peer that has
-closed the channel but is still running reads as alive.
+An explicit probe for supervisors. Reports whether the peer process
+holds its liveness lock, in about 1 microsecond with no waiting.
+\code{\link[=kio_recv]{kio_recv()}} and \code{\link[=kio_send]{kio_send()}} surface peer death automatically as
+\code{kio_peer_gone}. Use this probe to ask without touching the rings. A
+peer that closed the channel but still runs reads as alive.
 }

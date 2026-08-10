@@ -1,17 +1,17 @@
 #' Print Methods for kioto Objects
 #'
 #' One-line summaries. A channel prints its region name, side, and
-#' conversation state: `open`, `closed` once either side has signalled
-#' close, or `peer gone` — [kio_alive()]'s verdict, probed at print. A
-#' pool prints its region name, this handle's role, live workers out of
+#' conversation state: `open`, `closed` once either side signalled close,
+#' or `peer gone` — the verdict of [kio_alive()], probed at print. A pool
+#' prints its region name, the role of this handle, live workers out of
 #' registry capacity, and pending (uncompleted) tasks. A task handle
-#' prints its state, probed without consuming the result: `pending`,
-#' `ok`, `err`, `cancel`, or `died` in the result-slot vocabulary of
-#' [kio_pool_status()], `collected` once the result has been taken, or
-#' `dropped` when its pool is gone. Sentinels print as their class. The
-#' handle methods never error and never touch the rings — a handle whose
-#' resources have been released (a closed channel, a stopped pool)
-#' prints as closed — so auto-printing is always safe.
+#' prints its state, probed without consuming the result. The state is
+#' `pending`, `ok`, `err`, `cancel`, or `died` in the result-slot
+#' vocabulary of [kio_pool_status()]. It is `collected` once the result is
+#' taken, or `dropped` when its pool is gone. Sentinels print as their
+#' class. The handle methods never error and never touch the rings. A
+#' handle whose resources are released (a closed channel, a stopped pool)
+#' prints as closed. So auto-printing is always safe.
 #'
 #' @param x the object.
 #' @param ... ignored.

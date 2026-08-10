@@ -7,38 +7,39 @@
 kio_pool_stats(pool)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
-inside a task, the worker's own handle bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
+inside a task — the own handle of the worker, bound as \code{pool}.}
 }
 \value{
-A list of two data frames. \code{workers}: one row per worker slot
+A list of two data frames. \code{workers}: one row per worker slot,
 with \code{status}, \code{pid}, \code{tasks} (task evaluations run, help-mode and
-nested inline execution included), \code{steals} (entries claimed from
-peers' deques), \code{injections} (entries claimed from injection rings),
-\code{parks} (kernel parks in the worker loop), \code{helps} (claims executed
-while blocked in a nested collect), and the current \code{deque} depth.
-\code{submitters}: one row per submitter slot with \code{status}, \code{pid},
-\code{injected} (entries ever published to its injection ring), \code{claimed}
-(entries workers have taken from it), \code{spills} (payloads past the
-inline budget that traveled via their own region — task payloads at
-submit and result payloads at publish, both attributed to the task's
-submitter; nonzero means \code{slot_size} is undersized for the traffic),
-\code{spill_reuse} (the subset of \code{spills} that recycled a retired region
-from the producer's free list instead of creating one — steady-state
-spill traffic should approach \code{spills}, so \code{spills - spill_reuse} is
-the region-churn rate), and \code{queued} (\code{injected - claimed}). Counters
-reset when a slot is reused by a new joiner.
+nested inline execution included), \code{steals} (entries claimed from the
+deques of peers), \code{injections} (entries claimed from injection
+rings), \code{parks} (kernel parks in the worker loop), \code{helps} (claims
+executed while blocked in a nested collect), and the current \code{deque}
+depth. \code{submitters}: one row per submitter slot, with \code{status},
+\code{pid}, \code{injected} (entries ever published to its injection ring),
+\code{claimed} (entries the workers took from it), \code{spills} (payloads past
+the inline budget that traveled in their own region — task payloads
+at submit and result payloads at publish, both attributed to the
+submitter of the task. A nonzero value means \code{slot_size} is
+undersized for the traffic), \code{spill_reuse} (the subset of \code{spills}
+that recycled a retired region from the free list of the producer
+instead of creating one), and \code{queued} (\code{injected - claimed}).
+Steady-state spill traffic approaches \code{spills}, so
+\code{spills - spill_reuse} is the region-churn rate. Counters reset when
+a new joiner reuses a slot.
 }
 \description{
-Per-worker and per-submitter counters accumulated since each
-participant joined, complementing the point-in-time snapshots of
+Per-worker and per-submitter counters, accumulated since each
+participant joined. They complement the point-in-time snapshots of
 \code{\link[=kio_pool_status]{kio_pool_status()}} and \code{\link[=kio_pool_dump]{kio_pool_dump()}}. Nothing here costs the hot
-paths anything: submitter counts are the injection rings' own monotonic
-positions (submission writes nothing extra; the spill counter is bumped
-only on the spill path itself, which a fresh region per payload already
-dominates), and worker counters are kept process-locally and mirrored
-into the region only when a worker parks, leaves, or passes its fairness
-tick — so under continuous load a worker's row can lag by up to 61
-claims, and is exact whenever that worker is parked, retired, or the
-pool is quiescent.
+paths anything. The submitter counts are the monotonic positions of the
+injection rings themselves: submission writes nothing extra, and the
+spill counter moves only on the spill path, which a fresh region per
+payload already dominates. The worker counters are kept process-locally
+and mirrored into the region only when a worker parks, leaves, or
+passes its fairness tick. So under continuous load, the row of a worker
+can lag by up to 61 claims. The row is exact whenever that worker is
+parked or retired, or the pool is quiescent.
 }

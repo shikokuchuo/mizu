@@ -12,25 +12,27 @@ Invisibly, a character vector of the region names removed, or
 be enumerated (Windows, where orphans cannot exist), always \code{NULL}.
 }
 \description{
-Remove kioto shared memory regions left behind by processes that no longer
-exist. Needed only in exceptional circumstances: cleanup after a crash is
-automatic as long as any participant of the pool or channel survives it —
-the survivor detects the death via the liveness lock and reclaims the dead
-process's regions itself. Orphans arise only when every attached process
-dies at once (say, the whole process group is killed), leaving no survivor
-to run that cleanup; they persist until pruned or the machine reboots.
+Removes the kioto shared memory regions that dead processes leave
+behind. Needed only in exceptional circumstances. Cleanup after a crash
+is automatic as long as any participant of the pool or channel survives
+it. The survivor detects the death through the liveness lock and
+reclaims the regions of the dead process itself. Orphans arise only
+when every attached process dies at once (for example, the whole
+process group is killed), and no survivor remains to run that cleanup.
+They persist until pruned or until the machine reboots.
 }
 \details{
-Regions belonging to running processes are never touched, and mori regions
-are invisible to kioto (and vice versa) — the two packages keep disjoint
-namespaces. Avoid running this while another kioto session on the machine
-is itself recovering from a crash: payloads sent by a now-dead peer remain
-deliverable to its survivor until drained, and this function would reap
-them.
+Regions of running processes are never touched, and mori regions are
+invisible to kioto (and vice versa): the two packages keep disjoint
+namespaces. If another kioto session on the machine is itself
+recovering from a crash, do not run this. Payloads sent by a now-dead
+peer stay deliverable to its survivor until drained, and this function
+reaps them.
 
 A crashed process cannot clean up after itself, and a new process that
-happens to reuse its PID cannot reap its orphans either (it reads its own
-PID as alive) — run \code{kio_prune()} while the PID is free, before reuse.
+happens to reuse its PID cannot reap its orphans either (it reads its
+own PID as alive). Run \code{kio_prune()} while the PID is free, before
+reuse.
 }
 \examples{
 kio_prune()

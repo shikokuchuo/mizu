@@ -7,19 +7,21 @@
 kio_pool_stop(pool, timeout = 5)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
-inside a task, the worker's own handle bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
+inside a task — the own handle of the worker, bound as \code{pool}.}
 
-\item{timeout}{seconds to wait for workers' clean exit.}
+\item{timeout}{seconds to wait for the clean exit of the workers.}
 }
 \value{
-Invisibly, \code{TRUE} if all workers exited within the timeout,
-\code{FALSE} otherwise (with a warning; workers still exit on their own).
+Invisibly, \code{TRUE} if all workers exited within the timeout.
+\code{FALSE} otherwise, with a warning (the workers still exit on their
+own).
 }
 \description{
-Broadcasts shutdown, wakes every parked participant, cancels all pending
-tasks (blocked collectors raise \code{kio_error_cancelled}), waits
-up to \code{timeout} seconds for workers to exit cleanly, and unlinks the
-region and liveness files. The handle is dead afterwards; stopping it
-again is a no-op. Only the creating process can stop a pool.
+Broadcasts shutdown, wakes every parked participant, and cancels all
+pending tasks (blocked collectors raise \code{kio_error_cancelled}). Then
+waits up to \code{timeout} seconds for the workers to exit cleanly, and
+unlinks the region and the liveness files. The handle is dead
+afterwards, and stopping it again is a no-op. Only the creating process
+can stop a pool.
 }

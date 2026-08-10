@@ -11,63 +11,63 @@
 \alias{kio_error_shm}
 \title{Error Conditions}
 \description{
-Terminal failures a caller can act on programmatically are raised as
-classed conditions: each inherits \code{"kio_error"} (alongside \code{"error"} and
-\code{"condition"}) with a subclass naming the failure, so handlers dispatch
-with \code{tryCatch(..., kio_error_worker_died = ...)} or test with
+Terminal failures that a caller can act on programmatically are raised
+as classed conditions. Each inherits \code{"kio_error"} (alongside \code{"error"}
+and \code{"condition"}), with a subclass that names the failure. Handlers
+dispatch with \code{tryCatch(..., kio_error_worker_died = ...)} or test with
 \code{\link[=inherits]{inherits()}} instead of matching message text. Messages are not API and
-may be reworded; the class vectors and fields below are.
+can be reworded. The class vectors and fields below are API.
 }
 \details{
 The subclasses, where they are raised, and the structured fields they
 carry as condition elements:
 \itemize{
 \item \code{kio_error_submit_timeout} — \code{\link[=kio_submit]{kio_submit()}} on \code{.timeout} expiry with
-the submitter's injection ring still full.
+the injection ring of the submitter still full.
 \item \code{kio_error_slots_exhausted} — \code{\link[=kio_submit]{kio_submit()}} and \code{\link[=kio_map]{kio_map()}} when
-every result slot in the submitter's subrange is already outstanding;
-collect or cancel before resubmitting.
+every result slot in the subrange of the submitter is already
+outstanding. Collect or cancel before resubmitting.
 \item \code{kio_error_stopped} — \code{\link[=kio_submit]{kio_submit()}}, \code{\link[=kio_map]{kio_map()}} and
-\code{\link[=kio_pool_attach]{kio_pool_attach()}} against a pool that has been stopped or whose
-owner process died.
+\code{\link[=kio_pool_attach]{kio_pool_attach()}} against a pool that was stopped or whose owner
+process died.
 \item \code{kio_error_cancelled} — \code{\link[=kio_collect]{kio_collect()}} on a task that was cancelled
 or whose pool was stopped.
 \item \code{kio_error_worker_died} — \code{\link[=kio_collect]{kio_collect()}} on a task whose executing
 worker died. Fields \code{slot} (worker registry slot, 0-based as in
-\code{\link[=kio_pool_dump]{kio_pool_dump()}}) and \code{pid} — the result slot's claimant record read
-at collect time: informational, racy against slot reuse exactly as
-\code{\link[=kio_pool_dump]{kio_pool_dump()}} is, and \code{NA} where no claim was recorded.
-\code{\link[=kio_map]{kio_map()}} re-signals this class with the lost elements as an
-additional \code{elements} field: a two-column matrix of inclusive
+\code{\link[=kio_pool_dump]{kio_pool_dump()}}) and \code{pid}: the claimant record of the result slot,
+read at collect time. This is informational, racy against slot reuse
+exactly as \code{\link[=kio_pool_dump]{kio_pool_dump()}} is, and \code{NA} where no claim was
+recorded. \code{\link[=kio_map]{kio_map()}} signals this class again with the lost elements
+as an additional \code{elements} field: a two-column matrix of inclusive
 \verb{lo, hi} ranges, runner-granular and conservative (see the Errors
 section of \code{\link[=kio_map]{kio_map()}}).
 \item \code{kio_error_startup} — \code{\link[=kio_channel]{kio_channel()}}, \code{\link[=kio_pool]{kio_pool()}} and
 \code{\link[=kio_spawn_workers]{kio_spawn_workers()}} when a child process fails to attach within
 \code{startup_timeout}.
-\item \code{kio_error_shm} — shared-memory region create / open failure anywhere
-on the surface. Field \code{bytes}: the requested size of a region that
-could not be created, \code{NA} when a region could not be opened.
+\item \code{kio_error_shm} — shared-memory region create or open failure
+anywhere on the surface. Field \code{bytes}: the requested size of a
+region that was not created, \code{NA} when a region was not opened.
 }
 
 Errors of misuse (unnamed task arguments, out-of-range slots, operations
-on a closed handle) remain plain errors: the classed hierarchy covers
-the outcomes a running system produces, not programming mistakes.
+on a closed handle) stay plain errors: the classed hierarchy covers the
+outcomes that a running system produces, not programming mistakes.
 
 Raised \code{kio_error} conditions are distinct from sentinels (class
 \code{kio_sentinel}, returned by \code{\link[=kio_send]{kio_send()}}, \code{\link[=kio_recv]{kio_recv()}} and
-\code{\link[=kio_collect]{kio_collect()}}): a sentinel is an ordinary return value tagging a
-terminal state on the hot path, not a signalled condition — see
+\code{\link[=kio_collect]{kio_collect()}}). A sentinel is an ordinary return value that tags a
+terminal state on the hot path, not a signalled condition. See
 \code{\link[=kio_is_sentinel]{kio_is_sentinel()}}.
 
-Which discipline applies follows the shape of the call. Verbs that move
-payloads and bounded waits — \code{\link[=kio_send]{kio_send()}}, \code{\link[=kio_recv]{kio_recv()}},
-\code{\link[=kio_collect]{kio_collect()}}, \code{\link[=kio_map]{kio_map()}} — return sentinels for transport states:
-not yet (\code{kio_timeout}), not now (\code{kio_full}), stream over
+Which discipline applies follows the shape of the call. The verbs that
+move payloads and wait with a bound — \code{\link[=kio_send]{kio_send()}}, \code{\link[=kio_recv]{kio_recv()}},
+\code{\link[=kio_collect]{kio_collect()}}, \code{\link[=kio_map]{kio_map()}} — return sentinels for transport states.
+These are: not yet (\code{kio_timeout}), not now (\code{kio_full}), stream over
 (\code{kio_closed}, \code{kio_peer_gone}). Their caller is a loop, and these are
-its normal outcomes. Conditions are raised where a request has failed
-for good: constructors and \code{\link[=kio_submit]{kio_submit()}}, whose return is a handle the
-next line uses, raise on every failure; \code{\link[=kio_collect]{kio_collect()}} raises when the
-value can never arrive — the task's own error re-signalled,
+its normal outcomes. Conditions are raised where a request failed for
+good. Constructors and \code{\link[=kio_submit]{kio_submit()}}, whose return is a handle the
+next line uses, raise on every failure. \code{\link[=kio_collect]{kio_collect()}} raises when the
+value can never arrive: the own error of the task re-signalled,
 \code{kio_error_cancelled}, \code{kio_error_worker_died}. A sentinel invites the
-loop's next iteration; a condition means stop and deal with it.
+next iteration of the loop. A condition means stop and deal with it.
 }

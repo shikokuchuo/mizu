@@ -17,23 +17,23 @@ inside a peer expression).}
 
 \item{n}{maximum number of messages to return.}
 
-\item{timeout}{seconds to wait before returning the \code{kio_timeout}
-sentinel; \code{Inf} (the default) waits indefinitely, \code{0} polls. Ctrl-C
-remains responsive while waiting.}
+\item{timeout}{seconds to wait before the call returns the \code{kio_timeout}
+sentinel. \code{Inf} (the default) waits indefinitely, and \code{0} polls.
+Ctrl-C stays responsive during the wait.}
 }
 \value{
-\code{kio_send_batch()} returns the number of messages accepted: less
-than \code{length(xs)} when the ring filled or the channel closed midway
-(send the next element with \code{\link[=kio_send]{kio_send()}} to learn which).
-\code{kio_recv_batch()} waits for the first message like \code{\link[=kio_recv]{kio_recv()}} —
-returning its sentinels on timeout, close, or peer death — then
-returns a list of between 1 and \code{n} already-published messages without
-waiting further.
+\code{kio_send_batch()} returns the number of messages accepted. This
+is less than \code{length(xs)} when the ring filled or the channel closed
+midway. Send the next element with \code{\link[=kio_send]{kio_send()}} to learn which.
+\code{kio_recv_batch()} waits for the first message like \code{\link[=kio_recv]{kio_recv()}} and
+returns its sentinels on timeout, close, or peer death. It then
+returns a list of 1 to \code{n} already-published messages without waiting
+further.
 }
 \description{
 At target rates the R call boundary is a first-order cost.
-\code{kio_send_batch()} moves a list of payloads under a single \code{.Call},
-publishing them to the peer in one batched tail store; \code{kio_recv_batch()}
-drains up to \code{n} messages under a single park cycle and a single batched
-head publication.
+\code{kio_send_batch()} moves a list of payloads in a single \code{.Call} and
+publishes them to the peer in one batched tail store.
+\code{kio_recv_batch()} drains up to \code{n} messages in a single park cycle and
+a single batched head publication.
 }

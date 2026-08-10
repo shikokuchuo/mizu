@@ -1,28 +1,28 @@
 #' Create a Task Pool and Spawn Its Workers
 #'
-#' Creates a shared-memory task pool — per-submitter injection rings feeding
-#' worker processes, with results published through result slots — and spawns
-#' its worker processes. Submission is an SHM ring write plus at most one
-#' directed wake: no dispatcher process is in the loop. Each worker owns a
-#' work-stealing deque; idle workers steal from busy peers and consume the
-#' injection rings, with a fairness tick bounding external-submission
-#' latency on a saturated pool.
+#' Creates a shared-memory task pool and spawns its worker processes.
+#' Per-submitter injection rings feed the workers, and results are
+#' published through result slots. A submission is one SHM ring write plus
+#' at most one directed wake: no dispatcher process is in the loop. Each
+#' worker owns a work-stealing deque. Idle workers steal from busy peers
+#' and consume the injection rings. A fairness tick bounds the latency of
+#' external submissions on a saturated pool.
 #'
-#' The pool's lifetime is bound to the creating process, which holds
-#' submitter slot 0 of the returned handle: use it directly with
+#' The lifetime of the pool is bound to the creating process, which holds
+#' submitter slot 0 of the returned handle. Use this handle directly with
 #' [kio_submit()] and [kio_collect()]. Other processes join as submitters
-#' via [kio_pool_attach()]. Dropping the handle (or exiting R) shuts the
-#' pool down as [kio_pool_stop()] would, without the wait.
+#' through [kio_pool_attach()]. Dropping the handle (or exiting R) shuts
+#' the pool down as [kio_pool_stop()] does, but without the wait.
 #'
-#' Payload contents interoperate transparently with mori: a `mori::share()`d
-#' object anywhere inside a task's arguments or its result serializes to its
-#' short identifier wire form via mori's own hooks and maps zero-copy on the
-#' other side.
+#' Payload contents interoperate transparently with mori. A `mori::share()`d
+#' object anywhere inside the arguments of a task or its result serializes
+#' to its short identifier wire form through the mori hooks. It maps
+#' zero-copy on the other side.
 #'
-#' The pool's liveness lock files (the death-detection verdict) are created
-#' in a per-platform directory resolved at create time: `/dev/shm` on
-#' Linux, the per-user temporary directory on macOS and Windows. The
-#' resolved path is recorded in the region so every participant uses the
+#' The liveness lock files of the pool (the death-detection verdict) live
+#' in a per-platform directory chosen at create time. This is `/dev/shm` on
+#' Linux, and the per-user temporary directory on macOS and Windows. The
+#' chosen path is recorded in the region, so every participant uses the
 #' same files. The environment variable `KIOTO_LIVENESS_DIR`, read in the
 #' creating process, overrides the default.
 #'
@@ -32,26 +32,27 @@
 #' @param max_submitters submitter registry capacity (at most 64). Each
 #'   submitter owns its own injection ring and an equal share of
 #'   `result_slots`.
-#' @param injection_cap entries per submitter injection ring; a power of two.
-#' @param per_worker_cap entries per worker work-stealing deque; a power of
+#' @param injection_cap entries per submitter injection ring. A power of
 #'   two.
-#' @param result_slots total result slots, partitioned equally across
-#'   submitter slots; rounded up to a multiple of `max_submitters`. Bounds
-#'   each submitter's outstanding (uncollected) tasks.
-#' @param slot_size bytes per queue entry and result slot; a power of two
-#'   between 128 and 2^20. Payloads (task or result) that serialize past
-#'   the inline budget travel via a fresh region per payload — an
+#' @param per_worker_cap entries per worker work-stealing deque. A power of
+#'   two.
+#' @param result_slots total result slots, partitioned equally across the
+#'   submitter slots and rounded up to a multiple of `max_submitters`. This
+#'   bounds the outstanding (uncollected) tasks of each submitter.
+#' @param slot_size bytes per queue entry and result slot. A power of two
+#'   between 128 and 2^20. A payload (task or result) that serializes past
+#'   the inline budget travels in a fresh region per payload. This is an
 #'   order-of-magnitude latency cliff, surfaced per submitter as
 #'   [kio_pool_stats()]`$submitters$spills`. The default `512L` keeps
-#'   typical expression-plus-arguments tasks inline; pools moving only
+#'   typical expression-plus-arguments tasks inline. Pools that move only
 #'   scalar payloads can drop to `256L`.
-#' @param launcher a `function(token, slot)` that arranges for an R
-#'   process to eventually call `kioto:::worker_main(token, slot)`. The
-#'   default [kio_launcher()] spawns `Rscript` with the host's
-#'   `.libPaths()` propagated (its `stdout`/`stderr` arguments direct
-#'   worker output); a custom launcher must arrange library paths itself.
-#' @param startup_timeout seconds to wait for all workers to join before
-#'   giving up, destroying the pool, and raising `kio_error_startup` (see
+#' @param launcher a `function(token, slot)` that arranges for an R process
+#'   to call `kioto:::worker_main(token, slot)`. The default
+#'   [kio_launcher()] spawns `Rscript` and propagates the `.libPaths()` of
+#'   the host. Its `stdout` and `stderr` arguments direct the worker
+#'   output. A custom launcher must arrange the library paths itself.
+#' @param startup_timeout seconds to wait for all workers to join. On
+#'   expiry, kioto destroys the pool and raises `kio_error_startup` (see
 #'   [kio_error]).
 #'
 #' @return A pool handle (class `"kio_pool"`) holding submitter slot 0.
@@ -113,25 +114,25 @@ kio_pool <- function(
   p
 }
 
-#' Grow or Shrink a Pool's Worker Set
+#' Grow or Shrink the Worker Set of a Pool
 #'
 #' `kio_spawn_workers()` spawns additional workers into free registry
-#' slots, up to the pool's `max_workers`, and waits for them to join.
-#' `kio_retire_worker()` asks one worker to exit cleanly: the request is
-#' non-blocking and never preemptive — the worker observes it between
-#' tasks, releases its slot, and any work still queued on its deque is
-#' consumed in place by the remaining workers. A retired worker's process
-#' may linger briefly as a lifetime anchor for results it produced that
-#' have not yet been collected.
+#' slots, up to the `max_workers` of the pool, and waits for them to join.
+#' `kio_retire_worker()` asks one worker to exit cleanly. The request is
+#' non-blocking and never preemptive. The worker observes it between tasks
+#' and releases its slot. The remaining workers consume in place any work
+#' still queued on its deque. The process of a retired worker can linger
+#' briefly as a lifetime anchor for the results it produced that are not
+#' yet collected.
 #'
 #' Slots free up when workers retire, exit at shutdown, or die and are
-#' reaped, so a pool can cycle workers within its registry capacity for
+#' reaped. So a pool can cycle workers within its registry capacity for
 #' its whole lifetime. Only the creating process can resize a pool.
 #'
 #' @inheritParams kio_submit
 #' @inheritParams kio_pool
 #' @param n number of workers to spawn.
-#' @param slot the worker's slot index (0-based, as reported by
+#' @param slot the slot index of the worker (0-based, as reported by
 #'   [kio_pool_dump()]).
 #'
 #' @return `kio_spawn_workers()` invisibly returns the slot indices
@@ -183,13 +184,13 @@ kio_retire_worker <- function(pool, slot) {
 
 #' Attach to a Pool as a Submitter
 #'
-#' Joins an existing pool from another process, claiming a free submitter
-#' slot with its own injection ring and result-slot subrange. The pool's
-#' name travels out-of-band (it is `kio_pool_status(p)$name` on the
-#' creator).
+#' Joins an existing pool from another process. Claims a free submitter
+#' slot with its own injection ring and result-slot subrange. The name of
+#' the pool travels out of band: it is `kio_pool_status(p)$name` on the
+#' creator.
 #'
-#' @param name the pool's region name (or its suffix — the part after the
-#'   platform prefix).
+#' @param name the region name of the pool, or its suffix (the part after
+#'   the platform prefix).
 #'
 #' @return A pool handle (class `"kio_pool"`) holding a submitter slot.
 #'
@@ -201,30 +202,32 @@ kio_pool_attach <- function(name) {
 
 #' Submit a Task and Collect Its Result
 #'
-#' `kio_submit()` captures `expr` unevaluated, serializes it with its named
-#' arguments into the submitter's own injection ring (payloads past the
-#' inline budget travel via a fresh region), and returns a task handle
-#' immediately. A worker evaluates the expression in a fresh environment
-#' containing the arguments as bindings. `kio_collect()` blocks until the
-#' result is published, then returns the task's value — or raises the
-#' task's error condition, re-signalled in the collecting process.
+#' `kio_submit()` captures `expr` unevaluated, serializes it with its
+#' named arguments into the injection ring of the submitter, and returns a
+#' task handle immediately. Payloads past the inline budget travel in a
+#' fresh region. A worker evaluates the expression in a fresh environment
+#' that contains the arguments as bindings. `kio_collect()` blocks until
+#' the result is published, then returns the value of the task. If the
+#' task raised an error, `kio_collect()` signals that condition again in
+#' the collecting process.
 #'
-#' Submission blocks only when the submitter's own injection ring is full —
-#' back-pressure is per-submitter — and raises `kio_error_submit_timeout`
-#' on `.timeout` expiry rather than stalling. Collection returns the
-#' `kio_timeout` sentinel (class `c("kio_timeout", "kio_sentinel")`) if no
-#' result arrives within `timeout`. A task whose handle was cancelled (or
-#' whose pool was stopped) raises `kio_error_cancelled` on collect; a task
-#' whose executing worker died raises `kio_error_worker_died`, carrying the
-#' worker's slot and pid (see [kio_error]): worker death is detected at OS
-#' notification latency (a kernel-released lock is the verdict — no
-#' heartbeats, no polling) and fails exactly the tasks the dead worker had
-#' claimed, while work still queued on its deque is consumed by the
-#' surviving workers.
+#' Submission blocks only when the injection ring of the submitter is
+#' full: back-pressure is per-submitter. On `.timeout` expiry, submission
+#' raises `kio_error_submit_timeout` instead of stalling. If no result
+#' arrives within `timeout`, collection returns the `kio_timeout` sentinel
+#' (class `c("kio_timeout", "kio_sentinel")`). Collecting a task whose
+#' handle was cancelled (or whose pool was stopped) raises
+#' `kio_error_cancelled`. Collecting a task whose executing worker died
+#' raises `kio_error_worker_died`, carrying the slot and pid of the worker
+#' (see [kio_error]). Worker death is detected at OS notification latency:
+#' a kernel-released lock is the verdict, with no heartbeats and no
+#' polling. The death fails exactly the tasks that the dead worker
+#' claimed, and the surviving workers consume the work still queued on its
+#' deque.
 #'
 #' @section Outcomes:
-#' Timeout on collect is a normal outcome and is returned; every
-#' exceptional outcome is raised, as a classed condition (see [kio_error]):
+#' A timeout on collect is a normal outcome and is returned. Every
+#' exceptional outcome is raised as a classed condition (see [kio_error]):
 #'
 #' | outcome | surfaced as | class |
 #' |---|---|---|
@@ -233,43 +236,44 @@ kio_pool_attach <- function(name) {
 #' | ring full past `.timeout` | raised by `kio_submit()` | `kio_error_submit_timeout` |
 #' | result slots exhausted | raised by `kio_submit()` | `kio_error_slots_exhausted` |
 #' | pool stopped, or owner died | raised by `kio_submit()` | `kio_error_stopped` |
-#' | task raised an error | re-signalled on collect | the task's own condition classes |
+#' | task raised an error | re-signalled on collect | the condition classes of the task itself |
 #' | cancelled, or pool stopped | raised on collect | `kio_error_cancelled` |
 #' | executing worker died | raised on collect | `kio_error_worker_died` |
 #'
-#' Task expressions see their evaluating worker's own handle as `pool`
-#' (beneath the arguments in `...`), so tasks can submit nested subtasks:
-#' `kio_submit(pool, ...)` inside a task pushes onto the worker's own
-#' work-stealing deque — no ring, no wait; a full deque runs the subtask
-#' inline instead. A worker blocked in `kio_collect()` on a nested handle
-#' helps rather than sleeps: it executes work from its own deque (and
-#' steals from peers) until the awaited result publishes, so nested
-#' fan-outs run at fork/join cost and never deadlock the pool. Nested
-#' submission claims a submitter slot for the worker on first use.
+#' A task expression sees the handle of its evaluating worker as `pool`
+#' (beneath the arguments in `...`), so a task can submit nested subtasks.
+#' `kio_submit(pool, ...)` inside a task pushes onto the work-stealing
+#' deque of the worker itself: no ring, no wait. A full deque runs the
+#' subtask inline instead. A worker blocked in `kio_collect()` on a nested
+#' handle helps instead of sleeping. It executes work from its own deque
+#' (and steals from peers) until the awaited result is published. So
+#' nested fan-outs run at fork/join cost and never deadlock the pool. A
+#' nested submission claims a submitter slot for the worker on first use.
 #'
 #' A handle can be collected exactly once: the result slot is released to
-#' the pool as the value is returned. Dropping an uncollected handle to the
-#' garbage collector cancels a still-queued task and discards a published
-#' result.
+#' the pool as the value is returned. If an uncollected handle goes to the
+#' garbage collector, a still-queued task is cancelled and a published
+#' result is discarded.
 #'
-#' @param pool a pool handle from [kio_pool()] or [kio_pool_attach()] — or,
-#'   inside a task, the worker's own handle bound as `pool`.
-#' @param expr an expression, captured unevaluated — unlike [kio_channel()],
-#'   which requires its expression pre-quoted. It sees only the
-#'   arguments in `...` (plus the worker's global environment); packages
-#'   must be loaded by the expression itself.
-#' @param ... named values bound in the evaluation environment. Values are
-#'   serialized — `mori::share()`d objects reduce to identifiers and map
+#' @param pool a pool handle from [kio_pool()] or [kio_pool_attach()], or —
+#'   inside a task — the own handle of the worker, bound as `pool`.
+#' @param expr an expression, captured unevaluated. This differs from
+#'   [kio_channel()], which requires its expression pre-quoted. The
+#'   expression sees only the arguments in `...` and the global environment
+#'   of the worker. The expression itself must load any packages it needs.
+#' @param ... named values bound in the evaluation environment. The values
+#'   are serialized. `mori::share()`d objects reduce to identifiers and map
 #'   zero-copy on the worker.
-#' @param .timeout seconds to wait for injection-ring space before erroring;
-#'   `Inf` (the default) waits indefinitely. Ctrl-C remains responsive.
+#' @param .timeout seconds to wait for injection-ring space before the
+#'   call errors. `Inf` (the default) waits indefinitely. Ctrl-C stays
+#'   responsive.
 #' @param task a task handle from `kio_submit()`.
-#' @param timeout seconds to wait for the result before returning the
-#'   `kio_timeout` sentinel; `Inf` (the default) waits indefinitely, `0`
-#'   polls.
+#' @param timeout seconds to wait for the result before the call returns
+#'   the `kio_timeout` sentinel. `Inf` (the default) waits indefinitely,
+#'   and `0` polls.
 #'
 #' @return `kio_submit()` returns a task handle (class `"kio_task"`).
-#'   `kio_collect()` returns the task's value, or the `kio_timeout`
+#'   `kio_collect()` returns the value of the task, or the `kio_timeout`
 #'   sentinel.
 #'
 #' @examples
@@ -297,33 +301,35 @@ kio_collect <- function(task, timeout = Inf) {
 
 #' Cancel a Task
 #'
-#' Advisory and discard-only, never preemptive: a task still queued is
-#' skipped by the worker; a task already executing runs to completion and
+#' Advisory and discard-only, never preemptive. The worker skips a task
+#' that is still queued. A task already executing runs to completion, and
 #' its result is dropped. Collecting a cancelled handle raises
 #' `kio_error_cancelled` (see [kio_error]).
 #'
 #' @inheritParams kio_submit
 #'
-#' @return Invisibly, `TRUE` if this call cancelled the task, `FALSE` if it
-#'   was too late — the task completed, was already cancelled, or its pool
-#'   is gone.
+#' @return Invisibly, `TRUE` if this call cancelled the task. `FALSE` if
+#'   the call was too late: the task completed, was already cancelled, or
+#'   its pool is gone.
 #'
 #' @export
 kio_cancel <- function(task) invisible(.Call(kio_pool_cancel, task))
 
 #' Stop a Pool
 #'
-#' Broadcasts shutdown, wakes every parked participant, cancels all pending
-#' tasks (blocked collectors raise `kio_error_cancelled`), waits
-#' up to `timeout` seconds for workers to exit cleanly, and unlinks the
-#' region and liveness files. The handle is dead afterwards; stopping it
-#' again is a no-op. Only the creating process can stop a pool.
+#' Broadcasts shutdown, wakes every parked participant, and cancels all
+#' pending tasks (blocked collectors raise `kio_error_cancelled`). Then
+#' waits up to `timeout` seconds for the workers to exit cleanly, and
+#' unlinks the region and the liveness files. The handle is dead
+#' afterwards, and stopping it again is a no-op. Only the creating process
+#' can stop a pool.
 #'
 #' @inheritParams kio_submit
-#' @param timeout seconds to wait for workers' clean exit.
+#' @param timeout seconds to wait for the clean exit of the workers.
 #'
-#' @return Invisibly, `TRUE` if all workers exited within the timeout,
-#'   `FALSE` otherwise (with a warning; workers still exit on their own).
+#' @return Invisibly, `TRUE` if all workers exited within the timeout.
+#'   `FALSE` otherwise, with a warning (the workers still exit on their
+#'   own).
 #'
 #' @export
 kio_pool_stop <- function(pool, timeout = 5) {
@@ -363,29 +369,29 @@ kio_pool_status <- function(pool) {
   st
 }
 
-#' Dump a Pool's Distributed State
+#' Dump the Distributed State of a Pool
 #'
 #' A read-only debugging snapshot of the entire pool region, one level
-#' deeper than [kio_pool_status()]: per-slot registry detail, the park /
-#' ready / back-pressure masks unpacked per slot, and every occupied result
-#' slot. State is distributed across processes and execution is
-#' non-deterministic, so this is the first tool to reach for when a pool
-#' hangs. The scan takes no locks and can race in-flight transitions;
-#' each field is a consistent single read, rows need not be mutually
+#' deeper than [kio_pool_status()]. It shows per-slot registry detail, the
+#' park, ready, and back-pressure masks unpacked per slot, and every
+#' occupied result slot. State is distributed across processes and
+#' execution is non-deterministic, so reach for this tool first when a
+#' pool hangs. The scan takes no locks and can race in-flight transitions.
+#' Each field is a consistent single read. The rows need not be mutually
 #' consistent.
 #'
 #' @inheritParams kio_submit
 #'
 #' @return A list with elements `name`, `shutdown`, `workers` (data frame:
-#'   slot, status, pid, park_state, parked, deque `top` / `bottom`, and the
-#'   in-flight result slot), `submitters` (data frame: slot, status, pid,
-#'   result-slot subrange, queued injection entries, ready and
-#'   full-waiter mask bits), `tasks` (data frame of occupied result
-#'   slots: slot, status, sequence, executing worker, parked waiter), and
-#'   `local` — this handle's process-private spill-reuse machinery: the
-#'   producer free list's occupancy (`fl_entries`, `fl_bytes`) and reuse
-#'   count (`fl_hits`), and the consumer mapping cache's `open_hits` /
-#'   `open_misses`.
+#'   slot, status, pid, park_state, parked, deque `top` and `bottom`, and
+#'   the in-flight result slot), `submitters` (data frame: slot, status,
+#'   pid, result-slot subrange, queued injection entries, ready and
+#'   full-waiter mask bits), `tasks` (data frame of occupied result slots:
+#'   slot, status, sequence, executing worker, parked waiter), and `local`.
+#'   `local` is the process-private spill-reuse machinery of this handle:
+#'   the occupancy of the producer free list (`fl_entries`, `fl_bytes`),
+#'   its reuse count (`fl_hits`), and the `open_hits` and `open_misses` of
+#'   the consumer mapping cache.
 #'
 #' @export
 kio_pool_dump <- function(pool) {
@@ -407,37 +413,38 @@ kio_pool_dump <- function(pool) {
 
 #' Cumulative Pool Counters
 #'
-#' Per-worker and per-submitter counters accumulated since each
-#' participant joined, complementing the point-in-time snapshots of
+#' Per-worker and per-submitter counters, accumulated since each
+#' participant joined. They complement the point-in-time snapshots of
 #' [kio_pool_status()] and [kio_pool_dump()]. Nothing here costs the hot
-#' paths anything: submitter counts are the injection rings' own monotonic
-#' positions (submission writes nothing extra; the spill counter is bumped
-#' only on the spill path itself, which a fresh region per payload already
-#' dominates), and worker counters are kept process-locally and mirrored
-#' into the region only when a worker parks, leaves, or passes its fairness
-#' tick — so under continuous load a worker's row can lag by up to 61
-#' claims, and is exact whenever that worker is parked, retired, or the
-#' pool is quiescent.
+#' paths anything. The submitter counts are the monotonic positions of the
+#' injection rings themselves: submission writes nothing extra, and the
+#' spill counter moves only on the spill path, which a fresh region per
+#' payload already dominates. The worker counters are kept process-locally
+#' and mirrored into the region only when a worker parks, leaves, or
+#' passes its fairness tick. So under continuous load, the row of a worker
+#' can lag by up to 61 claims. The row is exact whenever that worker is
+#' parked or retired, or the pool is quiescent.
 #'
 #' @inheritParams kio_submit
 #'
-#' @return A list of two data frames. `workers`: one row per worker slot
+#' @return A list of two data frames. `workers`: one row per worker slot,
 #'   with `status`, `pid`, `tasks` (task evaluations run, help-mode and
-#'   nested inline execution included), `steals` (entries claimed from
-#'   peers' deques), `injections` (entries claimed from injection rings),
-#'   `parks` (kernel parks in the worker loop), `helps` (claims executed
-#'   while blocked in a nested collect), and the current `deque` depth.
-#'   `submitters`: one row per submitter slot with `status`, `pid`,
-#'   `injected` (entries ever published to its injection ring), `claimed`
-#'   (entries workers have taken from it), `spills` (payloads past the
-#'   inline budget that traveled via their own region — task payloads at
-#'   submit and result payloads at publish, both attributed to the task's
-#'   submitter; nonzero means `slot_size` is undersized for the traffic),
-#'   `spill_reuse` (the subset of `spills` that recycled a retired region
-#'   from the producer's free list instead of creating one — steady-state
-#'   spill traffic should approach `spills`, so `spills - spill_reuse` is
-#'   the region-churn rate), and `queued` (`injected - claimed`). Counters
-#'   reset when a slot is reused by a new joiner.
+#'   nested inline execution included), `steals` (entries claimed from the
+#'   deques of peers), `injections` (entries claimed from injection
+#'   rings), `parks` (kernel parks in the worker loop), `helps` (claims
+#'   executed while blocked in a nested collect), and the current `deque`
+#'   depth. `submitters`: one row per submitter slot, with `status`,
+#'   `pid`, `injected` (entries ever published to its injection ring),
+#'   `claimed` (entries the workers took from it), `spills` (payloads past
+#'   the inline budget that traveled in their own region — task payloads
+#'   at submit and result payloads at publish, both attributed to the
+#'   submitter of the task. A nonzero value means `slot_size` is
+#'   undersized for the traffic), `spill_reuse` (the subset of `spills`
+#'   that recycled a retired region from the free list of the producer
+#'   instead of creating one), and `queued` (`injected - claimed`).
+#'   Steady-state spill traffic approaches `spills`, so
+#'   `spills - spill_reuse` is the region-churn rate. Counters reset when
+#'   a new joiner reuses a slot.
 #'
 #' @export
 kio_pool_stats <- function(pool) {
@@ -454,26 +461,33 @@ kio_pool_stats <- function(pool) {
 
 #' Trace Task Lifecycle Events
 #'
-#' Registers a hook on a pool handle, called as `fn(event, id)` at each
-#' task lifecycle event this process observes: `"submit"` when a task is
-#' committed, and — on worker handles — `"start"` before a task's
-#' evaluation, `"done"` / `"error"` when its result publishes, `"drop"`
-#' when a claimed task is discarded (cancelled before or during execution,
-#' or its out-of-line payload died with its enqueuer), or `"rehome"` when
-#' a doorbell help beat claims a map runner and moves it onto the worker's
-#' own deque — stealable by idle peers — instead of executing it nested.
-#' `id` identifies the task as `"<submitter slot>:<counter>"`, stable
-#' across processes, so logs from both sides of a pool can be correlated.
+#' Registers a hook on a pool handle. The hook is called as
+#' `fn(event, id)` at each task lifecycle event that this process
+#' observes:
 #'
-#' Registration is per-handle and per-process. A submitter tracing its own
-#' handle sees only `"submit"`; execution events happen on the workers. To
-#' trace a worker, install the hook from a task, on the worker's own
-#' handle bound as `pool`: `kio_submit(p, kio_pool_trace(pool, fn))`.
-#' The disabled hook costs one pointer check per event site, and no event
-#' sites exist on the channel hot path. An error raised by the hook
-#' propagates as an infrastructure failure at its site — on a worker it
-#' takes the worker down (unlike a task's own error, which publishes as
-#' that task's ERR result).
+#' * `"submit"` when a task is committed.
+#' * On worker handles: `"start"` before the evaluation of a task, and
+#'   `"done"` or `"error"` when its result is published.
+#' * `"drop"` when a claimed task is discarded (cancelled before or during
+#'   execution, or its out-of-line payload died with its enqueuer).
+#' * `"rehome"` when a doorbell help beat claims a map runner. The helper
+#'   moves it onto its own deque — where idle peers can steal it — instead
+#'   of executing it nested.
+#'
+#' `id` identifies the task as `"<submitter slot>:<counter>"`. This id is
+#' stable across processes, so logs from both sides of a pool can be
+#' correlated.
+#'
+#' Registration is per-handle and per-process. A submitter that traces its
+#' own handle sees only `"submit"`. Execution events happen on the
+#' workers. To trace a worker, install the hook from a task, on the own
+#' handle of the worker bound as `pool`:
+#' `kio_submit(p, kio_pool_trace(pool, fn))`. The disabled hook costs one
+#' pointer check per event site, and no event sites exist on the channel
+#' hot path. An error raised by the hook propagates as an infrastructure
+#' failure at its site. On a worker, it takes the worker down. This
+#' differs from the own error of a task, which is published as the ERR
+#' result of that task.
 #'
 #' @inheritParams kio_submit
 #' @param fn a `function(event, id)`, or `NULL` to remove a registered

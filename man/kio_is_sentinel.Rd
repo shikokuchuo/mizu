@@ -14,13 +14,13 @@ kio_is_sentinel(x)
 }
 \description{
 Identity comparison against the four interned sentinel singletons —
-\code{kio_full}, \code{kio_timeout}, \code{kio_closed}, \code{kio_peer_gone} — that kioto's
-verbs return to tag terminal states. \code{inherits(x, "kio_sentinel")} tests
-the class alone, which any payload can carry — including a genuine
-sentinel forwarded over a channel, which arrives as an ordinary copy.
-\code{kio_is_sentinel()} is provenance: \code{TRUE} only for the exact objects
-kioto's own calls return in this process, so code relaying untrusted
-values can distinguish its terminal states from look-alike payloads.
+\code{kio_full}, \code{kio_timeout}, \code{kio_closed}, \code{kio_peer_gone} — that the
+verbs of kioto return to tag terminal states. \code{inherits(x, "kio_sentinel")} tests the class alone, which any payload can carry.
+This includes a genuine sentinel forwarded over a channel, which arrives
+as an ordinary copy. \code{kio_is_sentinel()} is provenance: \code{TRUE} only for
+the exact objects that the own calls of kioto return in this process.
+So code that relays untrusted values can distinguish its terminal states
+from look-alike payloads.
 }
 \details{
 Sentinels are ordinary values, not R conditions: nothing is signalled,

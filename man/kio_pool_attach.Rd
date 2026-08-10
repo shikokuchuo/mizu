@@ -7,15 +7,15 @@
 kio_pool_attach(name)
 }
 \arguments{
-\item{name}{the pool's region name (or its suffix — the part after the
-platform prefix).}
+\item{name}{the region name of the pool, or its suffix (the part after
+the platform prefix).}
 }
 \value{
 A pool handle (class \code{"kio_pool"}) holding a submitter slot.
 }
 \description{
-Joins an existing pool from another process, claiming a free submitter
-slot with its own injection ring and result-slot subrange. The pool's
-name travels out-of-band (it is \code{kio_pool_status(p)$name} on the
-creator).
+Joins an existing pool from another process. Claims a free submitter
+slot with its own injection ring and result-slot subrange. The name of
+the pool travels out of band: it is \code{kio_pool_status(p)$name} on the
+creator.
 }

@@ -26,31 +26,32 @@ kio_pool(
 submitter owns its own injection ring and an equal share of
 \code{result_slots}.}
 
-\item{injection_cap}{entries per submitter injection ring; a power of two.}
-
-\item{per_worker_cap}{entries per worker work-stealing deque; a power of
+\item{injection_cap}{entries per submitter injection ring. A power of
 two.}
 
-\item{result_slots}{total result slots, partitioned equally across
-submitter slots; rounded up to a multiple of \code{max_submitters}. Bounds
-each submitter's outstanding (uncollected) tasks.}
+\item{per_worker_cap}{entries per worker work-stealing deque. A power of
+two.}
 
-\item{slot_size}{bytes per queue entry and result slot; a power of two
-between 128 and 2^20. Payloads (task or result) that serialize past
-the inline budget travel via a fresh region per payload — an
+\item{result_slots}{total result slots, partitioned equally across the
+submitter slots and rounded up to a multiple of \code{max_submitters}. This
+bounds the outstanding (uncollected) tasks of each submitter.}
+
+\item{slot_size}{bytes per queue entry and result slot. A power of two
+between 128 and 2^20. A payload (task or result) that serializes past
+the inline budget travels in a fresh region per payload. This is an
 order-of-magnitude latency cliff, surfaced per submitter as
 \code{\link[=kio_pool_stats]{kio_pool_stats()}}\verb{$submitters$spills}. The default \code{512L} keeps
-typical expression-plus-arguments tasks inline; pools moving only
+typical expression-plus-arguments tasks inline. Pools that move only
 scalar payloads can drop to \code{256L}.}
 
-\item{launcher}{a \verb{function(token, slot)} that arranges for an R
-process to eventually call \code{kioto:::worker_main(token, slot)}. The
-default \code{\link[=kio_launcher]{kio_launcher()}} spawns \code{Rscript} with the host's
-\code{.libPaths()} propagated (its \code{stdout}/\code{stderr} arguments direct
-worker output); a custom launcher must arrange library paths itself.}
+\item{launcher}{a \verb{function(token, slot)} that arranges for an R process
+to call \code{kioto:::worker_main(token, slot)}. The default
+\code{\link[=kio_launcher]{kio_launcher()}} spawns \code{Rscript} and propagates the \code{.libPaths()} of
+the host. Its \code{stdout} and \code{stderr} arguments direct the worker
+output. A custom launcher must arrange the library paths itself.}
 
-\item{startup_timeout}{seconds to wait for all workers to join before
-giving up, destroying the pool, and raising \code{kio_error_startup} (see
+\item{startup_timeout}{seconds to wait for all workers to join. On
+expiry, kioto destroys the pool and raises \code{kio_error_startup} (see
 \link{kio_error}).}
 }
 \value{
@@ -58,30 +59,30 @@ A pool handle (class \code{"kio_pool"}) holding submitter slot 0.
 Handles are process-private and do not survive \code{fork()}.
 }
 \description{
-Creates a shared-memory task pool — per-submitter injection rings feeding
-worker processes, with results published through result slots — and spawns
-its worker processes. Submission is an SHM ring write plus at most one
-directed wake: no dispatcher process is in the loop. Each worker owns a
-work-stealing deque; idle workers steal from busy peers and consume the
-injection rings, with a fairness tick bounding external-submission
-latency on a saturated pool.
+Creates a shared-memory task pool and spawns its worker processes.
+Per-submitter injection rings feed the workers, and results are
+published through result slots. A submission is one SHM ring write plus
+at most one directed wake: no dispatcher process is in the loop. Each
+worker owns a work-stealing deque. Idle workers steal from busy peers
+and consume the injection rings. A fairness tick bounds the latency of
+external submissions on a saturated pool.
 }
 \details{
-The pool's lifetime is bound to the creating process, which holds
-submitter slot 0 of the returned handle: use it directly with
+The lifetime of the pool is bound to the creating process, which holds
+submitter slot 0 of the returned handle. Use this handle directly with
 \code{\link[=kio_submit]{kio_submit()}} and \code{\link[=kio_collect]{kio_collect()}}. Other processes join as submitters
-via \code{\link[=kio_pool_attach]{kio_pool_attach()}}. Dropping the handle (or exiting R) shuts the
-pool down as \code{\link[=kio_pool_stop]{kio_pool_stop()}} would, without the wait.
+through \code{\link[=kio_pool_attach]{kio_pool_attach()}}. Dropping the handle (or exiting R) shuts
+the pool down as \code{\link[=kio_pool_stop]{kio_pool_stop()}} does, but without the wait.
 
-Payload contents interoperate transparently with mori: a \code{mori::share()}d
-object anywhere inside a task's arguments or its result serializes to its
-short identifier wire form via mori's own hooks and maps zero-copy on the
-other side.
+Payload contents interoperate transparently with mori. A \code{mori::share()}d
+object anywhere inside the arguments of a task or its result serializes
+to its short identifier wire form through the mori hooks. It maps
+zero-copy on the other side.
 
-The pool's liveness lock files (the death-detection verdict) are created
-in a per-platform directory resolved at create time: \verb{/dev/shm} on
-Linux, the per-user temporary directory on macOS and Windows. The
-resolved path is recorded in the region so every participant uses the
+The liveness lock files of the pool (the death-detection verdict) live
+in a per-platform directory chosen at create time. This is \verb{/dev/shm} on
+Linux, and the per-user temporary directory on macOS and Windows. The
+chosen path is recorded in the region, so every participant uses the
 same files. The environment variable \code{KIOTO_LIVENESS_DIR}, read in the
 creating process, overrides the default.
 }

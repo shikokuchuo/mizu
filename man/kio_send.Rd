@@ -15,42 +15,43 @@ inside a peer expression).}
 
 \item{x}{the payload: any R object.}
 
-\item{timeout}{seconds to wait before returning the \code{kio_timeout}
-sentinel; \code{Inf} (the default) waits indefinitely, \code{0} polls. Ctrl-C
-remains responsive while waiting.}
+\item{timeout}{seconds to wait before the call returns the \code{kio_timeout}
+sentinel. \code{Inf} (the default) waits indefinitely, and \code{0} polls.
+Ctrl-C stays responsive during the wait.}
 }
 \value{
-\code{kio_send()} returns \code{TRUE} (invisibly) on success, else a
-sentinel. \code{kio_recv()} returns the received payload or a sentinel.
+\code{kio_send()} returns \code{TRUE} (invisibly) on success, or a
+sentinel otherwise. \code{kio_recv()} returns the received payload or a
+sentinel.
 }
 \description{
-\code{kio_send()} publishes a message to the peer — visible the moment the
-call returns, with no separate flush step. \code{kio_recv()} returns the next
-message, blocking up to \code{timeout} seconds.
+\code{kio_send()} publishes a message to the peer. The message is visible the
+moment the call returns, with no separate flush step. \code{kio_recv()}
+returns the next message, and waits up to \code{timeout} seconds for it.
 }
 \details{
-Sends never block for ring space and receives surface every terminal
-state as a class-tagged sentinel rather than an error (dispatch with
-\code{inherits(x, "kio_sentinel")}, or on the specific classes):
+Sends never block for ring space. Receives surface every terminal state
+as a class-tagged sentinel, not an error. Dispatch with
+\code{inherits(x, "kio_sentinel")}, or on the specific classes:
 \itemize{
-\item \code{kio_full} — the ring is full (send); back off until the peer drains,
-or drop.
-\item \code{kio_timeout} — no message within \code{timeout} (recv).
-\item \code{kio_closed} — the other side closed the channel. recv drains all
-published messages before reporting this.
-\item \code{kio_peer_gone} — the peer died without closing (verdict from the
-kernel-released liveness lock, detection at OS death-notification
-latency). recv likewise drains first: a dead peer's published messages
-are complete and valid. Sticky once returned.
+\item \code{kio_full} — the ring is full (send). Back off until the peer drains,
+or drop the message.
+\item \code{kio_timeout} — no message arrived within \code{timeout} (recv).
+\item \code{kio_closed} — the other side closed the channel. A receive drains all
+published messages before it reports this.
+\item \code{kio_peer_gone} — the peer died without closing. The verdict comes
+from the kernel-released liveness lock, at OS death-notification
+latency. A receive drains first here too: the published messages of a
+dead peer are complete and valid. Sticky once returned.
 }
 
-\code{NULL} is a legal payload; sentinels are identifiable by class alone —
-ordinary values, never signalled conditions (\code{\link[=kio_is_sentinel]{kio_is_sentinel()}} checks
-identity where payloads are untrusted).
+\code{NULL} is a legal payload. Sentinels are ordinary values, identifiable
+by class alone, and never signalled conditions. \code{\link[=kio_is_sentinel]{kio_is_sentinel()}}
+checks identity where payloads are untrusted.
 Attribute-free non-ALTREP atomic vectors that fit the inline budget ride
-a serialization-free fast path with a byte-identical round-trip; anything
-else is R-serialized (mori-shared objects reduce to identifier wire forms
-via mori's hooks).
+a serialization-free fast path with a byte-identical round-trip.
+Anything else is R-serialized. Mori-shared objects reduce to identifier
+wire forms through the mori hooks.
 }
 \examples{
 \dontrun{

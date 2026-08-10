@@ -15,33 +15,33 @@ kio_channel(
 )
 }
 \arguments{
-\item{expr}{a quoted expression (e.g. \code{quote({ ... })}) evaluated in the
-peer process with \code{ch} bound to the peer-side channel handle.}
+\item{expr}{a quoted expression (for example \code{quote({ ... })}), evaluated
+in the peer process with \code{ch} bound to the peer-side channel handle.}
 
-\item{capacity}{slots per ring; a power of two between 2 and 2^24.}
+\item{capacity}{slots per ring. A power of two between 2 and 2^24.}
 
-\item{slot_size}{bytes per slot; a power of two between 64 and 2^20. The
-inline payload budget is \code{slot_size - 16}; payloads that serialize
+\item{slot_size}{bytes per slot. A power of two between 64 and 2^20. The
+inline payload budget is \code{slot_size - 16}. Payloads that serialize
 larger spill to the arena, and past it to a fresh region.}
 
-\item{arena_size}{spill-arena bytes per direction; a multiple of 64, or 0
-to disable (every spill then creates a region). Bounds in-flight spill;
-undersizing degrades to region-create fallbacks, never to errors.}
+\item{arena_size}{spill-arena bytes per direction. A multiple of 64, or 0
+to disable (every spill then creates a region). This bounds the
+in-flight spill. An undersized arena degrades to region-create
+fallbacks, never to errors.}
 
-\item{spin}{opt the channel into pure-spin waiting: consumers never park
-and producers skip the wake check on publish. Only for callers whose
-consumer never yields — if a spin-mode consumer did park, the producer
-would never wake it.}
+\item{spin}{opts the channel into pure-spin waiting: consumers never park
+and producers skip the wake check on publish. Use this only when the
+consumer never yields. If a spin-mode consumer parks, the producer
+never wakes it.}
 
 \item{launcher}{a \verb{function(token)} that arranges for an R process to
-eventually call \code{kioto:::peer_main(token)}. The default
-\code{\link[=kio_launcher]{kio_launcher()}} spawns \code{Rscript} with the host's \code{.libPaths()}
-propagated (its \code{stdout}/\code{stderr} arguments direct peer output,
-including its error epilogue); a custom launcher must arrange library
-paths itself.}
+call \code{kioto:::peer_main(token)}. The default \code{\link[=kio_launcher]{kio_launcher()}} spawns
+\code{Rscript} and propagates the \code{.libPaths()} of the host. Its \code{stdout}
+and \code{stderr} arguments direct the peer output, including the error
+epilogue. A custom launcher must arrange the library paths itself.}
 
 \item{startup_timeout}{seconds to wait for the peer to attach and signal
-ready before giving up, releasing the channel, and raising
+ready. On expiry, kioto releases the channel and raises
 \code{kio_error_startup} (see \link{kio_error}).}
 }
 \value{
@@ -50,32 +50,32 @@ process-private and do not survive \code{fork()}.
 }
 \description{
 Creates a shared-memory SPSC channel — one lock-free ring per direction —
-and spawns a child R process connected to its other end. The channel is
-bidirectional after spawn: the returned handle produces on the host-to-peer
+and spawns a child R process connected to the other end. The channel is
+two-way after the spawn: the returned handle produces on the host-to-peer
 ring and consumes the peer-to-host ring. Setup is one-sided: only a short
-join token (the region name's suffix) crosses the process boundary, as a
-command-line argument.
+join token (the suffix of the region name) crosses the process boundary,
+as a command-line argument.
 }
 \details{
-\code{expr} is a quoted expression, not a closure — it captures nothing, and
-unlike \code{\link[=kio_submit]{kio_submit()}} it is not captured for you: pass it pre-quoted. The
-peer evaluates it in a fresh environment whose parent is the child's
-global environment, with \code{ch} (the peer-side channel handle) as the only
-binding kioto provides; data crosses the ring, and packages are loaded by
-the expression itself. When the expression returns (or errors — the
-condition message is written to the child's stderr), the peer signals an
-orderly close and exits.
+\code{expr} is a quoted expression, not a closure. It captures nothing, and
+unlike \code{\link[=kio_submit]{kio_submit()}} kioto does not capture it for you: pass it
+pre-quoted. The peer evaluates it in a fresh environment whose parent is
+the global environment of the child. \code{ch} (the peer-side channel handle)
+is the only binding that kioto provides. Data crosses the ring, and the
+expression itself loads any packages it needs. When the expression
+returns or errors, the peer signals an orderly close and exits. An error
+message goes to the stderr of the child.
 
-Payload contents interoperate transparently with mori: a \code{mori::share()}d
+Payload contents interoperate transparently with mori. A \code{mori::share()}d
 object anywhere inside a payload serializes to its short identifier wire
-form via mori's own hooks and maps zero-copy on the other side.
+form through the mori hooks, and maps zero-copy on the other side.
 
-The channel's two liveness lock files (the death-detection verdict) are
-created in a per-platform directory resolved at create time: \verb{/dev/shm}
-on Linux, the per-user temporary directory on macOS and Windows. The
-resolved path is recorded in the region so both sides use the same
-files. The environment variable \code{KIOTO_LIVENESS_DIR}, read in the
-creating process, overrides the default.
+The two liveness lock files of the channel (the death-detection verdict)
+live in a per-platform directory chosen at create time. This is
+\verb{/dev/shm} on Linux, and the per-user temporary directory on macOS and
+Windows. The chosen path is recorded in the region, so both sides use
+the same files. The environment variable \code{KIOTO_LIVENESS_DIR}, read in
+the creating process, overrides the default.
 }
 \examples{
 \dontrun{

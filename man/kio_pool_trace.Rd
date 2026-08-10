@@ -7,8 +7,8 @@
 kio_pool_trace(pool, fn = NULL)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
-inside a task, the worker's own handle bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
+inside a task — the own handle of the worker, bound as \code{pool}.}
 
 \item{fn}{a \verb{function(event, id)}, or \code{NULL} to remove a registered
 hook.}
@@ -17,25 +17,34 @@ hook.}
 Invisibly, \code{NULL}.
 }
 \description{
-Registers a hook on a pool handle, called as \code{fn(event, id)} at each
-task lifecycle event this process observes: \code{"submit"} when a task is
-committed, and — on worker handles — \code{"start"} before a task's
-evaluation, \code{"done"} / \code{"error"} when its result publishes, \code{"drop"}
-when a claimed task is discarded (cancelled before or during execution,
-or its out-of-line payload died with its enqueuer), or \code{"rehome"} when
-a doorbell help beat claims a map runner and moves it onto the worker's
-own deque — stealable by idle peers — instead of executing it nested.
-\code{id} identifies the task as \code{"<submitter slot>:<counter>"}, stable
-across processes, so logs from both sides of a pool can be correlated.
+Registers a hook on a pool handle. The hook is called as
+\code{fn(event, id)} at each task lifecycle event that this process
+observes:
 }
 \details{
-Registration is per-handle and per-process. A submitter tracing its own
-handle sees only \code{"submit"}; execution events happen on the workers. To
-trace a worker, install the hook from a task, on the worker's own
-handle bound as \code{pool}: \code{kio_submit(p, kio_pool_trace(pool, fn))}.
-The disabled hook costs one pointer check per event site, and no event
-sites exist on the channel hot path. An error raised by the hook
-propagates as an infrastructure failure at its site — on a worker it
-takes the worker down (unlike a task's own error, which publishes as
-that task's ERR result).
+\itemize{
+\item \code{"submit"} when a task is committed.
+\item On worker handles: \code{"start"} before the evaluation of a task, and
+\code{"done"} or \code{"error"} when its result is published.
+\item \code{"drop"} when a claimed task is discarded (cancelled before or during
+execution, or its out-of-line payload died with its enqueuer).
+\item \code{"rehome"} when a doorbell help beat claims a map runner. The helper
+moves it onto its own deque — where idle peers can steal it — instead
+of executing it nested.
+}
+
+\code{id} identifies the task as \code{"<submitter slot>:<counter>"}. This id is
+stable across processes, so logs from both sides of a pool can be
+correlated.
+
+Registration is per-handle and per-process. A submitter that traces its
+own handle sees only \code{"submit"}. Execution events happen on the
+workers. To trace a worker, install the hook from a task, on the own
+handle of the worker bound as \code{pool}:
+\code{kio_submit(p, kio_pool_trace(pool, fn))}. The disabled hook costs one
+pointer check per event site, and no event sites exist on the channel
+hot path. An error raised by the hook propagates as an infrastructure
+failure at its site. On a worker, it takes the worker down. This
+differs from the own error of a task, which is published as the ERR
+result of that task.
 }

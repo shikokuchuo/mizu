@@ -28,15 +28,15 @@
 }
 \description{
 One-line summaries. A channel prints its region name, side, and
-conversation state: \code{open}, \code{closed} once either side has signalled
-close, or \verb{peer gone} — \code{\link[=kio_alive]{kio_alive()}}'s verdict, probed at print. A
-pool prints its region name, this handle's role, live workers out of
+conversation state: \code{open}, \code{closed} once either side signalled close,
+or \verb{peer gone} — the verdict of \code{\link[=kio_alive]{kio_alive()}}, probed at print. A pool
+prints its region name, the role of this handle, live workers out of
 registry capacity, and pending (uncompleted) tasks. A task handle
-prints its state, probed without consuming the result: \code{pending},
-\code{ok}, \code{err}, \code{cancel}, or \code{died} in the result-slot vocabulary of
-\code{\link[=kio_pool_status]{kio_pool_status()}}, \code{collected} once the result has been taken, or
-\code{dropped} when its pool is gone. Sentinels print as their class. The
-handle methods never error and never touch the rings — a handle whose
-resources have been released (a closed channel, a stopped pool)
-prints as closed — so auto-printing is always safe.
+prints its state, probed without consuming the result. The state is
+\code{pending}, \code{ok}, \code{err}, \code{cancel}, or \code{died} in the result-slot
+vocabulary of \code{\link[=kio_pool_status]{kio_pool_status()}}. It is \code{collected} once the result is
+taken, or \code{dropped} when its pool is gone. Sentinels print as their
+class. The handle methods never error and never touch the rings. A
+handle whose resources are released (a closed channel, a stopped pool)
+prints as closed. So auto-printing is always safe.
 }

@@ -7,20 +7,20 @@
 kio_launcher(stdout = "", stderr = "")
 }
 \arguments{
-\item{stdout, stderr}{forwarded to \code{\link[=system2]{system2()}}; the default \code{""} sends
-child output (for a channel peer, including its error epilogue) to
-the host's console, \code{FALSE} discards it, and a file name collects it
-in that file.}
+\item{stdout, stderr}{forwarded to \code{\link[=system2]{system2()}}. The default \code{""} sends
+the child output (for a channel peer, including its error epilogue)
+to the console of the host, \code{FALSE} discards it, and a file name
+collects it in that file.}
 }
 \value{
 A \verb{function(token, slot)}. \code{\link[=kio_pool]{kio_pool()}} and
 \code{\link[=kio_spawn_workers]{kio_spawn_workers()}} call it with both arguments to spawn the worker
-for \code{slot}; \code{\link[=kio_channel]{kio_channel()}} calls it with \code{token} alone to spawn the
+for \code{slot}. \code{\link[=kio_channel]{kio_channel()}} calls it with \code{token} alone to spawn the
 peer.
 }
 \description{
-Returns the launcher \code{\link[=kio_channel]{kio_channel()}}, \code{\link[=kio_pool]{kio_pool()}} and
-\code{\link[=kio_spawn_workers]{kio_spawn_workers()}} use unless given a custom one: it spawns a
+Returns the launcher that \code{\link[=kio_channel]{kio_channel()}}, \code{\link[=kio_pool]{kio_pool()}} and
+\code{\link[=kio_spawn_workers]{kio_spawn_workers()}} use unless given a custom one. It spawns a
 detached child R process through a static \code{Rscript} runner, with the
-entry expression and the host's \code{.libPaths()} hex-encoded in argv.
+entry expression and the \code{.libPaths()} of the host hex-encoded in argv.
 }

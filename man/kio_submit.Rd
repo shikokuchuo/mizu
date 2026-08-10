@@ -10,85 +10,88 @@ kio_submit(pool, expr, ..., .timeout = Inf)
 kio_collect(task, timeout = Inf)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}} — or,
-inside a task, the worker's own handle bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
+inside a task — the own handle of the worker, bound as \code{pool}.}
 
-\item{expr}{an expression, captured unevaluated — unlike \code{\link[=kio_channel]{kio_channel()}},
-which requires its expression pre-quoted. It sees only the
-arguments in \code{...} (plus the worker's global environment); packages
-must be loaded by the expression itself.}
+\item{expr}{an expression, captured unevaluated. This differs from
+\code{\link[=kio_channel]{kio_channel()}}, which requires its expression pre-quoted. The
+expression sees only the arguments in \code{...} and the global environment
+of the worker. The expression itself must load any packages it needs.}
 
-\item{...}{named values bound in the evaluation environment. Values are
-serialized — \code{mori::share()}d objects reduce to identifiers and map
+\item{...}{named values bound in the evaluation environment. The values
+are serialized. \code{mori::share()}d objects reduce to identifiers and map
 zero-copy on the worker.}
 
-\item{.timeout}{seconds to wait for injection-ring space before erroring;
-\code{Inf} (the default) waits indefinitely. Ctrl-C remains responsive.}
+\item{.timeout}{seconds to wait for injection-ring space before the
+call errors. \code{Inf} (the default) waits indefinitely. Ctrl-C stays
+responsive.}
 
 \item{task}{a task handle from \code{kio_submit()}.}
 
-\item{timeout}{seconds to wait for the result before returning the
-\code{kio_timeout} sentinel; \code{Inf} (the default) waits indefinitely, \code{0}
-polls.}
+\item{timeout}{seconds to wait for the result before the call returns
+the \code{kio_timeout} sentinel. \code{Inf} (the default) waits indefinitely,
+and \code{0} polls.}
 }
 \value{
 \code{kio_submit()} returns a task handle (class \code{"kio_task"}).
-\code{kio_collect()} returns the task's value, or the \code{kio_timeout}
+\code{kio_collect()} returns the value of the task, or the \code{kio_timeout}
 sentinel.
 }
 \description{
-\code{kio_submit()} captures \code{expr} unevaluated, serializes it with its named
-arguments into the submitter's own injection ring (payloads past the
-inline budget travel via a fresh region), and returns a task handle
-immediately. A worker evaluates the expression in a fresh environment
-containing the arguments as bindings. \code{kio_collect()} blocks until the
-result is published, then returns the task's value — or raises the
-task's error condition, re-signalled in the collecting process.
+\code{kio_submit()} captures \code{expr} unevaluated, serializes it with its
+named arguments into the injection ring of the submitter, and returns a
+task handle immediately. Payloads past the inline budget travel in a
+fresh region. A worker evaluates the expression in a fresh environment
+that contains the arguments as bindings. \code{kio_collect()} blocks until
+the result is published, then returns the value of the task. If the
+task raised an error, \code{kio_collect()} signals that condition again in
+the collecting process.
 }
 \details{
-Submission blocks only when the submitter's own injection ring is full —
-back-pressure is per-submitter — and raises \code{kio_error_submit_timeout}
-on \code{.timeout} expiry rather than stalling. Collection returns the
-\code{kio_timeout} sentinel (class \code{c("kio_timeout", "kio_sentinel")}) if no
-result arrives within \code{timeout}. A task whose handle was cancelled (or
-whose pool was stopped) raises \code{kio_error_cancelled} on collect; a task
-whose executing worker died raises \code{kio_error_worker_died}, carrying the
-worker's slot and pid (see \link{kio_error}): worker death is detected at OS
-notification latency (a kernel-released lock is the verdict — no
-heartbeats, no polling) and fails exactly the tasks the dead worker had
-claimed, while work still queued on its deque is consumed by the
-surviving workers.
+Submission blocks only when the injection ring of the submitter is
+full: back-pressure is per-submitter. On \code{.timeout} expiry, submission
+raises \code{kio_error_submit_timeout} instead of stalling. If no result
+arrives within \code{timeout}, collection returns the \code{kio_timeout} sentinel
+(class \code{c("kio_timeout", "kio_sentinel")}). Collecting a task whose
+handle was cancelled (or whose pool was stopped) raises
+\code{kio_error_cancelled}. Collecting a task whose executing worker died
+raises \code{kio_error_worker_died}, carrying the slot and pid of the worker
+(see \link{kio_error}). Worker death is detected at OS notification latency:
+a kernel-released lock is the verdict, with no heartbeats and no
+polling. The death fails exactly the tasks that the dead worker
+claimed, and the surviving workers consume the work still queued on its
+deque.
 }
 \section{Outcomes}{
 
-Timeout on collect is a normal outcome and is returned; every
-exceptional outcome is raised, as a classed condition (see \link{kio_error}):\tabular{lll}{
+A timeout on collect is a normal outcome and is returned. Every
+exceptional outcome is raised as a classed condition (see \link{kio_error}):\tabular{lll}{
    outcome \tab surfaced as \tab class \cr
    result published \tab the value, returned \tab — \cr
    no result within \code{timeout} \tab sentinel, returned \tab \code{c("kio_timeout", "kio_sentinel")} \cr
    ring full past \code{.timeout} \tab raised by \code{kio_submit()} \tab \code{kio_error_submit_timeout} \cr
    result slots exhausted \tab raised by \code{kio_submit()} \tab \code{kio_error_slots_exhausted} \cr
    pool stopped, or owner died \tab raised by \code{kio_submit()} \tab \code{kio_error_stopped} \cr
-   task raised an error \tab re-signalled on collect \tab the task's own condition classes \cr
+   task raised an error \tab re-signalled on collect \tab the condition classes of the task itself \cr
    cancelled, or pool stopped \tab raised on collect \tab \code{kio_error_cancelled} \cr
    executing worker died \tab raised on collect \tab \code{kio_error_worker_died} \cr
 }
 
 
-Task expressions see their evaluating worker's own handle as \code{pool}
-(beneath the arguments in \code{...}), so tasks can submit nested subtasks:
-\code{kio_submit(pool, ...)} inside a task pushes onto the worker's own
-work-stealing deque — no ring, no wait; a full deque runs the subtask
-inline instead. A worker blocked in \code{kio_collect()} on a nested handle
-helps rather than sleeps: it executes work from its own deque (and
-steals from peers) until the awaited result publishes, so nested
-fan-outs run at fork/join cost and never deadlock the pool. Nested
-submission claims a submitter slot for the worker on first use.
+A task expression sees the handle of its evaluating worker as \code{pool}
+(beneath the arguments in \code{...}), so a task can submit nested subtasks.
+\code{kio_submit(pool, ...)} inside a task pushes onto the work-stealing
+deque of the worker itself: no ring, no wait. A full deque runs the
+subtask inline instead. A worker blocked in \code{kio_collect()} on a nested
+handle helps instead of sleeping. It executes work from its own deque
+(and steals from peers) until the awaited result is published. So
+nested fan-outs run at fork/join cost and never deadlock the pool. A
+nested submission claims a submitter slot for the worker on first use.
 
 A handle can be collected exactly once: the result slot is released to
-the pool as the value is returned. Dropping an uncollected handle to the
-garbage collector cancels a still-queued task and discards a published
-result.
+the pool as the value is returned. If an uncollected handle goes to the
+garbage collector, a still-queued task is cancelled and a published
+result is discarded.
 }
 
 \examples{

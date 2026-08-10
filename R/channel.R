@@ -1,53 +1,53 @@
 #' Create a Channel and Spawn Its Peer
 #'
 #' Creates a shared-memory SPSC channel — one lock-free ring per direction —
-#' and spawns a child R process connected to its other end. The channel is
-#' bidirectional after spawn: the returned handle produces on the host-to-peer
+#' and spawns a child R process connected to the other end. The channel is
+#' two-way after the spawn: the returned handle produces on the host-to-peer
 #' ring and consumes the peer-to-host ring. Setup is one-sided: only a short
-#' join token (the region name's suffix) crosses the process boundary, as a
-#' command-line argument.
+#' join token (the suffix of the region name) crosses the process boundary,
+#' as a command-line argument.
 #'
-#' `expr` is a quoted expression, not a closure — it captures nothing, and
-#' unlike [kio_submit()] it is not captured for you: pass it pre-quoted. The
-#' peer evaluates it in a fresh environment whose parent is the child's
-#' global environment, with `ch` (the peer-side channel handle) as the only
-#' binding kioto provides; data crosses the ring, and packages are loaded by
-#' the expression itself. When the expression returns (or errors — the
-#' condition message is written to the child's stderr), the peer signals an
-#' orderly close and exits.
+#' `expr` is a quoted expression, not a closure. It captures nothing, and
+#' unlike [kio_submit()] kioto does not capture it for you: pass it
+#' pre-quoted. The peer evaluates it in a fresh environment whose parent is
+#' the global environment of the child. `ch` (the peer-side channel handle)
+#' is the only binding that kioto provides. Data crosses the ring, and the
+#' expression itself loads any packages it needs. When the expression
+#' returns or errors, the peer signals an orderly close and exits. An error
+#' message goes to the stderr of the child.
 #'
-#' Payload contents interoperate transparently with mori: a `mori::share()`d
+#' Payload contents interoperate transparently with mori. A `mori::share()`d
 #' object anywhere inside a payload serializes to its short identifier wire
-#' form via mori's own hooks and maps zero-copy on the other side.
+#' form through the mori hooks, and maps zero-copy on the other side.
 #'
-#' The channel's two liveness lock files (the death-detection verdict) are
-#' created in a per-platform directory resolved at create time: `/dev/shm`
-#' on Linux, the per-user temporary directory on macOS and Windows. The
-#' resolved path is recorded in the region so both sides use the same
-#' files. The environment variable `KIOTO_LIVENESS_DIR`, read in the
-#' creating process, overrides the default.
+#' The two liveness lock files of the channel (the death-detection verdict)
+#' live in a per-platform directory chosen at create time. This is
+#' `/dev/shm` on Linux, and the per-user temporary directory on macOS and
+#' Windows. The chosen path is recorded in the region, so both sides use
+#' the same files. The environment variable `KIOTO_LIVENESS_DIR`, read in
+#' the creating process, overrides the default.
 #'
-#' @param expr a quoted expression (e.g. `quote({ ... })`) evaluated in the
-#'   peer process with `ch` bound to the peer-side channel handle.
-#' @param capacity slots per ring; a power of two between 2 and 2^24.
-#' @param slot_size bytes per slot; a power of two between 64 and 2^20. The
-#'   inline payload budget is `slot_size - 16`; payloads that serialize
+#' @param expr a quoted expression (for example `quote({ ... })`), evaluated
+#'   in the peer process with `ch` bound to the peer-side channel handle.
+#' @param capacity slots per ring. A power of two between 2 and 2^24.
+#' @param slot_size bytes per slot. A power of two between 64 and 2^20. The
+#'   inline payload budget is `slot_size - 16`. Payloads that serialize
 #'   larger spill to the arena, and past it to a fresh region.
-#' @param arena_size spill-arena bytes per direction; a multiple of 64, or 0
-#'   to disable (every spill then creates a region). Bounds in-flight spill;
-#'   undersizing degrades to region-create fallbacks, never to errors.
-#' @param spin opt the channel into pure-spin waiting: consumers never park
-#'   and producers skip the wake check on publish. Only for callers whose
-#'   consumer never yields — if a spin-mode consumer did park, the producer
-#'   would never wake it.
+#' @param arena_size spill-arena bytes per direction. A multiple of 64, or 0
+#'   to disable (every spill then creates a region). This bounds the
+#'   in-flight spill. An undersized arena degrades to region-create
+#'   fallbacks, never to errors.
+#' @param spin opts the channel into pure-spin waiting: consumers never park
+#'   and producers skip the wake check on publish. Use this only when the
+#'   consumer never yields. If a spin-mode consumer parks, the producer
+#'   never wakes it.
 #' @param launcher a `function(token)` that arranges for an R process to
-#'   eventually call `kioto:::peer_main(token)`. The default
-#'   [kio_launcher()] spawns `Rscript` with the host's `.libPaths()`
-#'   propagated (its `stdout`/`stderr` arguments direct peer output,
-#'   including its error epilogue); a custom launcher must arrange library
-#'   paths itself.
+#'   call `kioto:::peer_main(token)`. The default [kio_launcher()] spawns
+#'   `Rscript` and propagates the `.libPaths()` of the host. Its `stdout`
+#'   and `stderr` arguments direct the peer output, including the error
+#'   epilogue. A custom launcher must arrange the library paths itself.
 #' @param startup_timeout seconds to wait for the peer to attach and signal
-#'   ready before giving up, releasing the channel, and raising
+#'   ready. On expiry, kioto releases the channel and raises
 #'   `kio_error_startup` (see [kio_error]).
 #'
 #' @return A channel handle (class `"kio_channel"`). Handles are
@@ -102,41 +102,42 @@ kio_channel <- function(
 
 #' Send and Receive over a Channel
 #'
-#' `kio_send()` publishes a message to the peer — visible the moment the
-#' call returns, with no separate flush step. `kio_recv()` returns the next
-#' message, blocking up to `timeout` seconds.
+#' `kio_send()` publishes a message to the peer. The message is visible the
+#' moment the call returns, with no separate flush step. `kio_recv()`
+#' returns the next message, and waits up to `timeout` seconds for it.
 #'
-#' Sends never block for ring space and receives surface every terminal
-#' state as a class-tagged sentinel rather than an error (dispatch with
-#' `inherits(x, "kio_sentinel")`, or on the specific classes):
+#' Sends never block for ring space. Receives surface every terminal state
+#' as a class-tagged sentinel, not an error. Dispatch with
+#' `inherits(x, "kio_sentinel")`, or on the specific classes:
 #'
-#' * `kio_full` — the ring is full (send); back off until the peer drains,
-#'   or drop.
-#' * `kio_timeout` — no message within `timeout` (recv).
-#' * `kio_closed` — the other side closed the channel. recv drains all
-#'   published messages before reporting this.
-#' * `kio_peer_gone` — the peer died without closing (verdict from the
-#'   kernel-released liveness lock, detection at OS death-notification
-#'   latency). recv likewise drains first: a dead peer's published messages
-#'   are complete and valid. Sticky once returned.
+#' * `kio_full` — the ring is full (send). Back off until the peer drains,
+#'   or drop the message.
+#' * `kio_timeout` — no message arrived within `timeout` (recv).
+#' * `kio_closed` — the other side closed the channel. A receive drains all
+#'   published messages before it reports this.
+#' * `kio_peer_gone` — the peer died without closing. The verdict comes
+#'   from the kernel-released liveness lock, at OS death-notification
+#'   latency. A receive drains first here too: the published messages of a
+#'   dead peer are complete and valid. Sticky once returned.
 #'
-#' `NULL` is a legal payload; sentinels are identifiable by class alone —
-#' ordinary values, never signalled conditions ([kio_is_sentinel()] checks
-#' identity where payloads are untrusted).
+#' `NULL` is a legal payload. Sentinels are ordinary values, identifiable
+#' by class alone, and never signalled conditions. [kio_is_sentinel()]
+#' checks identity where payloads are untrusted.
 #' Attribute-free non-ALTREP atomic vectors that fit the inline budget ride
-#' a serialization-free fast path with a byte-identical round-trip; anything
-#' else is R-serialized (mori-shared objects reduce to identifier wire forms
-#' via mori's hooks).
+#' a serialization-free fast path with a byte-identical round-trip.
+#' Anything else is R-serialized. Mori-shared objects reduce to identifier
+#' wire forms through the mori hooks.
 #'
 #' @param ch a channel handle from [kio_channel()] (or the `ch` binding
 #'   inside a peer expression).
 #' @param x the payload: any R object.
-#' @param timeout seconds to wait before returning the `kio_timeout`
-#'   sentinel; `Inf` (the default) waits indefinitely, `0` polls. Ctrl-C
-#'   remains responsive while waiting.
+#' @param timeout seconds to wait before the call returns the `kio_timeout`
+#'   sentinel. `Inf` (the default) waits indefinitely, and `0` polls.
+#'   Ctrl-C stays responsive during the wait.
 #'
-#' @return `kio_send()` returns `TRUE` (invisibly) on success, else a
-#'   sentinel. `kio_recv()` returns the received payload or a sentinel.
+#' @return `kio_send()` returns `TRUE` (invisibly) on success, or a
+#'   sentinel otherwise. `kio_recv()` returns the received payload or a
+#'   sentinel.
 #'
 #' @examples
 #' \dontrun{
@@ -156,22 +157,22 @@ kio_recv <- function(ch, timeout = Inf) .Call(kio_channel_recv, ch, timeout)
 #' Batched Send and Receive
 #'
 #' At target rates the R call boundary is a first-order cost.
-#' `kio_send_batch()` moves a list of payloads under a single `.Call`,
-#' publishing them to the peer in one batched tail store; `kio_recv_batch()`
-#' drains up to `n` messages under a single park cycle and a single batched
-#' head publication.
+#' `kio_send_batch()` moves a list of payloads in a single `.Call` and
+#' publishes them to the peer in one batched tail store.
+#' `kio_recv_batch()` drains up to `n` messages in a single park cycle and
+#' a single batched head publication.
 #'
 #' @inheritParams kio_send
 #' @param xs a list of payloads.
 #' @param n maximum number of messages to return.
 #'
-#' @return `kio_send_batch()` returns the number of messages accepted: less
-#'   than `length(xs)` when the ring filled or the channel closed midway
-#'   (send the next element with [kio_send()] to learn which).
-#'   `kio_recv_batch()` waits for the first message like [kio_recv()] —
-#'   returning its sentinels on timeout, close, or peer death — then
-#'   returns a list of between 1 and `n` already-published messages without
-#'   waiting further.
+#' @return `kio_send_batch()` returns the number of messages accepted. This
+#'   is less than `length(xs)` when the ring filled or the channel closed
+#'   midway. Send the next element with [kio_send()] to learn which.
+#'   `kio_recv_batch()` waits for the first message like [kio_recv()] and
+#'   returns its sentinels on timeout, close, or peer death. It then
+#'   returns a list of 1 to `n` already-published messages without waiting
+#'   further.
 #'
 #' @export
 kio_send_batch <- function(ch, xs) .Call(kio_channel_send_batch, ch, xs)
@@ -184,21 +185,21 @@ kio_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 
 #' Close a Channel
 #'
-#' Orderly shutdown: signals close to the peer, and
-#' waits up to `timeout` seconds for the peer's own close (or its death) —
-#' the rendezvous that makes releasing sent-payload pins safe, since the
-#' peer sets its bit only after it has finished draining. On rendezvous all
-#' resources are released and the region name unlinked; the handle is dead
-#' afterwards (closing it again is a no-op). On timeout the handle stays
-#' usable and resources release when it is garbage collected, re-running the
-#' same rendezvous check.
+#' Orderly shutdown. Signals close to the peer, then waits up to `timeout`
+#' seconds for the close of the peer (or its death). This rendezvous makes
+#' it safe to release the sent-payload pins: the peer sets its bit only
+#' after it finishes draining. On rendezvous, all resources are released
+#' and the region name is unlinked. The handle is dead afterwards, and
+#' closing it again is a no-op. On timeout the handle stays usable, and the
+#' resources release at garbage collection, which runs the same rendezvous
+#' check again.
 #'
-#' Once either side has signalled close, sends on both sides return the
-#' `kio_closed` sentinel and receives drain remaining messages before doing
-#' the same.
+#' After either side signals close, sends on both sides return the
+#' `kio_closed` sentinel, and receives drain the remaining messages before
+#' they return the same.
 #'
 #' @inheritParams kio_send
-#' @param timeout seconds to wait for the peer's close.
+#' @param timeout seconds to wait for the close of the peer.
 #'
 #' @return Invisibly, `TRUE` on rendezvous, `FALSE` on timeout (with a
 #'   warning).
@@ -218,16 +219,16 @@ kio_close <- function(ch, timeout = 5) {
 
 #' Probe Peer Liveness
 #'
-#' An explicit probe for supervisors: reports whether the peer process holds
-#' its liveness lock (`~1` microsecond, no waiting). [kio_recv()] and
-#' [kio_send()] surface peer death automatically as `kio_peer_gone`; this is
-#' for callers that want to ask without touching the rings. A peer that has
-#' closed the channel but is still running reads as alive.
+#' An explicit probe for supervisors. Reports whether the peer process
+#' holds its liveness lock, in about 1 microsecond with no waiting.
+#' [kio_recv()] and [kio_send()] surface peer death automatically as
+#' `kio_peer_gone`. Use this probe to ask without touching the rings. A
+#' peer that closed the channel but still runs reads as alive.
 #'
 #' @inheritParams kio_send
 #'
-#' @return `TRUE` while the peer process is alive, `FALSE` once it has died
-#'   (at which point the survivor has unlinked the channel's names).
+#' @return `TRUE` while the peer process is alive, `FALSE` after it dies.
+#'   At that point the survivor unlinked the names of the channel.
 #'
 #' @export
 kio_alive <- function(ch) .Call(kio_channel_alive, ch)

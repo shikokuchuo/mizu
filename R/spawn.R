@@ -60,19 +60,19 @@ spawn_worker <- function(token, slot, stdout = "", stderr = "") {
 
 #' Default Child Process Launcher
 #'
-#' Returns the launcher [kio_channel()], [kio_pool()] and
-#' [kio_spawn_workers()] use unless given a custom one: it spawns a
+#' Returns the launcher that [kio_channel()], [kio_pool()] and
+#' [kio_spawn_workers()] use unless given a custom one. It spawns a
 #' detached child R process through a static `Rscript` runner, with the
-#' entry expression and the host's `.libPaths()` hex-encoded in argv.
+#' entry expression and the `.libPaths()` of the host hex-encoded in argv.
 #'
-#' @param stdout,stderr forwarded to [system2()]; the default `""` sends
-#'   child output (for a channel peer, including its error epilogue) to
-#'   the host's console, `FALSE` discards it, and a file name collects it
-#'   in that file.
+#' @param stdout,stderr forwarded to [system2()]. The default `""` sends
+#'   the child output (for a channel peer, including its error epilogue)
+#'   to the console of the host, `FALSE` discards it, and a file name
+#'   collects it in that file.
 #'
 #' @return A `function(token, slot)`. [kio_pool()] and
 #'   [kio_spawn_workers()] call it with both arguments to spawn the worker
-#'   for `slot`; [kio_channel()] calls it with `token` alone to spawn the
+#'   for `slot`. [kio_channel()] calls it with `token` alone to spawn the
 #'   peer.
 #'
 #' @export
