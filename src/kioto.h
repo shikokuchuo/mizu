@@ -268,16 +268,36 @@ enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
 #define KIO_INTERRUPT_BOUND_MS 2000L
 #endif
 
-/* Bounded pause-hinted spin over the work sources before announcing a park:
-   sub-µs publish gaps are absorbed without touching the entity line. */
-#define KIO_SPIN_ITERS 256
+/* Time-boxed pre-park spins: a park/wake round trip costs microseconds,
+   so a wait that would park first spins in userspace against a
+   nanosecond budget, sized ~2x the measured park/wake round trip.
+   Budgets adapt per handle (process-local words, never shared): an
+   episode whose spin comes up empty halves the budget
+   (floor KIO_SPIN_FLOOR_NS); work found resets it to the constant.
+   KIO_SPIN_BUDGET_NS covers the worker pre-park scan and the channel
+   recv wait, absorbing sub-µs publish gaps without touching the entity
+   line. */
+#define KIO_SPIN_BUDGET_NS 16000
 
-/* Collect's pre-announce spin bound, sized for a short task's whole
-   submit -> publish turnaround (a few µs) rather than a publish gap:
-   waiter_slot stays unannounced through the spin, so a fast result costs
-   neither side a syscall — the publisher skips its wake, the collector its
-   park. Spent at most once per collect call, before the first park. */
-#define KIO_COLLECT_SPIN_ITERS 1024
+/* Collect's pre-announce spin budget, sized for a short task's whole
+   submit -> publish turnaround rather than a publish gap: waiter_slot
+   stays unannounced through the spin, so a fast result caught here costs
+   neither side a syscall — the publisher skips its wake, the collector
+   its park. That syscall-skip invariant is pre-first-park only: the spin
+   re-runs after every bounded park wake, and waiter_slot stays announced
+   from the first park until the collect returns. */
+#define KIO_COLLECT_SPIN_BUDGET_NS 32000
+
+/* Decay floor for both budgets: genuine idleness converges here, so an
+   idle pool or channel parks instead of burning a core. */
+#define KIO_SPIN_FLOOR_NS 1000
+
+/* Pause iterations between kio_now() deadline checks at the
+   cheap-predicate spin sites (collect, channel: 1-2 loads per check).
+   The worker scan passes a stride of 1: pool_work_hint() is
+   O(max_workers) per iteration, so a ~20-25 ns vDSO clock read is noise
+   next to it and a longer stride could overshoot the budget. */
+#define KIO_SPIN_CLOCK_EVERY 8
 
 /* Busy-path bound on result-keeper reap visits per worker step: keeps the
    per-task reap cost O(1) against any number of results outstanding. The
@@ -291,6 +311,25 @@ enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
 #else
 #define KIO_PAUSE() do { } while (0)
 #endif
+
+/* Time-boxed pause-hinted spin, the shared pre-announce wait layer:
+   evaluate cond each iteration until it holds (out = 1) or the
+   kio_now()-scale deadline `until` passes (out = 0), reading the clock
+   every `stride` iterations. A macro, not an inline: the predicate must
+   inline at each site. Callers clamp `until` to any outer wait deadline
+   themselves. */
+#define KIO_SPIN_WAIT(cond, until, stride, out)                         \
+  do {                                                                  \
+    (out) = 0;                                                          \
+    for (;;) {                                                          \
+      int kio_sw_i = 0;                                                 \
+      for (; kio_sw_i < (stride); kio_sw_i++) {                         \
+        KIO_PAUSE();                                                    \
+        if (cond) { (out) = 1; break; }                                 \
+      }                                                                 \
+      if ((out) || kio_now() >= (until)) break;                         \
+    }                                                                   \
+  } while (0)
 
 /* region_name/entity name the Windows event ("<region>.pk.<entity>"), created
    by the region's host (create = 1) and opened by name by attachers; unused

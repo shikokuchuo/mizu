@@ -388,10 +388,11 @@ kio_pool_status <- function(pool) {
 #'   pid, result-slot subrange, queued injection entries, ready and
 #'   full-waiter mask bits), `tasks` (data frame of occupied result slots:
 #'   slot, status, sequence, executing worker, parked waiter), and `local`.
-#'   `local` is the process-private spill-reuse machinery of this handle:
-#'   the occupancy of the producer free list (`fl_entries`, `fl_bytes`),
-#'   its reuse count (`fl_hits`), and the `open_hits` and `open_misses` of
-#'   the consumer mapping cache.
+#'   `local` is the process-private machinery of this handle: the
+#'   occupancy of the producer free list (`fl_entries`, `fl_bytes`), its
+#'   reuse count (`fl_hits`), the `open_hits` and `open_misses` of the
+#'   consumer mapping cache, and `collect_parks` (how often a collect on
+#'   this handle parked waiting for a result).
 #'
 #' @export
 kio_pool_dump <- function(pool) {

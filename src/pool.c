@@ -100,6 +100,14 @@ typedef struct kio_pool_s {
   /* cumulative stat counters, mirrored into the slot's stat_* fields by
      pool_stats_publish at park/fairness-tick cadence */
   uint64_t st_tasks, st_steals, st_inj, st_parks, st_helps;
+  /* process-local adaptive spin budgets (ns) and collect park count:
+     budgets halve when an episode's spin comes up empty and reset to
+     the constant on a catch; st_collect_parks is the collect-side
+     mirror of st_parks. None of these are mirrored to shm; the dump
+     surfaces them under "local" */
+  uint64_t scan_budget_ns;
+  uint64_t collect_budget_ns;
+  uint64_t st_collect_parks;
 
   _Atomic int owner_dead;        /* death-listener flag: wake trigger only */
   kio_death_watch *watch;
@@ -607,6 +615,8 @@ SEXP kio_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   p->self_pid = kio_self_pid();
   p->wk_slot = -1;
   p->sub_slot = 0;
+  p->scan_budget_ns = KIO_SPIN_BUDGET_NS;
+  p->collect_budget_ns = KIO_COLLECT_SPIN_BUDGET_NS;
   p->hdr = h;
   memcpy(p->livedir, livedir, livedir_len + 1);
 
@@ -812,6 +822,8 @@ static kio_pool *pool_open_common(const char *suffix, SEXP *xp_out,
   p->self_pid = kio_self_pid();
   p->wk_slot = -1;
   p->sub_slot = -1;
+  p->scan_budget_ns = KIO_SPIN_BUDGET_NS;
+  p->collect_budget_ns = KIO_COLLECT_SPIN_BUDGET_NS;
 
   /* validate before touching any other field */
   const char *err = pool_hdr_validate(p->shm.addr, p->shm.size, &p->hdr);
@@ -2360,6 +2372,10 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
     }
 
     if (pool_next_task(p)) {
+      /* work found since the last reset recovers the scan budget —
+         without this, work caught after a park wake strands it at the
+         floor under trickle traffic */
+      p->scan_budget_ns = KIO_SPIN_BUDGET_NS;
       pool_execute(p, xp, 0);
       if (single) return Rf_ScalarInteger(1);
       R_CheckUserInterrupt();
@@ -2372,14 +2388,21 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
       return Rf_ScalarInteger(0);
     }
 
-    /* bounded spin before announcing: sub-µs submit gaps are absorbed
-       without touching the parked_workers line */
-    for (int i = 0; i < KIO_SPIN_ITERS; i++) {
-      KIO_PAUSE();
-      if (pool_work_hint(p)) break;
-    }
-    if (pool_work_hint(p))
+    /* time-boxed spin before announcing: sub-µs submit gaps are
+       absorbed without touching the parked_workers line. Clock stride
+       1: pool_work_hint() is O(max_workers) per iteration, so a vDSO
+       clock read is noise next to it. The budget decays only when the
+       spin comes up empty. */
+    double until = kio_now() + (double) p->scan_budget_ns / 1e9;
+    if (deadline >= 0 && deadline < until) until = deadline;
+    int caught;
+    KIO_SPIN_WAIT(pool_work_hint(p), until, 1, caught);
+    if (caught) {
+      p->scan_budget_ns = KIO_SPIN_BUDGET_NS;
       continue;
+    }
+    p->scan_budget_ns = p->scan_budget_ns / 2 < KIO_SPIN_FLOOR_NS ?
+      KIO_SPIN_FLOOR_NS : p->scan_budget_ns / 2;
 
     /* announce-then-rescan (the sleep race): either our rescan sees the
        push or the pusher's mask load sees our bit */
@@ -2549,20 +2572,34 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
 
     if (timeout_s <= 0) return kio_sent_timeout;
 
-    /* bounded pause-hinted spin before the park announce — the collect
-       mirror of the worker's pre-announce spin: a short task's publish is
-       absorbed without the park/wake syscall pair on either side, since
-       waiter_slot stays unannounced through the spin and the publisher
-       skips its wake. Falls through to the parked path at the bound. */
-    for (int i = 0; i < KIO_COLLECT_SPIN_ITERS; i++) {
-      KIO_PAUSE();
-      st = atomic_load_explicit(&rs->status, memory_order_acquire);
-      if (st != KIO_RS_PENDING) break;
-    }
-    if (st != KIO_RS_PENDING) break;
-
+    /* hoisted above the spin so the first episode's `until` is clamped
+       too — a finite timeout's clock covers the whole wait. Still after
+       the fast-path break and the timeout_s <= 0 return and still
+       R_FINITE-guarded, so the Inf and already-done paths pay no extra
+       clock read */
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = kio_now() + timeout_s;
+
+    /* time-boxed spin before the park announce: a short task's publish
+       is absorbed without the park/wake syscall pair on either side,
+       since waiter_slot stays unannounced through the spin and the
+       publisher skips its wake. The budget update is exclusive — once
+       per wait episode, on the budget that was tried (B): a spin catch
+       pins the max; a catch at the announce re-check or a parked wait
+       under 2x the constant doubles B; a longer parked wait halves B.
+       A halve and a double never both fire in one episode (that pair
+       nets to zero growth from the floor — the sticky-floor flaw). */
+    uint64_t budget = p->collect_budget_ns;
+    double until = kio_now() + (double) budget / 1e9;
+    if (deadline >= 0 && deadline < until) until = deadline;
+    int caught;
+    KIO_SPIN_WAIT((st = atomic_load_explicit(&rs->status,
+                                             memory_order_acquire)) !=
+                  KIO_RS_PENDING, until, KIO_SPIN_CLOCK_EVERY, caught);
+    if (caught) {
+      p->collect_budget_ns = KIO_COLLECT_SPIN_BUDGET_NS;
+      break;
+    }
 
     /* announce -> fence -> re-check -> park bounded; the publishing worker
        reads waiter_slot after its publish CAS and unparks us */
@@ -2571,8 +2608,13 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
                           memory_order_relaxed);
     atomic_thread_fence(memory_order_seq_cst);
     if (atomic_load_explicit(&rs->status, memory_order_acquire) !=
-        KIO_RS_PENDING)
+        KIO_RS_PENDING) {
+      /* caught at the re-check: the turnaround sat just past the tried
+         budget — grow toward catching the next one in the spin */
+      p->collect_budget_ns = budget * 2 > KIO_COLLECT_SPIN_BUDGET_NS ?
+        KIO_COLLECT_SPIN_BUDGET_NS : budget * 2;
       continue;
+    }
     long ms = KIO_INTERRUPT_BOUND_MS;
     if (deadline >= 0) {
       double rem = deadline - kio_now();
@@ -2580,12 +2622,27 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
+    /* the bracketing clock reads measure the parked wait for the budget
+       update; the common timeout = Inf collect has no other clock in its
+       wait loop, and the pair is negligible against the park syscalls */
+    double park_t0 = kio_now();
     kio_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    p->st_collect_parks++;
+    double parked_ns = (kio_now() - park_t0) * 1e9;
     R_CheckUserInterrupt();
-    if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
-        KIO_RS_PENDING) {
-      /* backstop for a missed death notification, piggybacked on a wake
-         that happened regardless — never a wakeup of its own */
+    st = atomic_load_explicit(&rs->status, memory_order_acquire);
+    if (st != KIO_RS_PENDING) {
+      if (parked_ns < 2.0 * KIO_COLLECT_SPIN_BUDGET_NS)
+        p->collect_budget_ns = budget * 2 > KIO_COLLECT_SPIN_BUDGET_NS ?
+          KIO_COLLECT_SPIN_BUDGET_NS : budget * 2;
+      else
+        p->collect_budget_ns = budget / 2 < KIO_SPIN_FLOOR_NS ?
+          KIO_SPIN_FLOOR_NS : budget / 2;
+      break;
+    }
+    /* backstop for a missed death notification, piggybacked on a wake
+       that happened regardless — never a wakeup of its own */
+    {
       int32_t claimant = atomic_load_explicit(&rs->worker_slot,
                                               memory_order_acquire);
       if (claimant >= 0 && (uint32_t) claimant < p->hdr.max_workers)
@@ -3081,10 +3138,11 @@ SEXP kio_pool_dump_call(SEXP xp) {
   SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(
     (int) atomic_load_explicit(p->help_wanted, memory_order_acquire)));
 
-  /* the spill free list and consumer mapping cache are handle-local, so
-     their counters surface here rather than in the cross-process stats */
+  /* the spill free list, consumer mapping cache, and collect-side park
+     count are handle-local, so their counters surface here rather than
+     in the cross-process stats (st_parks covers only worker parks) */
   const char *lnames[] = {"fl_entries", "fl_bytes", "fl_hits", "open_hits",
-                          "open_misses", ""};
+                          "open_misses", "collect_parks", ""};
   SEXP lo = Rf_mkNamed(VECSXP, lnames);
   SET_VECTOR_ELT(out, 5, lo);
   SET_VECTOR_ELT(lo, 0, Rf_ScalarInteger((int) p->fl.n));
@@ -3092,6 +3150,7 @@ SEXP kio_pool_dump_call(SEXP xp) {
   SET_VECTOR_ELT(lo, 2, Rf_ScalarReal((double) p->fl.hits));
   SET_VECTOR_ELT(lo, 3, Rf_ScalarReal((double) p->oc.hits));
   SET_VECTOR_ELT(lo, 4, Rf_ScalarReal((double) p->oc.misses));
+  SET_VECTOR_ELT(lo, 5, Rf_ScalarReal((double) p->st_collect_parks));
 
   const char *wnames[] = {"status", "pid", "park_state", "parked", "top",
                           "bottom", "in_flight", ""};

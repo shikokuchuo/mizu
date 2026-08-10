@@ -17,10 +17,11 @@ the in-flight result slot), \code{submitters} (data frame: slot, status,
 pid, result-slot subrange, queued injection entries, ready and
 full-waiter mask bits), \code{tasks} (data frame of occupied result slots:
 slot, status, sequence, executing worker, parked waiter), and \code{local}.
-\code{local} is the process-private spill-reuse machinery of this handle:
-the occupancy of the producer free list (\code{fl_entries}, \code{fl_bytes}),
-its reuse count (\code{fl_hits}), and the \code{open_hits} and \code{open_misses} of
-the consumer mapping cache.
+\code{local} is the process-private machinery of this handle: the
+occupancy of the producer free list (\code{fl_entries}, \code{fl_bytes}), its
+reuse count (\code{fl_hits}), the \code{open_hits} and \code{open_misses} of the
+consumer mapping cache, and \code{collect_parks} (how often a collect on
+this handle parked waiting for a result).
 }
 \description{
 A read-only debugging snapshot of the entire pool region, one level

@@ -71,6 +71,10 @@ typedef struct kio_chan_s {
   int pk_ok;
   long self_pid;                 /* fork guard */
   uint32_t inline_max;
+  /* process-local adaptive recv-wait spin budget (ns): halved when an
+     episode's spin comes up empty, reset to KIO_SPIN_BUDGET_NS on any
+     message acquired; never shared */
+  uint64_t wait_budget_ns;
 
   _Atomic uint32_t *ready;
   _Atomic uint32_t *closedw;     /* bit 1 = host closed, bit 2 = peer closed */
@@ -548,13 +552,19 @@ static int chan_wait_msg(kio_chan *c, SEXP prot, double timeout_s) {
   chan_reap(c, keepers);         /* recv is a reap trigger: the quiet-sender
                                     case pins at most cap payloads otherwise */
   for (;;) {
-    if (chan_rx_avail(c)) return KIO_ST_OK;
+    if (chan_rx_avail(c)) {
+      c->wait_budget_ns = KIO_SPIN_BUDGET_NS;
+      return KIO_ST_OK;
+    }
 
     /* our wake-register bit: clear, then re-check — the producer's OR
        follows its tail publish, so data ORed before the clear is caught */
     if (atomic_load_explicit(c->self_reg, memory_order_relaxed) & 1u) {
       atomic_fetch_and_explicit(c->self_reg, ~1u, memory_order_acq_rel);
-      if (chan_rx_avail(c)) return KIO_ST_OK;
+      if (chan_rx_avail(c)) {
+        c->wait_budget_ns = KIO_SPIN_BUDGET_NS;
+        return KIO_ST_OK;
+      }
     }
 
     if (atomic_load_explicit(c->closedw, memory_order_acquire) != 0)
@@ -572,9 +582,16 @@ static int chan_wait_msg(kio_chan *c, SEXP prot, double timeout_s) {
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = kio_now() + timeout_s;
 
-    for (int i = 0; i < KIO_SPIN_ITERS; i++) {
-      KIO_PAUSE();
-      if (chan_rx_avail(c)) return KIO_ST_OK;
+    /* time-boxed spin before the park announce, clamped to the recv
+       deadline: sub-µs publish gaps are absorbed without the park/wake
+       syscall pair on either side */
+    double until = kio_now() + (double) c->wait_budget_ns / 1e9;
+    if (deadline >= 0 && deadline < until) until = deadline;
+    int caught;
+    KIO_SPIN_WAIT(chan_rx_avail(c), until, KIO_SPIN_CLOCK_EVERY, caught);
+    if (caught) {
+      c->wait_budget_ns = KIO_SPIN_BUDGET_NS;
+      return KIO_ST_OK;
     }
 
     if (c->spin) {
@@ -586,6 +603,10 @@ static int chan_wait_msg(kio_chan *c, SEXP prot, double timeout_s) {
       }
       continue;
     }
+
+    /* the spin came up empty: decay toward the floor */
+    c->wait_budget_ns = c->wait_budget_ns / 2 < KIO_SPIN_FLOOR_NS ?
+      KIO_SPIN_FLOOR_NS : c->wait_budget_ns / 2;
 
     /* Park: snapshot -> announce -> re-check -> sleep bounded. Snapshot-
        before-announce means any unpark that observes the flag bumps the
@@ -685,6 +706,7 @@ SEXP kio_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
   }
   c->side = KIO_ENTITY_HOST;
   c->self_pid = kio_self_pid();
+  c->wait_budget_ns = KIO_SPIN_BUDGET_NS;
 
   /* From here cleanup is the finalizer's: build the handle before anything
      that can longjmp. */
@@ -808,6 +830,7 @@ SEXP kio_channel_attach(SEXP suffix_sexp) {
   }
   c->side = KIO_ENTITY_PEER;
   c->self_pid = kio_self_pid();
+  c->wait_budget_ns = KIO_SPIN_BUDGET_NS;
 
   /* validate before touching any other field */
   kio_preamble p;
