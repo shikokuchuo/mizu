@@ -4,18 +4,18 @@
 # runtime namespace to /kio_ (see ipc-plan.md, *Vendored mori code*).
 #
 # Usage: tools/vendor-mori.sh [ref]
-#   ref        tag/commit to vendor (default: the pin below)
+#   ref        tag, branch, or full commit SHA to vendor (default: the pin below)
 #   MORI_SRC   use a local mori checkout instead of cloning (must be at ref)
 #   MORI_REPO  override the upstream clone URL
 #
-# Vendored files are never edited by hand: changes go upstream to mori and
-# are pulled by re-running this script. Idempotent — CI re-runs it against
-# the pinned ref and fails on drift.
+# Vendored files are never edited by hand (see AGENTS.md): changes go
+# upstream to mori and are pulled by re-running this script. Idempotent.
 
 set -euo pipefail
 
-PIN="v0.2.2"                     # first tag carrying the seeded region-name
-                                 # counter (mori #51)
+PIN="00ccf73b7b65258497bfe0305468d76573663b5e"  # mori #54: fork guard,
+                                               # corrupt-region validation,
+                                               # string wire-form fix
 REF="${1:-$PIN}"
 REPO="${MORI_REPO:-https://github.com/shikokuchuo/mori}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor"
@@ -29,7 +29,16 @@ if [ -n "${MORI_SRC:-}" ]; then
   src_root="$MORI_SRC"
 else
   workdir="$(mktemp -d)"
-  git clone -q --depth 1 --branch "$REF" "$REPO" "$workdir/mori"
+  if printf '%s' "$REF" | grep -qE '^[0-9a-f]{40}$'; then
+    # A commit SHA is not a ref: fetch it directly (GitHub serves reachable
+    # SHAs) — clone --branch only takes branch/tag names.
+    git init -q "$workdir/mori"
+    git -C "$workdir/mori" remote add origin "$REPO"
+    git -C "$workdir/mori" fetch -q --depth 1 origin "$REF"
+    git -C "$workdir/mori" -c advice.detachedHead=false checkout -q FETCH_HEAD
+  else
+    git clone -q --depth 1 --branch "$REF" "$REPO" "$workdir/mori"
+  fi
   src_root="$workdir/mori"
 fi
 
