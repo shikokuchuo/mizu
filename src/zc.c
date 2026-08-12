@@ -245,7 +245,6 @@ SEXP kio_zc_stage(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
   mori_shm *shm = NULL;
   SEXP wrap = kio_spill_region_get(fl, total, &shm);   /* PROTECTed */
   mori_layout_write((unsigned char *) shm->addr, x);
-  kio_spill_collapse(shm, fl);
   atomic_store_explicit(zc_rc(shm->addr), 1, memory_order_relaxed);
   atomic_store_explicit(zc_flags(shm->addr), 0, memory_order_relaxed);
   int type = TYPEOF(x);
@@ -608,6 +607,7 @@ void kio_ledger_sweep(kio_spill_fl *fl, uint32_t quota) {
       if (shm != NULL && shm->addr != NULL)
         kio_spill_fl_insert(fl, wrap, shm);
       kio_ledger_drop(fl, i);
+      fl->churn = 0;   /* releases are landing: zero-copy reuse is viable */
     } else {
       i++;
     }
@@ -638,6 +638,7 @@ void kio_ledger_force(kio_spill_fl *fl, int32_t key) {
         if (TYPEOF(host) == EXTPTRSXP) mori_host_finalizer(host);
       } else {
         kio_spill_fl_insert(fl, wrap, shm);
+        fl->churn = 0;
       }
     }
     kio_ledger_drop(fl, i);
@@ -654,6 +655,9 @@ SEXP kio_zc_view_check_call(SEXP x) {
    else. Reads through the view's own chain (the refcount word is page 0,
    mapped at least RO on every holder). */
 SEXP kio_zc_refcount_call(SEXP x) {
+  /* the chain walk reads ALTREP slots: gate on view identity first —
+     on a plain vector data1 aliases the length field */
+  if (!mori_view_check(x)) return Rf_allocVector(INTSXP, 0);
   SEXP terminus = kio_view_terminus(x);
   mori_shm *shm = terminus == R_NilValue ? NULL :
     (mori_shm *) R_ExternalPtrAddr(terminus);

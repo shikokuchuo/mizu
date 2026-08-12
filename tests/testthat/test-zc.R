@@ -34,6 +34,12 @@ test_that("tier selection: big atomic vectors cross as views, others copy", {
   channel_end(p)
 })
 
+test_that("rc_of on a non-view returns integer(0) (no chain walk)", {
+  expect_identical(rc_of(runif(10)), integer(0))
+  expect_identical(rc_of(1:10), integer(0)) # ALTREP, but not a kioto view
+  expect_identical(rc_of(NULL), integer(0))
+})
+
 test_that("a held view pins its region in the ledger until release", {
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
@@ -116,6 +122,43 @@ test_that("pool results cross as views; a held result pins the worker's region",
   r2 <- kio_collect(t2, 5)
   expect_identical(.Call(kioto:::kio_pool_zc_info, p$wk)[[2L]], 0L)
   expect_true(is_view(r2))
+  pool_end(p)
+})
+
+test_that("zc churn falls back to SHM_RAW: reuse resumes without any GC", {
+  p <- pool_pair()
+  x <- runif(20000) # 160 KB: past the zc floor, spills
+  # collected views pin their regions until GC (none here), so SHM_VEC
+  # would churn a fresh region per payload; the fallback's SHM_RAW
+  # surrenders deterministically at consumer-done, restoring warm reuse
+  for (i in seq_len(6L)) {
+    t <- kio_submit(p$ctrl, x, x = x)
+    pool_step(p)
+    expect_identical(kio_collect(t, 5), x)
+  }
+  st <- kio_pool_stats(p$ctrl)$submitters
+  st <- st[st$status == "live", ]
+  expect_gt(st$spill_reuse, 0)
+  pool_end(p)
+})
+
+test_that("the churn fallback clears once lent regions reclaim", {
+  p <- pool_pair()
+  x <- runif(20000)
+  held <- vector("list", 4L) # held views pin their regions: churn
+  for (i in seq_along(held)) {
+    t <- kio_submit(p$ctrl, x, x = x)
+    pool_step(p)
+    held[[i]] <- kio_collect(t, 5)
+  }
+  rm(held)
+  invisible(gc())
+  for (i in seq_len(3L)) { # the sweeps reclaim; staging returns to SHM_VEC
+    t <- kio_submit(p$ctrl, x, x = x)
+    pool_step(p)
+    r <- kio_collect(t, 5)
+  }
+  expect_true(is_view(r))
   pool_end(p)
 })
 

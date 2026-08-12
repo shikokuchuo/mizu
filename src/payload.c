@@ -90,9 +90,12 @@ void kio_spill_fl_surrender(kio_spill_fl *fl, SEXP keepers, R_xlen_t at) {
 
 /* Smallest entry with size >= n, removed from the list. A miss runs a
    full ledger sweep (zero-count lent regions rejoin here) and retries
-   once — the free-list-miss full sweep of the release protocol. The
-   wrap's only reference is the returned value: the caller must PROTECT
-   before any allocation. */
+   once — the free-list-miss full sweep of the release protocol. A miss
+   with lent regions still outstanding sets fl->churn: the sweep just
+   proved consumer-side views are outliving their traffic — the signal
+   for kio_payload_stage's SHM_RAW fallback. The wrap's only reference
+   is the returned value: the caller must PROTECT before any
+   allocation. */
 static SEXP spill_fl_pop(kio_spill_fl *fl, size_t n) {
   for (int attempt = 0; attempt < 2; attempt++) {
     int best = -1;
@@ -109,9 +112,10 @@ static SEXP spill_fl_pop(kio_spill_fl *fl, size_t n) {
       if (kio_shm_unwrap(wrap) != NULL) return wrap;
       return R_NilValue;                  /* finalized */
     }
-    if (attempt > 0 || fl->led_n == 0) return R_NilValue;
+    if (attempt > 0 || fl->led_n == 0) break;
     kio_ledger_sweep(fl, KIO_LEDGER_MAX);
   }
+  if (fl->led_n > 0) fl->churn = 1;
   return R_NilValue;
 }
 
@@ -143,6 +147,17 @@ void kio_spill_fl_insert(kio_spill_fl *fl, SEXP wrap, mori_shm *shm) {
     slot = vic;
   }
   if (slot < 0) return;                      /* every entry occupied */
+  /* The Linux THP collapse, deferred to the moment a region proves
+     reusable by completing a consumer-done cycle: under zc churn lent
+     regions never reach insert, so the pass never taxes a churned
+     fresh-create-per-payload regime (the vendored create's
+     MADV_HUGEPAGE is inert under stock Linux shmem_enabled=[never]).
+     Idempotent re-collapse is sub-µs, so once per cycle is fine.
+     Failure is benign. */
+#if defined(__linux__) && defined(MADV_COLLAPSE)
+  if (size >= ((size_t) 2 << 20))
+    (void) madvise(shm->addr, size, MADV_COLLAPSE);
+#endif
   SET_VECTOR_ELT(fl->wraps, slot, wrap);
   fl->size[slot] = size;
   fl->stamp[slot] = ++fl->tick;
@@ -183,26 +198,11 @@ SEXP kio_spill_region_get(kio_spill_fl *fl, size_t n, mori_shm **out) {
   return wrap;
 }
 
-/* The vendored create's MADV_HUGEPAGE is inert under the stock Linux
-   shmem_enabled=[never]; a synchronous collapse (kernel >= 6.1) works on
-   shmem regardless. Once per region lifetime — after the stage write so
-   the pages exist, on the fresh-create path only, where the pass
-   amortizes over every later free-list hit. Failure is benign. */
-void kio_spill_collapse(mori_shm *shm, kio_spill_fl *fl) {
-#if defined(__linux__) && defined(MADV_COLLAPSE)
-  if (fl != NULL && !fl->last_reused && shm->size >= ((size_t) 2 << 20))
-    madvise(shm->addr, shm->size, MADV_COLLAPSE);
-#else
-  (void) shm; (void) fl;
-#endif
-}
-
 SEXP kio_payload_spill_shm(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
                            size_t n, kio_spill_fl *fl) {
   mori_shm *shm = NULL;
   SEXP wrap = kio_spill_region_get(fl, n, &shm);       /* PROTECTed */
   mori_serialize_into((unsigned char *) shm->addr, n, x);
-  kio_spill_collapse(shm, fl);
   hdr->kind = KIO_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
@@ -232,8 +232,12 @@ SEXP kio_payload_stage(kio_slot_hdr *hdr, unsigned char *payload,
   }
   /* SHM_VEC: mori-layout-eligible objects (atomic vectors, strings, list
      trees) past the budget and the zc floor — cheap probes keep the
-     layout-size walk off the inline path (zc.c). */
-  if (kio_zc_eligible(x, inline_max, &total))
+     layout-size walk off the inline path (zc.c). Under churn (the last
+     spill miss swept the lent ledger and reclaimed nothing) the fresh
+     region per SHM_VEC payload is dearer than the serialize copy: fall
+     to SHM_RAW, whose region surrenders deterministically at
+     consumer-done. */
+  if ((fl == NULL || !fl->churn) && kio_zc_eligible(x, inline_max, &total))
     return kio_zc_stage(hdr, payload, x, total, fl);
   size_t n = kio_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {

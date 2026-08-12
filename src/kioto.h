@@ -193,6 +193,11 @@ typedef struct kio_spill_fl_s {
   SEXP led_wraps;                   /* VECSXP(KIO_LEDGER_MAX), handle-pinned */
   int32_t led_key[KIO_LEDGER_MAX];
   uint32_t led_n;
+  /* set when a spill pop misses with lent regions outstanding (the sweep
+     just proved consumer-side views outlive their traffic): the signal
+     for kio_payload_stage's SHM_RAW fallback; cleared when a ledger
+     sweep or force-reclaim returns a lent region to the free list */
+  int churn;
 } kio_spill_fl;
 
 /* Surrender a dropped keeper's region to the free list: a no-op unless
@@ -310,9 +315,6 @@ void kio_ledger_sweep(kio_spill_fl *fl, uint32_t quota);
    matches that consumer only, key < 0 all entries (the channel's single
    peer). REFHELD entries leak + unlink; the rest rejoin the free list. */
 void kio_ledger_force(kio_spill_fl *fl, int32_t key);
-/* The Linux THP collapse for a freshly created spill region (no-op
-   elsewhere / on reuse / below 2 MiB). */
-void kio_spill_collapse(mori_shm *shm, kio_spill_fl *fl);
 /* Test / debug surface: is x a kioto-native view; c(refcount, flags) of
    the region behind a view; c(free-list, ledger) entry counts for a
    handle. */
