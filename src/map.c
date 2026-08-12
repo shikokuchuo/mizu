@@ -492,6 +492,15 @@ SEXP kio_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     np++;
   }
   const int xt = TYPEOF(x);
+  /* Atomic element reads go through one hoisted data pointer: for a
+     non-ALTREP x its own block; for an ALTREP with data behind it (a
+     kioto view, a foreign shared vector, a materialized one) the shared
+     pages — the per-element writable accessors would COW-materialize the
+     whole vector per worker. NULL when an ALTREP has no data block (a
+     compact 1:n), where the standard accessors stand. */
+  const void *xd = NULL;
+  if (mori_sizeof_elt(xt) != 0)
+    xd = ALTREP(x) ? DATAPTR_OR_NULL(x) : kio_vec_ptr(x);
   for (R_xlen_t i = 0; i < len; i++) {
     if ((i & 63) == 0) R_CheckUserInterrupt();
     double e = lo + (double) i;
@@ -510,11 +519,26 @@ SEXP kio_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     case VECSXP: case EXPRSXP:
       elt = VECTOR_ELT(x, idx);
       break;
-    case LGLSXP:  elt = Rf_ScalarLogical(LOGICAL(x)[idx]); break;
-    case INTSXP:  elt = Rf_ScalarInteger(INTEGER(x)[idx]); break;
-    case REALSXP: elt = Rf_ScalarReal(REAL(x)[idx]); break;
-    case CPLXSXP: elt = Rf_ScalarComplex(COMPLEX(x)[idx]); break;
-    case RAWSXP:  elt = Rf_ScalarRaw(RAW(x)[idx]); break;
+    case LGLSXP:
+      elt = Rf_ScalarLogical(xd == NULL ? LOGICAL(x)[idx]
+                                        : ((const int *) xd)[idx]);
+      break;
+    case INTSXP:
+      elt = Rf_ScalarInteger(xd == NULL ? INTEGER(x)[idx]
+                                        : ((const int *) xd)[idx]);
+      break;
+    case REALSXP:
+      elt = Rf_ScalarReal(xd == NULL ? REAL(x)[idx]
+                                     : ((const double *) xd)[idx]);
+      break;
+    case CPLXSXP:
+      elt = Rf_ScalarComplex(xd == NULL ? COMPLEX(x)[idx]
+                                        : ((const Rcomplex *) xd)[idx]);
+      break;
+    case RAWSXP:
+      elt = Rf_ScalarRaw(xd == NULL ? RAW(x)[idx]
+                                    : ((const Rbyte *) xd)[idx]);
+      break;
     case STRSXP:  elt = Rf_ScalarString(STRING_ELT(x, idx)); break;
     default:      Rf_error("kioto: unsupported map element type");
     }
@@ -539,6 +563,52 @@ SEXP kio_map_gather(SEXP xp) {
   memcpy(kio_vec_ptr(out), (unsigned char *) mh->shm->addr + mh->h.out_off,
          (size_t) len * mh->h.out_elt_size);
   return out;
+}
+
+/* `.collect = "view"`: the output area wrapped as an ALTREP view over the
+   map region's own pages — no gather memcpy. Names / dim / dimnames are
+   applied here, not R-side: the R setters see a shared object and
+   duplicate, and the default ALTREP duplicate materializes (the vec
+   classes register no Duplicate method). The keeper is the map handle
+   itself: its prot chain pins the producer wrap, so the region lives
+   until the view is released (the R side marks the map state consumed, so
+   a prepared re-run restages instead of overwriting the pages). With no
+   mori-shm hop in that chain the view never crosses by reference — a
+   re-send degrades to a materializing copy, as the region is not a MORH
+   layout and REF resolution would misread it. */
+SEXP kio_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
+  kio_map_h *mh = map_h_get(xp);
+  if (mh->h.out_sexptype == 0)
+    Rf_error("kioto: map region has no output area");
+  uint64_t n = mh->h.n, m = mh->h.out_m;
+  SEXP view = PROTECT(mori_vec_wrap(
+    (unsigned char *) mh->shm->addr + mh->h.out_off, (R_xlen_t) (n * m),
+    (int) mh->h.out_sexptype, xp, NULL, NULL));
+  if (m == 1) {
+    if (nms != R_NilValue) Rf_setAttrib(view, R_NamesSymbol, nms);
+    UNPROTECT(1);
+    return view;
+  }
+  SEXP dim;
+  if (n * m > (uint64_t) INT_MAX) {   /* a long vector: double dim */
+    dim = PROTECT(Rf_allocVector(REALSXP, 2));
+    REAL(dim)[0] = (double) m;
+    REAL(dim)[1] = (double) n;
+  } else {
+    dim = PROTECT(Rf_allocVector(INTSXP, 2));
+    INTEGER(dim)[0] = (int) m;
+    INTEGER(dim)[1] = (int) n;
+  }
+  Rf_setAttrib(view, R_DimSymbol, dim);
+  if (tn != R_NilValue || nms != R_NilValue) {
+    SEXP dn = PROTECT(Rf_allocVector(VECSXP, 2));
+    SET_VECTOR_ELT(dn, 0, tn);
+    SET_VECTOR_ELT(dn, 1, nms);
+    Rf_setAttrib(view, R_DimNamesSymbol, dn);
+    UNPROTECT(1);
+  }
+  UNPROTECT(2);
+  return view;
 }
 
 // Morsel protocol ---------------------------------------------------------------

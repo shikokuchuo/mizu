@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Vendors mori's platform SHM core and exact-size serialize streams into
-# src/vendor/, applying the enumerated substitution set that forks the
-# runtime namespace to /kio_ (see ipc-plan.md, *Vendored mori code*).
+# Vendors mori's platform SHM core, exact-size serialize streams, and
+# ALTREP layer into src/vendor/, applying the enumerated substitution set
+# that forks the runtime namespace to /kio_ (see ipc-plan.md, *Vendored
+# mori code*).
 #
 # Usage: tools/vendor-mori.sh [ref]
 #   ref        tag, branch, or full commit SHA to vendor (default: the pin below)
@@ -13,16 +14,17 @@
 
 set -euo pipefail
 
-PIN="00ccf73b7b65258497bfe0305468d76573663b5e"  # mori #54: fork guard,
-                                               # corrupt-region validation,
-                                               # string wire-form fix
+PIN="d3534936aed6959ce6475c0dcde575fc97bb871c"  # mori: embedder API —
+                                               # layout writer, wrap
+                                               # constructors with release
+                                               # hook, wire hooks
 REF="${1:-$PIN}"
 REPO="${MORI_REPO:-https://github.com/shikokuchuo/mori}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor"
-FILES="mori.h shm.c serialize.c"
+FILES="mori.h shm.c serialize.c altrep.c"
 
 workdir=""
-cleanup() { [ -n "$workdir" ] && rm -rf "$workdir"; }
+cleanup() { if [ -n "$workdir" ]; then rm -rf "$workdir"; fi; }
 trap cleanup EXIT
 
 if [ -n "${MORI_SRC:-}" ]; then
@@ -44,6 +46,9 @@ fi
 
 commit="$(git -C "$src_root" rev-parse HEAD)"
 commit_date="$(git -C "$src_root" log -1 --format=%cI HEAD)"
+if [ -n "$(git -C "$src_root" status --porcelain -- src)" ]; then
+  commit="$commit-dirty"   # MORI_SRC with uncommitted src/ changes
+fi
 
 mkdir -p "$DEST"
 for f in $FILES; do
@@ -58,17 +63,44 @@ done
 # 1. Fork the runtime namespace in one line: region names, the macOS
 #    registry-log filename prefix, and the reaper's scan filter all
 #    derive from MORI_PREFIX_LITERAL.
+# 2. Region magics: kioto regions are refcounted and recycled, never
+#    mori-owned and immortal — distinct magics keep the namespaces from
+#    aliasing under a hand-crafted identifier.
+# 3. Extptr tag strings: installed symbols are process-global, so the
+#    vendored view chain must not share tag names with a loaded mori.
 sed -i.bak \
   -e 's|"/mori_"|"/kio_"|' \
   -e 's|"Local\\\\mori_"|"Local\\\\kio_"|' \
+  -e 's|0x4D4F5248u|0x4B494F48u|' \
+  -e 's|0x4D4F5253u|0x4B494F53u|' \
+  -e 's|0x4D4F524Cu|0x4B494F4Cu|' \
+  -e 's|"mori_shm"|"kio_mori_shm"|' \
+  -e 's|"mori_host"|"kio_mori_host"|' \
+  -e 's|"mori_owned"|"kio_mori_owned"|' \
   "$DEST/mori.h"
 
-# 2. The macOS registry dir; 3. the user-facing reaper name in the
+# 4. The macOS registry dir; 5. the user-facing reaper name in the
 #    MORI_EEXIST hint string and its comments.
 sed -i.bak \
   -e 's|"%s/mori"|"%s/kioto"|' \
   -e 's|prune_shared()|kio_prune()|g' \
   "$DEST/shm.c"
+
+# 6. ALTREP class names + registering package: kioto's classes stay
+#    distinguishable from an installed mori's (class identity is name +
+#    package + DllInfo; the first two are user-visible).
+# 7. Error message prefix, package-consistent with the rest of kioto.
+sed -i.bak \
+  -e 's|"mori_list"|"kio_list"|g' \
+  -e 's|"mori_real"|"kio_real"|g' \
+  -e 's|"mori_integer"|"kio_integer"|g' \
+  -e 's|"mori_logical"|"kio_logical"|g' \
+  -e 's|"mori_raw"|"kio_raw"|g' \
+  -e 's|"mori_complex"|"kio_complex"|g' \
+  -e 's|"mori_string"|"kio_string"|g' \
+  -e 's|, "mori", dll)|, "kioto", dll)|g' \
+  -e 's|"mori: |"kioto: |g' \
+  "$DEST/altrep.c"
 
 rm -f "$DEST"/*.bak
 

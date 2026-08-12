@@ -12,7 +12,7 @@
    independent of R's serialize version. */
 
 #define KIO_MAGIC        0x4B494F43u   /* "KIOC" */
-#define KIO_ABI_VERSION  1u
+#define KIO_ABI_VERSION  2u            /* 2: SHM_VEC / REF payload kinds */
 
 typedef struct kio_preamble_s {
   uint32_t magic;
@@ -104,13 +104,20 @@ size_t kio_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
    memcpy cost; ARENA (channel-only) one chunk in the channel's spill arena
    (aux = chunk offset, chunk byte length as a uint64 in the payload);
    SHM_RAW the name of a fresh kioto region holding the stream (len = name
-   length, name bytes in the payload — root-form, bounded by MORI_NAME_MAX). */
+   length, name bytes in the payload — root-form, bounded by MORI_NAME_MAX);
+   SHM_VEC the name of a spill region holding a mori-layout object (aux =
+   layout SEXPTYPE | exact used bytes << 8) — the consumer wraps it as an
+   ALTREP view instead of copying (zc.c); REF the /kio_ identifier of an
+   object already in shared memory (a view being passed on) — zero payload
+   bytes beyond the identifier move, resolved via the consumer's zc cache. */
 
 enum {
   KIO_KIND_INLINE = 0,
   KIO_KIND_ARENA,
   KIO_KIND_SHM_RAW,
-  KIO_KIND_RAWVEC
+  KIO_KIND_RAWVEC,
+  KIO_KIND_SHM_VEC,
+  KIO_KIND_REF
 };
 
 typedef struct kio_slot_hdr_s {
@@ -138,6 +145,42 @@ typedef char kio_slot_hdr_assert[(sizeof(kio_slot_hdr) == 16) ? 1 : -1];
 #define KIO_SPILL_FL_BYTES  ((size_t) 32 << 20)
 #define KIO_SPILL_FL_FLOOR  ((size_t) 4096)
 
+/* Zero-copy view protocol (zc.c): a SHM_VEC region holds a mori-layout
+   object (64-byte header, then data). kioto owns header bytes [24-31] —
+   reserved [24-63] in every mori layout — as a view refcount at [24-27]
+   and a flags word at [28-31] (bit 0: staged as REF at least once, so the
+   holder set may be wider than the direct peer and the death backstop
+   leaks + unlinks instead of force-reclaiming). The producer stores 1 at
+   every stage (its own loan — fresh create or free-list pop alike); the
+   consumer adds 1 at view wrap, before its consumer-done signal; view
+   release (COW materialize or finalizer — finalizer only for list views,
+   whose extracted elements keep referencing the region) subs 1. The
+   producer drops its
+   loan at the existing keeper release points; regions at count 0 rejoin
+   the spill free list, others wait in the lent-region ledger below. */
+#define KIO_ZC_REFCOUNT_OFF ((size_t) 24)
+#define KIO_ZC_FLAGS_OFF    ((size_t) 28)
+#define KIO_ZC_FLAG_REFHELD 1u
+
+typedef char kio_zc_off_assert[
+  (KIO_ZC_FLAGS_OFF + 4 <= MORI_HEADER_SIZE) ? 1 : -1];
+
+/* SHM_VEC escalation floor: below max(inline budget, this) the copy tiers
+   win — Phase 0 measured the wrap-vs-copy crossover in the 16-64 KiB band
+   (ARENA ~2 µs flat vs a fresh-region spill ~6-7 µs under churn). */
+#define KIO_ZC_FLOOR ((size_t) 32768)
+
+/* Lent-region ledger: producer wraps of SHM_VEC regions with views
+   outstanding, pinned until the refcount hits 0 (then free-listed) or the
+   consumer's death is confirmed (then force-reclaimed; REFHELD entries
+   leak + unlink instead). Full at KIO_LEDGER_MAX the wrap simply drops to
+   GC — the name unlinks, live views keep their own mappings, and only
+   recycling is forfeited. key names the consumer: pool result regions the
+   submitter slot, pool task-arg regions the consuming worker slot (set at
+   the release point), channel regions unused (-1: the peer is the only
+   possible holder); -1 entries are never force-reclaimed. */
+#define KIO_LEDGER_MAX 64
+
 typedef struct kio_spill_fl_s {
   SEXP wraps;                       /* VECSXP(KIO_SPILL_FL_MAX), handle-pinned */
   size_t size[KIO_SPILL_FL_MAX];    /* region size; 0 = empty entry */
@@ -147,6 +190,9 @@ typedef struct kio_spill_fl_s {
   uint32_t n;
   int last_reused;                  /* whether the last spill popped an entry */
   uint64_t hits;                    /* process-local reuse count (dump-only) */
+  SEXP led_wraps;                   /* VECSXP(KIO_LEDGER_MAX), handle-pinned */
+  int32_t led_key[KIO_LEDGER_MAX];
+  uint32_t led_n;
 } kio_spill_fl;
 
 /* Surrender a dropped keeper's region to the free list: a no-op unless
@@ -182,24 +228,97 @@ typedef struct kio_open_cache_s {
 
 void *kio_vec_ptr(SEXP x);
 int kio_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
+/* Pop the smallest fitting free-list region (a full ledger sweep first on
+   a miss) or create one fresh — at the pow2 size class when a free list is
+   in play, exact otherwise. Returns the PROTECTed producer wrap and sets
+   *out. */
+SEXP kio_spill_region_get(kio_spill_fl *fl, size_t n, mori_shm **out);
+/* Insert a producer wrap into the free list under the size-class and byte
+   caps (evicting largest-oldest), or drop it to GC when it doesn't fit. */
+void kio_spill_fl_insert(kio_spill_fl *fl, SEXP wrap, mori_shm *shm);
 /* Serialize x into a kioto region — popped from fl when an entry fits,
    created fresh otherwise (fl may be NULL: always fresh, exactly n bytes)
    — and frame it as SHM_RAW. Returns the keeper — list(x, producer
    wrapper, marker) — freshly allocated: the caller must protect it. */
 SEXP kio_payload_spill_shm(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
                            size_t n, kio_spill_fl *fl);
-/* Stage x as RAWVEC, INLINE, or (past the inline budget) SHM_RAW — the pool
-   framing, with no arena tier. Returns the keeper to pin: x itself, or the
-   fresh SHM_RAW list; the caller must protect it. */
+/* Stage x as REF (a kioto view), RAWVEC, INLINE, SHM_VEC (a mori-layout-
+   eligible object past the inline budget and the zc floor), or SHM_RAW —
+   the pool framing, with no arena tier. Returns the keeper to pin: x
+   itself, or the fresh spill list; the caller must protect it. */
 SEXP kio_payload_stage(kio_slot_hdr *hdr, unsigned char *payload,
                        uint32_t inline_max, SEXP x, kio_spill_fl *fl);
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload (errors on ARENA — the
-   channel resolves its own arena chunks). oc may be NULL: open per
-   payload, mapping dropped at GC, as before the cache. */
+   channel resolves its own arena chunks), or wrap a SHM_VEC / REF payload
+   as an ALTREP view. oc may be NULL: open per payload, mapping dropped at
+   GC, as before the cache. zoc (also NULL-able) is the consumer cache for
+   the view tiers — split-mapped (page 0 RW for the refcount word) and
+   lazy, unlike the SHM_RAW cache. */
 /* gone: NULL raises on a vanished out-of-line region; else set to 1 with a
    NULL-value return, for callers that can turn it into a task verdict */
 SEXP kio_payload_read(const kio_slot_hdr *hdr, const unsigned char *payload,
-                      uint32_t inline_max, int *gone, kio_open_cache *oc);
+                      uint32_t inline_max, int *gone, kio_open_cache *oc,
+                      kio_open_cache *zoc);
+
+/* Open-cache primitives, shared by the SHM_RAW and zc read paths: the
+   name-keyed wrap lookup (R_NilValue on a miss or a finalized entry) and
+   the LRU store (evicted entries drop to GC). */
+SEXP kio_oc_lookup_wrap(kio_open_cache *oc, const unsigned char *name,
+                        uint32_t len);
+void kio_oc_store(kio_open_cache *oc, const unsigned char *name, uint32_t len,
+                  SEXP wrap);
+
+// Zero-copy payload tiers (zc.c) ---------------------------------------------
+
+void kio_zc_init(void);
+/* SHM_VEC eligibility: a mori-layout-eligible object (non-ALTREP, non-S4
+   atomic vector; string vector; list tree) whose layout bytes exceed both
+   the inline budget and KIO_ZC_FLOOR — cheap lower-bound probes keep the
+   layout-size walk off the inline path, and a kioto view nested in a list
+   tree rejects it (nested views cross by reference on the serialize-hook
+   path). *out_total receives the exact layout size (header + data +
+   attrs). */
+int kio_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total);
+/* Stage x as SHM_VEC into a spill region and return the keeper —
+   list(x, wrap, marker, key) with key an INTSXP(1) cell (-1) the release
+   point may re-stamp with the consumer's identity (pool keying). */
+SEXP kio_zc_stage(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                  size_t total, kio_spill_fl *fl);
+/* Stage a kioto-native view as REF (its identifier as the payload), marking
+   the region REFHELD. Returns 1 on success, 0 to fall through to the copy
+   tiers (not a view, materialized view, or an identifier past the budget). */
+int kio_zc_ref_stage(kio_slot_hdr *hdr, unsigned char *payload,
+                     uint32_t inline_max, SEXP x);
+/* The receive sides: wrap the SHM_VEC region / resolve the REF identifier
+   as an ALTREP view over the shared pages, refcounted per the zc protocol
+   (zc.c). gone as in kio_payload_read. */
+SEXP kio_zc_read(const kio_slot_hdr *hdr, const unsigned char *payload,
+                 int *gone, kio_open_cache *oc);
+SEXP kio_zc_ref_read(const kio_slot_hdr *hdr, const unsigned char *payload,
+                     int *gone, kio_open_cache *oc);
+/* The zc keeper predicate (pointer identity of a private marker). */
+int kio_zc_keeper(SEXP k);
+/* Re-stamp a zc keeper's consumer key (no-op for other keepers). */
+void kio_zc_keeper_key(SEXP keeper, int32_t key);
+/* The producer-loan release for a zc keeper: refcount sub, then free list
+   on 0 or the lent-region ledger otherwise. */
+void kio_zc_release(kio_spill_fl *fl, SEXP keeper);
+/* Move zero-count ledger entries to the free list, up to quota
+   (KIO_LEDGER_MAX = full sweep). */
+void kio_ledger_sweep(kio_spill_fl *fl, uint32_t quota);
+/* Force-reclaim ledger entries after a confirmed consumer death: key >= 0
+   matches that consumer only, key < 0 all entries (the channel's single
+   peer). REFHELD entries leak + unlink; the rest rejoin the free list. */
+void kio_ledger_force(kio_spill_fl *fl, int32_t key);
+/* The Linux THP collapse for a freshly created spill region (no-op
+   elsewhere / on reuse / below 2 MiB). */
+void kio_spill_collapse(mori_shm *shm, kio_spill_fl *fl);
+/* Test / debug surface: is x a kioto-native view; c(refcount, flags) of
+   the region behind a view; c(free-list, ledger) entry counts for a
+   handle. */
+SEXP kio_zc_view_check_call(SEXP x);
+SEXP kio_zc_refcount_call(SEXP x);
+SEXP kio_zc_fl_info(kio_spill_fl *fl);
 
 /* Terminal-state sentinels (channel.c), shared across the verb surface. */
 extern SEXP kio_sent_full, kio_sent_timeout, kio_sent_closed, kio_sent_gone;

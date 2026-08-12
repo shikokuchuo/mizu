@@ -92,9 +92,11 @@ typedef struct kio_chan_s {
 
   /* SHM_RAW arena-overflow fallback reuse, as on pool handles: producer
      spill free list and consumer mapping cache, wraps pinned by prot[2] /
-     prot[3] */
+     prot[3]; prot[4] pins the lent-region ledger (zc.c) and prot[5] the
+     zc view cache (split-mapped, lazy — unlike the SHM_RAW cache) */
   kio_spill_fl fl;
   kio_open_cache oc;
+  kio_open_cache zoc;
 
   kio_chan_ring tx, rx;
 } kio_chan;
@@ -315,6 +317,9 @@ static int chan_probe_dead(kio_chan *c, SEXP prot) {
   if (kio_live_try(c->live_peer) != KIO_LIVE_ACQUIRED) return 0;
   c->verdict_dead = 1;
   chan_survivor_unlink(c, prot);
+  /* the dead peer's view finalizers never ran: force-reclaim the lent
+     regions (REFHELD ones leak + unlink — the holder set is wider) */
+  kio_ledger_force(&c->fl, -1);
   return 1;
 }
 
@@ -390,6 +395,9 @@ static void chan_reap(kio_chan *c, SEXP keepers) {
                            (R_xlen_t) ((uint64_t) i & r->mask));
   r->afree = r->aend[(uint64_t) (head - 1) & r->mask];
   r->reaped_head = head;
+  /* quota-bounded ledger sweep on the busy path (zc.c): an O(outstanding)
+     scan here would tax the hot loop under held-view workloads */
+  kio_ledger_sweep(&c->fl, 4);
 }
 
 // Spill arena ---------------------------------------------------------------------
@@ -441,12 +449,24 @@ static int chan_send1(kio_chan *c, SEXP prot, SEXP x) {
   SEXP keep = x;
   int nprotect = 0;
 
-  size_t rawlen;
-  if (kio_raw_eligible(x, c->inline_max, &rawlen)) {
+  size_t rawlen, total;
+  /* a kioto-native view crosses by reference (REF) at any size — required
+     once SHM_VEC views exist: the serialize-hook fallback resolves
+     uncounted, and the producer could recycle under the far side's view */
+  if (kio_zc_ref_stage(hdr, payload, c->inline_max, x)) {
+    /* keeper is x itself */
+  } else if (kio_raw_eligible(x, c->inline_max, &rawlen)) {
     memcpy(payload, kio_vec_ptr(x), rawlen);
     hdr->kind = KIO_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
+  } else if (kio_zc_eligible(x, c->inline_max, &total)) {
+    /* eligible objects past the budget go straight to SHM_VEC, skipping
+       the arena: arena receive pays a full unserialize and a chunk can
+       never hold a view (chunk lifetime tracks ring advance) */
+    chan_reap(c, keepers);
+    keep = PROTECT(kio_zc_stage(hdr, payload, x, total, &c->fl));
+    nprotect++;
   } else {
     size_t n = kio_serialize_bounded(payload, c->inline_max, x);
     if (n <= c->inline_max) {
@@ -539,7 +559,7 @@ static SEXP chan_materialize(kio_chan *c, const unsigned char *sl) {
     /* already mapped: no open, no syscall */
     return mori_unserialize_from(c->rx.arena + off, (size_t) n);
   }
-  return kio_payload_read(hdr, payload, c->inline_max, NULL, &c->oc);
+  return kio_payload_read(hdr, payload, c->inline_max, NULL, &c->oc, &c->zoc);
 }
 
 /* Block until a message is available at rx.lhead (KIO_ST_OK) or a verdict.
@@ -712,13 +732,17 @@ SEXP kio_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
      that can longjmp. */
   SEXP host_ptr = PROTECT(kio_shm_wrap_host(&c->shm));
   SEXP keepers = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) cap));
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 4));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
   SET_VECTOR_ELT(prot, 0, keepers);
   SET_VECTOR_ELT(prot, 1, host_ptr);
   SET_VECTOR_ELT(prot, 2, Rf_allocVector(VECSXP, KIO_SPILL_FL_MAX));
   c->fl.wraps = VECTOR_ELT(prot, 2);
   SET_VECTOR_ELT(prot, 3, Rf_allocVector(VECSXP, KIO_OPEN_CACHE_MAX));
   c->oc.wraps = VECTOR_ELT(prot, 3);
+  SET_VECTOR_ELT(prot, 4, Rf_allocVector(VECSXP, KIO_LEDGER_MAX));
+  c->fl.led_wraps = VECTOR_ELT(prot, 4);
+  SET_VECTOR_ELT(prot, 5, Rf_allocVector(VECSXP, KIO_OPEN_CACHE_MAX));
+  c->zoc.wraps = VECTOR_ELT(prot, 5);
   SEXP xp = PROTECT(R_MakeExternalPtr(c, kio_chan_tag, prot));
   R_RegisterCFinalizerEx(xp, kio_chan_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, kio_class_channel);
@@ -844,13 +868,17 @@ SEXP kio_channel_attach(SEXP suffix_sexp) {
   }
 
   SEXP keepers = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) p.cap));
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 4));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
   SET_VECTOR_ELT(prot, 0, keepers);
   SET_VECTOR_ELT(prot, 1, R_NilValue);   /* no host extptr on the peer side */
   SET_VECTOR_ELT(prot, 2, Rf_allocVector(VECSXP, KIO_SPILL_FL_MAX));
   c->fl.wraps = VECTOR_ELT(prot, 2);
   SET_VECTOR_ELT(prot, 3, Rf_allocVector(VECSXP, KIO_OPEN_CACHE_MAX));
   c->oc.wraps = VECTOR_ELT(prot, 3);
+  SET_VECTOR_ELT(prot, 4, Rf_allocVector(VECSXP, KIO_LEDGER_MAX));
+  c->fl.led_wraps = VECTOR_ELT(prot, 4);
+  SET_VECTOR_ELT(prot, 5, Rf_allocVector(VECSXP, KIO_OPEN_CACHE_MAX));
+  c->zoc.wraps = VECTOR_ELT(prot, 5);
   SEXP xp = PROTECT(R_MakeExternalPtr(c, kio_chan_tag, prot));
   R_RegisterCFinalizerEx(xp, kio_chan_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, kio_class_channel);
@@ -1038,7 +1066,8 @@ SEXP kio_channel_stat(SEXP xp) {
                          "closed", "peer_pid", "tx_sent", "tx_published",
                          "tx_consumed", "rx_consumed", "rx_published",
                          "fl_entries", "fl_hits", "open_hits",
-                         "open_misses", ""};
+                         "open_misses", "ledger_entries", "zc_open_hits",
+                         "zc_open_misses", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(c->shm.name));
   SET_VECTOR_ELT(out, 1, Rf_mkString(c->side == KIO_ENTITY_HOST ?
@@ -1065,6 +1094,9 @@ SEXP kio_channel_stat(SEXP xp) {
   SET_VECTOR_ELT(out, 16, Rf_ScalarReal((double) c->fl.hits));
   SET_VECTOR_ELT(out, 17, Rf_ScalarReal((double) c->oc.hits));
   SET_VECTOR_ELT(out, 18, Rf_ScalarReal((double) c->oc.misses));
+  SET_VECTOR_ELT(out, 19, Rf_ScalarInteger((int) c->fl.led_n));
+  SET_VECTOR_ELT(out, 20, Rf_ScalarReal((double) c->zoc.hits));
+  SET_VECTOR_ELT(out, 21, Rf_ScalarReal((double) c->zoc.misses));
   UNPROTECT(1);
   return out;
 }

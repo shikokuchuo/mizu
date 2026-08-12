@@ -7,7 +7,7 @@
 \usage{
 kio_map_prepare(pool, x, f, ..., .template = NULL, .chunks = NULL)
 
-kio_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf)
+kio_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 }
 \arguments{
 \item{pool}{a pool handle from \code{\link[=kio_pool]{kio_pool()}} or \code{\link[=kio_pool_attach]{kio_pool_attach()}}, or —
@@ -38,6 +38,14 @@ Reproducible RNG section.}
 outstanding work, and returns the \code{kio_timeout} sentinel (class
 \code{c("kio_timeout", "kio_sentinel")}). \code{Inf} (the default) waits
 indefinitely. One deadline covers submission and collection.}
+
+\item{.collect}{\code{"value"} (the default) gathers template results into
+an owning R vector. \code{"view"} instead returns an ALTREP view over the
+map's shared output area — no gather copy — for pipelines that
+immediately reduce. Requires an atomic \code{.template}. The view is
+copy-on-write: the first write materializes a private copy. It keeps
+the map region alive until released, and re-sending it through a
+channel or pool crosses as a full copy, not by reference.}
 }
 \value{
 \code{kio_map_prepare()}: a prepared-map handle. \code{kio_map_run()}:
@@ -63,9 +71,11 @@ never issue against the cursor of the new run. After an unclean run — a
 \code{.timeout} expiry, an error in \code{f}, a worker death — the handle is
 marked stale. The next \code{kio_map_run()} restages into a fresh region
 transparently (the old one unlinks at garbage collection under any
-stragglers). A map small enough to ride entirely inline keeps its
-staged blob on the handle instead: runs resubmit it, still skipping
-the serialization.
+stragglers). A run collected with \code{.collect = "view"} restages
+likewise: the returned view pins its region, so the next run stages
+fresh rather than re-arming pages a held view still reads. A map small
+enough to ride entirely inline keeps its staged blob on the handle
+instead: runs resubmit it, still skipping the serialization.
 
 The prepared handle pins the staged \code{x} (for transparent restaging) and
 the map region for its lifetime. Both release at garbage collection

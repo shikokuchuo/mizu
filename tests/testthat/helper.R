@@ -125,6 +125,14 @@ echo_expr <- quote(
   }
 )
 
+# Orderly in-process channel teardown: the peer signals its close (flush +
+# bit + wake), so both ends' close rendezvous succeeds.
+channel_end <- function(p) {
+  .Call(kioto:::kio_channel_close_signal, p$peer)
+  .Call(kioto:::kio_channel_close, p$host, 5)
+  .Call(kioto:::kio_channel_close, p$peer, 5)
+}
+
 # In-process pool pair: controller plus one or more worker handles joined
 # from this process — the deterministic harness for the injection /
 # result-slot / stealing protocols, with no process management involved.

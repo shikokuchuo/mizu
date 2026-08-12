@@ -72,9 +72,12 @@ typedef struct kio_pool_s {
   /* producer spill free list (all staging roles on this handle: task
      payloads, results, nested submits) and consumer mapping cache (entry
      reads on workers, result reads on submitters); wraps vectors pinned by
-     prot[6] / prot[7] */
+     prot[6] / prot[7]. prot[8] pins the lent-region ledger (zc.c — the
+     free list's struct fields live in fl) and prot[9] the zc view cache
+     (split-mapped, lazy — unlike the SHM_RAW cache) */
   kio_spill_fl fl;
   kio_open_cache oc;
+  kio_open_cache zoc;
 
   /* worker-local */
   unsigned char *scratch;        /* slot-sized claim copy buffer */
@@ -414,16 +417,21 @@ static void kio_pool_finalizer(SEXP xp) {
    cache env (kio_map; created lazily by kio_pool_map_cache, cleared whole
    by the idle sweep — clear-all is its entire eviction policy); [6] the
    spill free list's wrap table; [7] the consumer mapping cache's wrap
-   table (both never reassigned — p->fl / p->oc hold the raw pointers for
-   the handle's lifetime). */
+   table; [8] the lent-region ledger's wrap table; [9] the zc view cache's
+   wrap table (all four never reassigned — p->fl / p->oc / p->zoc hold the
+   raw pointers for the handle's lifetime). */
 static SEXP pool_make_handle(kio_pool *p, SEXP keepers, SEXP host_ptr) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 8));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 10));
   SET_VECTOR_ELT(prot, 0, keepers);
   SET_VECTOR_ELT(prot, 1, host_ptr);
   SET_VECTOR_ELT(prot, 6, Rf_allocVector(VECSXP, KIO_SPILL_FL_MAX));
   p->fl.wraps = VECTOR_ELT(prot, 6);
   SET_VECTOR_ELT(prot, 7, Rf_allocVector(VECSXP, KIO_OPEN_CACHE_MAX));
   p->oc.wraps = VECTOR_ELT(prot, 7);
+  SET_VECTOR_ELT(prot, 8, Rf_allocVector(VECSXP, KIO_LEDGER_MAX));
+  p->fl.led_wraps = VECTOR_ELT(prot, 8);
+  SET_VECTOR_ELT(prot, 9, Rf_allocVector(VECSXP, KIO_OPEN_CACHE_MAX));
+  p->zoc.wraps = VECTOR_ELT(prot, 9);
   SEXP xp = PROTECT(R_MakeExternalPtr(p, kio_pool_tag, prot));
   R_RegisterCFinalizerEx(xp, kio_pool_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, kio_class_pool);
@@ -1229,15 +1237,16 @@ static void pool_unpark_keeper_drop(kio_pool *p, int32_t w) {
     kio_unpark(pool_wk_pk(p, (uint32_t) w));
 }
 
-/* SHM_RAW staging is the off-ramp from the inline fast path — a region per
-   payload, recycled from the handle's free list when steady-state traffic
-   permits. Counted against the task's submitter for task and result
-   payloads alike, so kio_pool_stats surfaces an undersized slot_size from
-   either direction of the traffic; the reuse count alongside says how much
-   of that spill traffic is churn-free. */
+/* Spill staging (SHM_RAW or SHM_VEC) is the off-ramp from the inline fast
+   path — a region per payload, recycled from the handle's free list when
+   steady-state traffic permits. Counted against the task's submitter for
+   task and result payloads alike, so kio_pool_stats surfaces an undersized
+   slot_size from either direction of the traffic; the reuse count
+   alongside says how much of that spill traffic is churn-free. */
 static void pool_count_spill(kio_pool *p, uint32_t sub_slot,
                              const kio_slot_hdr *ph) {
-  if (ph->kind == KIO_KIND_SHM_RAW && sub_slot < p->hdr.max_submitters) {
+  if ((ph->kind == KIO_KIND_SHM_RAW || ph->kind == KIO_KIND_SHM_VEC) &&
+      sub_slot < p->hdr.max_submitters) {
     atomic_fetch_add_explicit(&p->sub[sub_slot].stat_spills, 1,
                               memory_order_relaxed);
     if (p->fl.last_reused)
@@ -1306,6 +1315,12 @@ static uint32_t pool_alloc_rs(kio_pool *p, SEXP keepers) {
     uint32_t cand = (p->rs_cursor + k) % me->rs_count;
     if (atomic_load_explicit(&pool_rs(p, me->rs_start + cand)->status,
                              memory_order_acquire) == KIO_RS_FREE) {
+      /* the slot's previous consumer is the zc keeper's ledger key (the
+         worker-death backstop); -1 when it was never claimed */
+      kio_zc_keeper_key(
+        VECTOR_ELT(keepers, (R_xlen_t) cand),
+        atomic_load_explicit(&pool_rs(p, me->rs_start + cand)->worker_slot,
+                             memory_order_acquire));
       kio_spill_fl_surrender(&p->fl, keepers, (R_xlen_t) cand);
       return cand;
     }
@@ -1505,11 +1520,13 @@ static int pool_rk_visit(kio_pool *p, SEXP keepers, uint32_t i) {
 
 /* The full sweep, for the idle and departure paths (pre-park, empty step
    returns, the lame-duck beat) where visiting every record costs nothing
-   the pool feels. */
+   the pool feels. The idle path also runs the full lent-ledger sweep
+   (zc.c) — the busy paths' quota'd sweeps clear only residue. */
 static void pool_reap_result_keepers(kio_pool *p, SEXP keepers) {
   uint32_t i = 0;
   while (i < p->rk_n) i += (uint32_t) pool_rk_visit(p, keepers, i);
   p->rk_cursor = 0;
+  kio_ledger_sweep(&p->fl, KIO_LEDGER_MAX);
 }
 
 /* The idle-path sweep proper: the full keeper reap plus the map-context
@@ -1537,6 +1554,8 @@ static void pool_reap_quota(kio_pool *p, SEXP keepers) {
     if (p->rk_cursor >= p->rk_n) p->rk_cursor = 0;
     p->rk_cursor += (uint32_t) pool_rk_visit(p, keepers, p->rk_cursor);
   }
+  /* the busy-path ledger sweep, quota'd like the reap itself */
+  kio_ledger_sweep(&p->fl, KIO_REAP_QUOTA);
 }
 
 /* Growth is split from recording so it can run before the publish CAS: an
@@ -2029,22 +2048,29 @@ static int pool_probe_worker(kio_pool *p, uint32_t slot) {
   kio_wk_slot *w = &p->wk[slot];
   if (atomic_load_explicit(&w->status, memory_order_acquire) == KIO_WK_FREE)
     return 0;
+  int dead = 0;
   if (p->live_all != NULL) {
     if (kio_live_try(p->live_all[slot]) != KIO_LIVE_ACQUIRED) return 0;
     pool_reap_worker(p, slot);
     kio_live_unlock(p->live_all[slot]);
-    return 1;
+    dead = 1;
+  } else {
+    char path[1024];
+    intptr_t h;
+    if (pool_live_path(p, path, sizeof(path), "wk", slot) != 0) return 0;
+    if (kio_live_open_existing(path, &h) != 0) return 0;
+    uint64_t dev, ino;
+    dead = kio_live_ident(h, &dev, &ino) == 0 &&
+      dev == w->live_dev && ino == w->live_ino &&
+      kio_live_try(h) == KIO_LIVE_ACQUIRED;
+    if (dead) pool_reap_worker(p, slot);
+    kio_live_close(h);
   }
-  char path[1024];
-  intptr_t h;
-  if (pool_live_path(p, path, sizeof(path), "wk", slot) != 0) return 0;
-  if (kio_live_open_existing(path, &h) != 0) return 0;
-  uint64_t dev, ino;
-  int dead = kio_live_ident(h, &dev, &ino) == 0 &&
-    dev == w->live_dev && ino == w->live_ino &&
-    kio_live_try(h) == KIO_LIVE_ACQUIRED;
-  if (dead) pool_reap_worker(p, slot);
-  kio_live_close(h);
+  /* the zc death backstop: this handle's lent regions consumed by the
+     dead worker (task-arg payloads, keyed at the release point)
+     force-reclaim. Runs on the R main thread only — every probe caller
+     is one — never in the controller's off-thread death callback */
+  if (dead) kio_ledger_force(&p->fl, (int32_t) slot);
   return dead;
 }
 
@@ -2098,23 +2124,32 @@ static void pool_probe_submitter(kio_pool *p, uint32_t j) {
   if (atomic_load_explicit(&s->status, memory_order_acquire) ==
       KIO_SUB_FREE)
     return;
+  int reaped = 0;
   if (p->live_all != NULL) {
     intptr_t h = p->live_all[p->hdr.max_workers + j];
     if (kio_live_try(h) != KIO_LIVE_ACQUIRED) return;
     pool_reap_submitter(p, j);
     kio_live_unlock(h);
-    return;
+    reaped = 1;
+  } else {
+    char path[1024];
+    intptr_t h;
+    if (pool_live_path(p, path, sizeof(path), "sub", j) != 0) return;
+    if (kio_live_open_existing(path, &h) != 0) return;
+    uint64_t dev, ino;
+    if (kio_live_ident(h, &dev, &ino) == 0 &&
+        dev == s->live_dev && ino == s->live_ino &&
+        kio_live_try(h) == KIO_LIVE_ACQUIRED) {
+      pool_reap_submitter(p, j);
+      reaped = 1;
+    }
+    kio_live_close(h);
   }
-  char path[1024];
-  intptr_t h;
-  if (pool_live_path(p, path, sizeof(path), "sub", j) != 0) return;
-  if (kio_live_open_existing(path, &h) != 0) return;
-  uint64_t dev, ino;
-  if (kio_live_ident(h, &dev, &ino) == 0 &&
-      dev == s->live_dev && ino == s->live_ino &&
-      kio_live_try(h) == KIO_LIVE_ACQUIRED)
-    pool_reap_submitter(p, j);
-  kio_live_close(h);
+  /* the zc death backstop rides the submitter reap: this handle's lent
+     regions consumed by the dead submitter force-reclaim (REFHELD ones
+     leak + unlink). Only ever runs on the R main thread (the probe
+     callers), never in the controller's off-thread death callback */
+  if (reaped) kio_ledger_force(&p->fl, (int32_t) j);
 }
 
 /* The controller's per-worker death callback: OS notification -> lock
@@ -2172,6 +2207,9 @@ static int pool_publish_result(kio_pool *p, SEXP xp, uint32_t rs_index,
                                         (unsigned char *) rs +
                                         sizeof(kio_rs_hdr),
                                         p->inline_rs, value, &p->fl));
+  /* a spilled result region's consumer is the task's submitter — key the
+     zc keeper so the submitter-death backstop can force-reclaim it */
+  kio_zc_keeper_key(keep, (int32_t) sub_slot);
   pool_count_spill(p, sub_slot, &rs->ph);
   int32_t expected = KIO_RS_PENDING;
   int published =
@@ -2257,7 +2295,8 @@ static void pool_execute(kio_pool *p, SEXP xp, int catching) {
   int gone = 0;
   SEXP pl = PROTECT(kio_payload_read(&eh->ph,
                                      p->scratch + sizeof(kio_entry_hdr),
-                                     p->inline_entry, &gone, &p->oc));
+                                     p->inline_entry, &gone, &p->oc,
+                                     &p->zoc));
   if (gone) {
     int32_t expected = KIO_RS_PENDING;
     if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
@@ -2517,12 +2556,16 @@ static kio_task *task_get(SEXP xp, kio_pool **pool_out, SEXP *pool_xp_out) {
 /* Drop the task keeper of a terminal slot in this submitter's subrange.
    OK/ERR means the worker materialized the task args, DIED that the entry's
    claimant is dead: either way no reader remains, so a spilled task region
-   surrenders to the free list with the keeper. */
-static void pool_task_keeper_drop(kio_pool *p, SEXP pool_xp, uint32_t idx) {
+   surrenders to the free list with the keeper. key names the consuming
+   worker for the zc ledger (the worker-death backstop); -1 when unknown. */
+static void pool_task_keeper_drop(kio_pool *p, SEXP pool_xp, uint32_t idx,
+                                  int32_t key) {
   kio_sub_slot *me = &p->sub[p->sub_slot];
   if (idx < me->rs_start || idx >= me->rs_start + me->rs_count) return;
-  kio_spill_fl_surrender(&p->fl, pool_task_keepers(p, pool_xp),
-                         (R_xlen_t) (idx - me->rs_start));
+  SEXP keepers = pool_task_keepers(p, pool_xp);
+  R_xlen_t local = (R_xlen_t) (idx - me->rs_start);
+  kio_zc_keeper_key(VECTOR_ELT(keepers, local), key);
+  kio_spill_fl_surrender(&p->fl, keepers, local);
 }
 
 /* tryflag: the expected terminal outcomes (ERR payload, DIED, CANCEL)
@@ -2663,9 +2706,9 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
     SEXP v = PROTECT(kio_payload_read(&rs->ph,
                                       (unsigned char *) rs +
                                       sizeof(kio_rs_hdr), p->inline_rs,
-                                      NULL, &p->oc));
+                                      NULL, &p->oc, &p->zoc));
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
-    pool_task_keeper_drop(p, pool_xp, t->idx);
+    pool_task_keeper_drop(p, pool_xp, t->idx, w);
     int32_t expected = st;
     if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
                                                  KIO_RS_FREE,
@@ -2690,8 +2733,12 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
   case KIO_RS_DIED: {
     /* terminal like ERR, but status-word only: the reaper wrote no
        payload (see the DIED note in kioto.h) */
-    pool_task_keeper_drop(p, pool_xp, t->idx);
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
+    pool_task_keeper_drop(p, pool_xp, t->idx, w);
+    /* the claimant is confirmed dead (DIED implies the reap ran under the
+       liveness lock): force-reclaim its lent task-arg regions now */
+    if (w >= 0 && (uint32_t) w < p->hdr.max_workers)
+      kio_ledger_force(&p->fl, w);
     double wpid = (w >= 0 && (uint32_t) w < p->hdr.max_workers) ?
       (double) p->wk[w].pid : 0;
     int32_t expected = KIO_RS_DIED;
@@ -2944,6 +2991,12 @@ SEXP kio_pool_map_cache(SEXP xp) {
     SET_VECTOR_ELT(prot, 5, cache);
   }
   return cache;
+}
+
+/* Test / debug surface: c(free-list entries, lent-ledger entries). */
+SEXP kio_pool_zc_info(SEXP xp) {
+  kio_pool *p = pool_get(xp);
+  return kio_zc_fl_info(&p->fl);
 }
 
 // Stop and introspection ---------------------------------------------------------------------

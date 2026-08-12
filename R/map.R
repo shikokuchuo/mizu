@@ -111,7 +111,10 @@ mono_time <- function() .Call(kio_now_call)
 #' type and length exactly, or coerce upward (logical -> integer ->
 #' double -> complex, checked on the workers per element). Results are
 #' written directly into a shared output area and gathered in one copy:
-#' zero result serializations. A template of length `m > 1` gathers an
+#' zero result serializations. With `.collect = "view"`, the gather copy
+#' is skipped as well: the result is a copy-on-write view over the shared
+#' output area itself, for pipelines that immediately reduce. A template
+#' of length `m > 1` gathers an
 #' `m * length(x)` matrix, with the names of the template as row names, as
 #' `vapply()` does. Character templates are assembled through the generic
 #' result path instead. Their type checks then surface at assembly, not
@@ -173,10 +176,12 @@ mono_time <- function() .Call(kio_now_call)
 #' budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
 #' the wrapper to about 250 bytes. Seeded maps on such pools work but
 #' spill a region per runner, so keep the default `slot_size` on pools
-#' meant for seeded maps. For a very large `x`, `mori::share()` is the
-#' recommended path when mori is available. A shared `x` reduces to its
-#' ~30-byte identifier inside the staged descriptor and maps zero-copy on
-#' each worker with OS demand paging (`kio_map` itself never calls mori).
+#' meant for seeded maps. For a very large `x`, sharing it first is the
+#' recommended path: a zero-copy view received from a channel or a pool
+#' result, or a `mori::share()`d vector, reduces to its ~30-byte
+#' identifier inside the staged descriptor, and workers read elements
+#' straight off the shared pages with OS demand paging — no worker copies
+#' any part of `x` (`kio_map` itself never calls mori).
 #'
 #' As in [lapply()], `x` is indexed with `[[` on the workers after an
 #' `as.list()` coercion of anything that is not a plain vector. So a
@@ -200,12 +205,20 @@ mono_time <- function() .Call(kio_now_call)
 #'   outstanding work, and returns the `kio_timeout` sentinel (class
 #'   `c("kio_timeout", "kio_sentinel")`). `Inf` (the default) waits
 #'   indefinitely. One deadline covers submission and collection.
+#' @param .collect `"value"` (the default) gathers template results into
+#'   an owning R vector. `"view"` instead returns an ALTREP view over the
+#'   map's shared output area — no gather copy — for pipelines that
+#'   immediately reduce. Requires an atomic `.template`. The view is
+#'   copy-on-write: the first write materializes a private copy. It keeps
+#'   the map region alive until released, and re-sending it through a
+#'   channel or pool crosses as a full copy, not by reference.
 #'
 #' @return A list of the results of `f` in the order of `x`, with
 #'   `names(x)` reapplied. With `.template`, an atomic vector of type
 #'   `typeof(.template)` (an `m * length(x)` matrix when
-#'   `length(.template) > 1`). On `.timeout` expiry, the `kio_timeout`
-#'   sentinel.
+#'   `length(.template) > 1`) — an owning vector, or a copy-on-write view
+#'   over the shared output area with `.collect = "view"`. On `.timeout`
+#'   expiry, the `kio_timeout` sentinel.
 #'
 #' @examples
 #' \dontrun{
@@ -226,15 +239,17 @@ kio_map <- function(
   .template = NULL,
   .chunks = NULL,
   .seed = NULL,
-  .timeout = Inf
+  .timeout = Inf,
+  .collect = "value"
 ) {
   f <- match.fun(f)
   map_template_check(.template)
+  map_collect_check(.collect, .template)
   if (length(x) == 0L) {
     return(map_empty(x, .template))
   }
   st <- map_stage(pool, x, f, list(...), .template, .chunks, .seed)
-  map_run(pool, st, .timeout)
+  map_run(pool, st, .timeout, .collect)
 }
 
 # The one run path shared by kio_map (stage + run on an anonymous state)
@@ -243,14 +258,14 @@ kio_map <- function(
 # backstop armed — Ctrl-C in submit or collect cancels every outstanding
 # task and drops the references; after a clean collect all handles are
 # consumed and the backstop is a no-op.
-map_run <- function(pool, st, timeout) {
+map_run <- function(pool, st, timeout, collect = "value") {
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
   on.exit(map_cancel(st))
   map_submit(pool, st, deadline)
   if (st$timed_out) {
     return(.Call(kio_map_timeout_call))
   }
-  map_collect(pool, st, deadline)
+  map_collect(pool, st, deadline, collect)
 }
 
 #' Prepared Maps: Stage Once, Run Many
@@ -272,9 +287,11 @@ map_run <- function(pool, st, timeout) {
 #' `.timeout` expiry, an error in `f`, a worker death — the handle is
 #' marked stale. The next `kio_map_run()` restages into a fresh region
 #' transparently (the old one unlinks at garbage collection under any
-#' stragglers). A map small enough to ride entirely inline keeps its
-#' staged blob on the handle instead: runs resubmit it, still skipping
-#' the serialization.
+#' stragglers). A run collected with `.collect = "view"` restages
+#' likewise: the returned view pins its region, so the next run stages
+#' fresh rather than re-arming pages a held view still reads. A map small
+#' enough to ride entirely inline keeps its staged blob on the handle
+#' instead: runs resubmit it, still skipping the serialization.
 #'
 #' The prepared handle pins the staged `x` (for transparent restaging) and
 #' the map region for its lifetime. Both release at garbage collection
@@ -329,10 +346,17 @@ kio_map_prepare <- function(pool, x, f, ..., .template = NULL, .chunks = NULL) {
 #' @rdname kio_map_prepare
 #' @param pm a prepared-map handle from [kio_map_prepare()].
 #' @export
-kio_map_run <- function(pm, x = NULL, .seed = NULL, .timeout = Inf) {
+kio_map_run <- function(
+  pm,
+  x = NULL,
+  .seed = NULL,
+  .timeout = Inf,
+  .collect = "value"
+) {
   if (!inherits(pm, "kio_map_prepared")) {
     stop("kioto: not a prepared-map handle", call. = FALSE)
   }
+  map_collect_check(.collect, pm$template)
   if (!is.null(x)) {
     map_swap_x(pm, x)
   }
@@ -352,8 +376,11 @@ kio_map_run <- function(pm, x = NULL, .seed = NULL, .timeout = Inf) {
     map_rearm(pm$pool, st, .seed)
     pm$st <- NULL
   }
-  r <- map_run(pm$pool, st, .timeout)
-  if (!inherits(r, "kio_timeout")) {
+  r <- map_run(pm$pool, st, .timeout, .collect)
+  # a view collect consumes the region (the returned view pins it), so a
+  # prepared handle restages on its next run instead of re-arming pages a
+  # held view still reads
+  if (!inherits(r, "kio_timeout") && !isTRUE(st$consumed)) {
     pm$st <- st
   }
   r
@@ -419,6 +446,23 @@ map_rearm <- function(pool, st, seed) {
   }
   st$timed_out <- FALSE
   invisible(st)
+}
+
+map_collect_check <- function(collect, template) {
+  if (identical(collect, "value")) {
+    return(invisible())
+  }
+  if (!identical(collect, "view")) {
+    stop("kioto: .collect must be \"value\" or \"view\"", call. = FALSE)
+  }
+  if (is.null(template) || !typeof(template) %in% map_template_types) {
+    stop(
+      "kioto: .collect = \"view\" requires an atomic .template ",
+      "(logical, integer, double, complex or raw)",
+      call. = FALSE
+    )
+  }
+  invisible()
 }
 
 map_template_check <- function(template) {
@@ -669,7 +713,7 @@ map_ranges_label <- function(elts) {
 # region's output area on the template path. Splicing by position and
 # minimum-element-index error selection are both collection-order
 # independent, so the region path's deferred order changes no semantics.
-map_collect <- function(pool, st, deadline = Inf) {
+map_collect <- function(pool, st, deadline = Inf, collect = "value") {
   out <- if (!st$direct) vector("list", st$n)
   if (!is.null(st$blob)) {
     # blob path: in-order chunk collection, as ever
@@ -856,7 +900,16 @@ map_collect <- function(pool, st, deadline = Inf) {
     return(out)
   }
   # template assembly: one memcpy from the output area — or, for a
-  # character template (generic chunk results), vapply's own checks
+  # character template (generic chunk results), vapply's own checks. A
+  # "view" collect instead wraps the output area as an ALTREP view (no
+  # gather copy), its names / dim applied in C — the R setters would
+  # duplicate the view and the default ALTREP duplicate materializes. The
+  # view pins the region, so the state is marked consumed and a prepared
+  # re-run restages rather than overwriting it
+  if (st$direct && identical(collect, "view")) {
+    st$consumed <- TRUE
+    return(.Call(kio_map_gather_view, st$wrap, st$nms, names(st$template)))
+  }
   res <- if (st$direct) {
     .Call(kio_map_gather, st$wrap)
   } else {

@@ -106,6 +106,7 @@ SEXP kio_map_desc(SEXP);
 SEXP kio_map_slice(SEXP, SEXP, SEXP);
 SEXP kio_map_write(SEXP, SEXP, SEXP);
 SEXP kio_map_gather(SEXP);
+SEXP kio_map_gather_view(SEXP, SEXP, SEXP);
 SEXP kio_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP kio_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                    SEXP);
@@ -120,6 +121,9 @@ SEXP kio_map_timeout_call(void);
 SEXP kio_map_rng_base(SEXP);
 SEXP kio_map_rng_seek(SEXP, SEXP);
 SEXP kio_map_rng_install(SEXP);
+SEXP kio_zc_view_check_call(SEXP);
+SEXP kio_zc_refcount_call(SEXP);
+SEXP kio_pool_zc_info(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
   {"kio_onload_probe",          (DL_FUNC) &kio_onload_probe,          0},
@@ -197,6 +201,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_map_slice",             (DL_FUNC) &kio_map_slice,             3},
   {"kio_map_write",             (DL_FUNC) &kio_map_write,             3},
   {"kio_map_gather",            (DL_FUNC) &kio_map_gather,            1},
+  {"kio_map_gather_view",       (DL_FUNC) &kio_map_gather_view,       3},
   {"kio_map_next",              (DL_FUNC) &kio_map_next,              6},
   {"kio_map_batch",             (DL_FUNC) &kio_map_batch,             10},
   {"kio_map_abandon",           (DL_FUNC) &kio_map_abandon,           2},
@@ -210,6 +215,9 @@ static const R_CallMethodDef CallEntries[] = {
   {"kio_map_rng_base",          (DL_FUNC) &kio_map_rng_base,          1},
   {"kio_map_rng_seek",          (DL_FUNC) &kio_map_rng_seek,          2},
   {"kio_map_rng_install",       (DL_FUNC) &kio_map_rng_install,       1},
+  {"kio_zc_view_check",         (DL_FUNC) &kio_zc_view_check_call,    1},
+  {"kio_zc_refcount",           (DL_FUNC) &kio_zc_refcount_call,      1},
+  {"kio_pool_zc_info",          (DL_FUNC) &kio_pool_zc_info,          1},
   {NULL, NULL, 0}
 };
 
@@ -223,4 +231,6 @@ void R_init_kioto(DllInfo *dll) {
   kio_channel_init();
   kio_pool_init();
   kio_map_init();
+  kio_zc_init();
+  mori_altrep_init(dll);
 }

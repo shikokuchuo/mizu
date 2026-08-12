@@ -12,7 +12,8 @@ kio_map(
   .template = NULL,
   .chunks = NULL,
   .seed = NULL,
-  .timeout = Inf
+  .timeout = Inf,
+  .collect = "value"
 )
 }
 \arguments{
@@ -42,13 +43,22 @@ Reproducible RNG section.}
 outstanding work, and returns the \code{kio_timeout} sentinel (class
 \code{c("kio_timeout", "kio_sentinel")}). \code{Inf} (the default) waits
 indefinitely. One deadline covers submission and collection.}
+
+\item{.collect}{\code{"value"} (the default) gathers template results into
+an owning R vector. \code{"view"} instead returns an ALTREP view over the
+map's shared output area — no gather copy — for pipelines that
+immediately reduce. Requires an atomic \code{.template}. The view is
+copy-on-write: the first write materializes a private copy. It keeps
+the map region alive until released, and re-sending it through a
+channel or pool crosses as a full copy, not by reference.}
 }
 \value{
 A list of the results of \code{f} in the order of \code{x}, with
 \code{names(x)} reapplied. With \code{.template}, an atomic vector of type
 \code{typeof(.template)} (an \code{m * length(x)} matrix when
-\code{length(.template) > 1}). On \code{.timeout} expiry, the \code{kio_timeout}
-sentinel.
+\code{length(.template) > 1}) — an owning vector, or a copy-on-write view
+over the shared output area with \code{.collect = "view"}. On \code{.timeout}
+expiry, the \code{kio_timeout} sentinel.
 }
 \description{
 Maps \code{f} over the elements of \code{x} on a pool and returns the results in
@@ -101,7 +111,10 @@ subrange of the submitter is fully occupied by outstanding tasks,
 type and length exactly, or coerce upward (logical -> integer ->
 double -> complex, checked on the workers per element). Results are
 written directly into a shared output area and gathered in one copy:
-zero result serializations. A template of length \code{m > 1} gathers an
+zero result serializations. With \code{.collect = "view"}, the gather copy
+is skipped as well: the result is a copy-on-write view over the shared
+output area itself, for pipelines that immediately reduce. A template
+of length \code{m > 1} gathers an
 \code{m * length(x)} matrix, with the names of the template as row names, as
 \code{vapply()} does. Character templates are assembled through the generic
 result path instead. Their type checks then surface at assembly, not
@@ -171,10 +184,12 @@ inline budget, so pools created with \code{slot_size = 256L} (224-byte
 budget) fit it. The exception is \code{.seed}: its 6-word RNG state pushes
 the wrapper to about 250 bytes. Seeded maps on such pools work but
 spill a region per runner, so keep the default \code{slot_size} on pools
-meant for seeded maps. For a very large \code{x}, \code{mori::share()} is the
-recommended path when mori is available. A shared \code{x} reduces to its
-~30-byte identifier inside the staged descriptor and maps zero-copy on
-each worker with OS demand paging (\code{kio_map} itself never calls mori).
+meant for seeded maps. For a very large \code{x}, sharing it first is the
+recommended path: a zero-copy view received from a channel or a pool
+result, or a \code{mori::share()}d vector, reduces to its ~30-byte
+identifier inside the staged descriptor, and workers read elements
+straight off the shared pages with OS demand paging — no worker copies
+any part of \code{x} (\code{kio_map} itself never calls mori).
 
 As in \code{\link[=lapply]{lapply()}}, \code{x} is indexed with \code{[[} on the workers after an
 \code{as.list()} coercion of anything that is not a plain vector. So a
