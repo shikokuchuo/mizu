@@ -195,8 +195,9 @@ typedef struct kio_spill_fl_s {
   uint32_t led_n;
   /* set when a spill pop misses with lent regions outstanding (the sweep
      just proved consumer-side views outlive their traffic): the signal
-     for kio_payload_stage's SHM_RAW fallback; cleared when a ledger
-     sweep or force-reclaim returns a lent region to the free list */
+     for the copy-tier fallback in kio_payload_stage and chan_send1;
+     cleared when a ledger sweep or force-reclaim returns a lent region
+     to the free list */
   int churn;
 } kio_spill_fl;
 

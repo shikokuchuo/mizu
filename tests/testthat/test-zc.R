@@ -162,6 +162,26 @@ test_that("the churn fallback clears once lent regions reclaim", {
   pool_end(p)
 })
 
+test_that("channel zc churn falls back to the copy tiers and recovers", {
+  p <- channel_pair(arena_size = 0)
+  x <- runif(20000) # 160 KB: past the zc floor, spills
+  held <- vector("list", 4L) # held views pin their regions: churn
+  for (i in seq_along(held)) {
+    kio_send(p$host, x)
+    held[[i]] <- kio_recv(p$peer, 5)
+  }
+  expect_true(is_view(held[[1L]]))
+  expect_false(is_view(held[[4L]])) # the churn gate: a materialized copy
+  expect_identical(held[[4L]], x)
+  rm(held)
+  invisible(gc())
+  kio_send(p$host, x) # the reap's sweep reclaims; staging returns to SHM_VEC
+  invisible(kio_recv(p$peer, 5))
+  kio_send(p$host, x)
+  expect_true(is_view(kio_recv(p$peer, 5)))
+  channel_end(p)
+})
+
 test_that("REF round-trips at any viewed size", {
   p <- channel_pair(arena_size = 0)
   for (n in c(5000, 8 * 1000 * 1000)) {
