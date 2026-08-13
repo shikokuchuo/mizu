@@ -32,7 +32,7 @@ kill_hard <- function(pid) {
 # terminate the process — ask tasklist instead.
 pid_alive <- function(pid) {
   pid <- as.integer(pid)
-  if (.Platform$OS.type == "windows") {
+  if (.Platform[["OS.type"]] == "windows") {
     out <- suppressWarnings(system2(
       "tasklist",
       c("/FI", sprintf('"PID eq %d"', pid), "/NH", "/FO", "CSV"),
@@ -110,7 +110,9 @@ channel_pair <- function(
   )
   peer <- att[[1L]]
   .Call(kioto:::kio_channel_ready_set, peer)
-  stopifnot(.Call(kioto:::kio_channel_ready_wait, host, 10))
+  if (!.Call(kioto:::kio_channel_ready_wait, host, 10)) {
+    stop("channel peer not ready")
+  }
   list(host = host, peer = peer)
 }
 
@@ -133,9 +135,9 @@ echo_expr <- quote(
 # Orderly in-process channel teardown: the peer signals its close (flush +
 # bit + wake), so both ends' close rendezvous succeeds.
 channel_end <- function(p) {
-  .Call(kioto:::kio_channel_close_signal, p$peer)
-  .Call(kioto:::kio_channel_close, p$host, 5)
-  .Call(kioto:::kio_channel_close, p$peer, 5)
+  .Call(kioto:::kio_channel_close_signal, p[["peer"]])
+  .Call(kioto:::kio_channel_close, p[["host"]], 5)
+  .Call(kioto:::kio_channel_close, p[["peer"]], 5)
 }
 
 # In-process pool pair: controller plus one or more worker handles joined
@@ -172,7 +174,7 @@ pool_pair <- function(
 # One worker-loop iteration: 1 = executed a task, 0 = none, -1 = shutdown.
 # A task error longjmps out of the step — the eval hot path arms no
 # handler — so publish it as the task's ERR result, as worker_main does.
-pool_step <- function(p, timeout = 0, wk = p$wk) {
+pool_step <- function(p, timeout = 0, wk = p[["wk"]]) {
   e <- tryCatch(
     return(.Call(kioto:::kio_pool_step, wk, timeout)),
     error = function(e) e
@@ -185,15 +187,15 @@ pool_step <- function(p, timeout = 0, wk = p$wk) {
 
 # Test-only: move up to n queued injection entries onto the worker's own
 # deque (the stand-in for Phase 3's nested submit)
-pool_pull <- function(p, n, wk = p$wk) {
+pool_pull <- function(p, n, wk = p[["wk"]]) {
   .Call(kioto:::kio_pool_deque_pull, wk, n)
 }
 
 # Orderly in-process teardown: the workers leave (their slots free), then
 # the controller destroys (broadcast + unlink + release).
 pool_end <- function(p) {
-  for (wk in p$wks) {
+  for (wk in p[["wks"]]) {
     .Call(kioto:::kio_pool_leave, wk)
   }
-  .Call(kioto:::kio_pool_destroy, p$ctrl)
+  .Call(kioto:::kio_pool_destroy, p[["ctrl"]])
 }

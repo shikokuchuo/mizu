@@ -16,8 +16,8 @@ library(kioto)
 p <- kio_pool(1L)
 on.exit(kio_pool_stop(p))
 
-collect_parks <- function() kio_pool_dump(p)$local$collect_parks
-worker_parks <- function() sum(kio_pool_stats(p)$workers$parks)
+collect_parks <- function() kio_pool_dump(p)[["local"]][["collect_parks"]]
+worker_parks <- function() sum(kio_pool_stats(p)[["workers"]][["parks"]])
 
 phase <- function(label, x, reps) {
   cp0 <- collect_parks()
@@ -51,7 +51,7 @@ phase("8 KB recovery (x200)", x8k, 200L)
 
 # idle-pool CPU: with decay at the floor the worker parks, so its
 # userspace+kernel clock ticks over 2 idle seconds should be ~0
-wpid <- kio_pool_stats(p)$workers$pid[1L]
+wpid <- kio_pool_stats(p)[["workers"]][["pid"]][1L]
 ticks <- function(pid) {
   f <- sprintf("/proc/%d/stat", pid)
   if (!file.exists(f)) {

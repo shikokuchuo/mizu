@@ -24,15 +24,15 @@ abandon <- function(h, r) .Call(kioto:::kio_map_abandon, h, r)
 test_that("stage lays out morsel geometry and a zeroed state section", {
   h <- stage_h(100, 8)
   i <- minfo(h)
-  expect_identical(i$n, 100)
-  expect_identical(i$morsel_size, 8)
-  expect_identical(i$n_morsels, 13)          # ceiling(100 / 8)
-  expect_identical(i$claim_n, 64L)
-  expect_identical(i$generation, 0)
-  expect_identical(i$cursor, 0)
-  expect_false(i$cancel)
-  expect_identical(claim(h, 0L)$state, "idle")
-  expect_identical(claim(h, 63L)$state, "idle")
+  expect_identical(i[["n"]], 100)
+  expect_identical(i[["morsel_size"]], 8)
+  expect_identical(i[["n_morsels"]], 13)          # ceiling(100 / 8)
+  expect_identical(i[["claim_n"]], 64L)
+  expect_identical(i[["generation"]], 0)
+  expect_identical(i[["cursor"]], 0)
+  expect_false(i[["cancel"]])
+  expect_identical(claim(h, 0L)[["state"]], "idle")
+  expect_identical(claim(h, 63L)[["state"]], "idle")
   expect_error(stage_h(5, 10), "invalid map morsel size")
 })
 
@@ -45,7 +45,7 @@ test_that("pinned-k issue walks the cursor with a final partial grant", {
   b <- nxt(h, k = 64)                        # clamps to the end
   expect_identical(unlist(b[1:4]), c(7, 3, 8, 10))
   expect_null(nxt(h))                        # exhausted
-  expect_identical(minfo(h)$cursor, 10)      # clamped past the overshoot
+  expect_identical(minfo(h)[["cursor"]], 10)      # clamped past the overshoot
 })
 
 test_that("element ranges track morsel geometry, last morsel partial", {
@@ -66,8 +66,8 @@ test_that("multiple runners issue disjoint batches off one cursor", {
   got <- sort(c(a[[3L]]:a[[4L]], b[[3L]]:b[[4L]], c3[[3L]]:c3[[4L]]))
   expect_identical(got, 1:6)
   expect_null(nxt(h, 1L, k = 2))
-  expect_identical(claim(h, 0L)$state, "running")
-  expect_identical(claim(h, 1L)$state, "running")
+  expect_identical(claim(h, 0L)[["state"]], "running")
+  expect_identical(claim(h, 1L)[["state"]], "running")
 })
 
 test_that("a batch carries its x slice from the RAWVEC section", {
@@ -87,19 +87,19 @@ test_that("the cancel word stops issue before any claim and arms the trim", {
   nxt(h, k = 2)
   # refusal while morsels remain and cancel is clear reports the state
   expect_identical(abandon(h, 1L), "idle")
-  expect_identical(claim(h, 1L)$state, "idle")
+  expect_identical(claim(h, 1L)[["state"]], "idle")
   .Call(kioto:::kio_map_cancel_set, h)
   expect_true(.Call(kioto:::kio_map_cancel_get, h))
-  cur <- minfo(h)$cursor
+  cur <- minfo(h)[["cursor"]]
   # a cancelled region issues nothing more, even with morsels left
   expect_null(nxt(h, k = 2))
-  expect_identical(minfo(h)$cursor, cur)     # NULL landed before any issue
+  expect_identical(minfo(h)[["cursor"]], cur)     # NULL landed before any issue
   # the cancel arm lets teardown trim queued never-started runners
   expect_identical(abandon(h, 1L), "abandoned")
-  expect_identical(claim(h, 1L)$state, "abandoned")
+  expect_identical(claim(h, 1L)[["state"]], "abandoned")
   # an abandoned runner's first call returns NULL without issuing
   expect_null(nxt(h, 1L, k = 2))
-  expect_identical(minfo(h)$cursor, cur)
+  expect_identical(minfo(h)[["cursor"]], cur)
 })
 
 test_that("the trim fires on exhaustion and loses to a RUNNING claim", {
@@ -111,7 +111,7 @@ test_that("the trim fires on exhaustion and loses to a RUNNING claim", {
   expect_null(nxt(h, 1L))
   # an exhausted runner's word stays RUNNING for collect
   expect_null(nxt(h, 0L))
-  expect_identical(claim(h, 0L)$state, "running")
+  expect_identical(claim(h, 0L)[["state"]], "running")
 })
 
 test_that("reset re-arms every CLAIM word under a bumped generation", {
@@ -122,23 +122,23 @@ test_that("reset re-arms every CLAIM word under a bumped generation", {
   gen2 <- .Call(kioto:::kio_map_reset, h)
   expect_identical(gen2, 1)
   i <- minfo(h)
-  expect_identical(i$generation, 1)
-  expect_identical(i$cursor, 0)
-  expect_false(i$cancel)
+  expect_identical(i[["generation"]], 1)
+  expect_identical(i[["cursor"]], 0)
+  expect_false(i[["cancel"]])
   for (r in c(0L, 1L, 5L)) {
     cs <- claim(h, r)
-    expect_identical(cs$state, "idle")
-    expect_identical(cs$generation, 1)
+    expect_identical(cs[["state"]], "idle")
+    expect_identical(cs[["generation"]], 1)
   }
   # a stale payload from the prior run fails its first-call CAS against
   # the re-armed word — NULL before any issue, cursor untouched
   expect_null(nxt(h, 0L, gen = 0, k = 2))
-  expect_identical(minfo(h)$cursor, 0)
-  expect_identical(claim(h, 0L)$state, "idle")
+  expect_identical(minfo(h)[["cursor"]], 0)
+  expect_identical(claim(h, 0L)[["state"]], "idle")
   # the new run's payload claims and issues normally
   b <- nxt(h, 0L, gen = 1, k = 2)
   expect_identical(b[[1L]], 0)
-  expect_identical(claim(h, 0L)$state, "running")
+  expect_identical(claim(h, 0L)[["state"]], "running")
   # any non-current generation is fenced, not just the previous one
   expect_null(nxt(h, 1L, gen = 99, k = 2))
 })
@@ -190,28 +190,28 @@ test_that("an all-busy publish rings the doorbell; help_once consumes and restor
   p <- pool_pair()
   # no worker is ever parked in the in-process harness, so a submit's
   # wake finds an empty mask and rings the bell
-  h1 <- kio_submit(p$ctrl, quote(1L))
-  expect_true(kio_pool_dump(p$ctrl)$help)
-  h2 <- kio_submit(p$ctrl, quote(2L))
+  h1 <- kio_submit(p[["ctrl"]], quote(1L))
+  expect_true(kio_pool_dump(p[["ctrl"]])[["help"]])
+  h2 <- kio_submit(p[["ctrl"]], quote(2L))
   # one help beat: claim + execute one entry, then restore the bell for
   # the entry still queued (clear -> re-check -> restore)
-  expect_true(.Call(kioto:::kio_pool_help_once, p$wk))
-  expect_true(kio_pool_dump(p$ctrl)$help)
+  expect_true(.Call(kioto:::kio_pool_help_once, p[["wk"]]))
+  expect_true(kio_pool_dump(p[["ctrl"]])[["help"]])
   expect_identical(kio_collect(h1), 1L)
-  expect_true(.Call(kioto:::kio_pool_help_once, p$wk))
-  expect_false(kio_pool_dump(p$ctrl)$help)   # nothing queued: stays clear
+  expect_true(.Call(kioto:::kio_pool_help_once, p[["wk"]]))
+  expect_false(kio_pool_dump(p[["ctrl"]])[["help"]])   # nothing queued: stays clear
   expect_identical(kio_collect(h2), 2L)
-  expect_false(.Call(kioto:::kio_pool_help_once, p$wk))
+  expect_false(.Call(kioto:::kio_pool_help_once, p[["wk"]]))
   pool_end(p)
 })
 
 test_that("kio_map_next consumes pool signals: help flag, skip rule, shutdown", {
   p <- pool_pair()
-  sig <- .Call(kioto:::kio_pool_signals, p$wk)
+  sig <- .Call(kioto:::kio_pool_signals, p[["wk"]])
   h <- stage_h(1e4, 1)
   b <- .Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 0)
   expect_false(b[[6L]])                      # quiet pool: no help flag
-  kio_submit(p$ctrl, quote(1L))              # all busy: bell rings
+  kio_submit(p[["ctrl"]], quote(1L))              # all busy: bell rings
   b <- .Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 1e-6)
   expect_true(b[[6L]])                       # help flag rides the return
   expect_identical(b[[2L]], 2)               # this interval still updated
@@ -223,7 +223,7 @@ test_that("kio_map_next consumes pool signals: help flag, skip rule, shutdown", 
   b <- .Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 1.0)
   expect_identical(b[[2L]], 8)
   # shutdown observed at the next transition: NULL, mid-cursor
-  .Call(kioto:::kio_pool_destroy, p$ctrl)
+  .Call(kioto:::kio_pool_destroy, p[["ctrl"]])
   expect_null(.Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 1.1))
-  .Call(kioto:::kio_pool_leave, p$wk)
+  .Call(kioto:::kio_pool_leave, p[["wk"]])
 })

@@ -4,7 +4,7 @@
 test_that("regions are created under the kioto namespace with correct size", {
   xp <- .Call(kioto:::kio_region_create, 4096)
   nm <- .Call(kioto:::kio_region_name, xp)
-  prefix <- if (.Platform$OS.type == "windows") "Local\\kio_" else "/kio_"
+  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\kio_" else "/kio_"
   expect_true(startsWith(nm, prefix))
   expect_identical(.Call(kioto:::kio_region_size, xp), 4096)
 })
@@ -59,7 +59,7 @@ test_that("producer GC releases the name; live consumers keep reading", {
   # the consumer's mapping survives the producer's GC on every platform
   expect_identical(.Call(kioto:::kio_peek, ro, 0, 1), as.raw(42))
 
-  if (.Platform$OS.type != "windows") {
+  if (.Platform[["OS.type"]] != "windows") {
     # POSIX: the producer's finalizer unlinked the name immediately
     expect_error(.Call(kioto:::kio_region_open, nm, FALSE), "cannot open")
   }

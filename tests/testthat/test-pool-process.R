@@ -20,8 +20,8 @@ test_that("a spawned worker round-trips every payload kind", {
     as.double(seq_len(100000L))
   )
   st <- kio_pool_status(p)
-  expect_identical(st$workers, "live")
-  expect_identical(unname(st$tasks), rep(0L, 5L))
+  expect_identical(st[["workers"]], "live")
+  expect_identical(unname(st[["tasks"]]), rep(0L, 5L))
   expect_true(kio_pool_stop(p, timeout = 10))
   expect_error(kio_submit(p, 1), "pool handle is closed")
 })
@@ -123,9 +123,9 @@ test_that("mori-shared task arguments map zero-copy in the worker", {
     x = x
   )
   info <- kio_collect(t, timeout = 30)
-  expect_true(info$shared)
-  expect_identical(info$name, mori::shared_name(x))
-  expect_identical(info$total, sum(x))
+  expect_true(info[["shared"]])
+  expect_identical(info[["name"]], mori::shared_name(x))
+  expect_identical(info[["total"]], sum(x))
   expect_true(kio_pool_stop(p, timeout = 10))
 })
 
@@ -147,8 +147,8 @@ test_that("a custom launcher receives the token and slot", {
     seen <<- list(token = token, slot = slot)
     kioto:::spawn_worker(token, slot)
   })
-  expect_match(seen$token, "^[0-9a-f]+_[0-9a-f]+$")
-  expect_identical(seen$slot, 0L)
+  expect_match(seen[["token"]], "^[0-9a-f]+_[0-9a-f]+$")
+  expect_identical(seen[["slot"]], 0L)
   t <- kio_submit(p, "via launcher")
   expect_identical(kio_collect(t, timeout = 30), "via launcher")
   expect_true(kio_pool_stop(p, timeout = 10))
@@ -168,7 +168,7 @@ test_that("a second worker picks up tasks while the first is busy", {
   skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  expect_identical(kio_pool_status(p)$workers, c("live", "live"))
+  expect_identical(kio_pool_status(p)[["workers"]], c("live", "live"))
   slow <- kio_submit(p, {
     Sys.sleep(1)
     Sys.getpid()
@@ -186,7 +186,7 @@ test_that("repeated submit/collect cycles park and wake without loss", {
   p <- kio_pool(n_workers = 2L)
   # an idle pool parks both workers; each cycle below is a fresh wake —
   # a lost wake in the handshake surfaces as a collect timeout
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   for (i in 1:50) {
     t <- kio_submit(p, x + 1L, x = i)
     expect_identical(kio_collect(t, timeout = 10), i + 1L)
@@ -240,7 +240,7 @@ test_that("a trace-hook error takes the worker down as infrastructure", {
     timeout = 30
   ))
   # the dying worker released its slot on the way out
-  expect_true(wait_until(kio_pool_status(p)$workers == "free", timeout = 30))
+  expect_true(wait_until(kio_pool_status(p)[["workers"]] == "free", timeout = 30))
   expect_true(kio_pool_stop(p, timeout = 10))
 })
 

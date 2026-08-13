@@ -149,7 +149,7 @@ kio_spawn_workers <- function(
   if (is.na(n) || n < 1L) {
     stop("kioto: n must be at least 1", call. = FALSE)
   }
-  free <- which(kio_pool_status(pool)$workers == "free") - 1L
+  free <- which(kio_pool_status(pool)[["workers"]] == "free") - 1L
   if (length(free) < n) {
     stop(
       "kioto: not enough free worker slots (",
@@ -196,7 +196,9 @@ kio_retire_worker <- function(pool, slot) {
 #'
 #' @export
 kio_pool_attach <- function(name) {
-  stopifnot(is.character(name), length(name) == 1L, !is.na(name))
+  if (!is.character(name) || length(name) != 1L || is.na(name)) {
+    stop("kioto: name must be a character string", call. = FALSE)
+  }
   .Call(kio_pool_attach_call, sub("^.*kio_", "", name))
 }
 
@@ -361,11 +363,11 @@ kio_pool_stop <- function(pool, timeout = 5) {
 #' @export
 kio_pool_status <- function(pool) {
   st <- .Call(kio_pool_status_call, pool)
-  st$workers <- c("free", "claiming", "live", "leaving", "reaping")[
-    st$workers + 1L
+  st[["workers"]] <- c("free", "claiming", "live", "leaving", "reaping")[
+    st[["workers"]] + 1L
   ]
-  st$submitters <- c("free", "live", "reaping")[st$submitters + 1L]
-  names(st$tasks) <- c("pending", "ok", "err", "cancel", "died")
+  st[["submitters"]] <- c("free", "live", "reaping")[st[["submitters"]] + 1L]
+  names(st[["tasks"]]) <- c("pending", "ok", "err", "cancel", "died")
   st
 }
 
@@ -397,18 +399,22 @@ kio_pool_status <- function(pool) {
 #' @export
 kio_pool_dump <- function(pool) {
   d <- .Call(kio_pool_dump_call, pool)
-  w <- d$workers
-  w$status <- c("free", "claiming", "live", "leaving", "reaping")[w$status + 1L]
-  w$park_state <- c("running", "idle", "parked", "waking")[w$park_state + 1L]
-  d$workers <- data.frame(slot = seq_along(w$status) - 1L, w)
-  s <- d$submitters
-  s$status <- c("free", "live", "reaping")[s$status + 1L]
-  d$submitters <- data.frame(slot = seq_along(s$status) - 1L, s)
-  tk <- lapply(d$tasks, `[`, !is.na(d$tasks$slot))
-  tk$status <- c("free", "pending", "ok", "err", "cancel", "died")[
-    tk$status + 1L
+  w <- d[["workers"]]
+  w[["status"]] <- c("free", "claiming", "live", "leaving", "reaping")[
+    w[["status"]] + 1L
   ]
-  d$tasks <- data.frame(tk)
+  w[["park_state"]] <- c("running", "idle", "parked", "waking")[
+    w[["park_state"]] + 1L
+  ]
+  d[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
+  s <- d[["submitters"]]
+  s[["status"]] <- c("free", "live", "reaping")[s[["status"]] + 1L]
+  d[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
+  tk <- lapply(d[["tasks"]], `[`, !is.na(d[["tasks"]][["slot"]]))
+  tk[["status"]] <- c("free", "pending", "ok", "err", "cancel", "died")[
+    tk[["status"]] + 1L
+  ]
+  d[["tasks"]] <- data.frame(tk)
   d
 }
 
@@ -450,13 +456,15 @@ kio_pool_dump <- function(pool) {
 #' @export
 kio_pool_stats <- function(pool) {
   st <- .Call(kio_pool_stats_call, pool)
-  w <- st$workers
-  w$status <- c("free", "claiming", "live", "leaving", "reaping")[w$status + 1L]
-  st$workers <- data.frame(slot = seq_along(w$status) - 1L, w)
-  s <- st$submitters
-  s$status <- c("free", "live", "reaping")[s$status + 1L]
-  s$queued <- s$injected - s$claimed
-  st$submitters <- data.frame(slot = seq_along(s$status) - 1L, s)
+  w <- st[["workers"]]
+  w[["status"]] <- c("free", "claiming", "live", "leaving", "reaping")[
+    w[["status"]] + 1L
+  ]
+  st[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
+  s <- st[["submitters"]]
+  s[["status"]] <- c("free", "live", "reaping")[s[["status"]] + 1L]
+  s[["queued"]] <- s[["injected"]] - s[["claimed"]]
+  st[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
   st
 }
 

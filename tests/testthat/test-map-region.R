@@ -46,7 +46,7 @@ test_that("attach validates each corrupted map header field", {
   corrupt(80, 0, "output area lies outside")          # out_m -> 0
   # the intact header still admits the passive read-only attach
   ro <- .Call(kioto:::kio_map_open, nm, FALSE)
-  expect_identical(.Call(kioto:::kio_map_info, ro)$cursor, 0)
+  expect_identical(.Call(kioto:::kio_map_info, ro)[["cursor"]], 0)
   expect_error(.Call(kioto:::kio_map_open, "/kio_nonexistent_0", TRUE),
                "cannot open map region")
 })
@@ -88,7 +88,7 @@ test_that("an armed trim reads a flipped claim as abandoned thereafter", {
   expect_identical(.Call(kioto:::kio_map_abandon, h, 0L), "abandoned")
   # the second read finds the word already flipped
   expect_identical(.Call(kioto:::kio_map_abandon, h, 0L), "abandoned")
-  expect_identical(.Call(kioto:::kio_map_claim_state, h, 0L)$state,
+  expect_identical(.Call(kioto:::kio_map_claim_state, h, 0L)[["state"]],
                    "abandoned")
 })
 

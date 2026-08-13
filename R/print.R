@@ -27,9 +27,9 @@ print.kio_channel <- function(x, ...) {
     } else {
       sprintf(
         "<kio_channel %s: %s, %s>\n",
-        st$name,
-        st$side,
-        if (st$closed) {
+        st[["name"]],
+        st[["side"]],
+        if (st[["closed"]]) {
           "closed"
         } else if (kio_alive(x)) {
           "open"
@@ -52,12 +52,12 @@ print.kio_pool <- function(x, ...) {
     } else {
       sprintf(
         "<kio_pool %s: %s, %d/%d workers live, %d pending%s>\n",
-        st$name,
-        st$role,
-        sum(st$workers == "live"),
-        st$max_workers,
-        st$tasks[["pending"]],
-        if (st$shutdown) ", shutdown" else ""
+        st[["name"]],
+        st[["role"]],
+        sum(st[["workers"]] == "live"),
+        st[["max_workers"]],
+        st[["tasks"]][["pending"]],
+        if (st[["shutdown"]]) ", shutdown" else ""
       )
     }
   )
@@ -76,11 +76,11 @@ print.kio_task <- function(x, ...) {
 print.kio_map_prepared <- function(x, ...) {
   cat(sprintf(
     "<kio_map_prepared: %.0f elements, %s>\n",
-    length(x$x),
-    if (is.null(x$st)) {
+    length(x[["x"]]),
+    if (is.null(x[["st"]])) {
       "stale (next run restages)"
-    } else if (is.null(x$st$blob)) {
-      x$st$name
+    } else if (is.null(x[["st"]][["blob"]])) {
+      x[["st"]][["name"]]
     } else {
       "inline blob"
     }

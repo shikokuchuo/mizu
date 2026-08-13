@@ -19,15 +19,15 @@ new_channel_region <- function() {
 test_that("a written preamble validates and round-trips its fields", {
   xp <- new_channel_region()
   p <- .Call(kioto:::kio_preamble_validate_call, xp)
-  expect_identical(p$version, 2) # ABI 2: SHM_VEC / REF payload kinds
-  expect_identical(p$cap, 4)
-  expect_identical(p$slot, 64)
-  expect_identical(p$host_pid, as.double(Sys.getpid()))
-  expect_identical(p$arena_size, 0)
-  expect_identical(p$drop_offset, 2048)
-  expect_identical(p$drop_size, 100)
-  expect_identical(p$livedir_offset, 2148)
-  expect_identical(p$livedir_size, 50)
+  expect_identical(p[["version"]], 2) # ABI 2: SHM_VEC / REF payload kinds
+  expect_identical(p[["cap"]], 4)
+  expect_identical(p[["slot"]], 64)
+  expect_identical(p[["host_pid"]], as.double(Sys.getpid()))
+  expect_identical(p[["arena_size"]], 0)
+  expect_identical(p[["drop_offset"]], 2048)
+  expect_identical(p[["drop_size"]], 100)
+  expect_identical(p[["livedir_offset"]], 2148)
+  expect_identical(p[["livedir_size"]], 50)
 })
 
 test_that("a consumer validates the host-written preamble", {
@@ -38,7 +38,7 @@ test_that("a consumer validates the host-written preamble", {
     FALSE
   )
   p <- .Call(kioto:::kio_preamble_validate_call, ro)
-  expect_identical(p$host_pid, as.double(Sys.getpid()))
+  expect_identical(p[["host_pid"]], as.double(Sys.getpid()))
 })
 
 test_that("each corruption is caught before the ring protocol is engaged", {

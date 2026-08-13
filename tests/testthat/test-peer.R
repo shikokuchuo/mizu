@@ -23,8 +23,8 @@ test_that("the peer evaluates its expression with only ch bound", {
     kio_send(ch, list(bindings = ls(), has_kioto = "package:kioto" %in% search()))
   ))
   info <- kio_recv(ch, 30)
-  expect_identical(info$bindings, "ch")
-  expect_true(info$has_kioto)
+  expect_identical(info[["bindings"]], "ch")
+  expect_true(info[["has_kioto"]])
   kio_close(ch, timeout = 10)
 })
 
@@ -49,9 +49,9 @@ test_that("peer death surfaces as a sticky kio_peer_gone after draining", {
     kio_send(ch, "before death")
     Sys.sleep(300)
   }))
-  nm <- .Call(kioto:::kio_channel_stat, ch)$name
+  nm <- .Call(kioto:::kio_channel_stat, ch)[["name"]]
   expect_identical(kio_recv(ch, 30), "before death")
-  tools::pskill(.Call(kioto:::kio_channel_stat, ch)$peer_pid)
+  tools::pskill(.Call(kioto:::kio_channel_stat, ch)[["peer_pid"]])
 
   # empty ring + confirmed death: the listener wakes the park, the flock
   # probe delivers the verdict
@@ -62,7 +62,7 @@ test_that("peer death surfaces as a sticky kio_peer_gone after draining", {
   expect_s3_class(kio_recv(ch, 0), "kio_peer_gone")
 
   # the survivor unlinked the region name
-  if (.Platform$OS.type != "windows")
+  if (.Platform[["OS.type"]] != "windows")
     expect_error(.Call(kioto:::kio_region_open, nm, FALSE), "cannot open")
   expect_true(kio_close(ch, timeout = 10))
 })
@@ -120,8 +120,8 @@ test_that("mori-shared objects map zero-copy in the peer process", {
   x <- mori::share(runif(1000))
   kio_send(ch, x)
   info <- kio_recv(ch, 30)
-  expect_true(info$shared)
-  expect_identical(info$name, mori::shared_name(x))
-  expect_identical(info$total, sum(x))
+  expect_true(info[["shared"]])
+  expect_identical(info[["name"]], mori::shared_name(x))
+  expect_identical(info[["total"]], sum(x))
   kio_close(ch, timeout = 10)
 })

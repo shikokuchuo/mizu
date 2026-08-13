@@ -55,7 +55,7 @@ test_that("death-watch entries reject foreign handles", {
   expect_error(.Call(kioto:::kio_death_fired_call, NULL),
                "not a death-watch handle")
   p <- channel_pair()
-  expect_error(.Call(kioto:::kio_death_fired_call, p$host),
+  expect_error(.Call(kioto:::kio_death_fired_call, p[["host"]]),
                "not a death-watch handle")
   channel_end(p)
 })

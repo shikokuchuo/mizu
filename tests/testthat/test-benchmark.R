@@ -98,7 +98,7 @@ test_that("pool task dispatch reports against the mirai baseline", {
 
   # once the worker parks, its stat mirror is exact
   total <- 200 + 2 * 1000 + 200 + 2 * 2000
-  expect_true(wait_until(kio_pool_stats(p)$workers$tasks == total))
+  expect_true(wait_until(kio_pool_stats(p)[["workers"]][["tasks"]] == total))
   expect_true(kio_pool_stop(p))
 })
 
@@ -362,13 +362,13 @@ test_that("guard: held results do not pin payload regions today", {
   for (i in seq_len(8L)) {
     held[[i]] <- kio_collect(kio_submit(p, seq_len(n) + 0, n = n), 60)
   }
-  st <- kio_pool_stats(p)$submitters
-  st <- st[st$status == "live", ] # one row per slot; the idle slot reads zero
+  st <- kio_pool_stats(p)[["submitters"]]
+  st <- st[st[["status"]] == "live", ] # one row per slot; the idle slot reads zero
   cat(sprintf(
     "\nheld 8 x 16 MiB: spills %d, spill_reuse %d, fresh regions %d\n",
-    st$spills,
-    st$spill_reuse,
-    st$spills - st$spill_reuse
+    st[["spills"]],
+    st[["spill_reuse"]],
+    st[["spills"]] - st[["spill_reuse"]]
   ))
   expect_identical(held[[8L]], seq_len(n) + 0)
   expect_true(kio_pool_stop(p))

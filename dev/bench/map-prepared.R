@@ -61,7 +61,7 @@ cat(sprintf("%d x kio_map_run, back-to-back:  %8.1f us/run\n", K,
 # kio_map pays a fresh region + full ctx miss regardless
 idle_gap <- function(run) {
   best(function() {
-    while (kio_pool_status(p)$parked < 4L) Sys.sleep(0.01)
+    while (kio_pool_status(p)[["parked"]] < 4L) Sys.sleep(0.01)
     Sys.sleep(0.05)                 # past the pre-park sweep
     t0 <- now()
     run()

@@ -22,4 +22,4 @@ ts <- vapply(seq_len(n), function(i) {
 }, 0)
 cat(sprintf("ping-pong 8 KB x%d: median %.1f us | p90 %.1f us | collect parks +%d\n",
             n, median(ts) * 1e6, quantile(ts, 0.9) * 1e6,
-            kio_pool_dump(p)$local$collect_parks))
+            kio_pool_dump(p)[["local"]][["collect_parks"]]))

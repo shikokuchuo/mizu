@@ -31,22 +31,22 @@ test_that("the R-level constructor validates the worker count", {
 test_that("a fresh pool reports its layout and registry state", {
   p <- pool_pair(max_submitters = 4L, injection_cap = 32L,
                  result_slots = 32L, slot_size = 512L)
-  st <- kio_pool_status(p$ctrl)
-  prefix <- if (.Platform$OS.type == "windows") "Local\\kio_" else "/kio_"
-  expect_true(startsWith(st$name, prefix))
-  expect_identical(st$role, "controller")
-  expect_identical(st$max_workers, 1L)
-  expect_identical(st$max_submitters, 4L)
-  expect_identical(st$injection_cap, 32L)
-  expect_identical(st$result_slots, 32L)
-  expect_identical(st$slot_size, 512L)
-  expect_identical(st$workers, "live")
-  expect_identical(st$submitters, c("live", rep("free", 3L)))
-  expect_identical(st$injection, 0)
-  expect_identical(unname(st$tasks), rep(0L, 5L))
-  expect_false(st$shutdown)
-  expect_identical(kio_pool_status(p$wk)$role, "worker")
-  expect_s3_class(p$ctrl, "kio_pool")
+  st <- kio_pool_status(p[["ctrl"]])
+  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\kio_" else "/kio_"
+  expect_true(startsWith(st[["name"]], prefix))
+  expect_identical(st[["role"]], "controller")
+  expect_identical(st[["max_workers"]], 1L)
+  expect_identical(st[["max_submitters"]], 4L)
+  expect_identical(st[["injection_cap"]], 32L)
+  expect_identical(st[["result_slots"]], 32L)
+  expect_identical(st[["slot_size"]], 512L)
+  expect_identical(st[["workers"]], "live")
+  expect_identical(st[["submitters"]], c("live", rep("free", 3L)))
+  expect_identical(st[["injection"]], 0)
+  expect_identical(unname(st[["tasks"]]), rep(0L, 5L))
+  expect_false(st[["shutdown"]])
+  expect_identical(kio_pool_status(p[["wk"]])[["role"]], "worker")
+  expect_s3_class(p[["ctrl"]], "kio_pool")
   pool_end(p)
 })
 
@@ -65,16 +65,16 @@ test_that("attach validates the region: absent, malformed, or not a pool", {
   ch <- channel_pair()
   expect_error(
     .Call(kioto:::kio_pool_attach_call, .Call(kioto:::kio_channel_suffix,
-                                            ch$host)),
+                                            ch[["host"]])),
     "invalid pool region")
-  .Call(kioto:::kio_channel_close_signal, ch$peer)
-  kio_close(ch$host, timeout = 5)
-  kio_close(ch$peer, timeout = 5)
+  .Call(kioto:::kio_channel_close_signal, ch[["peer"]])
+  kio_close(ch[["host"]], timeout = 5)
+  kio_close(ch[["peer"]], timeout = 5)
 })
 
 test_that("worker join is lock-before-CAS and rejects a held or taken slot", {
   p <- pool_pair()
-  suffix <- .Call(kioto:::kio_pool_suffix, p$ctrl)
+  suffix <- .Call(kioto:::kio_pool_suffix, p[["ctrl"]])
   # slot 0 is held by p$wk in this same process: the flock fails first
   expect_error(.Call(kioto:::kio_pool_worker_join, suffix, 0L),
                "already held")
@@ -85,17 +85,17 @@ test_that("worker join is lock-before-CAS and rejects a held or taken slot", {
 
 test_that("submitters claim distinct slots and subranges", {
   p <- pool_pair(max_submitters = 4L, result_slots = 32L)
-  suffix <- .Call(kioto:::kio_pool_suffix, p$ctrl)
+  suffix <- .Call(kioto:::kio_pool_suffix, p[["ctrl"]])
   s1 <- .Call(kioto:::kio_pool_attach_call, suffix)
   s2 <- .Call(kioto:::kio_pool_attach_call, suffix)
-  st <- kio_pool_status(p$ctrl)
-  expect_identical(st$submitters, c("live", "live", "live", "free"))
-  expect_identical(kio_pool_status(s1)$role, "submitter")
+  st <- kio_pool_status(p[["ctrl"]])
+  expect_identical(st[["submitters"]], c("live", "live", "live", "free"))
+  expect_identical(kio_pool_status(s1)[["role"]], "submitter")
 
   # each submitter's tasks flow through its own ring to the same worker
   t1 <- kio_submit(s1, i + 1L, i = 10L)
   t2 <- kio_submit(s2, i + 2L, i = 20L)
-  expect_identical(kio_pool_status(p$ctrl)$injection, 2)
+  expect_identical(kio_pool_status(p[["ctrl"]])[["injection"]], 2)
   while (pool_step(p) == 1L) NULL
   expect_identical(kio_collect(t1, timeout = 5), 11L)
   expect_identical(kio_collect(t2, timeout = 5), 22L)
@@ -104,7 +104,7 @@ test_that("submitters claim distinct slots and subranges", {
 
 test_that("the submitter registry reports full", {
   p <- pool_pair(max_submitters = 1L, result_slots = 8L)
-  suffix <- .Call(kioto:::kio_pool_suffix, p$ctrl)
+  suffix <- .Call(kioto:::kio_pool_suffix, p[["ctrl"]])
   expect_error(.Call(kioto:::kio_pool_attach_call, suffix),
                "submitter registry full")
   pool_end(p)
@@ -113,11 +113,11 @@ test_that("the submitter registry reports full", {
 test_that("destroy releases the region name and poisons late attaches", {
   skip_on_os("windows")   # kernel objects have no unlink step to observe
   p <- pool_pair()
-  nm <- kio_pool_status(p$ctrl)$name
+  nm <- kio_pool_status(p[["ctrl"]])[["name"]]
   expect_no_error(.Call(kioto:::kio_region_open, nm, FALSE))
-  suffix <- .Call(kioto:::kio_pool_suffix, p$ctrl)
-  .Call(kioto:::kio_pool_leave, p$wk)
-  .Call(kioto:::kio_pool_destroy, p$ctrl)
+  suffix <- .Call(kioto:::kio_pool_suffix, p[["ctrl"]])
+  .Call(kioto:::kio_pool_leave, p[["wk"]])
+  .Call(kioto:::kio_pool_destroy, p[["ctrl"]])
   expect_error(.Call(kioto:::kio_region_open, nm, FALSE), "cannot open")
   expect_error(.Call(kioto:::kio_pool_attach_call, suffix), "cannot open")
 })
@@ -125,16 +125,16 @@ test_that("destroy releases the region name and poisons late attaches", {
 test_that("a stopped or destroyed handle is dead across the verb surface", {
   p <- pool_pair()
   pool_end(p)
-  expect_error(kio_submit(p$ctrl, 1), "pool handle is closed")
-  expect_error(kio_pool_status(p$ctrl), "pool handle is closed")
+  expect_error(kio_submit(p[["ctrl"]], 1), "pool handle is closed")
+  expect_error(kio_pool_status(p[["ctrl"]]), "pool handle is closed")
   # stop is idempotent on a released handle
-  expect_true(.Call(kioto:::kio_pool_stop_call, p$ctrl, 0))
+  expect_true(.Call(kioto:::kio_pool_stop_call, p[["ctrl"]], 0))
 })
 
 test_that("an attached submitter observes shutdown at its next verb", {
   p <- pool_pair()
   s <- .Call(kioto:::kio_pool_attach_call, .Call(kioto:::kio_pool_suffix,
-                                               p$ctrl))
+                                               p[["ctrl"]]))
   pool_end(p)
   expect_error(kio_submit(s, 1), "pool stopped")
 })
@@ -150,7 +150,7 @@ test_that("non-pool handles are rejected across the verb surface", {
 test_that("attach rejects each corrupted pool header field", {
   ctrl <- .Call(kioto:::kio_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
   suffix <- .Call(kioto:::kio_pool_suffix, ctrl)
-  rw <- .Call(kioto:::kio_region_open, kio_pool_status(ctrl)$name, TRUE)
+  rw <- .Call(kioto:::kio_region_open, kio_pool_status(ctrl)[["name"]], TRUE)
   hdr <- .Call(kioto:::kio_peek, rw, 0, 64)
   corrupt <- function(off, bytes, msg) {
     .Call(kioto:::kio_poke, rw, off, as.raw(bytes))
@@ -177,11 +177,11 @@ test_that("dropping the controller handle shuts the pool down at GC", {
 test_that("stop warns and reports FALSE when workers outlive the wait", {
   p <- pool_pair()
   # the in-process worker cannot exit: the bounded wait must expire
-  expect_warning(ok <- kio_pool_stop(p$ctrl, timeout = 0.2), "timed out")
+  expect_warning(ok <- kio_pool_stop(p[["ctrl"]], timeout = 0.2), "timed out")
   expect_false(ok)
   # the worker observes shutdown and leaves on its own path, as worker_main
-  expect_identical(.Call(kioto:::kio_pool_step, p$wk, 0), -1L)
-  .Call(kioto:::kio_pool_leave, p$wk)
+  expect_identical(.Call(kioto:::kio_pool_step, p[["wk"]], 0), -1L)
+  .Call(kioto:::kio_pool_leave, p[["wk"]])
 })
 
 test_that("kio_spawn_workers validates n and walks back a failed startup", {
@@ -193,7 +193,7 @@ test_that("kio_spawn_workers validates n and walks back a failed startup", {
                       startup_timeout = 0.2),
     class = "kio_error_startup")
   # the slot was never claimed: a later spawn can still take it
-  expect_identical(kio_pool_status(ctrl)$workers, c("free", "free"))
+  expect_identical(kio_pool_status(ctrl)[["workers"]], c("free", "free"))
   .Call(kioto:::kio_pool_destroy, ctrl)
 })
 
@@ -217,61 +217,61 @@ test_that("a pool region past the size budget refuses before allocating", {
 
 test_that("controller-only entries reject worker handles", {
   p <- pool_pair()
-  expect_error(.Call(kioto:::kio_pool_destroy, p$wk),
+  expect_error(.Call(kioto:::kio_pool_destroy, p[["wk"]]),
                "only the controller can destroy")
-  expect_error(.Call(kioto:::kio_pool_stop_call, p$wk, 5),
+  expect_error(.Call(kioto:::kio_pool_stop_call, p[["wk"]], 5),
                "only the controller can stop")
-  expect_error(.Call(kioto:::kio_pool_retire, p$wk, 0L),
+  expect_error(.Call(kioto:::kio_pool_retire, p[["wk"]], 0L),
                "only the controller can retire")
-  expect_error(.Call(kioto:::kio_pool_ready_wait, p$wk, 0L, 5),
+  expect_error(.Call(kioto:::kio_pool_ready_wait, p[["wk"]], 0L, 5),
                "only the controller can wait")
   pool_end(p)
 })
 
 test_that("worker-only entries reject the controller handle", {
   p <- pool_pair()
-  expect_error(.Call(kioto:::kio_pool_leave, p$ctrl), "not a worker handle")
-  expect_error(.Call(kioto:::kio_pool_step, p$ctrl, 0), "not a worker handle")
-  expect_error(.Call(kioto:::kio_pool_deque_pull, p$ctrl, 1L),
+  expect_error(.Call(kioto:::kio_pool_leave, p[["ctrl"]]), "not a worker handle")
+  expect_error(.Call(kioto:::kio_pool_step, p[["ctrl"]], 0), "not a worker handle")
+  expect_error(.Call(kioto:::kio_pool_deque_pull, p[["ctrl"]], 1L),
                "not a worker handle")
-  expect_error(.Call(kioto:::kio_pool_help_once, p$ctrl),
+  expect_error(.Call(kioto:::kio_pool_help_once, p[["ctrl"]]),
                "not a worker handle")
-  expect_error(.Call(kioto:::kio_pool_map_cache, p$ctrl),
+  expect_error(.Call(kioto:::kio_pool_map_cache, p[["ctrl"]]),
                "not a worker handle")
-  expect_error(.Call(kioto:::kio_pool_run_outcome, p$ctrl, NULL),
+  expect_error(.Call(kioto:::kio_pool_run_outcome, p[["ctrl"]], NULL),
                "not a worker handle")
   pool_end(p)
 })
 
 test_that("worker wait/retire validate their slot arguments", {
   p <- pool_pair()
-  expect_error(.Call(kioto:::kio_pool_ready_wait, p$ctrl, "x", 5),
+  expect_error(.Call(kioto:::kio_pool_ready_wait, p[["ctrl"]], "x", 5),
                "expected worker slot indices")
-  expect_error(.Call(kioto:::kio_pool_ready_wait, p$ctrl, 99L, 5),
+  expect_error(.Call(kioto:::kio_pool_ready_wait, p[["ctrl"]], 99L, 5),
                "worker slot index out of range")
-  expect_error(kio_retire_worker(p$ctrl, 99L), "worker slot index out of range")
+  expect_error(kio_retire_worker(p[["ctrl"]], 99L), "worker slot index out of range")
   pool_end(p)
 })
 
 test_that("retiring a departed worker errors", {
   p <- pool_pair()
-  kio_retire_worker(p$ctrl, 0L)
+  kio_retire_worker(p[["ctrl"]], 0L)
   expect_identical(pool_step(p), -2L)
-  .Call(kioto:::kio_pool_leave, p$wk)
-  expect_error(kio_retire_worker(p$ctrl, 0L), "worker slot 0 is not live")
+  .Call(kioto:::kio_pool_leave, p[["wk"]])
+  expect_error(kio_retire_worker(p[["ctrl"]], 0L), "worker slot 0 is not live")
   pool_end(p)
 })
 
 test_that("the map capacity probe requires a live pool and a submitter slot", {
   p <- pool_pair(max_submitters = 1L)
-  expect_error(.Call(kioto:::kio_pool_map_caps, p$wk),
+  expect_error(.Call(kioto:::kio_pool_map_caps, p[["wk"]]),
                "submitter registry full")
   pool_end(p)
   p <- pool_pair()
-  expect_warning(kio_pool_stop(p$ctrl, timeout = 0), "timed out")
+  expect_warning(kio_pool_stop(p[["ctrl"]], timeout = 0), "timed out")
   # stop releases the controller's handle; a joined worker's lives on and
   # sees the shutdown word
-  expect_error(.Call(kioto:::kio_pool_map_caps, p$wk),
+  expect_error(.Call(kioto:::kio_pool_map_caps, p[["wk"]]),
                class = "kio_error_stopped")
-  .Call(kioto:::kio_pool_leave, p$wk)
+  .Call(kioto:::kio_pool_leave, p[["wk"]])
 })

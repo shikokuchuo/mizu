@@ -18,7 +18,7 @@ test_that("a map's chunks spread across the workers", {
   skip_on_cran() # host + 2 workers exceeds 2 cores
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   # The first-claimed chunk holds its worker until a second pid checks in
   # — only a chunk claimed by the other worker can supply one — so a
   # starved worker can't lose every claim to a fast drain. Bounded, with a
@@ -48,9 +48,9 @@ test_that("a map's chunks spread across the workers", {
   )
   expect_identical(r, as.list(1:32 * 2L))
   # counters mirror into the region at park: a row read mid-drain can lag
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   st <- kio_pool_stats(p)
-  expect_true(all(st$workers$tasks > 0)) # both workers claimed chunks
+  expect_true(all(st[["workers"]][["tasks"]] > 0)) # both workers claimed chunks
   expect_true(kio_pool_stop(p))
   unlink(rdv, recursive = TRUE)
 })
@@ -59,7 +59,7 @@ test_that("an imbalanced map still returns in order, work balanced", {
   skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   # front-loaded cost — the first elements are slow, the rest instant —
   # under the same rendezvous and stats gate as above
   rdv <- tfile()
@@ -89,8 +89,8 @@ test_that("an imbalanced map still returns in order, work balanced", {
     .timeout = 60
   )
   expect_identical(r, as.list(1:16))
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
-  expect_true(all(kio_pool_stats(p)$workers$tasks > 0))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
+  expect_true(all(kio_pool_stats(p)[["workers"]][["tasks"]] > 0))
   expect_true(kio_pool_stop(p))
   unlink(rdv, recursive = TRUE)
 })
@@ -103,7 +103,7 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   # one runner ends up sleeping in elements 3-4 while the other publishes
   # ok — nested doorbell help would leave both tasks pending on one worker
   # and the gate below unsatisfiable
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   st <- kioto:::map_stage(
     p,
     1:4,
@@ -128,18 +128,20 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   expect_true(wait_until(
     {
       d <- kio_pool_dump(p)
-      pend <- d$tasks[d$tasks$status == "pending", ]
-      hit <- any(d$tasks$status == "ok") &&
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
-        pend$worker >= 0L
+        pend[["worker"]] >= 0L
       if (hit) {
-        victim <- d$workers$pid[pend$worker + 1L]
+        victim <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
       }
       hit
     },
     timeout = 10
   ))
-  stopifnot(victim > 0) # a failed gate must never reach kill(-1)
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   e <- tryCatch(
     kioto:::map_collect(p, st, deadline = kioto:::mono_time() + 30),
@@ -151,7 +153,7 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   # the elements the dead worker was executing (3-4), may include the
   # dead runner's completed batches (its history died unpublished), and
   # never a surviving runner's published batches or anything outside n
-  el <- e$elements
+  el <- e[["elements"]]
   expect_true(is.matrix(el) && ncol(el) == 2L)
   lost <- unlist(lapply(seq_len(nrow(el)), function(r) {
     seq.int(el[r, 1L], el[r, 2L])
@@ -171,7 +173,7 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   skip_if_no_child_kioto()
   # slot_size 1024: this f's chunk payload overflows the default budget
   p <- kio_pool(n_workers = 2L, slot_size = 1024L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   f <- function(i) {
     if (i > 2L) {
       Sys.sleep(30)
@@ -180,7 +182,7 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   }
   environment(f) <- globalenv()
   st <- kioto:::map_stage(p, 1:4, f, list(), chunks = 2)
-  expect_type(st$blob, "raw")
+  expect_type(st[["blob"]], "raw")
   kioto:::map_submit(p, st)
   # the same park-gated submit and deterministic victim selection as the
   # region-path test above
@@ -188,18 +190,20 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   expect_true(wait_until(
     {
       d <- kio_pool_dump(p)
-      pend <- d$tasks[d$tasks$status == "pending", ]
-      hit <- any(d$tasks$status == "ok") &&
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
-        pend$worker >= 0L
+        pend[["worker"]] >= 0L
       if (hit) {
-        victim <- d$workers$pid[pend$worker + 1L]
+        victim <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
       }
       hit
     },
     timeout = 10
   ))
-  stopifnot(victim > 0) # a failed gate must never reach kill(-1)
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   e <- tryCatch(
     kioto:::map_collect(p, st, deadline = kioto:::mono_time() + 30),
@@ -207,7 +211,7 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   )
   expect_s3_class(e, "kio_error_worker_died")
   # blob chunks are fixed ranges: the lost set is the dead chunk, exactly
-  expect_identical(e$elements, cbind(lo = 3, hi = 4))
+  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
   expect_true(kio_pool_stop(p))
 })
 
@@ -215,7 +219,7 @@ test_that("worker death on the template path never exposes partial output", {
   skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   st <- kioto:::map_stage(
     p,
     1:4,
@@ -236,18 +240,20 @@ test_that("worker death on the template path never exposes partial output", {
   expect_true(wait_until(
     {
       d <- kio_pool_dump(p)
-      pend <- d$tasks[d$tasks$status == "pending", ]
-      hit <- any(d$tasks$status == "ok") &&
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
-        pend$worker >= 0L
+        pend[["worker"]] >= 0L
       if (hit) {
-        victim <- d$workers$pid[pend$worker + 1L]
+        victim <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
       }
       hit
     },
     timeout = 10
   ))
-  stopifnot(victim > 0) # a failed gate must never reach kill(-1)
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   # completed writes landed in the output area, but the map errors as a
   # whole: nothing is ever gathered, and durably written elements from
@@ -257,7 +263,7 @@ test_that("worker death on the template path never exposes partial output", {
     error = identity
   )
   expect_match(conditionMessage(e), "worker died while executing map elements")
-  el <- e$elements
+  el <- e[["elements"]]
   lost <- unlist(lapply(seq_len(nrow(el)), function(r) {
     seq.int(el[r, 1L], el[r, 2L])
   }))
@@ -271,7 +277,7 @@ test_that("a lone worker's death reports the whole issued range as lost", {
   # — the died branch must still raise kio_error_worker_died (regression:
   # order(NULL) turned this into a bare "argument 1 is not a vector")
   p <- kio_pool(n_workers = 1L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 1L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 1L))
   x <- seq_len(40) + 0 # non-ALTREP doubles: the region path
   st <- kioto:::map_stage(
     p,
@@ -285,23 +291,23 @@ test_that("a lone worker's death reports the whole issued range as lost", {
   kioto:::map_submit(p, st)
   # kill only once the runner has claimed off the cursor, so the issued
   # range is non-empty and the kill lands mid-map
-  expect_true(wait_until(.Call(kioto:::kio_map_info, st$wrap)$cursor > 0))
-  pid <- kio_pool_dump(p)$workers$pid[1L]
+  expect_true(wait_until(.Call(kioto:::kio_map_info, st[["wrap"]])[["cursor"]] > 0))
+  pid <- kio_pool_dump(p)[["workers"]][["pid"]][1L]
   kill_hard(pid)
-  cur <- .Call(kioto:::kio_map_info, st$wrap)$cursor # frozen by the kill
+  cur <- .Call(kioto:::kio_map_info, st[["wrap"]])[["cursor"]] # frozen by the kill
   e <- tryCatch(
     kioto:::map_collect(p, st, deadline = kioto:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "kio_error_worker_died")
   expect_match(conditionMessage(e), "worker died while executing map elements")
-  expect_identical(e$slot, 0L)
-  expect_identical(e$pid, pid)
+  expect_identical(e[["slot"]], 0L)
+  expect_identical(e[["pid"]], pid)
   # with no history the lost set is the whole issued range, in one block
-  el <- e$elements
+  el <- e[["elements"]]
   expect_true(is.matrix(el) && nrow(el) == 1L)
   expect_equal(el[[1L, 1L]], 1)
-  expect_equal(el[[1L, 2L]], min(40, cur * st$ms))
+  expect_equal(el[[1L, 2L]], min(40, cur * st[["ms"]]))
   expect_true(kio_pool_stop(p, timeout = 10))
 })
 
@@ -312,7 +318,7 @@ test_that("a runner's announce lost to a help beat still fails as died", {
   # worker_slot sweep fails the runner's slot — before it, this map hung
   # to its deadline instead of raising kio_error_worker_died
   p <- kio_pool(n_workers = 1L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 1L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 1L))
   x <- seq_len(40) + 0 # non-ALTREP doubles: the region path
   st <- kioto:::map_stage(
     p,
@@ -324,13 +330,13 @@ test_that("a runner's announce lost to a help beat still fails as died", {
     list()
   )
   kioto:::map_submit(p, st)
-  expect_true(wait_until(.Call(kioto:::kio_map_info, st$wrap)$cursor > 0))
+  expect_true(wait_until(.Call(kioto:::kio_map_info, st[["wrap"]])[["cursor"]] > 0))
   # the lone worker is inside the runner, so this task can only complete
   # through a doorbell help beat — its result proves one ran
   expect_identical(kio_collect(kio_submit(p, "quick"), timeout = 5), "quick")
   # the announce is gone: the kill below lands in the lost-announce state
-  expect_true(wait_until(kio_pool_dump(p)$workers$in_flight[1L] == -1L))
-  pid <- kio_pool_dump(p)$workers$pid[1L]
+  expect_true(wait_until(kio_pool_dump(p)[["workers"]][["in_flight"]][1L] == -1L))
+  pid <- kio_pool_dump(p)[["workers"]][["pid"]][1L]
   kill_hard(pid)
   e <- tryCatch(
     kioto:::map_collect(p, st, deadline = kioto:::mono_time() + 30),
@@ -338,8 +344,8 @@ test_that("a runner's announce lost to a help beat still fails as died", {
   )
   expect_s3_class(e, "kio_error_worker_died")
   expect_match(conditionMessage(e), "worker died while executing map elements")
-  expect_identical(e$slot, 0L)
-  expect_identical(e$pid, pid)
+  expect_identical(e[["slot"]], 0L)
+  expect_identical(e[["pid"]], pid)
   expect_true(kio_pool_stop(p, timeout = 10))
 })
 
@@ -360,7 +366,7 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
   # the executing chunk finishes, its publish CAS consumes the CANCEL; the
   # queued chunk drops at claim: every slot frees without a collect
   expect_true(wait_until(
-    identical(unname(kio_pool_status(p)$tasks), rep(0L, 5L)),
+    identical(unname(kio_pool_status(p)[["tasks"]]), rep(0L, 5L)),
     timeout = 10
   ))
   expect_identical(
@@ -403,9 +409,9 @@ test_that("a nested map fans out over the deque and peers steal it", {
     rdv = rdv
   )
   expect_identical(kio_collect(t, timeout = 30), as.list(1:16 * 10L))
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   # the outer worker's chunks were stolen by its idle peer
-  expect_gte(sum(kio_pool_stats(p)$workers$steals), 1)
+  expect_gte(sum(kio_pool_stats(p)[["workers"]][["steals"]]), 1)
   expect_true(kio_pool_stop(p))
   unlink(rdv, recursive = TRUE)
 })
@@ -432,7 +438,7 @@ test_that("a mori-shared x rides the descriptor as its identifier", {
   x <- mori::share(as.numeric(1:100) * 0.5)
   p <- kio_pool(n_workers = 2L)
   st <- kioto:::map_stage(p, x, identity, list())
-  expect_false(st$xraw) # ALTREP: reduces via the hooks, never memcpy'd
+  expect_false(st[["xraw"]]) # ALTREP: reduces via the hooks, never memcpy'd
   r <- kio_map(p, x, function(v) v * 2, .timeout = 60)
   expect_identical(r, lapply(as.numeric(1:100) * 0.5, function(v) v * 2))
   expect_true(kio_pool_stop(p))
@@ -491,8 +497,8 @@ test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
     kioto:::map_collect(p, st, deadline = kioto:::mono_time() + 30),
     as.list(1:40)
   )
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
-  expect_gte(sum(kio_pool_stats(p)$workers$helps), 1)
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
+  expect_gte(sum(kio_pool_stats(p)[["workers"]][["helps"]]), 1)
   expect_true(kio_pool_stop(p))
 })
 
@@ -500,7 +506,7 @@ test_that("a map submitted into a busy pool regains freed workers", {
   skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   # pin both workers asymmetrically, then submit the map into the busy
   # pool: nobody is parked, so the runner pushes ring the doorbell. The
   # first worker to free claims runner 0 and its first help beat re-homes
@@ -510,7 +516,7 @@ test_that("a map submitted into a busy pool regains freed workers", {
   # leaving the other at a single task)
   pin1 <- kio_submit(p, Sys.sleep(0.3))
   pin2 <- kio_submit(p, Sys.sleep(1))
-  expect_true(wait_until(kio_pool_status(p)$parked == 0L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 0L))
   x <- seq_len(40) + 0 # non-ALTREP doubles: the region path
   st <- kioto:::map_stage(
     p,
@@ -531,8 +537,8 @@ test_that("a map submitted into a busy pool regains freed workers", {
   # both workers executed map work: one pin plus at least one map share
   # each — no wall-time assertions (CI timing, see test-benchmark.R), and
   # the counters mirror only at park cadence
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
-  expect_true(all(kio_pool_stats(p)$workers$tasks >= 2))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
+  expect_true(all(kio_pool_stats(p)[["workers"]][["tasks"]] >= 2))
   expect_true(kio_pool_stop(p))
 })
 
@@ -540,13 +546,13 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
   skip_on_cran()
   skip_if_no_child_kioto()
   p <- kio_pool(n_workers = 2L)
-  expect_true(wait_until(kio_pool_status(p)$parked == 2L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 2L))
   # asymmetric pins as above, sized so the re-homer is killed while its
   # peer is still pinned — the re-homed runner must sit unexecuted in the
   # dead worker's deque when the kill lands
   pin1 <- kio_submit(p, Sys.sleep(1))
   pin2 <- kio_submit(p, Sys.sleep(5))
-  expect_true(wait_until(kio_pool_status(p)$parked == 0L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 0L))
   x <- seq_len(8) + 0 # non-ALTREP doubles: the region path
   st <- kioto:::map_stage(
     p,
@@ -565,16 +571,18 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
   expect_true(wait_until(
     {
       d <- kio_pool_dump(p)
-      dq <- d$workers$bottom - d$workers$top
+      dq <- d[["workers"]][["bottom"]] - d[["workers"]][["top"]]
       hit <- any(dq == 1)
       if (hit) {
-        victim <- d$workers$pid[which(dq == 1)[1L]]
+        victim <- d[["workers"]][["pid"]][which(dq == 1)[1L]]
       }
       hit
     },
     timeout = 10
   ))
-  stopifnot(victim > 0) # a failed gate must never reach kill(-1)
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   # the re-homer died mid-runner: its unpublished batch history is lost
   # and collect raises — the regression under test is no wedge, not
@@ -589,12 +597,12 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
   # the survivor drains the orphaned deque — the re-homed entry drops at
   # the CANCEL skip once collect's cancel lands — and the pool empties
   expect_true(wait_until(
-    identical(unname(kio_pool_status(p)$tasks), rep(0L, 5L)),
+    identical(unname(kio_pool_status(p)[["tasks"]]), rep(0L, 5L)),
     timeout = 30
   ))
   d <- kio_pool_dump(p)
-  expect_identical(nrow(d$tasks), 0L)
-  expect_true(all(d$workers$bottom - d$workers$top <= 0))
+  expect_identical(nrow(d[["tasks"]]), 0L)
+  expect_true(all(d[["workers"]][["bottom"]] - d[["workers"]][["top"]] <= 0))
   expect_true(kio_pool_stop(p))
 })
 
@@ -645,7 +653,7 @@ test_that("a mid-map worker death reports the gap between survivor batches", {
   # all workers parked before submit: the three morsels claim in one wave,
   # so the slow middle morsel (elements 3-4) is still executing when the
   # fast outer ones have published — their histories straddle its range
-  expect_true(wait_until(kio_pool_status(p)$parked == 3L))
+  expect_true(wait_until(kio_pool_status(p)[["parked"]] == 3L))
   st <- kioto:::map_stage(
     p,
     1:6,
@@ -663,25 +671,27 @@ test_that("a mid-map worker death reports the gap between survivor batches", {
   expect_true(wait_until(
     {
       d <- kio_pool_dump(p)
-      pend <- d$tasks[d$tasks$status == "pending", ]
-      hit <- sum(d$tasks$status == "ok") == 2L &&
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      hit <- sum(d[["tasks"]][["status"]] == "ok") == 2L &&
         nrow(pend) == 1L &&
-        pend$worker >= 0L
+        pend[["worker"]] >= 0L
       if (hit) {
-        victim <- d$workers$pid[pend$worker + 1L]
+        victim <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
       }
       hit
     },
     timeout = 10
   ))
-  stopifnot(victim > 0) # a failed gate must never reach kill(-1)
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   e <- tryCatch(
     kioto:::map_collect(p, st, deadline = kioto:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "kio_error_worker_died")
-  el <- e$elements
+  el <- e[["elements"]]
   lost <- unlist(lapply(seq_len(nrow(el)), function(r) {
     seq.int(el[r, 1L], el[r, 2L])
   }))

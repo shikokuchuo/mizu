@@ -28,7 +28,7 @@
 # a listener, host death while a non-interactive peer is parked would be
 # a permanent hang, not a late detection.
 .onLoad <- function(libname, pkgname) {
-  if (.Machine$sizeof.pointer < 8L) {
+  if (.Machine[["sizeof.pointer"]] < 8L) {
     stop(
       "kioto requires 64-bit R: its cross-process wire formats depend on ",
       "lock-free 64-bit atomics",

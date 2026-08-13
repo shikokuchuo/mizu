@@ -173,7 +173,7 @@ cat(sprintf(
   packageVersion("kioto"),
   packageVersion("mirai"),
   getRversion(),
-  R.version$platform
+  R.version[["platform"]]
 ))
 
 # 1. sequential round-trip -----------------------------------------------------
@@ -331,32 +331,33 @@ payload_label <- function(size) {
 }
 
 for (pl in payloads) {
-  x <- runif(pl$size)
-  n <- pl$n
+  x <- runif(pl[["size"]])
+  n <- pl[["n"]]
   with_pool(
     1L,
     function(p) {
-      stopifnot(identical(
-        kio_collect(kio_submit(p, x, x = x), timeout = 30),
-        x
-      ))
-      note_us(payload_label(pl$size), "kioto pool", n, function() {
+      if (!identical(kio_collect(kio_submit(p, x, x = x), timeout = 30), x)) {
+        stop("pool roundtrip mismatch")
+      }
+      note_us(payload_label(pl[["size"]]), "kioto pool", n, function() {
         for (i in seq_len(n)) {
           kio_collect(kio_submit(p, x, x = x), timeout = 30)
         }
       })
     },
-    pl$args
+    pl[["args"]]
   )
 }
 
 each_daemons(1L, "mirai", function(fw) {
   mirai(NULL)[]
   for (pl in payloads) {
-    x <- runif(pl$size)
-    n <- pl$n
-    stopifnot(identical(mirai(x, .args = list(x = x))[], x))
-    note_us(payload_label(pl$size), fw, n, function() {
+    x <- runif(pl[["size"]])
+    n <- pl[["n"]]
+    if (!identical(mirai(x, .args = list(x = x))[], x)) {
+      stop("mirai roundtrip mismatch")
+    }
+    note_us(payload_label(pl[["size"]]), fw, n, function() {
       for (i in seq_len(n)) {
         mirai(x, .args = list(x = x))[]
       }
@@ -421,7 +422,7 @@ with_channel(
         want <- min(4096L, n - sent)
         sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
       }
-      stopifnot(identical(kio_recv(ch, 60), n))
+      if (!identical(kio_recv(ch, 60), n)) stop("stream count mismatch")
     }
     stream_round()
     note_rate(
@@ -457,7 +458,9 @@ repeat {
       for (i in seq_len(n)) {
         send(s, 1L, mode = "raw", block = TRUE)
       }
-      stopifnot(identical(recv(s, mode = "integer", block = TRUE), n))
+      if (!identical(recv(s, mode = "integer", block = TRUE), n)) {
+        stop("stream count mismatch")
+      }
     }
     nn_round()
     note_rate("streaming", "nanonext pair", n, nn_round, "msg/s")
@@ -621,14 +624,14 @@ each_daemons(4L, "mirai_map", function(fw) {
 
 cat("\n== summary ==\n")
 df <- do.call(rbind, results)
-df <- df[order(match(df$scenario, unique(df$scenario))), ]
+df <- df[order(match(df[["scenario"]], unique(df[["scenario"]]))), ]
 cat(
   sprintf(
     "  %-20s %-20s %12s %s\n",
-    df$scenario,
-    df$framework,
-    formatC(df$value, format = "f", digits = 1, big.mark = ","),
-    df$unit
+    df[["scenario"]],
+    df[["framework"]],
+    formatC(df[["value"]], format = "f", digits = 1, big.mark = ","),
+    df[["unit"]]
   ),
   sep = ""
 )

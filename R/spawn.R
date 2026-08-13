@@ -5,7 +5,7 @@
 rscript_path <- function() {
   file.path(
     R.home("bin"),
-    if (.Platform$OS.type == "windows") "Rscript.exe" else "Rscript"
+    if (.Platform[["OS.type"]] == "windows") "Rscript.exe" else "Rscript"
   )
 }
 
@@ -28,10 +28,14 @@ kio_child_script <- function(root) {
 }
 
 kio_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
-  stopifnot(is.character(expr), length(expr) == 1L, !is.na(expr), nzchar(expr))
+  if (
+    !is.character(expr) || length(expr) != 1L || is.na(expr) || !nzchar(expr)
+  ) {
+    stop("kioto: expr must be a non-empty string", call. = FALSE)
+  }
   root <- getNamespaceInfo(asNamespace("kioto"), "path")
   script <- kio_child_script(root)
-  libs <- paste(.libPaths(), collapse = .Platform$path.sep)
+  libs <- paste(.libPaths(), collapse = .Platform[["path.sep"]])
   system2(
     rscript_path(),
     c(shQuote(script), to_hex(expr), to_hex(libs)),
@@ -46,7 +50,9 @@ kio_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
 # <pid hex>_<counter hex> tail after the platform prefix — is carried in the
 # entry expression; the child prepends its own compiled-in prefix.
 spawn_peer <- function(token, stdout = "", stderr = "") {
-  stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", token))
+  if (!grepl("^[0-9a-f]+_[0-9a-f]+$", token)) {
+    stop("kioto: malformed join token", call. = FALSE)
+  }
   kio_spawn(
     sprintf('kioto:::peer_main("%s")', token),
     stdout = stdout,
@@ -57,7 +63,9 @@ spawn_peer <- function(token, stdout = "", stderr = "") {
 # Spawn a pool worker: the join token and the host-assigned slot index
 # travel as argv, under the same rules as spawn_peer.
 spawn_worker <- function(token, slot, stdout = "", stderr = "") {
-  stopifnot(grepl("^[0-9a-f]+_[0-9a-f]+$", token), slot >= 0)
+  if (!grepl("^[0-9a-f]+_[0-9a-f]+$", token) || slot < 0) {
+    stop("kioto: malformed join token or slot", call. = FALSE)
+  }
   kio_spawn(
     sprintf('kioto:::worker_main("%s",%dL)', token, as.integer(slot)),
     stdout = stdout,

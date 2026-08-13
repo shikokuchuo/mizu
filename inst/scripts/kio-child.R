@@ -11,7 +11,7 @@ libs <- rawToChar(as.raw(strtoi(
   16L
 )))
 Encoding(libs) <- "UTF-8"
-.libPaths(strsplit(libs, .Platform$path.sep, fixed = TRUE)[[1L]])
+.libPaths(strsplit(libs, .Platform[["path.sep"]], fixed = TRUE)[[1L]])
 n <- nchar(args[[1L]])
 expr <- rawToChar(as.raw(strtoi(
   substring(args[[1L]], seq.int(1L, n, 2L), seq.int(2L, n, 2L)),
