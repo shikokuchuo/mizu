@@ -207,3 +207,71 @@ test_that("worker-only entry points reject unfit handles", {
   .Call(kioto:::kio_pool_leave, wk)
   .Call(kioto:::kio_pool_destroy, ctrl)
 })
+
+test_that("a pool region past the size budget refuses before allocating", {
+  expect_error(
+    .Call(kioto:::kio_pool_create, 64L, 64L, 256L, 2^24, 256L, 2^20),
+    "pool region too large"
+  )
+})
+
+test_that("controller-only entries reject worker handles", {
+  p <- pool_pair()
+  expect_error(.Call(kioto:::kio_pool_destroy, p$wk),
+               "only the controller can destroy")
+  expect_error(.Call(kioto:::kio_pool_stop_call, p$wk, 5),
+               "only the controller can stop")
+  expect_error(.Call(kioto:::kio_pool_retire, p$wk, 0L),
+               "only the controller can retire")
+  expect_error(.Call(kioto:::kio_pool_ready_wait, p$wk, 0L, 5),
+               "only the controller can wait")
+  pool_end(p)
+})
+
+test_that("worker-only entries reject the controller handle", {
+  p <- pool_pair()
+  expect_error(.Call(kioto:::kio_pool_leave, p$ctrl), "not a worker handle")
+  expect_error(.Call(kioto:::kio_pool_step, p$ctrl, 0), "not a worker handle")
+  expect_error(.Call(kioto:::kio_pool_deque_pull, p$ctrl, 1L),
+               "not a worker handle")
+  expect_error(.Call(kioto:::kio_pool_help_once, p$ctrl),
+               "not a worker handle")
+  expect_error(.Call(kioto:::kio_pool_map_cache, p$ctrl),
+               "not a worker handle")
+  expect_error(.Call(kioto:::kio_pool_run_outcome, p$ctrl, NULL),
+               "not a worker handle")
+  pool_end(p)
+})
+
+test_that("worker wait/retire validate their slot arguments", {
+  p <- pool_pair()
+  expect_error(.Call(kioto:::kio_pool_ready_wait, p$ctrl, "x", 5),
+               "expected worker slot indices")
+  expect_error(.Call(kioto:::kio_pool_ready_wait, p$ctrl, 99L, 5),
+               "worker slot index out of range")
+  expect_error(kio_retire_worker(p$ctrl, 99L), "worker slot index out of range")
+  pool_end(p)
+})
+
+test_that("retiring a departed worker errors", {
+  p <- pool_pair()
+  kio_retire_worker(p$ctrl, 0L)
+  expect_identical(pool_step(p), -2L)
+  .Call(kioto:::kio_pool_leave, p$wk)
+  expect_error(kio_retire_worker(p$ctrl, 0L), "worker slot 0 is not live")
+  pool_end(p)
+})
+
+test_that("the map capacity probe requires a live pool and a submitter slot", {
+  p <- pool_pair(max_submitters = 1L)
+  expect_error(.Call(kioto:::kio_pool_map_caps, p$wk),
+               "submitter registry full")
+  pool_end(p)
+  p <- pool_pair()
+  expect_warning(kio_pool_stop(p$ctrl, timeout = 0), "timed out")
+  # stop releases the controller's handle; a joined worker's lives on and
+  # sees the shutdown word
+  expect_error(.Call(kioto:::kio_pool_map_caps, p$wk),
+               class = "kio_error_stopped")
+  .Call(kioto:::kio_pool_leave, p$wk)
+})

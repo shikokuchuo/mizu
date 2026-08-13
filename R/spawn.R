@@ -17,13 +17,20 @@ to_hex <- function(x) paste(charToRaw(enc2utf8(x)), collapse = "")
 # launches share no state and the host environment is never touched, and
 # pure [0-9a-f] has no quoting hazard on any platform. A static runner
 # avoids Rscript -e, whose implementation writes a per-spawn command file.
-kio_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
-  stopifnot(is.character(expr), length(expr) == 1L, !is.na(expr), nzchar(expr))
-  root <- getNamespaceInfo(asNamespace("kioto"), "path")
+# The runner lives at scripts/ once installed, inst/scripts/ in a source
+# tree (a bare load_all)
+kio_child_script <- function(root) {
   script <- file.path(root, "scripts", "kio-child.R")
   if (!file.exists(script)) {
     script <- file.path(root, "inst", "scripts", "kio-child.R")
   }
+  script
+}
+
+kio_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
+  stopifnot(is.character(expr), length(expr) == 1L, !is.na(expr), nzchar(expr))
+  root <- getNamespaceInfo(asNamespace("kioto"), "path")
+  script <- kio_child_script(root)
   libs <- paste(.libPaths(), collapse = .Platform$path.sep)
   system2(
     rscript_path(),

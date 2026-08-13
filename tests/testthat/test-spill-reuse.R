@@ -178,3 +178,23 @@ test_that("a seventeenth distinct region evicts from the mapping cache", {
   }
   pool_end(p)
 })
+
+test_that("eviction between equal-size regions takes the older stamp", {
+  p <- pool_pair()
+  v <- big_obj(1.5e6) # ~12 MB stream: the 16 MB size class, two fit the cap
+  t1 <- kio_submit(p$ctrl, sum(v[[1]]), v = v)
+  t2 <- kio_submit(p$ctrl, sum(v[[1]]), v = v)
+  t3 <- kio_submit(p$ctrl, sum(v[[1]]), v = v)
+  pool_step(p)
+  pool_step(p)
+  pool_step(p)
+  expect_identical(kio_collect(t1, 5), sum(v[[1]]))
+  expect_identical(kio_collect(t2, 5), sum(v[[1]]))
+  expect_identical(kio_collect(t3, 5), sum(v[[1]]))
+  # t3's surrender puts the list past its 32 MB cap: one of the two
+  # equal-size residents is evicted on the stamp tie-break
+  local <- kio_pool_dump(p$ctrl)$local
+  expect_identical(local$fl_entries, 2L)
+  expect_lte(local$fl_bytes, 32 * 2^20)
+  pool_end(p)
+})

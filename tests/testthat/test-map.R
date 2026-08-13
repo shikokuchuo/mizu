@@ -987,3 +987,38 @@ test_that("kio_map validates its arguments", {
   expect_error(kio_map("not a pool", 1:4, identity), "not a pool handle")
   pool_end(p)
 })
+
+test_that("an attributed x leaves the raw section and rides the descriptor", {
+  p <- pool_pair()
+  st <- kioto:::map_stage(
+    p$ctrl,
+    structure(1:6, foo = "bar"),
+    function(i) i * 2L,
+    list(),
+    chunks = 2
+  )
+  expect_false(st$xraw)
+  kioto:::map_submit(p$ctrl, st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p$ctrl, st), as.list(1:6 * 2L))
+  pool_end(p)
+})
+
+test_that("a template type mismatch names the template's type", {
+  p <- pool_pair()
+  expect_error(
+    run_map(p, 1:4, function(i) 1.5, template = logical(1)),
+    "must be type 'logical'"
+  )
+  expect_error(
+    run_map(p, 1:4, function(i) 1.5, template = integer(1)),
+    "must be type 'integer'"
+  )
+  expect_error(
+    run_map(p, 1:4, function(i) "x", template = numeric(1)),
+    "must be type 'double'"
+  )
+  pool_end(p)
+})

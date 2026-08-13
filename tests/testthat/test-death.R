@@ -48,3 +48,14 @@ test_that("stopped watches are inert and handles single-shot", {
   expect_error(.Call(kioto:::kio_death_fired_call, w), "stopped")
   tools::pskill(pid)
 })
+
+test_that("death-watch entries reject foreign handles", {
+  # kio_death_stop_call has no handle_get guard of its own (it is the
+  # finalizer direct) — only the fired probe validates
+  expect_error(.Call(kioto:::kio_death_fired_call, NULL),
+               "not a death-watch handle")
+  p <- channel_pair()
+  expect_error(.Call(kioto:::kio_death_fired_call, p$host),
+               "not a death-watch handle")
+  channel_end(p)
+})

@@ -91,3 +91,43 @@ test_that("an armed trim reads a flipped claim as abandoned thereafter", {
   expect_identical(.Call(kioto:::kio_map_claim_state, h, 0L)$state,
                    "abandoned")
 })
+
+test_that("the map batch entry validates its arguments", {
+  eic <- numeric(1)
+  env <- new.env()
+  expect_error(
+    .Call(kioto:::kio_map_batch, NULL, identity, NULL, 1:10, 0, 0, 5, NULL,
+          eic, env),
+    "invalid map batch range"
+  )
+  expect_error(
+    .Call(kioto:::kio_map_batch, NULL, identity, 1, 1:10, 0, 1, 5, NULL,
+          eic, env),
+    "invalid map dots"
+  )
+  expect_error(
+    .Call(kioto:::kio_map_batch, NULL, identity, NULL, 1:10, 0, 1, 5, NULL,
+          "x", env),
+    "invalid element-index cell"
+  )
+  expect_error(
+    .Call(kioto:::kio_map_batch, NULL, identity, NULL, 1:10, 0, 1, 5, NULL,
+          eic, NULL),
+    "invalid evaluation environment"
+  )
+  expect_error(
+    .Call(kioto:::kio_map_batch, NULL, identity, NULL, 1:10, 0, 1, 5, 1L,
+          eic, env),
+    "invalid RNG stream state"
+  )
+})
+
+test_that("map_open and gather_view validate their inputs", {
+  expect_error(.Call(kioto:::kio_map_open, 1L, TRUE),
+               "expected a map region name")
+  st <- .Call(kioto:::kio_map_stage, list(identity, list()),
+              seq_len(8) + 0, NULL, 8, NULL, 2)
+  h <- .Call(kioto:::kio_map_open, st[[1L]], TRUE)
+  expect_error(.Call(kioto:::kio_map_gather_view, h, NULL, NULL),
+               "no output area")
+})

@@ -125,3 +125,30 @@ test_that("kio_is_sentinel tests provenance, not class", {
   expect_false(kio_is_sentinel(NULL))
   expect_false(kio_is_sentinel("timeout"))
 })
+
+test_that("a finite-timeout empty recv expires both parked and mid-spin", {
+  p <- channel_pair()
+  # parked: the wait outlives the 16 us spin budget, so the bounded sleep
+  # runs out — the post-park deadline exit
+  expect_s3_class(kio_recv(p$host, timeout = 0.05), "kio_timeout")
+  # mid-spin: a deadline inside the spin budget expires before any park
+  expect_s3_class(kio_recv(p$host, timeout = 1e-6), "kio_timeout")
+  channel_end(p)
+})
+
+test_that("an overlong liveness directory is rejected before create", {
+  old <- Sys.getenv("KIOTO_LIVENESS_DIR", unset = NA)
+  on.exit(
+    if (is.na(old)) {
+      Sys.unsetenv("KIOTO_LIVENESS_DIR")
+    } else {
+      Sys.setenv(KIOTO_LIVENESS_DIR = old)
+    },
+    add = TRUE
+  )
+  Sys.setenv(KIOTO_LIVENESS_DIR = strrep("x", 1000))
+  expect_error(
+    .Call(kioto:::kio_channel_create, quote(NULL), 64L, 256L, 4096, FALSE),
+    "liveness directory path too long"
+  )
+})

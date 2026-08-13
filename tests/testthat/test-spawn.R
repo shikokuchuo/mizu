@@ -47,3 +47,19 @@ test_that("spawn_peer admits only prefix-stripped region-name suffixes", {
   expect_error(kioto:::spawn_peer("/kio_1a2b_3c4d"))       # full name, not suffix
   expect_error(kioto:::spawn_peer("1A2B_3C4D"))            # uppercase hex
 })
+
+test_that("the child runner resolves to inst/ in a source layout", {
+  root <- tempfile()
+  dir.create(file.path(root, "inst", "scripts"), recursive = TRUE)
+  file.create(file.path(root, "inst", "scripts", "kio-child.R"))
+  expect_identical(
+    kioto:::kio_child_script(root),
+    file.path(root, "inst", "scripts", "kio-child.R")
+  )
+  dir.create(file.path(root, "scripts"))
+  file.create(file.path(root, "scripts", "kio-child.R"))
+  expect_identical(
+    kioto:::kio_child_script(root),
+    file.path(root, "scripts", "kio-child.R")
+  )
+})

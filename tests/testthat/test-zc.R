@@ -593,3 +593,34 @@ test_that("a peer killed holding a view is force-reclaimed after the verdict", {
   expect_gte(chan_fl(ch), 1L) # the lent region rejoined the list
   kio_close(ch, 10)
 })
+
+test_that("a pairlist inside a list tree rides the layout as a list", {
+  p <- channel_pair(arena_size = 0)
+  x <- list(pl = as.pairlist(list(1, 2)), nums = runif(100000))
+  kio_send(p$host, x)
+  y <- kio_recv(p$peer, 5)
+  expect_true(is_view(y))
+  expect_identical(y$pl, list(1, 2)) # MORL coerces LISTSXP to VECSXP
+  expect_identical(as.numeric(y$nums), x$nums)
+  channel_end(p)
+})
+
+test_that("a re-sent map view degrades to a materializing copy", {
+  p <- pool_pair()
+  st <- kioto:::map_stage(p$ctrl, 1:1000 + 0, function(i) i * 2, list(),
+                          template = numeric(1))
+  kioto:::map_submit(p$ctrl, st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  v <- kioto:::map_collect(p$ctrl, st, kioto:::mono_time() + 30,
+                           collect = "view")
+  expect_true(is_view(v))
+  ch <- channel_pair(arena_size = 0)
+  kio_send(ch$host, v)
+  w <- kio_recv(ch$peer, 5)
+  expect_false(is_view(w))
+  expect_identical(w, 1:1000 * 2 + 0)
+  channel_end(ch)
+  pool_end(p)
+})

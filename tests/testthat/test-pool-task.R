@@ -268,3 +268,31 @@ test_that("a trace-hook error outside any task eval is not attributed", {
   kio_pool_trace(p$wk, NULL)
   pool_end(p)
 })
+
+test_that("a stale task handle reads collected and errors on collect", {
+  p <- pool_pair(result_slots = 8L) # one result slot per submitter
+  t1 <- kio_submit(p$ctrl, 1 + 1)
+  pool_step(p)
+  expect_identical(kio_collect(t1, 5), 2)
+  t2 <- kio_submit(p$ctrl, 2 + 2) # reuses the one slot, bumping its sequence
+  expect_identical(.Call(kioto:::kio_pool_task_state, t1), "collected")
+  expect_false(kio_cancel(t1))
+  expect_error(kio_collect(t1, 5), "already collected or invalidated")
+  pool_step(p)
+  expect_identical(kio_collect(t2, 5), 4)
+  pool_end(p)
+})
+
+test_that("cancel is FALSE once collected and once the pool is gone", {
+  p <- pool_pair()
+  t <- kio_submit(p$ctrl, 1 + 1)
+  pool_step(p)
+  expect_identical(kio_collect(t, 5), 2)
+  expect_false(kio_cancel(t))
+  pool_end(p)
+  expect_false(kio_cancel(t))
+})
+
+test_that("task_state rejects non-task handles", {
+  expect_error(.Call(kioto:::kio_pool_task_state, NULL), "not a task handle")
+})

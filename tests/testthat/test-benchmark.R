@@ -34,6 +34,9 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
       total <- 0L
       repeat {
         xs <- kio_recv_batch(ch, n = 4096L, timeout = 30)
+        if (inherits(xs, "kio_timeout")) {
+          next # an idle producer is not terminal (cf. echo_expr)
+        }
         if (inherits(xs, "kio_sentinel")) {
           break
         }

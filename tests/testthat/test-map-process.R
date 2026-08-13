@@ -637,3 +637,55 @@ test_that("a short map completes on free workers while a peer is pinned", {
   expect_null(kio_collect(pin, timeout = 30))
   expect_true(kio_pool_stop(p))
 })
+
+test_that("a mid-map worker death reports the gap between survivor batches", {
+  skip_on_cran()
+  skip_if_no_child_kioto()
+  p <- kio_pool(n_workers = 3L)
+  # all workers parked before submit: the three morsels claim in one wave,
+  # so the slow middle morsel (elements 3-4) is still executing when the
+  # fast outer ones have published — their histories straddle its range
+  expect_true(wait_until(kio_pool_status(p)$parked == 3L))
+  st <- kioto:::map_stage(
+    p,
+    1:6,
+    function(i) {
+      if (i > 2L && i < 5L) {
+        Sys.sleep(30)
+      }
+      i
+    },
+    list(),
+    chunks = 3
+  )
+  kioto:::map_submit(p, st)
+  victim <- -1
+  expect_true(wait_until(
+    {
+      d <- kio_pool_dump(p)
+      pend <- d$tasks[d$tasks$status == "pending", ]
+      hit <- sum(d$tasks$status == "ok") == 2L &&
+        nrow(pend) == 1L &&
+        pend$worker >= 0L
+      if (hit) {
+        victim <- d$workers$pid[pend$worker + 1L]
+      }
+      hit
+    },
+    timeout = 10
+  ))
+  stopifnot(victim > 0) # a failed gate must never reach kill(-1)
+  kill_hard(victim)
+  e <- tryCatch(
+    kioto:::map_collect(p, st, deadline = kioto:::mono_time() + 30),
+    error = identity
+  )
+  expect_s3_class(e, "kio_error_worker_died")
+  el <- e$elements
+  lost <- unlist(lapply(seq_len(nrow(el)), function(r) {
+    seq.int(el[r, 1L], el[r, 2L])
+  }))
+  expect_true(all(c(3, 4) %in% lost))
+  expect_true(all(lost %in% 1:6))
+  expect_true(kio_pool_stop(p))
+})

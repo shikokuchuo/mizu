@@ -114,10 +114,15 @@ channel_pair <- function(
   list(host = host, peer = peer)
 }
 
-# The canonical peer expression: echo everything until a sentinel arrives
+# The canonical peer expression: echo everything until close or host death.
+# An idle timeout is not terminal — under instrumentation (valgrind) the
+# producer can exceed any idle bound — so only other sentinels end the loop.
 echo_expr <- quote(
   repeat {
     x <- kio_recv(ch, timeout = 30)
+    if (inherits(x, "kio_timeout")) {
+      next
+    }
     if (inherits(x, "kio_sentinel")) {
       break
     }

@@ -45,3 +45,21 @@ test_that("sentinels print as their class", {
   expect_s3_class(s, "kio_timeout")
   expect_output(print(s), "<kio_timeout>", fixed = TRUE)
 })
+
+test_that("a channel whose peer is gone prints the verdict", {
+  p <- channel_pair()
+  host <- p$host
+  rm(p)
+  invisible(gc()) # the peer handle's finalizer releases its liveness lock
+  expect_output(print(host), "peer gone", fixed = TRUE)
+  expect_true(kio_close(host, timeout = 5))
+})
+
+test_that("a prepared map prints its staging", {
+  p <- pool_pair(slot_size = 512L)
+  f <- function(i) i + 1L
+  environment(f) <- globalenv()
+  pm <- kio_map_prepare(p$ctrl, 1:4, f)
+  expect_output(print(pm), "inline blob", fixed = TRUE)
+  pool_end(p)
+})
