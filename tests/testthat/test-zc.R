@@ -126,6 +126,7 @@ test_that("pool results cross as views; a held result pins the worker's region",
 })
 
 test_that("zc churn falls back to SHM_RAW: reuse resumes without any GC", {
+  skip_on_os(c("mac", "windows")) # the churn signal is Linux-only (spill_fl_pop)
   p <- pool_pair()
   x <- runif(20000) # 160 KB: past the zc floor, spills
   # collected views pin their regions until GC (none here), so SHM_VEC
@@ -153,7 +154,8 @@ test_that("the churn fallback clears once lent regions reclaim", {
   }
   rm(held)
   invisible(gc())
-  for (i in seq_len(3L)) { # the sweeps reclaim; staging returns to SHM_VEC
+  for (i in seq_len(3L)) {
+    # the sweeps reclaim; staging returns to SHM_VEC
     t <- kio_submit(p$ctrl, x, x = x)
     pool_step(p)
     r <- kio_collect(t, 5)
@@ -163,6 +165,7 @@ test_that("the churn fallback clears once lent regions reclaim", {
 })
 
 test_that("channel zc churn falls back to the copy tiers and recovers", {
+  skip_on_os(c("mac", "windows")) # the churn signal is Linux-only (spill_fl_pop)
   p <- channel_pair(arena_size = 0)
   x <- runif(20000) # 160 KB: past the zc floor, spills
   held <- vector("list", 4L) # held views pin their regions: churn

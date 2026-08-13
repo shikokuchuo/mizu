@@ -464,10 +464,10 @@ static int chan_send1(kio_chan *c, SEXP prot, SEXP x) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
        never hold a view (chunk lifetime tracks ring advance). The churn
-       gate (payload.c): while lent regions prove consumer views outlive
-       their traffic, the copy tiers below are cheaper — the arena and
-       SHM_RAW surrender deterministically, where a fresh SHM_VEC region
-       per message would pile up in the ledger */
+       gate (Linux-only, payload.c): while lent regions prove consumer
+       views outlive their traffic, the copy tiers below are cheaper —
+       the arena and SHM_RAW surrender deterministically, where a fresh
+       SHM_VEC region per message would pile up in the ledger */
     chan_reap(c, keepers);
     keep = PROTECT(kio_zc_stage(hdr, payload, x, total, &c->fl));
     nprotect++;

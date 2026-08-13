@@ -197,7 +197,9 @@ typedef struct kio_spill_fl_s {
      just proved consumer-side views outlive their traffic): the signal
      for the copy-tier fallback in kio_payload_stage and chan_send1;
      cleared when a ledger sweep or force-reclaim returns a lent region
-     to the free list */
+     to the free list. Raised on Linux only (spill_fl_pop): fresh
+     regions pre-fault there; macOS/Windows creates are lazy and
+     SHM_VEC wins even under churn */
   int churn;
 } kio_spill_fl;
 

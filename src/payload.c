@@ -90,12 +90,9 @@ void kio_spill_fl_surrender(kio_spill_fl *fl, SEXP keepers, R_xlen_t at) {
 
 /* Smallest entry with size >= n, removed from the list. A miss runs a
    full ledger sweep (zero-count lent regions rejoin here) and retries
-   once — the free-list-miss full sweep of the release protocol. A miss
-   with lent regions still outstanding sets fl->churn: the sweep just
-   proved consumer-side views are outliving their traffic — the signal
-   for kio_payload_stage's SHM_RAW fallback. The wrap's only reference
-   is the returned value: the caller must PROTECT before any
-   allocation. */
+   once — the free-list-miss full sweep of the release protocol. The
+   wrap's only reference is the returned value: the caller must PROTECT
+   before any allocation. */
 static SEXP spill_fl_pop(kio_spill_fl *fl, size_t n) {
   for (int attempt = 0; attempt < 2; attempt++) {
     int best = -1;
@@ -115,7 +112,18 @@ static SEXP spill_fl_pop(kio_spill_fl *fl, size_t n) {
     if (attempt > 0 || fl->led_n == 0) break;
     kio_ledger_sweep(fl, KIO_LEDGER_MAX);
   }
+#ifdef __linux__
+  /* A miss with lent regions still outstanding: the sweep just proved
+     consumer-side views outlive their traffic. The signal is Linux-only
+     because only there is a fresh region dear: the vendored create
+     pre-faults every page (posix_fallocate + MAP_POPULATE, SIGBUS-
+     proofing tmpfs), so a fresh region per SHM_VEC payload pays a full
+     extra pass over the bytes and the copy tiers' deterministic reuse
+     wins. macOS and Windows creates are lazy — the layout write faults
+     the pages it touches anyway — so SHM_VEC (one layout write, no
+     receive copy) beats the fallback even under churn. */
   if (fl->led_n > 0) fl->churn = 1;
+#endif
   return R_NilValue;
 }
 
@@ -233,10 +241,10 @@ SEXP kio_payload_stage(kio_slot_hdr *hdr, unsigned char *payload,
   /* SHM_VEC: mori-layout-eligible objects (atomic vectors, strings, list
      trees) past the budget and the zc floor — cheap probes keep the
      layout-size walk off the inline path (zc.c). Under churn (the last
-     spill miss swept the lent ledger and reclaimed nothing) the fresh
-     region per SHM_VEC payload is dearer than the serialize copy: fall
-     to SHM_RAW, whose region surrenders deterministically at
-     consumer-done. */
+     spill miss swept the lent ledger and reclaimed nothing — a Linux-
+     only signal, see spill_fl_pop) the fresh region per SHM_VEC payload
+     is dearer than the serialize copy: fall to SHM_RAW, whose region
+     surrenders deterministically at consumer-done. */
   if ((fl == NULL || !fl->churn) && kio_zc_eligible(x, inline_max, &total))
     return kio_zc_stage(hdr, payload, x, total, fl);
   size_t n = kio_serialize_bounded(payload, inline_max, x);
