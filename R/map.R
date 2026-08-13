@@ -721,27 +721,30 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
       # terminal outcomes come back kio_caught-boxed (only C boxes, so an
       # OK result that is itself a condition stays bare) — no handler frame
       v <- .Call(kio_pool_collect_try, st$handles[[k]], deadline)
-      if (inherits(v, "kio_caught")) {
-        v <- v[[1L]]
-        map_cancel(st)
-        if (inherits(v, "kio_error_worker_died")) {
-          elts <- cbind(lo = st$lo[[k]], hi = st$hi[[k]])
-          stop_kio(
-            "kio_error_worker_died",
-            sprintf(
-              "kioto: worker died while executing map elements %s",
-              map_ranges_label(elts)
-            ),
-            slot = v$slot,
-            pid = v$pid,
-            elements = elts
-          )
+      # terminal outcomes are all classed; a bare value skips every check
+      if (is.object(v)) {
+        if (inherits(v, "kio_caught")) {
+          v <- v[[1L]]
+          map_cancel(st)
+          if (inherits(v, "kio_error_worker_died")) {
+            elts <- cbind(lo = st$lo[[k]], hi = st$hi[[k]])
+            stop_kio(
+              "kio_error_worker_died",
+              sprintf(
+                "kioto: worker died while executing map elements %s",
+                map_ranges_label(elts)
+              ),
+              slot = v$slot,
+              pid = v$pid,
+              elements = elts
+            )
+          }
+          stop(v)
         }
-        stop(v)
-      }
-      if (inherits(v, "kio_timeout")) {
-        map_cancel(st)
-        return(v)
+        if (inherits(v, "kio_timeout")) {
+          map_cancel(st)
+          return(v)
+        }
       }
       st$handles[k] <- list(NULL)
       out[seq.int(st$lo[[k]], st$hi[[k]])] <- v
@@ -767,30 +770,34 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
     # deadline) expired with the slot still pending
     consume <- function(k, deadline) {
       v <- .Call(kio_pool_collect_try, st$handles[[k]], deadline)
-      if (inherits(v, "kio_timeout")) {
-        return(FALSE)
+      # terminal outcomes are all classed; a bare value skips every check
+      if (is.object(v)) {
+        if (inherits(v, "kio_timeout")) {
+          return(FALSE)
+        }
+        if (inherits(v, "kio_caught")) {
+          v <- v[[1L]]
+          # fail fast: peers stop within ~a batch (idempotent — an erroring
+          # runner already stored this before its ERR publish)
+          .Call(kio_map_cancel_set, st$wrap)
+          if (inherits(v, "kio_error_worker_died")) {
+            if (is.null(died)) died <<- v
+          } else if (!is.null(v$kio_map_index)) {
+            errs[[length(errs) + 1L]] <<- v
+            # the erroring runner's completed batches still count against
+            # the lost set; only its uncompleted batch reports lost
+            if (!is.null(v$kio_map_hist)) {
+              hists[[length(hists) + 1L]] <<- v$kio_map_hist
+            }
+          } else {
+            map_cancel(st)
+            stop(v)
+          }
+          st$handles[k] <- list(NULL)
+          return(TRUE)
+        }
       }
       st$handles[k] <- list(NULL)
-      if (inherits(v, "kio_caught")) {
-        v <- v[[1L]]
-        # fail fast: peers stop within ~a batch (idempotent — an erroring
-        # runner already stored this before its ERR publish)
-        .Call(kio_map_cancel_set, st$wrap)
-        if (inherits(v, "kio_error_worker_died")) {
-          if (is.null(died)) died <<- v
-        } else if (!is.null(v$kio_map_index)) {
-          errs[[length(errs) + 1L]] <<- v
-          # the erroring runner's completed batches still count against
-          # the lost set; only its uncompleted batch reports lost
-          if (!is.null(v$kio_map_hist)) {
-            hists[[length(hists) + 1L]] <<- v$kio_map_hist
-          }
-        } else {
-          map_cancel(st)
-          stop(v)
-        }
-        return(TRUE)
-      }
       hists[[length(hists) + 1L]] <<- v[1:2]
       if (!st$direct) {
         for (b in seq_along(v[[3L]])) {
@@ -804,6 +811,7 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
     pending <- seq_len(st$R)
     while (length(pending)) {
       progress <- FALSE
+      completed <- logical(st$R)
       for (k in pending) {
         if (mono_time() >= deadline) {
           map_cancel(st)
@@ -825,9 +833,12 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
           FALSE # idle: defer, the trim trigger unarmed
         }
         if (done) {
-          pending <- setdiff(pending, k)
+          completed[[k]] <- TRUE
           progress <- TRUE
         }
+      }
+      if (progress) {
+        pending <- pending[!completed[pending]]
       }
       if (length(pending) && !progress) {
         # every uncollected handle defers (nothing claimed yet:
@@ -840,7 +851,7 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
           return(.Call(kio_map_timeout_call))
         }
         if (consume(pending[[1L]], min(deadline, now + 0.05))) {
-          pending <- setdiff(pending, pending[[1L]])
+          pending <- pending[-1L]
         }
       }
     }

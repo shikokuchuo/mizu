@@ -659,8 +659,10 @@ static int chan_wait_msg(kio_chan *c, SEXP prot, double timeout_s) {
     kio_park(&c->self_pk, e, ms);
     atomic_store_explicit(c->self_parked, 0u, memory_order_relaxed);
     R_CheckUserInterrupt();
-    if (deadline >= 0 && kio_now() >= deadline)
-      return chan_rx_avail(c) ? KIO_ST_OK : KIO_ST_TIMEOUT;
+    /* availability first: a wake that delivered a message returns OK at
+       the loop top regardless of the clock, so skip the read for it */
+    if (deadline >= 0 && !chan_rx_avail(c) && kio_now() >= deadline)
+      return KIO_ST_TIMEOUT;
   }
 }
 
