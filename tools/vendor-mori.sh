@@ -14,10 +14,9 @@
 
 set -euo pipefail
 
-PIN="d3534936aed6959ce6475c0dcde575fc97bb871c"  # mori: embedder API —
-                                               # layout writer, wrap
-                                               # constructors with release
-                                               # hook, wire hooks
+PIN="0d3cca1b851c0c7fd1130b9f3a86f88dc6ad39b1"  # mori: embedder API +
+                                               # write-pass sizing dedup
+                                               # (counted-write serialize)
 REF="${1:-$PIN}"
 REPO="${MORI_REPO:-https://github.com/shikokuchuo/mori}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor"

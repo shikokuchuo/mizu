@@ -210,7 +210,7 @@ SEXP kio_payload_spill_shm(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
                            size_t n, kio_spill_fl *fl) {
   mori_shm *shm = NULL;
   SEXP wrap = kio_spill_region_get(fl, n, &shm);       /* PROTECTed */
-  mori_serialize_into((unsigned char *) shm->addr, n, x);
+  mori_serialize_into((unsigned char *) shm->addr, x);
   hdr->kind = KIO_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;

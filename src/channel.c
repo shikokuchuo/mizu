@@ -480,7 +480,7 @@ static int chan_send1(kio_chan *c, SEXP prot, SEXP x) {
     } else {
       uint64_t off;
       if (chan_arena_alloc(c, keepers, MORI_ALIGN64(n), &off)) {
-        mori_serialize_into(r->arena + off, n, x);
+        mori_serialize_into(r->arena + off, x);
         hdr->kind = KIO_KIND_ARENA;
         hdr->len = 0;
         hdr->aux = off;
@@ -767,7 +767,7 @@ SEXP kio_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
   kio_preamble_write(b, &p);
   if (Rf_asLogical(spin) == TRUE)
     *(uint32_t *) (b + KIO_OFF_FLAGS) = KIO_FLAG_SPIN;
-  mori_serialize_into(b + drop_off, expr_size, expr);
+  mori_serialize_into(b + drop_off, expr);
   memcpy(b + livedir_off, livedir, livedir_len);
   chan_wire(c, &p);
   c->tx.aend = calloc((size_t) cap, sizeof(uint64_t));
