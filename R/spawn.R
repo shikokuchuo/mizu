@@ -85,10 +85,24 @@ spawn_worker <- function(token, slot, stdout = "", stderr = "") {
 #'   to the console of the host, `FALSE` discards it, and a file name
 #'   collects it in that file.
 #'
+#'   On Windows, the child holds a redirection file without sharing for
+#'   its lifetime. Only one live process can use a file at a time.
+#'   Other processes cannot read the file while the child lives. A
+#'   second spawn with the same file fails to launch. In a pool, this
+#'   failure causes a startup timeout. A custom launcher that sets the
+#'   file name from `slot` gives one log file per worker (see examples).
+#'
 #' @return A `function(token, slot)`. [kio_pool()] and
 #'   [kio_spawn_workers()] call it with both arguments to spawn the worker
 #'   for `slot`. [kio_channel()] calls it with `token` alone to spawn the
 #'   peer.
+#'
+#' @examples
+#' # One log file per worker on Windows.
+#' launcher <- function(token, slot) {
+#'   f <- if (missing(slot)) "peer.log" else sprintf("worker-%d.log", slot)
+#'   kio_launcher(stderr = f)(token, slot)
+#' }
 #'
 #' @export
 kio_launcher <- function(stdout = "", stderr = "") {

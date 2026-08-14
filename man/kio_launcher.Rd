@@ -10,7 +10,14 @@ kio_launcher(stdout = "", stderr = "")
 \item{stdout, stderr}{forwarded to \code{\link[=system2]{system2()}}. The default \code{""} sends
 the child output (for a channel peer, including its error epilogue)
 to the console of the host, \code{FALSE} discards it, and a file name
-collects it in that file.}
+collects it in that file.
+
+On Windows, the child holds a redirection file without sharing for
+its lifetime. Only one live process can use a file at a time.
+Other processes cannot read the file while the child lives. A
+second spawn with the same file fails to launch. In a pool, this
+failure causes a startup timeout. A custom launcher that sets the
+file name from \code{slot} gives one log file per worker (see examples).}
 }
 \value{
 A \verb{function(token, slot)}. \code{\link[=kio_pool]{kio_pool()}} and
@@ -23,4 +30,12 @@ Returns the launcher that \code{\link[=kio_channel]{kio_channel()}}, \code{\link
 \code{\link[=kio_spawn_workers]{kio_spawn_workers()}} use unless given a custom one. It spawns a
 detached child R process through a static \code{Rscript} runner, with the
 entry expression and the \code{.libPaths()} of the host hex-encoded in argv.
+}
+\examples{
+# One log file per worker on Windows.
+launcher <- function(token, slot) {
+  f <- if (missing(slot)) "peer.log" else sprintf("worker-\%d.log", slot)
+  kio_launcher(stderr = f)(token, slot)
+}
+
 }
