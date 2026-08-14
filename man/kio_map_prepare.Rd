@@ -30,9 +30,10 @@ granularity), or \code{NULL} for the default. See the Granularity section.}
 
 \item{pm}{a prepared-map handle from \code{\link[=kio_map_prepare]{kio_map_prepare()}}.}
 
-\item{.seed}{\code{NULL} (default: no RNG guarantees, no cost), or a scalar
-integer that derives reproducible per-element RNG streams. See the
-Reproducible RNG section.}
+\item{.seed}{\code{NULL} (default: no RNG guarantees, no cost), or a numeric
+vector of length 1 or 2 that derives reproducible per-element RNG
+streams: \code{seed}, or \code{c(seed, offset)} to shift every element's
+stream by \code{offset} positions. See the Reproducible RNG section.}
 
 \item{.timeout}{seconds after which the map gives up, cancels its
 outstanding work, and returns the \code{kio_timeout} sentinel (class

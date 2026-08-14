@@ -35,9 +35,10 @@ Keep that environment small, as with any cross-process map.}
 \item{.chunks}{the morsel count of the map (its scheduling
 granularity), or \code{NULL} for the default. See the Granularity section.}
 
-\item{.seed}{\code{NULL} (default: no RNG guarantees, no cost), or a scalar
-integer that derives reproducible per-element RNG streams. See the
-Reproducible RNG section.}
+\item{.seed}{\code{NULL} (default: no RNG guarantees, no cost), or a numeric
+vector of length 1 or 2 that derives reproducible per-element RNG
+streams: \code{seed}, or \code{c(seed, offset)} to shift every element's
+stream by \code{offset} positions. See the Reproducible RNG section.}
 
 \item{.timeout}{seconds after which the map gives up, cancels its
 outstanding work, and returns the \code{kio_timeout} sentinel (class
@@ -162,7 +163,10 @@ L'Ecuyer-CMRG streams: element \code{i} runs under the stream \code{i} jumps of
 installs. The own \code{.Random.seed} of the caller is not touched, and the
 RNG state of each worker is saved and restored around its batches.
 Because the streams are per-element, the results are identical for any
-\code{.chunks} value, batch sizing, worker count, or steal order.
+\code{.chunks} value, batch sizing, worker count, or steal order. With
+\code{c(seed, offset)}, element \code{i} runs under the stream of element
+\code{i + offset} of an unoffset run, so a map split across runs or
+processes reproduces the streams of one uninterrupted run.
 }
 
 \section{Nested maps}{

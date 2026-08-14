@@ -163,7 +163,10 @@ mono_time <- function() .Call(kio_now_call)
 #' installs. The own `.Random.seed` of the caller is not touched, and the
 #' RNG state of each worker is saved and restored around its batches.
 #' Because the streams are per-element, the results are identical for any
-#' `.chunks` value, batch sizing, worker count, or steal order.
+#' `.chunks` value, batch sizing, worker count, or steal order. With
+#' `c(seed, offset)`, element `i` runs under the stream of element
+#' `i + offset` of an unoffset run, so a map split across runs or
+#' processes reproduces the streams of one uninterrupted run.
 #'
 #' @section Nested maps:
 #' `kio_map(pool, ...)` inside a task expression uses the own handle of
@@ -203,9 +206,10 @@ mono_time <- function() .Call(kio_now_call)
 #'   `FUN.VALUE`: an atomic vector template that each result must match.
 #' @param .chunks the morsel count of the map (its scheduling
 #'   granularity), or `NULL` for the default. See the Granularity section.
-#' @param .seed `NULL` (default: no RNG guarantees, no cost), or a scalar
-#'   integer that derives reproducible per-element RNG streams. See the
-#'   Reproducible RNG section.
+#' @param .seed `NULL` (default: no RNG guarantees, no cost), or a numeric
+#'   vector of length 1 or 2 that derives reproducible per-element RNG
+#'   streams: `seed`, or `c(seed, offset)` to shift every element's
+#'   stream by `offset` positions. See the Reproducible RNG section.
 #' @param .timeout seconds after which the map gives up, cancels its
 #'   outstanding work, and returns the `kio_timeout` sentinel (class
 #'   `c("kio_timeout", "kio_sentinel")`). `Inf` (the default) waits
@@ -425,6 +429,45 @@ map_swap_x <- function(pm, x) {
   invisible(pm)
 }
 
+# One validation path for .seed, shared by map_stage and map_rearm: NULL
+# stays NULL (unseeded), a scalar derives the base CMRG state, and a
+# length-2 vector pre-seeks that base by seed[2] stream jumps — exact by
+# jump composition (A^a A^b = A^(a+b) over the jump matrices), so element
+# i runs under the stream of element i + seed[2] of an unoffset run, and
+# c(s, 0) is identical to s. Runs once per map, never per element.
+map_seed_state <- function(seed) {
+  if (is.null(seed)) {
+    return(NULL)
+  }
+  n <- length(seed)
+  if (!is.numeric(seed) || n == 0L || n > 2L) {
+    stop(
+      "kioto: .seed must be a numeric vector of length 1 or 2",
+      call. = FALSE
+    )
+  }
+  s <- seed[1L]
+  if (!is.finite(s) || abs(s) > .Machine$integer.max) {
+    stop("kioto: .seed[1] must be an integer", call. = FALSE)
+  }
+  base <- .Call(kio_map_rng_base, s)
+  if (n == 1L) {
+    return(base)
+  }
+  # the fractional check is the one C can't do: kio_map_rng_seek truncates
+  # k to uint64_t, so a fractional offset would silently floor. NA /
+  # negative / fractional get the specific message here; Inf and huge
+  # offsets error on the C side ("invalid stream index")
+  offset <- seed[2L]
+  if (is.na(offset) || offset < 0 || offset != floor(offset)) {
+    stop(
+      "kioto: .seed[2] (stream offset) must be a non-negative integer",
+      call. = FALSE
+    )
+  }
+  .Call(kio_map_rng_seek, base, offset)
+}
+
 # Re-arm a staged map state for another run: per-run seed state (it rides
 # the runner payloads, never the region), a fresh runner count against
 # the live workers, and — on the region path — the O(1) shared-state
@@ -432,13 +475,7 @@ map_swap_x <- function(pm, x) {
 # before. The staged morsel geometry is inherited: batching absorbs
 # worker-count drift between runs.
 map_rearm <- function(pool, st, seed) {
-  st[["seed_state"]] <- if (!is.null(seed)) {
-    seed <- suppressWarnings(as.integer(seed))
-    if (length(seed) != 1L || is.na(seed)) {
-      stop("kioto: .seed must be a scalar integer", call. = FALSE)
-    }
-    .Call(kio_map_rng_base, seed)
-  }
+  st[["seed_state"]] <- map_seed_state(seed)
   if (is.null(st[["blob"]])) {
     caps <- .Call(kio_pool_map_caps, pool)
     if (caps[[2L]] == 0L) {
@@ -551,13 +588,7 @@ map_stage <- function(
   st[["nms"]] <- names(x)
   st[["template"]] <- template
   st[["direct"]] <- direct
-  st[["seed_state"]] <- if (!is.null(seed)) {
-    seed <- suppressWarnings(as.integer(seed))
-    if (length(seed) != 1L || is.na(seed)) {
-      stop("kioto: .seed must be a scalar integer", call. = FALSE)
-    }
-    .Call(kio_map_rng_base, seed)
-  }
+  st[["seed_state"]] <- map_seed_state(seed)
 
   # free_rs counts FREE slots in this submitter's own subrange (claiming a
   # worker's submitter slot on nested first use); zero errors here, before
