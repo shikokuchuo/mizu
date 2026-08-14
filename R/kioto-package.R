@@ -15,6 +15,7 @@
 #' own malloc tunables via 'GLIBC_TUNABLES' is left untouched. Other
 #' platforms are unaffected.
 #'
+#' @importFrom utils removeSource
 #' @useDynLib kioto, .registration = TRUE
 #'
 #' @keywords internal

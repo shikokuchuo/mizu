@@ -16,4 +16,3 @@ compile_commands.json
 .posit/
 # OS
 .DS_Store
-dev/bench/*.rds

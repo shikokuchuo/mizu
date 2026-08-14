@@ -234,7 +234,6 @@ mono_time <- function() .Call(kio_now_call)
 #' kio_pool_stop(p)
 #' }
 #'
-#' @importFrom utils removeSource
 #' @export
 kio_map <- function(
   pool,

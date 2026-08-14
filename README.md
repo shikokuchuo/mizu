@@ -190,6 +190,88 @@ When you are done, `kio_pool_stop()` cancels the pending tasks, waits for the wo
 kio_pool_stop(p)
 ```
 
+## Benchmarks
+
+Two head-to-head measurements against mirai, timed with [bench](https://bench.r-lib.org).
+Four kioto workers against four mirai daemons.
+Setup is excluded from the timings:
+
+``` r
+library(mirai)
+
+daemons(4L)
+p <- kio_pool(n_workers = 4L)
+diamonds <- ggplot2::diamonds
+
+# The task function.
+enrich <- evalq(
+  function(dat) {
+    dat$price_per_carat <- dat$price / dat$carat
+    dat
+  },
+  baseenv()
+)
+
+# Speedup multiple of one bench row over another, from the medians
+speedup <- function(b, over, base) signif(as.numeric(b$median[over]) / as.numeric(b$median[base]), 2L)
+```
+
+**A dataset across the wire, both ways.**
+The `enrich()` task receives the 3.3 MB `diamonds` data frame, adds a column, and returns it.
+mirai serializes the data once per direction and copies it through a socket.
+kioto stages the frame once in shared memory; the worker reads it in place, and the enriched frame crosses back the same way:
+
+``` r
+roundtrip <- bench::mark(
+  kioto = kio_collect(kio_submit(p, enrich(dat), dat = diamonds, enrich = enrich)),
+  mirai = collect_mirai(mirai(enrich(dat), dat = diamonds, enrich = enrich))
+)
+roundtrip
+#> # A tibble: 2 × 6
+#>   expression      min   median `itr/sec` mem_alloc `gc/sec`
+#>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
+#> 1 kioto      246.41µs 373.47µs     2195.   546.5KB     34.1
+#> 2 mirai        7.27ms   7.55ms      131.    3.89MB     21.4
+```
+
+End to end, kioto is **20x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
+
+**Two thousand small tasks.**
+Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece.
+mirai sends one task per element through its dispatcher, whose per-task cost alone exceeds the task.
+kioto stages the map once, and the workers self-schedule element ranges off a shared cursor.
+The serial `lapply()` row is the baseline a parallel map must beat:
+
+``` r
+winsum <- evalq(function(i) {
+  w <- ggplot2::diamonds$price[i:(i + 999L)]
+  c(mean = mean(w), sd = stats::sd(w))
+}, baseenv())
+
+tasks <- bench::mark(
+  serial = lapply(1:2000, winsum),
+  kioto = kio_map(p, 1:2000, winsum),
+  mirai = collect_mirai(mirai_map(1:2000, winsum))
+)
+tasks
+#> # A tibble: 3 × 6
+#>   expression      min   median `itr/sec` mem_alloc `gc/sec`
+#>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
+#> 1 serial      19.53ms  19.53ms     51.2     30.9MB  1178.  
+#> 2 kioto        5.39ms   5.66ms    147.      89.9KB     0   
+#> 3 mirai      213.15ms 213.15ms      4.69    19.1MB     9.38
+```
+
+kioto turns the four workers into a **3.4x** gain over the serial loop, and runs **38x** ahead of mirai (medians).
+
+``` r
+daemons(0L)
+kio_pool_stop(p)
+```
+
+mirai remains the general solution: it scales across machines, where serialization through sockets is unavoidable.
+On one machine, kioto removes that cost — an order of magnitude on data movement, and per-task overhead low enough that even microsecond-scale tasks profit from parallelism.
+
 ## Deploying on Linux
 
 On Linux, POSIX shared memory is `/dev/shm`, a bounded tmpfs mount.
