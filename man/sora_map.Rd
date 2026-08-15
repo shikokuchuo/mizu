@@ -201,12 +201,10 @@ data.frame maps over its columns, and a factor over its elements.
 }
 
 \examples{
-\dontrun{
-p <- sora_pool(n_workers = 4L)
+p <- sora_pool()
 sora_map(p, 1:10, function(i) i * 2L)
-sora_map(p, rnorm(1e6), abs, .template = numeric(1))
+v <- sora_map(p, rnorm(1e5), abs, .template = numeric(1))
 sora_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
 sora_pool_stop(p)
-}
 
 }

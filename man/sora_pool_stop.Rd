@@ -25,3 +25,10 @@ unlinks the region and the liveness files. The handle is dead
 afterwards, and stopping it again is a no-op. Only the creating process
 can stop a pool.
 }
+\examples{
+p <- sora_pool()
+t <- sora_submit(p, 1 + 1)
+sora_collect(t)
+sora_pool_stop(p)
+
+}

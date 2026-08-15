@@ -59,12 +59,10 @@
 #'   Handles are process-private and do not survive `fork()`.
 #'
 #' @examples
-#' \dontrun{
 #' p <- sora_pool()
 #' t <- sora_submit(p, x + y, x = 1, y = 2)
 #' sora_collect(t)
 #' sora_pool_stop(p)
-#' }
 #'
 #' @export
 sora_pool <- function(
@@ -138,6 +136,12 @@ sora_pool <- function(
 #' @return `sora_spawn_workers()` invisibly returns the slot indices
 #'   spawned into. `sora_retire_worker()` invisibly returns `NULL`.
 #'
+#' @examplesIf interactive()
+#' p <- sora_pool(n_workers = 1L, max_workers = 2L)
+#' sora_retire_worker(p, 0L)
+#' sora_spawn_workers(p)
+#' sora_pool_stop(p)
+#'
 #' @export
 sora_spawn_workers <- function(
   pool,
@@ -193,6 +197,14 @@ sora_retire_worker <- function(pool, slot) {
 #'   the platform prefix).
 #'
 #' @return A pool handle (class `"sora_pool"`) holding a submitter slot.
+#'
+#' @examples
+#' p <- sora_pool()
+#' name <- sora_pool_status(p)[["name"]]
+#' # `name` travels out of band to the joining process, which runs:
+#' # pa <- sora_pool_attach(name)
+#' # sora_collect(sora_submit(pa, runif(3)))
+#' sora_pool_stop(p)
 #'
 #' @export
 sora_pool_attach <- function(name) {
@@ -279,12 +291,10 @@ sora_pool_attach <- function(name) {
 #'   sentinel.
 #'
 #' @examples
-#' \dontrun{
 #' p <- sora_pool()
 #' t <- sora_submit(p, sum(x), x = runif(10))
 #' sora_collect(t, timeout = 30)
 #' sora_pool_stop(p)
-#' }
 #'
 #' @export
 sora_submit <- function(pool, expr, ..., .timeout = Inf) {
@@ -314,6 +324,12 @@ sora_collect <- function(task, timeout = Inf) {
 #'   the call was too late: the task completed, was already cancelled, or
 #'   its pool is gone.
 #'
+#' @examples
+#' p <- sora_pool()
+#' t <- sora_submit(p, runif(1))
+#' sora_cancel(t)
+#' sora_pool_stop(p)
+#'
 #' @export
 sora_cancel <- function(task) invisible(.Call(sora_pool_cancel, task))
 
@@ -332,6 +348,12 @@ sora_cancel <- function(task) invisible(.Call(sora_pool_cancel, task))
 #' @return Invisibly, `TRUE` if all workers exited within the timeout.
 #'   `FALSE` otherwise, with a warning (the workers still exit on their
 #'   own).
+#'
+#' @examples
+#' p <- sora_pool()
+#' t <- sora_submit(p, 1 + 1)
+#' sora_collect(t)
+#' sora_pool_stop(p)
 #'
 #' @export
 sora_pool_stop <- function(pool, timeout = 5) {
@@ -359,6 +381,11 @@ sora_pool_stop <- function(pool, timeout = 5) {
 #'   `injection` (entries queued and unclaimed), `tasks` (result slots by
 #'   state: pending / ok / err / cancel / died), `deque` (per-worker deque
 #'   depths), and `shutdown`.
+#'
+#' @examples
+#' p <- sora_pool()
+#' sora_pool_status(p)
+#' sora_pool_stop(p)
 #'
 #' @export
 sora_pool_status <- function(pool) {
@@ -389,12 +416,23 @@ sora_pool_status <- function(pool) {
 #'   the in-flight result slot), `submitters` (data frame: slot, status,
 #'   pid, result-slot subrange, queued injection entries, ready and
 #'   full-waiter mask bits), `tasks` (data frame of occupied result slots:
-#'   slot, status, sequence, executing worker, parked waiter), and `local`.
+#'   slot, status, sequence, executing worker, parked waiter), `help`, and
+#'   `local`. `help` is the help-wanted doorbell: `TRUE` while injection
+#'   entries are queued with every worker busy, awaiting pickup by a map
+#'   runner at its next batch transition or a worker helping out of a
+#'   nested [sora_collect()] (the `rehome` event of [sora_pool_trace()]).
 #'   `local` is the process-private machinery of this handle: the
 #'   occupancy of the producer free list (`fl_entries`, `fl_bytes`), its
 #'   reuse count (`fl_hits`), the `open_hits` and `open_misses` of the
 #'   consumer mapping cache, and `collect_parks` (how often a collect on
 #'   this handle parked waiting for a result).
+#'
+#' @examples
+#' p <- sora_pool()
+#' t <- sora_submit(p, runif(1))
+#' sora_pool_dump(p)
+#' sora_collect(t)
+#' sora_pool_stop(p)
 #'
 #' @export
 sora_pool_dump <- function(pool) {
@@ -453,6 +491,13 @@ sora_pool_dump <- function(pool) {
 #'   `spills - spill_reuse` is the region-churn rate. Counters reset when
 #'   a new joiner reuses a slot.
 #'
+#' @examples
+#' p <- sora_pool()
+#' t <- sora_submit(p, runif(5))
+#' sora_collect(t)
+#' sora_pool_stats(p)
+#' sora_pool_stop(p)
+#'
 #' @export
 sora_pool_stats <- function(pool) {
   st <- .Call(sora_pool_stats_call, pool)
@@ -503,6 +548,14 @@ sora_pool_stats <- function(pool) {
 #'   hook.
 #'
 #' @return Invisibly, `NULL`.
+#'
+#' @examples
+#' p <- sora_pool()
+#' sora_pool_trace(p, function(event, id) cat(event, id, "\n"))
+#' t <- sora_submit(p, 1 + 1)
+#' sora_collect(t)
+#' sora_pool_trace(p)
+#' sora_pool_stop(p)
 #'
 #' @export
 sora_pool_trace <- function(pool, fn = NULL) {

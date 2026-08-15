@@ -39,7 +39,7 @@ The hot path stays in user space: single-producer single-consumer rings with bat
 R evaluates code on a single thread, so parallelism in R means multiple processes.
 sora makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
 sora complements [mirai](https://mirai.r-lib.org), the general solution for parallel and distributed computing in R.
-Payload contents interoperate transparently with [mori](https://github.com/r-lib/mori) shared objects.
+Payload contents interoperate transparently with [mori](https://shikokuchuo.net/mori/) shared objects.
 
 ## Installation
 

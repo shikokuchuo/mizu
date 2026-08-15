@@ -54,11 +54,9 @@ Anything else is R-serialized. Mori-shared objects reduce to identifier
 wire forms through the mori hooks.
 }
 \examples{
-\dontrun{
 ch <- sora_channel(quote(sora_send(ch, sora_recv(ch))))
 sora_send(ch, list(1, "a"))
 sora_recv(ch, timeout = 5)
 sora_close(ch)
-}
 
 }

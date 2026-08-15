@@ -2,16 +2,18 @@
 # creators (a hard-killed process runs no finalizers).
 
 test_that("sora_prune returns NULL when there is nothing to reap", {
-  sora_prune()                      # clear leftovers of earlier crashed runs
+  sora_prune() # clear leftovers of earlier crashed runs
   expect_null(sora_prune())
 })
 
 test_that("sora_prune reaps the orphans of a hard-killed process", {
-  skip_on_os("windows")            # Win32 mappings cannot outlive their creator
+  skip_on_os("windows") # Win32 mappings cannot outlive their creator
   skip_if_no_child_sora()
+  skip_if_no_reaper() # a zombie's PID is not free for the reaper
   f <- tfile()
 
-  sora:::sora_spawn(sprintf('
+  sora:::sora_spawn(sprintf(
+    '
     library(sora)
     xp <- .Call(sora:::sora_region_create, 4096)
     tmp <- paste0(%s, ".tmp")
@@ -19,7 +21,10 @@ test_that("sora_prune reaps the orphans of a hard-killed process", {
     file.rename(tmp, %s)
     Sys.sleep(0.2)                       # let the host observe the orphan
     tools::pskill(Sys.getpid(), tools::SIGKILL)
-  ', deparse(f), deparse(f)))
+  ',
+    deparse(f),
+    deparse(f)
+  ))
 
   expect_true(wait_for_file(f))
   nm <- readLines(f)

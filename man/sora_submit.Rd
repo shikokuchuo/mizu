@@ -95,11 +95,9 @@ result is discarded.
 }
 
 \examples{
-\dontrun{
 p <- sora_pool()
 t <- sora_submit(p, sum(x), x = runif(10))
 sora_collect(t, timeout = 30)
 sora_pool_stop(p)
-}
 
 }

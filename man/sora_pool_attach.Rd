@@ -19,3 +19,12 @@ slot with its own injection ring and result-slot subrange. The name of
 the pool travels out of band: it is \code{sora_pool_status(p)$name} on the
 creator.
 }
+\examples{
+p <- sora_pool()
+name <- sora_pool_status(p)[["name"]]
+# `name` travels out of band to the joining process, which runs:
+# pa <- sora_pool_attach(name)
+# sora_collect(sora_submit(pa, runif(3)))
+sora_pool_stop(p)
+
+}

@@ -22,3 +22,9 @@ depths), and \code{shutdown}.
 A read-only snapshot of the pool region: registry states, parked-worker
 count, queued injection entries, and result-slot occupancy.
 }
+\examples{
+p <- sora_pool()
+sora_pool_status(p)
+sora_pool_stop(p)
+
+}

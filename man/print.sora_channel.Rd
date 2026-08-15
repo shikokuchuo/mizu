@@ -40,3 +40,13 @@ class. The handle methods never error and never touch the rings. A
 handle whose resources are released (a closed channel, a stopped pool)
 prints as closed. So auto-printing is always safe.
 }
+\examples{
+p <- sora_pool()
+p
+t <- sora_submit(p, 1 + 1)
+t
+sora_collect(t)
+sora_pool_stop(p)
+p
+
+}

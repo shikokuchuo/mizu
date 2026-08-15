@@ -230,13 +230,11 @@ mono_time <- function() .Call(sora_now_call)
 #'   expiry, the `sora_timeout` sentinel.
 #'
 #' @examples
-#' \dontrun{
-#' p <- sora_pool(n_workers = 4L)
+#' p <- sora_pool()
 #' sora_map(p, 1:10, function(i) i * 2L)
-#' sora_map(p, rnorm(1e6), abs, .template = numeric(1))
+#' v <- sora_map(p, rnorm(1e5), abs, .template = numeric(1))
 #' sora_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
 #' sora_pool_stop(p)
-#' }
 #'
 #' @export
 sora_map <- function(
@@ -313,17 +311,22 @@ map_run <- function(pool, st, timeout, collect = "value") {
 #'   templated atomic vector, or the `sora_timeout` sentinel.
 #'
 #' @examples
-#' \dontrun{
-#' p <- sora_pool(n_workers = 4L)
+#' p <- sora_pool()
 #' pm <- sora_map_prepare(p, 1:1000, function(i, draws) {
 #'   mean(rnorm(draws)) * i
 #' }, draws = 100L)
 #' runs <- lapply(1:50, function(s) sora_map_run(pm, .seed = s))
 #' sora_pool_stop(p)
-#' }
 #'
 #' @export
-sora_map_prepare <- function(pool, x, f, ..., .template = NULL, .chunks = NULL) {
+sora_map_prepare <- function(
+  pool,
+  x,
+  f,
+  ...,
+  .template = NULL,
+  .chunks = NULL
+) {
   f <- match.fun(f)
   map_template_check(.template)
   pm <- new.env(parent = emptyenv())

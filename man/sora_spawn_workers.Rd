@@ -52,3 +52,11 @@ Slots free up when workers retire, exit at shutdown, or die and are
 reaped. So a pool can cycle workers within its registry capacity for
 its whole lifetime. Only the creating process can resize a pool.
 }
+\examples{
+\dontshow{if (interactive()) withAutoprint(\{ # examplesIf}
+p <- sora_pool(n_workers = 1L, max_workers = 2L)
+sora_retire_worker(p, 0L)
+sora_spawn_workers(p)
+sora_pool_stop(p)
+\dontshow{\}) # examplesIf}
+}

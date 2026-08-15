@@ -43,3 +43,11 @@ passes its fairness tick. So under continuous load, the row of a worker
 can lag by up to 61 claims. The row is exact whenever that worker is
 parked or retired, or the pool is quiescent.
 }
+\examples{
+p <- sora_pool()
+t <- sora_submit(p, runif(5))
+sora_collect(t)
+sora_pool_stats(p)
+sora_pool_stop(p)
+
+}

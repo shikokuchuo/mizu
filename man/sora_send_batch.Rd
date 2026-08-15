@@ -37,3 +37,10 @@ publishes them to the peer in one batched tail store.
 \code{sora_recv_batch()} drains up to \code{n} messages in a single park cycle and
 a single batched head publication.
 }
+\examples{
+ch <- sora_channel(quote(sora_send_batch(ch, sora_recv_batch(ch, 3L))))
+sora_send_batch(ch, list(1, 2, 3))
+sora_recv_batch(ch, 3L, timeout = 5)
+sora_close(ch)
+
+}

@@ -87,11 +87,9 @@ same files. The environment variable \code{SORA_LIVENESS_DIR}, read in the
 creating process, overrides the default.
 }
 \examples{
-\dontrun{
 p <- sora_pool()
 t <- sora_submit(p, x + y, x = 1, y = 2)
 sora_collect(t)
 sora_pool_stop(p)
-}
 
 }

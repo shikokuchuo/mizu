@@ -97,13 +97,11 @@ transparently on the next run.
 }
 
 \examples{
-\dontrun{
-p <- sora_pool(n_workers = 4L)
+p <- sora_pool()
 pm <- sora_map_prepare(p, 1:1000, function(i, draws) {
   mean(rnorm(draws)) * i
 }, draws = 100L)
 runs <- lapply(1:50, function(s) sora_map_run(pm, .seed = s))
 sora_pool_stop(p)
-}
 
 }

@@ -48,3 +48,12 @@ failure at its site. On a worker, it takes the worker down. This
 differs from the own error of a task, which is published as the ERR
 result of that task.
 }
+\examples{
+p <- sora_pool()
+sora_pool_trace(p, function(event, id) cat(event, id, "\n"))
+t <- sora_submit(p, 1 + 1)
+sora_collect(t)
+sora_pool_trace(p)
+sora_pool_stop(p)
+
+}

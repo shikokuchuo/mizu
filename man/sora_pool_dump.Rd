@@ -16,7 +16,11 @@ slot, status, pid, park_state, parked, deque \code{top} and \code{bottom}, and
 the in-flight result slot), \code{submitters} (data frame: slot, status,
 pid, result-slot subrange, queued injection entries, ready and
 full-waiter mask bits), \code{tasks} (data frame of occupied result slots:
-slot, status, sequence, executing worker, parked waiter), and \code{local}.
+slot, status, sequence, executing worker, parked waiter), \code{help}, and
+\code{local}. \code{help} is the help-wanted doorbell: \code{TRUE} while injection
+entries are queued with every worker busy, awaiting pickup by a map
+runner at its next batch transition or a worker helping out of a
+nested \code{\link[=sora_collect]{sora_collect()}} (the \code{rehome} event of \code{\link[=sora_pool_trace]{sora_pool_trace()}}).
 \code{local} is the process-private machinery of this handle: the
 occupancy of the producer free list (\code{fl_entries}, \code{fl_bytes}), its
 reuse count (\code{fl_hits}), the \code{open_hits} and \code{open_misses} of the
@@ -32,4 +36,12 @@ execution is non-deterministic, so reach for this tool first when a
 pool hangs. The scan takes no locks and can race in-flight transitions.
 Each field is a consistent single read. The rows need not be mutually
 consistent.
+}
+\examples{
+p <- sora_pool()
+t <- sora_submit(p, runif(1))
+sora_pool_dump(p)
+sora_collect(t)
+sora_pool_stop(p)
+
 }

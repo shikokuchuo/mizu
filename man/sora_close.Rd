@@ -31,3 +31,9 @@ After either side signals close, sends on both sides return the
 \code{sora_closed} sentinel, and receives drain the remaining messages before
 they return the same.
 }
+\examples{
+ch <- sora_channel(quote(sora_send(ch, "done")))
+sora_recv(ch, timeout = 5)
+sora_close(ch)
+
+}

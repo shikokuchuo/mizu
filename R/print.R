@@ -18,6 +18,15 @@
 #'
 #' @return `x`, invisibly.
 #'
+#' @examples
+#' p <- sora_pool()
+#' p
+#' t <- sora_submit(p, 1 + 1)
+#' t
+#' sora_collect(t)
+#' sora_pool_stop(p)
+#' p
+#'
 #' @export
 print.sora_channel <- function(x, ...) {
   st <- tryCatch(.Call(sora_channel_stat, x), error = function(e) NULL)

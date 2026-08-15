@@ -54,7 +54,6 @@
 #'   process-private and do not survive `fork()`.
 #'
 #' @examples
-#' \dontrun{
 #' ch <- sora_channel(quote(
 #'   repeat {
 #'     x <- sora_recv(ch, timeout = 30)
@@ -65,7 +64,6 @@
 #' sora_send(ch, 42L)
 #' sora_recv(ch, timeout = 5)
 #' sora_close(ch)
-#' }
 #'
 #' @export
 sora_channel <- function(
@@ -140,12 +138,10 @@ sora_channel <- function(
 #'   sentinel.
 #'
 #' @examples
-#' \dontrun{
 #' ch <- sora_channel(quote(sora_send(ch, sora_recv(ch))))
 #' sora_send(ch, list(1, "a"))
 #' sora_recv(ch, timeout = 5)
 #' sora_close(ch)
-#' }
 #'
 #' @export
 sora_send <- function(ch, x) invisible(.Call(sora_channel_send, ch, x))
@@ -173,6 +169,12 @@ sora_recv <- function(ch, timeout = Inf) .Call(sora_channel_recv, ch, timeout)
 #'   returns its sentinels on timeout, close, or peer death. It then
 #'   returns a list of 1 to `n` already-published messages without waiting
 #'   further.
+#'
+#' @examples
+#' ch <- sora_channel(quote(sora_send_batch(ch, sora_recv_batch(ch, 3L))))
+#' sora_send_batch(ch, list(1, 2, 3))
+#' sora_recv_batch(ch, 3L, timeout = 5)
+#' sora_close(ch)
 #'
 #' @export
 sora_send_batch <- function(ch, xs) .Call(sora_channel_send_batch, ch, xs)
@@ -204,6 +206,11 @@ sora_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 #' @return Invisibly, `TRUE` on rendezvous, `FALSE` on timeout (with a
 #'   warning).
 #'
+#' @examples
+#' ch <- sora_channel(quote(sora_send(ch, "done")))
+#' sora_recv(ch, timeout = 5)
+#' sora_close(ch)
+#'
 #' @export
 sora_close <- function(ch, timeout = 5) {
   ok <- .Call(sora_channel_close, ch, timeout)
@@ -229,6 +236,11 @@ sora_close <- function(ch, timeout = 5) {
 #'
 #' @return `TRUE` while the peer process is alive, `FALSE` after it dies.
 #'   At that point the survivor unlinked the names of the channel.
+#'
+#' @examples
+#' ch <- sora_channel(quote(sora_recv(ch)))
+#' sora_alive(ch)
+#' sora_close(ch)
 #'
 #' @export
 sora_alive <- function(ch) .Call(sora_channel_alive, ch)

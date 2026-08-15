@@ -21,3 +21,9 @@ holds its liveness lock, in about 1 microsecond with no waiting.
 \code{sora_peer_gone}. Use this probe to ask without touching the rings. A
 peer that closed the channel but still runs reads as alive.
 }
+\examples{
+ch <- sora_channel(quote(sora_recv(ch)))
+sora_alive(ch)
+sora_close(ch)
+
+}

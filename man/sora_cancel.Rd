@@ -20,3 +20,10 @@ that is still queued. A task already executing runs to completion, and
 its result is dropped. Collecting a cancelled handle raises
 \code{sora_error_cancelled} (see \link{sora_error}).
 }
+\examples{
+p <- sora_pool()
+t <- sora_submit(p, runif(1))
+sora_cancel(t)
+sora_pool_stop(p)
+
+}

@@ -31,6 +31,18 @@ Returns the launcher that \code{\link[=sora_channel]{sora_channel()}}, \code{\li
 detached child R process through a static \code{Rscript} runner, with the
 entry expression and the \code{.libPaths()} of the host hex-encoded in argv.
 }
+\section{Containers}{
+
+\code{system2(wait = FALSE)} detaches background children, so workers and
+peers are adopted by PID 1 of the process namespace and reaped by that
+init when they exit. In a container whose PID 1 does not reap (a plain
+\verb{docker run} without \code{--init}), exited children accumulate as zombie
+PID-table entries. This is harmless to sora itself — death verdicts
+come from the liveness lock, never the PID — but PID-probe supervision
+misreads zombies as alive, and \code{\link[=sora_prune]{sora_prune()}} cannot reclaim a dead
+process's regions while its PID stays taken.
+}
+
 \examples{
 # One log file per worker on Windows.
 launcher <- function(token, slot) {

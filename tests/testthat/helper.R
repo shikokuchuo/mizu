@@ -29,7 +29,9 @@ kill_hard <- function(pid) {
 
 # Liveness probe for a raw pid. pskill(pid, 0) is the POSIX probe, but on
 # Windows pskill ignores the signal value, so probing with 0 would
-# terminate the process — ask tasklist instead.
+# terminate the process — ask tasklist instead. A zombie answers the POSIX
+# probe but is dead: its PID stays taken until its parent or the system
+# init reaps it, so the zombie state is checked explicitly.
 pid_alive <- function(pid) {
   pid <- as.integer(pid)
   if (.Platform[["OS.type"]] == "windows") {
@@ -41,7 +43,22 @@ pid_alive <- function(pid) {
     ))
     return(any(grepl(sprintf('","%d","', pid), out, fixed = TRUE)))
   }
-  isTRUE(tools::pskill(pid, 0L))
+  isTRUE(tools::pskill(pid, 0L)) && !pid_zombie(pid)
+}
+
+pid_zombie <- function(pid) {
+  status <- sprintf("/proc/%d/status", pid)
+  if (file.exists(status)) {
+    state <- tryCatch(readLines(status), error = function(e) character())
+    return(any(grepl("^State:\\s+Z", state)))
+  }
+  stat <- suppressWarnings(system2(
+    "ps",
+    c("-o", "stat=", "-p", pid),
+    stdout = TRUE,
+    stderr = FALSE
+  ))
+  any(startsWith(trimws(stat), "Z"))
 }
 
 # Re-evaluate `expr` in the caller's frame until truthy or the deadline passes
@@ -84,6 +101,37 @@ skip_if_no_child_sora <- function() {
     child_sora_ok(),
     "sora not loadable from child processes"
   )
+}
+
+# The orphan-reaping tests need an init that reaps: R detaches background
+# spawns, so a dead child's PID stays taken by a zombie until PID 1 reaps
+# it — and the vendored reaper reclaims a region only once the creator's
+# PID is free.
+reaper_ok <- local({
+  val <- NULL
+  function() {
+    if (is.null(val)) {
+      f <- tfile()
+      sora:::sora_spawn(sprintf(
+        '
+        tmp <- paste0(%s, ".tmp")
+        writeLines(as.character(Sys.getpid()), tmp)
+        file.rename(tmp, %s)
+      ',
+        deparse(f),
+        deparse(f)
+      ))
+      # the probe child exits at once; its PID frees only if PID 1 reaps
+      val <<- wait_for_file(f) &&
+        wait_until(!isTRUE(tools::pskill(as.integer(readLines(f)), 0L)), 5)
+      unlink(f)
+    }
+    val
+  }
+})
+
+skip_if_no_reaper <- function() {
+  testthat::skip_if_not(reaper_ok(), "PID 1 does not reap orphans")
 }
 
 # In-process channel pair: both ends of one region attached from this

@@ -78,7 +78,6 @@ the same files. The environment variable \code{SORA_LIVENESS_DIR}, read in
 the creating process, overrides the default.
 }
 \examples{
-\dontrun{
 ch <- sora_channel(quote(
   repeat {
     x <- sora_recv(ch, timeout = 30)
@@ -89,6 +88,5 @@ ch <- sora_channel(quote(
 sora_send(ch, 42L)
 sora_recv(ch, timeout = 5)
 sora_close(ch)
-}
 
 }
