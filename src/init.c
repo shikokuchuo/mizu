@@ -107,6 +107,8 @@ SEXP sora_map_slice(SEXP, SEXP, SEXP);
 SEXP sora_map_write(SEXP, SEXP, SEXP);
 SEXP sora_map_gather(SEXP);
 SEXP sora_map_gather_view(SEXP, SEXP, SEXP);
+SEXP sora_map_splice(SEXP, SEXP, SEXP);
+SEXP sora_map_lost(SEXP, SEXP);
 SEXP sora_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP sora_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                    SEXP);
@@ -202,6 +204,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"sora_map_write",             (DL_FUNC) &sora_map_write,             3},
   {"sora_map_gather",            (DL_FUNC) &sora_map_gather,            1},
   {"sora_map_gather_view",       (DL_FUNC) &sora_map_gather_view,       3},
+  {"sora_map_splice",            (DL_FUNC) &sora_map_splice,            3},
+  {"sora_map_lost",              (DL_FUNC) &sora_map_lost,              2},
   {"sora_map_next",              (DL_FUNC) &sora_map_next,              6},
   {"sora_map_batch",             (DL_FUNC) &sora_map_batch,             10},
   {"sora_map_abandon",           (DL_FUNC) &sora_map_abandon,           2},

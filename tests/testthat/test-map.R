@@ -8,7 +8,7 @@
 # collect under a file-wide 30s guard: a chunk missed by the stepping
 # above fails the test loudly instead of hanging CI on an infinite wait
 collect30 <- function(pool, st) {
-  sora:::map_collect(pool, st, deadline = sora:::mono_time() + 30)
+  sora:::map_collect(st, deadline = sora:::mono_time() + 30)
 }
 
 run_map <- function(p, x, f, dots = list(), ..., steps = 256L) {
@@ -232,7 +232,7 @@ test_that(".collect = \"view\" wraps the output area, names applied, COW intact"
   while (pool_step(p) == 1L) {
     NULL
   }
-  res <- sora:::map_collect(p[["ctrl"]], st, sora:::mono_time() + 30, "view")
+  res <- sora:::map_collect(st, sora:::mono_time() + 30, "view")
   expect_true(.Call(sora:::sora_zc_view_check, res))
   expect_true(st[["consumed"]])
   expect_identical(names(res), paste0("e", 1:10000))
@@ -253,7 +253,7 @@ test_that(".collect = \"view\" gathers a matrix view for m > 1", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  res <- sora:::map_collect(p[["ctrl"]], st, sora:::mono_time() + 30, "view")
+  res <- sora:::map_collect(st, sora:::mono_time() + 30, "view")
   expect_true(.Call(sora:::sora_zc_view_check, res))
   expect_identical(dim(res), c(2L, 6L))
   expect_identical(dimnames(res), list(c("a", "b"), letters[1:6]))
@@ -277,7 +277,7 @@ test_that("a held view gates map-region teardown; a prepared re-run restages", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  v1 <- sora:::map_collect(p[["ctrl"]], st, sora:::mono_time() + 30, "view")
+  v1 <- sora:::map_collect(st, sora:::mono_time() + 30, "view")
   expect_true(st[["consumed"]])
   nm <- st[["name"]]
   rm(st) # the map state drops; the view alone pins the region now
@@ -301,7 +301,7 @@ test_that("a held view gates map-region teardown; a prepared re-run restages", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  v2 <- sora:::map_collect(p[["ctrl"]], st2, sora:::mono_time() + 30, "view")
+  v2 <- sora:::map_collect(st2, sora:::mono_time() + 30, "view")
   expect_identical(as.numeric(v1), 1:100 * 2.5)
   expect_identical(as.numeric(v2), 1:100 * 100)
   pool_end(p)
@@ -450,14 +450,19 @@ test_that("a runner error stores the cancel word before its ERR publish", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
 test_that("a doorbell help beat re-homes a runner instead of nesting it", {
   p <- pool_pair(workers = 2L)
   ev <- character()
-  sora_pool_trace(p[["wk"]], function(e, id) if (e == "rehome") ev <<- c(ev, id))
+  sora_pool_trace(p[["wk"]], function(e, id) {
+    if (e == "rehome") ev <<- c(ev, id)
+  })
   st <- sora:::map_stage(
     p[["ctrl"]],
     1:2,
@@ -513,7 +518,10 @@ test_that("help re-homes runners but executes ordinary tasks inline", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  expect_identical(sora_pool_stats(p[["ctrl"]])[["workers"]][["helps"]][[1L]], 1)
+  expect_identical(
+    sora_pool_stats(p[["ctrl"]])[["workers"]][["helps"]][[1L]],
+    1
+  )
   expect_identical(collect30(p[["ctrl"]], st), as.list(1:6))
   pool_end(p)
 })
@@ -545,7 +553,10 @@ test_that("a full deque falls back to executing the claimed runner inline", {
   expect_identical(sora_collect(h1), 1L)
   expect_identical(sora_collect(h2), 2L)
   expect_identical(collect30(p[["ctrl"]], st), list(10L, 20L))
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -593,7 +604,10 @@ test_that("collect trims never-claimed runners once the cursor exhausts", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -613,7 +627,10 @@ test_that("n = 0, n = 1, and n < chunks all behave", {
     sora_map(p[["ctrl"]], integer(), identity, .template = c(a = 0L, b = 0L)),
     vapply(integer(), identity, c(a = 0L, b = 0L))
   )
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   expect_identical(run_map(p, 5, function(i) i * 2), list(10))
   # more morsels requested than elements: the count clamps to n
   st <- sora:::map_stage(p[["ctrl"]], 1:3, identity, list(), chunks = 8)
@@ -813,7 +830,10 @@ test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
     NULL
   } # filler runs, dropped chunks free
   expect_identical(sora_collect(filler, timeout = 5), "filler")
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -821,11 +841,7 @@ test_that(".timeout expiring in collect cancels the outstanding chunks", {
   p <- pool_pair()
   st <- sora:::map_stage(p[["ctrl"]], 1:4, identity, list(), chunks = 2)
   sora:::map_submit(p[["ctrl"]], st)
-  r <- sora:::map_collect(
-    p[["ctrl"]],
-    st,
-    deadline = sora:::mono_time() + 0.05
-  )
+  r <- sora:::map_collect(st, deadline = sora:::mono_time() + 0.05)
   expect_s3_class(r, "sora_timeout")
   expect_true(all(
     sora_pool_dump(p[["ctrl"]])[["tasks"]][["status"]] == "cancel"
@@ -833,7 +849,10 @@ test_that(".timeout expiring in collect cancels the outstanding chunks", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -947,7 +966,10 @@ test_that("a nested map runs on the worker's own deque, help-collected", {
     sum(sora_pool_status(p[["ctrl"]])[["submitters"]] == "live"),
     2L
   )
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -965,7 +987,10 @@ test_that("a deadline already expired at submit stages no tasks", {
   sora:::map_submit(p[["ctrl"]], st, deadline = sora:::mono_time() - 1)
   expect_true(st[["timed_out"]])
   expect_true(all(vapply(st[["handles"]], is.null, NA)))
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -977,7 +1002,7 @@ test_that("blob-path collect times out, cancels, and re-signals f's errors", {
   st <- sora:::map_stage(p[["ctrl"]], 1:4, f, list(), chunks = 2)
   expect_type(st[["blob"]], "raw")
   sora:::map_submit(p[["ctrl"]], st)
-  r <- sora:::map_collect(p[["ctrl"]], st, deadline = sora:::mono_time() - 1)
+  r <- sora:::map_collect(st, deadline = sora:::mono_time() - 1)
   expect_s3_class(r, "sora_timeout")
   while (pool_step(p) == 1L) {
     NULL
@@ -985,11 +1010,7 @@ test_that("blob-path collect times out, cancels, and re-signals f's errors", {
   # one expiring while parked on an unpublished chunk returns it too
   st <- sora:::map_stage(p[["ctrl"]], 1:4, f, list(), chunks = 2)
   sora:::map_submit(p[["ctrl"]], st)
-  r <- sora:::map_collect(
-    p[["ctrl"]],
-    st,
-    deadline = sora:::mono_time() + 0.05
-  )
+  r <- sora:::map_collect(st, deadline = sora:::mono_time() + 0.05)
   expect_s3_class(r, "sora_timeout")
   while (pool_step(p) == 1L) {
     NULL
@@ -1004,7 +1025,10 @@ test_that("blob-path collect times out, cancels, and re-signals f's errors", {
   expect_identical(conditionMessage(e), "blob boom")
   expect_identical(e[["sora_map_index"]], 1)
   gc() # chunk 2's discarded ERR result frees with its dropped handle
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 

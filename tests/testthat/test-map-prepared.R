@@ -5,7 +5,7 @@
 
 # collect under a file-wide 30s guard, as in test-map.R
 collect30 <- function(pool, st)
-  sora:::map_collect(pool, st, deadline = sora:::mono_time() + 30)
+  sora:::map_collect(st, deadline = sora:::mono_time() + 30)
 
 test_that("a prepared map re-runs on one region under a bumped generation", {
   p <- pool_pair()

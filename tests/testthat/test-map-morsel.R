@@ -5,17 +5,27 @@
 # region's producer handle maps writable, so this process can drive the
 # shared state from both sides.
 
-stage_h <- function(n, morsel = 1, x = NULL, template = NULL)
-  .Call(sora:::sora_map_stage, list(identity, list()), x, NULL, n,
-        template, morsel)[[2L]]
+stage_h <- function(n, morsel = 1, x = NULL, template = NULL) {
+  .Call(
+    sora:::sora_map_stage,
+    list(identity, list()),
+    x,
+    NULL,
+    n,
+    template,
+    morsel
+  )[[2L]]
+}
 
 # pinned-k transition (the test entry bypassing the sizing policy)
-nxt <- function(h, r = 0L, gen = 0, k = 1, now = NULL)
+nxt <- function(h, r = 0L, gen = 0, k = 1, now = NULL) {
   .Call(sora:::sora_map_next, h, r, gen, NULL, k, now)
+}
 
 # adaptive transition under a forced clock
-anxt <- function(h, now, r = 0L, gen = 0)
+anxt <- function(h, now, r = 0L, gen = 0) {
   .Call(sora:::sora_map_next, h, r, gen, NULL, NULL, now)
+}
 
 minfo <- function(h) .Call(sora:::sora_map_info, h)
 claim <- function(h, r) .Call(sora:::sora_map_claim_state, h, r)
@@ -26,7 +36,7 @@ test_that("stage lays out morsel geometry and a zeroed state section", {
   i <- minfo(h)
   expect_identical(i[["n"]], 100)
   expect_identical(i[["morsel_size"]], 8)
-  expect_identical(i[["n_morsels"]], 13)          # ceiling(100 / 8)
+  expect_identical(i[["n_morsels"]], 13) # ceiling(100 / 8)
   expect_identical(i[["claim_n"]], 64L)
   expect_identical(i[["generation"]], 0)
   expect_identical(i[["cursor"]], 0)
@@ -42,17 +52,17 @@ test_that("pinned-k issue walks the cursor with a final partial grant", {
   expect_identical(unlist(b[1:4]), c(0, 3, 1, 3))
   b <- nxt(h, k = 4)
   expect_identical(unlist(b[1:4]), c(3, 4, 4, 7))
-  b <- nxt(h, k = 64)                        # clamps to the end
+  b <- nxt(h, k = 64) # clamps to the end
   expect_identical(unlist(b[1:4]), c(7, 3, 8, 10))
-  expect_null(nxt(h))                        # exhausted
-  expect_identical(minfo(h)[["cursor"]], 10)      # clamped past the overshoot
+  expect_null(nxt(h)) # exhausted
+  expect_identical(minfo(h)[["cursor"]], 10) # clamped past the overshoot
 })
 
 test_that("element ranges track morsel geometry, last morsel partial", {
-  h <- stage_h(10, 4)                        # morsels [1,4] [5,8] [9,10]
+  h <- stage_h(10, 4) # morsels [1,4] [5,8] [9,10]
   b <- nxt(h, k = 2)
   expect_identical(c(b[[3L]], b[[4L]]), c(1, 8))
-  b <- nxt(h, k = 2)                         # grant clamps to one morsel
+  b <- nxt(h, k = 2) # grant clamps to one morsel
   expect_identical(b[[2L]], 1)
   expect_identical(c(b[[3L]], b[[4L]]), c(9, 10))
   expect_null(nxt(h))
@@ -86,16 +96,16 @@ test_that("the cancel word stops issue before any claim and arms the trim", {
   h <- stage_h(10, 1)
   nxt(h, k = 2)
   # refusal while morsels remain and cancel is clear reports the state
-  expect_identical(abandon(h, 1L), "idle")
+  expect_identical(abandon(h, 1L), 0L)
   expect_identical(claim(h, 1L)[["state"]], "idle")
   .Call(sora:::sora_map_cancel_set, h)
   expect_true(.Call(sora:::sora_map_cancel_get, h))
   cur <- minfo(h)[["cursor"]]
   # a cancelled region issues nothing more, even with morsels left
   expect_null(nxt(h, k = 2))
-  expect_identical(minfo(h)[["cursor"]], cur)     # NULL landed before any issue
+  expect_identical(minfo(h)[["cursor"]], cur) # NULL landed before any issue
   # the cancel arm lets teardown trim queued never-started runners
-  expect_identical(abandon(h, 1L), "abandoned")
+  expect_identical(abandon(h, 1L), 2L)
   expect_identical(claim(h, 1L)[["state"]], "abandoned")
   # an abandoned runner's first call returns NULL without issuing
   expect_null(nxt(h, 1L, k = 2))
@@ -104,20 +114,40 @@ test_that("the cancel word stops issue before any claim and arms the trim", {
 
 test_that("the trim fires on exhaustion and loses to a RUNNING claim", {
   h <- stage_h(4, 1)
-  b <- nxt(h, 0L, k = 4)                     # r0 drains the cursor
+  b <- nxt(h, 0L, k = 4) # r0 drains the cursor
   expect_identical(b[[2L]], 4)
-  expect_identical(abandon(h, 0L), "running")  # won CAS beats a late abandon
-  expect_identical(abandon(h, 1L), "abandoned")  # never started: trimmed
+  expect_identical(abandon(h, 0L), 1L) # won CAS beats a late abandon
+  expect_identical(abandon(h, 1L), 2L) # never started: trimmed
   expect_null(nxt(h, 1L))
   # an exhausted runner's word stays RUNNING for collect
   expect_null(nxt(h, 0L))
   expect_identical(claim(h, 0L)[["state"]], "running")
 })
 
+test_that("the lost set is the issued range minus collected histories", {
+  h <- stage_h(10, 1) # 10 morsels, 1 element each
+  nxt(h, 0L, k = 3) # issue morsels 0-2
+  nxt(h, 1L, k = 3) # issue morsels 3-5
+  # completed: morsels 0-1 and 4 — morsels 2-3 and 5 report lost
+  elts <- .Call(sora:::sora_map_lost, h, list(list(c(0, 4), c(2, 1))))
+  expect_identical(elts, cbind(lo = c(3, 6), hi = c(4, 6)))
+  # no surviving history: the whole issued range, clamped to n
+  h2 <- stage_h(10, 4) # morsels [1,4] [5,8] [9,10]
+  nxt(h2, 0L, k = 3)
+  expect_identical(
+    .Call(sora:::sora_map_lost, h2, list()),
+    cbind(lo = 1, hi = 10)
+  )
+  expect_error(
+    .Call(sora:::sora_map_lost, h, list(list(1))),
+    "invalid map batch history"
+  )
+})
+
 test_that("reset re-arms every CLAIM word under a bumped generation", {
   h <- stage_h(6, 1)
   nxt(h, k = 6)
-  abandon(h, 1L)                             # exhausted: trims
+  abandon(h, 1L) # exhausted: trims
   .Call(sora:::sora_map_cancel_set, h)
   gen2 <- .Call(sora:::sora_map_reset, h)
   expect_identical(gen2, 1)
@@ -147,7 +177,7 @@ test_that("batch sizing grows <=2x toward the target and settles", {
   h <- stage_h(1e6, 1)
   t <- 0
   b <- anxt(h, t)
-  expect_identical(b[[2L]], 1)               # first batch k = 1
+  expect_identical(b[[2L]], 1) # first batch k = 1
   # per-morsel 8us against the 200us target: double until 16, settle at 25
   ks <- numeric(8)
   for (i in seq_along(ks)) {
@@ -162,14 +192,15 @@ test_that("cheap morsels ramp to the batch cap; overshoot shrinks at once", {
   h <- stage_h(1e6, 1)
   t <- 0
   b <- anxt(h, t)
-  for (i in 1:8) {                           # 0.1us/morsel: want 2000, cap 64
+  for (i in 1:8) {
+    # 0.1us/morsel: want 2000, cap 64
     t <- t + b[[2L]] * 1e-7
     b <- anxt(h, t)
   }
   expect_identical(b[[2L]], 64)
-  t <- t + b[[2L]] * 100e-3                  # abrupt cost jump
+  t <- t + b[[2L]] * 100e-3 # abrupt cost jump
   b <- anxt(h, t)
-  expect_identical(b[[2L]], 1)               # immediate shrink on overshoot
+  expect_identical(b[[2L]], 1) # immediate shrink on overshoot
 })
 
 test_that("the sizing ramp resets to k = 1 at a run boundary", {
@@ -182,7 +213,7 @@ test_that("the sizing ramp resets to k = 1 at a run boundary", {
   }
   expect_gt(b[[2L]], 1)
   .Call(sora:::sora_map_reset, h)
-  b <- anxt(h, t, gen = 1)                   # new run, same ctx: fresh ramp
+  b <- anxt(h, t, gen = 1) # new run, same ctx: fresh ramp
   expect_identical(b[[2L]], 1)
 })
 
@@ -199,7 +230,7 @@ test_that("an all-busy publish rings the doorbell; help_once consumes and restor
   expect_true(sora_pool_dump(p[["ctrl"]])[["help"]])
   expect_identical(sora_collect(h1), 1L)
   expect_true(.Call(sora:::sora_pool_help_once, p[["wk"]]))
-  expect_false(sora_pool_dump(p[["ctrl"]])[["help"]])   # nothing queued: stays clear
+  expect_false(sora_pool_dump(p[["ctrl"]])[["help"]]) # nothing queued: stays clear
   expect_identical(sora_collect(h2), 2L)
   expect_false(.Call(sora:::sora_pool_help_once, p[["wk"]]))
   pool_end(p)
@@ -210,11 +241,11 @@ test_that("sora_map_next consumes pool signals: help flag, skip rule, shutdown",
   sig <- .Call(sora:::sora_pool_signals, p[["wk"]])
   h <- stage_h(1e4, 1)
   b <- .Call(sora:::sora_map_next, h, 0L, 0, sig, NULL, 0)
-  expect_false(b[[6L]])                      # quiet pool: no help flag
-  sora_submit(p[["ctrl"]], quote(1L))              # all busy: bell rings
+  expect_false(b[[6L]]) # quiet pool: no help flag
+  sora_submit(p[["ctrl"]], quote(1L)) # all busy: bell rings
   b <- .Call(sora:::sora_map_next, h, 0L, 0, sig, NULL, 1e-6)
-  expect_true(b[[6L]])                       # help flag rides the return
-  expect_identical(b[[2L]], 2)               # this interval still updated
+  expect_true(b[[6L]]) # help flag rides the return
+  expect_identical(b[[2L]], 2) # this interval still updated
   # the two intervals below contain (nominal) foreign-task time: the cost
   # estimate must not absorb them — growth continues off the old estimate
   # instead of collapsing to k = 1 against the huge elapsed times

@@ -271,7 +271,7 @@ map_run <- function(pool, st, timeout, collect = "value") {
   if (st[["timed_out"]]) {
     return(.Call(sora_map_timeout_call))
   }
-  map_collect(pool, st, deadline, collect)
+  map_collect(st, deadline, collect)
 }
 
 #' Prepared Maps: Stage Once, Run Many
@@ -471,6 +471,13 @@ map_seed_state <- function(seed) {
   .Call(sora_map_rng_seek, base, offset)
 }
 
+# One runner per live worker (floored at 1 so a workerless map still
+# queues), clamped by the submitter's free result slots and the injection
+# ring — and by the morsel count where that is known
+map_runner_count <- function(caps, nm = Inf) {
+  as.integer(min(nm, max(1L, caps[[1L]]), caps[[2L]], caps[[3L]]))
+}
+
 # Re-arm a staged map state for another run: per-run seed state (it rides
 # the runner payloads, never the region), a fresh runner count against
 # the live workers, and — on the region path — the O(1) shared-state
@@ -491,12 +498,7 @@ map_rearm <- function(pool, st, seed) {
       )
     }
     st[["gen"]] <- .Call(sora_map_reset, st[["wrap"]])
-    st[["R"]] <- as.integer(min(
-      st[["nm"]],
-      max(1L, caps[[1L]]),
-      caps[[2L]],
-      caps[[3L]]
-    ))
+    st[["R"]] <- map_runner_count(caps, st[["nm"]])
     st[["handles"]] <- vector("list", st[["R"]])
   } else {
     st[["handles"]] <- vector("list", st[["C"]])
@@ -678,7 +680,7 @@ map_stage <- function(
     # bypassing the cap (no per-morsel storage exists, so .chunks = n is
     # admissible at zero memory cost); the default targets
     # ~map_morsels_per_runner morsels per runner under the constant grain.
-    runners <- min(max(1L, caps[[1L]]), caps[[2L]], caps[[3L]])
+    runners <- map_runner_count(caps)
     st[["ms"]] <- if (is.null(chunks)) {
       max(1, min(n %/% (runners * map_morsels_per_runner), map_morsel_cap))
     } else {
@@ -698,14 +700,7 @@ map_stage <- function(
     )
     st[["name"]] <- sr[[1L]]
     st[["wrap"]] <- sr[[2L]]
-    # one runner per live worker (floored at 1 so a workerless map still
-    # queues), clamped by the free slots and the ring as chunks were
-    st[["R"]] <- as.integer(min(
-      st[["nm"]],
-      max(1L, caps[[1L]]),
-      caps[[2L]],
-      caps[[3L]]
-    ))
+    st[["R"]] <- map_runner_count(caps, st[["nm"]])
     st[["handles"]] <- vector("list", st[["R"]])
   }
   st[["timed_out"]] <- FALSE
@@ -769,7 +764,7 @@ map_ranges_label <- function(elts) {
 # region's output area on the template path. Splicing by position and
 # minimum-element-index error selection are both collection-order
 # independent, so the region path's deferred order changes no semantics.
-map_collect <- function(pool, st, deadline = Inf, collect = "value") {
+map_collect <- function(st, deadline = Inf, collect = "value") {
   out <- if (!st[["direct"]]) vector("list", st[["n"]])
   if (!is.null(st[["blob"]])) {
     # blob path: in-order chunk collection, as ever
@@ -818,10 +813,9 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
     # — the trigger stays armed while we wait. Only when every uncollected
     # handle defers does collect park, in bounded slices, re-scanning on
     # each return.
-    ms <- st[["ms"]]
     errs <- list()
     died <- NULL
-    hists <- list()
+    runs <- list()
     # consume one runner handle: FALSE when the park slice (or the map
     # deadline) expired with the slot still pending
     consume <- function(k, deadline) {
@@ -843,7 +837,7 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
             # the erroring runner's completed batches still count against
             # the lost set; only its uncompleted batch reports lost
             if (!is.null(v[["sora_map_hist"]])) {
-              hists[[length(hists) + 1L]] <<- v[["sora_map_hist"]]
+              runs[[length(runs) + 1L]] <<- v[["sora_map_hist"]]
             }
           } else {
             map_cancel(st)
@@ -854,48 +848,46 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
         }
       }
       st[["handles"]][k] <- list(NULL)
-      hists[[length(hists) + 1L]] <<- v[1:2]
-      if (!st[["direct"]]) {
-        for (b in seq_along(v[[3L]])) {
-          lo <- v[[1L]][[b]] * ms + 1
-          hi <- min(st[["n"]], (v[[1L]][[b]] + v[[2L]][[b]]) * ms)
-          out[seq.int(lo, hi)] <<- v[[3L]][[b]]
-        }
-      }
+      # one list carries every published runner result: the death lost-set
+      # scan reads the batch histories, the clean path's C assembly
+      # splices the batch values
+      runs[[length(runs) + 1L]] <<- v
       TRUE
     }
     pending <- seq_len(st[["R"]])
     while (length(pending)) {
       progress <- FALSE
-      completed <- logical(st[["R"]])
+      still <- integer(0L)
       for (k in pending) {
         if (mono_time() >= deadline) {
           map_cancel(st)
           return(.Call(sora_map_timeout_call))
         }
+        # the verdict is the C morsel-state code: 2 abandoned, 1 running,
+        # 0 idle
         verdict <- .Call(sora_map_abandon, st[["wrap"]], k - 1L)
-        done <- if (verdict == "abandoned") {
-          # never started and never will: cancel and drop — a claim that
-          # lands anyway loses its first-call CAS and publishes empty
+        done <- if (verdict == 2L) {
+          # abandoned: never started and never will — cancel and drop; a
+          # claim that lands anyway loses its first-call CAS and publishes
+          # empty
           h <- st[["handles"]][[k]]
           if (!is.null(h)) {
             .Call(sora_pool_cancel, h)
           }
           st[["handles"]][k] <- list(NULL)
           TRUE
-        } else if (verdict == "running") {
+        } else if (verdict == 1L) {
           consume(k, deadline)
         } else {
           FALSE # idle: defer, the trim trigger unarmed
         }
         if (done) {
-          completed[[k]] <- TRUE
           progress <- TRUE
+        } else {
+          still <- c(still, k)
         }
       }
-      if (progress) {
-        pending <- pending[!completed[pending]]
-      }
+      pending <- still
       if (length(pending) && !progress) {
         # every uncollected handle defers (nothing claimed yet:
         # pre-first-claim, or every worker pinned): park on one in bounded
@@ -913,35 +905,9 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
     }
     if (!is.null(died)) {
       map_cancel(st)
-      # the lost set is arithmetic over the collected results: issued =
-      # [0, cursor), lost = issued minus the union of collected histories.
-      # A batch in no history was issued but never completed (its claimant
-      # died, or f errored mid-batch); a dead runner's whole history lands
-      # here too — it publishes only at exhaustion — and durably written
-      # template elements report conservatively as lost, never wrong.
-      cur <- .Call(sora_map_info, st[["wrap"]])[["cursor"]]
-      # as.numeric: empty hists (every runner that ran died) must stay a
-      # zero-length vector — unlist(list()) is NULL and order(NULL) errors
-      hm <- as.numeric(unlist(lapply(hists, `[[`, 1L)))
-      hk <- as.numeric(unlist(lapply(hists, `[[`, 2L)))
-      o <- order(hm)
-      hm <- hm[o]
-      hk <- hk[o]
-      lo <- numeric(0)
-      hi <- numeric(0)
-      at <- 0
-      for (b in seq_along(hm)) {
-        if (hm[[b]] > at) {
-          lo <- c(lo, at)
-          hi <- c(hi, hm[[b]] - 1)
-        }
-        at <- hm[[b]] + hk[[b]]
-      }
-      if (at < cur) {
-        lo <- c(lo, at)
-        hi <- c(hi, cur - 1)
-      }
-      elts <- cbind(lo = lo * ms + 1, hi = pmin(st[["n"]], (hi + 1) * ms))
+      # the lost set is arithmetic over the collected histories, in C:
+      # issued = [0, cursor), lost = issued minus their union
+      elts <- .Call(sora_map_lost, st[["wrap"]], runs)
       stop_sora(
         "sora_error_worker_died",
         sprintf(
@@ -960,6 +926,11 @@ map_collect <- function(pool, st, deadline = Inf, collect = "value") {
       # shrinks it sooner
       idx <- vapply(errs, function(e) as.numeric(e[["sora_map_index"]]), 0)
       stop(errs[[which.min(idx)]])
+    }
+    if (!st[["direct"]]) {
+      # generic assembly: one C pass splices every runner's batch value
+      # lists into out by element position
+      .Call(sora_map_splice, out, runs, st[["ms"]])
     }
   }
   if (!st[["direct"]] && is.null(st[["template"]])) {

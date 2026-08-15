@@ -144,7 +144,7 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   e <- tryCatch(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "sora_error_worker_died")
@@ -206,7 +206,7 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   e <- tryCatch(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "sora_error_worker_died")
@@ -259,7 +259,7 @@ test_that("worker death on the template path never exposes partial output", {
   # whole: nothing is ever gathered, and durably written elements from
   # the dead runner report conservatively as lost
   e <- tryCatch(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     error = identity
   )
   expect_match(conditionMessage(e), "worker died while executing map elements")
@@ -296,7 +296,7 @@ test_that("a lone worker's death reports the whole issued range as lost", {
   kill_hard(pid)
   cur <- .Call(sora:::sora_map_info, st[["wrap"]])[["cursor"]] # frozen by the kill
   e <- tryCatch(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "sora_error_worker_died")
@@ -339,7 +339,7 @@ test_that("a runner's announce lost to a help beat still fails as died", {
   pid <- sora_pool_dump(p)[["workers"]][["pid"]][1L]
   kill_hard(pid)
   e <- tryCatch(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "sora_error_worker_died")
@@ -494,7 +494,7 @@ test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
   # not at map end (~0.7 s away)
   expect_lt(sora:::mono_time() - t0, 0.5)
   expect_identical(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     as.list(1:40)
   )
   expect_true(wait_until(sora_pool_status(p)[["parked"]] == 2L))
@@ -529,7 +529,7 @@ test_that("a map submitted into a busy pool regains freed workers", {
   )
   sora:::map_submit(p, st)
   expect_identical(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     as.list(x)
   )
   expect_null(sora_collect(pin1, timeout = 30))
@@ -588,7 +588,7 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
   # and collect raises — the regression under test is no wedge, not
   # completion
   e <- tryCatch(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "sora_error_worker_died")
@@ -687,7 +687,7 @@ test_that("a mid-map worker death reports the gap between survivor batches", {
   } # a failed gate must never reach kill(-1)
   kill_hard(victim)
   e <- tryCatch(
-    sora:::map_collect(p, st, deadline = sora:::mono_time() + 30),
+    sora:::map_collect(st, deadline = sora:::mono_time() + 30),
     error = identity
   )
   expect_s3_class(e, "sora_error_worker_died")

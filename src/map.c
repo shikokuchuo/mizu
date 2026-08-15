@@ -611,6 +611,139 @@ SEXP sora_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
   return view;
 }
 
+/* Generic-path assembly: one pass splices every collected runner
+   result's batch value lists into out by element position — the R side
+   per batch allocated a seq.int index as long as the batch and paid the
+   subassignment dispatch; here the batch ranges recompute from the
+   morsel geometry exactly as sora_map_next issued them (the final grant
+   clamps to n) and only the pointer copies remain. A range or length
+   mismatch against a published batch means protocol corruption, not a
+   recoverable condition. */
+SEXP sora_map_splice(SEXP out, SEXP results, SEXP ms_sexp) {
+  if (TYPEOF(out) != VECSXP || TYPEOF(results) != VECSXP)
+    Rf_error("sora: invalid map splice arguments");
+  double ms = Rf_asReal(ms_sexp);
+  if (!(ms >= 1))
+    Rf_error("sora: invalid morsel size");
+  R_xlen_t n = XLENGTH(out);
+  for (R_xlen_t r = 0; r < XLENGTH(results); r++) {
+    SEXP res = VECTOR_ELT(results, r);
+    if (TYPEOF(res) != VECSXP || XLENGTH(res) < 3)
+      Rf_error("sora: invalid map runner result");
+    SEXP hm = VECTOR_ELT(res, 0), hk = VECTOR_ELT(res, 1),
+         vals = VECTOR_ELT(res, 2);
+    if (TYPEOF(hm) != REALSXP || TYPEOF(hk) != REALSXP ||
+        TYPEOF(vals) != VECSXP || XLENGTH(hk) != XLENGTH(hm) ||
+        XLENGTH(vals) != XLENGTH(hm))
+      Rf_error("sora: invalid map runner result");
+    const double *m = REAL(hm), *k = REAL(hk);
+    for (R_xlen_t b = 0; b < XLENGTH(hm); b++) {
+      if (!(m[b] >= 0) || !(k[b] >= 1))
+        Rf_error("sora: invalid map batch range");
+      double lo_d = m[b] * ms + 1, hi_d = (m[b] + k[b]) * ms;
+      if (hi_d > (double) n) hi_d = (double) n;
+      if (!(lo_d >= 1) || lo_d > (double) n || hi_d < lo_d)
+        Rf_error("sora: invalid map batch range");
+      R_xlen_t lo = (R_xlen_t) lo_d, hi = (R_xlen_t) hi_d;
+      SEXP bv = VECTOR_ELT(vals, b);
+      if (TYPEOF(bv) != VECSXP || XLENGTH(bv) != hi - lo + 1)
+        Rf_error("sora: map batch result length mismatch");
+      for (R_xlen_t i = 0; i <= hi - lo; i++)
+        SET_VECTOR_ELT(out, lo - 1 + i, VECTOR_ELT(bv, i));
+    }
+  }
+  return R_NilValue;
+}
+
+/* Worker-death lost set: issued = [0, cursor), lost = issued minus the
+   union of the collected batch histories — a batch in no history was
+   issued but never completed (its claimant died, or f errored
+   mid-batch); a dead runner's whole history lands here too — it
+   publishes only at exhaustion — and durably written template elements
+   report conservatively as lost, never wrong. runs is the R side's list
+   of runner results and error-carried history pairs; only the first two
+   elements of each (batch starts, batch sizes, in morsels) are read.
+   Returns the lost element ranges as a two-column double matrix of
+   inclusive 1-based [lo, hi]. */
+typedef struct sora_mbatch_s { uint64_t m, k; } sora_mbatch;
+
+static int sora_mbatch_cmp(const void *a, const void *b) {
+  uint64_t x = ((const sora_mbatch *) a)->m;
+  uint64_t y = ((const sora_mbatch *) b)->m;
+  return (x > y) - (x < y);
+}
+
+SEXP sora_map_lost(SEXP xp, SEXP runs) {
+  sora_map_h *mh = map_h_get(xp);
+  uint64_t cur = atomic_load_explicit(map_cursor_word(mh),
+                                      memory_order_acquire);
+  if (cur > mh->h.n_morsels) cur = mh->h.n_morsels;
+  if (TYPEOF(runs) != VECSXP)
+    Rf_error("sora: invalid map batch history");
+  R_xlen_t nh = XLENGTH(runs), total = 0;
+  for (R_xlen_t i = 0; i < nh; i++) {
+    SEXP pr = VECTOR_ELT(runs, i);
+    if (TYPEOF(pr) != VECSXP || XLENGTH(pr) < 2 ||
+        TYPEOF(VECTOR_ELT(pr, 0)) != REALSXP ||
+        TYPEOF(VECTOR_ELT(pr, 1)) != REALSXP ||
+        XLENGTH(VECTOR_ELT(pr, 0)) != XLENGTH(VECTOR_ELT(pr, 1)))
+      Rf_error("sora: invalid map batch history");
+    total += XLENGTH(VECTOR_ELT(pr, 0));
+  }
+  sora_mbatch *b =
+    (sora_mbatch *) R_alloc((size_t) (total > 0 ? total : 1),
+                            sizeof(*b));
+  R_xlen_t at = 0;
+  for (R_xlen_t i = 0; i < nh; i++) {
+    SEXP pr = VECTOR_ELT(runs, i);
+    SEXP hm = VECTOR_ELT(pr, 0), hk = VECTOR_ELT(pr, 1);
+    const double *m = REAL(hm), *k = REAL(hk);
+    for (R_xlen_t j = 0; j < XLENGTH(hm); j++, at++) {
+      if (!(m[j] >= 0) || !(k[j] >= 1) ||
+          m[j] > (double) mh->h.n_morsels ||
+          k[j] > (double) mh->h.n_morsels)
+        Rf_error("sora: invalid map batch history");
+      b[at].m = (uint64_t) m[j];
+      b[at].k = (uint64_t) k[j];
+    }
+  }
+  qsort(b, (size_t) total, sizeof(*b), sora_mbatch_cmp);
+  const uint64_t msz = mh->h.morsel_size, n = mh->h.n;
+  uint64_t pos = 0, ngap = 0;
+  for (R_xlen_t i = 0; i < total; i++) {
+    if (b[i].m > pos) ngap++;
+    if (b[i].m + b[i].k > pos) pos = b[i].m + b[i].k;
+  }
+  if (pos < cur) ngap++;
+  SEXP out = PROTECT(Rf_allocMatrix(REALSXP, (R_xlen_t) ngap, 2));
+  double *lo = REAL(out), *hi = lo + ngap;
+  pos = 0;
+  uint64_t g = 0;
+  for (R_xlen_t i = 0; i < total; i++) {
+    if (b[i].m > pos) {
+      uint64_t e = b[i].m * msz;
+      lo[g] = (double) (pos * msz) + 1;
+      hi[g] = (double) (e > n ? n : e);
+      g++;
+    }
+    if (b[i].m + b[i].k > pos) pos = b[i].m + b[i].k;
+  }
+  if (pos < cur) {
+    uint64_t e = cur * msz;
+    lo[g] = (double) (pos * msz) + 1;
+    hi[g] = (double) (e > n ? n : e);
+    g++;
+  }
+  SEXP cn = PROTECT(Rf_allocVector(STRSXP, 2));
+  SET_STRING_ELT(cn, 0, Rf_mkChar("lo"));
+  SET_STRING_ELT(cn, 1, Rf_mkChar("hi"));
+  SEXP dn = PROTECT(Rf_allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(dn, 1, cn);
+  Rf_setAttrib(out, R_DimNamesSymbol, dn);
+  UNPROTECT(3);
+  return out;
+}
+
 // Morsel protocol ---------------------------------------------------------------
 
 /* One whole batch transition — generation-fenced lane claim, cancel and
@@ -732,9 +865,10 @@ SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
    runner never started and never will do work — sora_pool_cancel alone
    cannot carry the trim, being advisory and discard-only while the
    trigger condition is the routine end state of every map. Returns the
-   verdict: "abandoned" (won, or already trimmed), "running" (the runner
-   is executing or already published — collect it), or "idle" (trigger
-   unarmed: collect defers this handle rather than parking on it). */
+   verdict as the morsel-state code itself: SORA_MORSEL_ABANDONED (won,
+   or already trimmed), SORA_MORSEL_RUNNING (the runner is executing or
+   already published — collect it), SORA_MORSEL_IDLE (trigger unarmed:
+   collect defers this handle rather than parking on it). */
 SEXP sora_map_abandon(SEXP xp, SEXP r_sexp) {
   sora_map_h *mh = map_h_get(xp);
   uint32_t r = map_ordinal(mh, r_sexp);
@@ -752,12 +886,8 @@ SEXP sora_map_abandon(SEXP xp, SEXP r_sexp) {
       if (atomic_compare_exchange_strong_explicit(
             cw, &w, (gen << 2) | SORA_MORSEL_ABANDONED,
             memory_order_seq_cst, memory_order_acquire))
-        return Rf_mkString("abandoned");
-  switch (w & 3u) {
-  case SORA_MORSEL_RUNNING:   return Rf_mkString("running");
-  case SORA_MORSEL_ABANDONED: return Rf_mkString("abandoned");
-  default:                   return Rf_mkString("idle");
-  }
+        return Rf_ScalarInteger(SORA_MORSEL_ABANDONED);
+  return Rf_ScalarInteger((int) (w & 3u));
 }
 
 /* The cancel word: set by the submitter on timeout / cancel / death, and

@@ -310,11 +310,15 @@ test_that("guard: ALTREP input stays a compact stream", {
   skip_if_no_child_sora()
   ch <- sora_channel(echo_expr, capacity = 64L)
 
-  x <- 1:(128 * 1024 * 1024) # ALTREP seq: 1 GiB materialized
-  len <- length(serialize(x, NULL))
+  x <- 1:(128 * 1024 * 1024) # ALTREP seq: 512 MiB materialized
+  xb <- serialize(x, NULL)
+  len <- length(xb)
   expect_lt(len, 1024L) # the compact-stream premise
   sora_send(ch, x)
-  expect_identical(sora_recv(ch, 60), x)
+  # compare the serialized streams, not the objects: identical() would
+  # materialize both sequences (two 512 MiB allocations — valgrind's
+  # large-range mmap warnings); equal compact streams are equal values
+  expect_identical(serialize(sora_recv(ch, 60), NULL), xb)
   n <- 1000L # looped: proc.time ticks at ~1 ms on this platform
   t0 <- proc.time()[[3]]
   for (i in seq_len(n)) {

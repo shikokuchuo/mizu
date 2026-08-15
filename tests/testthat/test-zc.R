@@ -613,7 +613,7 @@ test_that("a re-sent map view degrades to a materializing copy", {
   while (pool_step(p) == 1L) {
     NULL
   }
-  v <- sora:::map_collect(p[["ctrl"]], st, sora:::mono_time() + 30,
+  v <- sora:::map_collect(st, sora:::mono_time() + 30,
                            collect = "view")
   expect_true(is_view(v))
   ch <- channel_pair(arena_size = 0)
