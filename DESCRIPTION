@@ -25,7 +25,10 @@ Imports:
     utils
 Suggests:
     mori,
+    quarto,
     testthat (>= 3.0.0)
+VignetteBuilder:
+    quarto
 Config/build/compilation-database: true
 Config/roxygen2/markdown: TRUE
 Config/roxygen2/version: 8.1.0

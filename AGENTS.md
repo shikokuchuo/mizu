@@ -7,6 +7,7 @@ kioto is an R package (C core behind a thin `.Call` veneer) for lock-free shared
 ```sh
 R CMD INSTALL .                       # build + install
 Rscript -e 'devtools::build_readme()' # regenerate README.md from README.Rmd — edit the .Rmd, never README.md directly
+Rscript dev/vignettes/precompile.R    # regenerate vignettes/{name}.qmd from dev/vignettes/_{name}.qmd — edit the _-prefixed source, never vignettes/ directly
 bash tools/vendor-mori.sh             # re-vendor src/vendor
 ```
 
@@ -34,6 +35,8 @@ devtools::check()
 Cross-process tests spawn fresh `Rscript` children that `library(kioto)` from the *installed* library. Under a bare `load_all()` they skip via `skip_if_no_child_kioto()`; with a stale installed copy the children run different code than the test process. **After changing `src/` or `R/`, run `R CMD INSTALL .` before the test suite.**
 
 `compile_commands.json` for clangd is regenerated on install (`Config/build/compilation-database` in DESCRIPTION). The package has no air formatter config — don't run `air format`.
+
+The reference vignette is pre-computed (mirai-style, but quarto instead of litedown): `precompile.R` renders `dev/vignettes/_reference.qmd` to static markdown as `vignettes/reference.qmd` (engine `quarto::html`; no chunks execute at build time, but the quarto CLI must be present). Re-run it after editing the `_`-prefixed source; it needs the installed package (it spawns children) plus bench/mirai/ggplot2 for the benchmark chunks.
 
 ### Architecture
 
