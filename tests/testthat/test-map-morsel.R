@@ -1,25 +1,25 @@
-# In-process morsel-protocol tests: kio_map_next / kio_map_abandon /
-# kio_map_cancel_* / kio_map_reset are .Calls against a region staged from
+# In-process morsel-protocol tests: sora_map_next / sora_map_abandon /
+# sora_map_cancel_* / sora_map_reset are .Calls against a region staged from
 # this process — the deterministic harness for issue order, exhaustion,
 # the CLAIM handshake and generation fencing, no children needed. The
 # region's producer handle maps writable, so this process can drive the
 # shared state from both sides.
 
 stage_h <- function(n, morsel = 1, x = NULL, template = NULL)
-  .Call(kioto:::kio_map_stage, list(identity, list()), x, NULL, n,
+  .Call(sora:::sora_map_stage, list(identity, list()), x, NULL, n,
         template, morsel)[[2L]]
 
 # pinned-k transition (the test entry bypassing the sizing policy)
 nxt <- function(h, r = 0L, gen = 0, k = 1, now = NULL)
-  .Call(kioto:::kio_map_next, h, r, gen, NULL, k, now)
+  .Call(sora:::sora_map_next, h, r, gen, NULL, k, now)
 
 # adaptive transition under a forced clock
 anxt <- function(h, now, r = 0L, gen = 0)
-  .Call(kioto:::kio_map_next, h, r, gen, NULL, NULL, now)
+  .Call(sora:::sora_map_next, h, r, gen, NULL, NULL, now)
 
-minfo <- function(h) .Call(kioto:::kio_map_info, h)
-claim <- function(h, r) .Call(kioto:::kio_map_claim_state, h, r)
-abandon <- function(h, r) .Call(kioto:::kio_map_abandon, h, r)
+minfo <- function(h) .Call(sora:::sora_map_info, h)
+claim <- function(h, r) .Call(sora:::sora_map_claim_state, h, r)
+abandon <- function(h, r) .Call(sora:::sora_map_abandon, h, r)
 
 test_that("stage lays out morsel geometry and a zeroed state section", {
   h <- stage_h(100, 8)
@@ -88,8 +88,8 @@ test_that("the cancel word stops issue before any claim and arms the trim", {
   # refusal while morsels remain and cancel is clear reports the state
   expect_identical(abandon(h, 1L), "idle")
   expect_identical(claim(h, 1L)[["state"]], "idle")
-  .Call(kioto:::kio_map_cancel_set, h)
-  expect_true(.Call(kioto:::kio_map_cancel_get, h))
+  .Call(sora:::sora_map_cancel_set, h)
+  expect_true(.Call(sora:::sora_map_cancel_get, h))
   cur <- minfo(h)[["cursor"]]
   # a cancelled region issues nothing more, even with morsels left
   expect_null(nxt(h, k = 2))
@@ -118,8 +118,8 @@ test_that("reset re-arms every CLAIM word under a bumped generation", {
   h <- stage_h(6, 1)
   nxt(h, k = 6)
   abandon(h, 1L)                             # exhausted: trims
-  .Call(kioto:::kio_map_cancel_set, h)
-  gen2 <- .Call(kioto:::kio_map_reset, h)
+  .Call(sora:::sora_map_cancel_set, h)
+  gen2 <- .Call(sora:::sora_map_reset, h)
   expect_identical(gen2, 1)
   i <- minfo(h)
   expect_identical(i[["generation"]], 1)
@@ -181,7 +181,7 @@ test_that("the sizing ramp resets to k = 1 at a run boundary", {
     b <- anxt(h, t)
   }
   expect_gt(b[[2L]], 1)
-  .Call(kioto:::kio_map_reset, h)
+  .Call(sora:::sora_map_reset, h)
   b <- anxt(h, t, gen = 1)                   # new run, same ctx: fresh ramp
   expect_identical(b[[2L]], 1)
 })
@@ -190,40 +190,40 @@ test_that("an all-busy publish rings the doorbell; help_once consumes and restor
   p <- pool_pair()
   # no worker is ever parked in the in-process harness, so a submit's
   # wake finds an empty mask and rings the bell
-  h1 <- kio_submit(p[["ctrl"]], quote(1L))
-  expect_true(kio_pool_dump(p[["ctrl"]])[["help"]])
-  h2 <- kio_submit(p[["ctrl"]], quote(2L))
+  h1 <- sora_submit(p[["ctrl"]], quote(1L))
+  expect_true(sora_pool_dump(p[["ctrl"]])[["help"]])
+  h2 <- sora_submit(p[["ctrl"]], quote(2L))
   # one help beat: claim + execute one entry, then restore the bell for
   # the entry still queued (clear -> re-check -> restore)
-  expect_true(.Call(kioto:::kio_pool_help_once, p[["wk"]]))
-  expect_true(kio_pool_dump(p[["ctrl"]])[["help"]])
-  expect_identical(kio_collect(h1), 1L)
-  expect_true(.Call(kioto:::kio_pool_help_once, p[["wk"]]))
-  expect_false(kio_pool_dump(p[["ctrl"]])[["help"]])   # nothing queued: stays clear
-  expect_identical(kio_collect(h2), 2L)
-  expect_false(.Call(kioto:::kio_pool_help_once, p[["wk"]]))
+  expect_true(.Call(sora:::sora_pool_help_once, p[["wk"]]))
+  expect_true(sora_pool_dump(p[["ctrl"]])[["help"]])
+  expect_identical(sora_collect(h1), 1L)
+  expect_true(.Call(sora:::sora_pool_help_once, p[["wk"]]))
+  expect_false(sora_pool_dump(p[["ctrl"]])[["help"]])   # nothing queued: stays clear
+  expect_identical(sora_collect(h2), 2L)
+  expect_false(.Call(sora:::sora_pool_help_once, p[["wk"]]))
   pool_end(p)
 })
 
-test_that("kio_map_next consumes pool signals: help flag, skip rule, shutdown", {
+test_that("sora_map_next consumes pool signals: help flag, skip rule, shutdown", {
   p <- pool_pair()
-  sig <- .Call(kioto:::kio_pool_signals, p[["wk"]])
+  sig <- .Call(sora:::sora_pool_signals, p[["wk"]])
   h <- stage_h(1e4, 1)
-  b <- .Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 0)
+  b <- .Call(sora:::sora_map_next, h, 0L, 0, sig, NULL, 0)
   expect_false(b[[6L]])                      # quiet pool: no help flag
-  kio_submit(p[["ctrl"]], quote(1L))              # all busy: bell rings
-  b <- .Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 1e-6)
+  sora_submit(p[["ctrl"]], quote(1L))              # all busy: bell rings
+  b <- .Call(sora:::sora_map_next, h, 0L, 0, sig, NULL, 1e-6)
   expect_true(b[[6L]])                       # help flag rides the return
   expect_identical(b[[2L]], 2)               # this interval still updated
   # the two intervals below contain (nominal) foreign-task time: the cost
   # estimate must not absorb them — growth continues off the old estimate
   # instead of collapsing to k = 1 against the huge elapsed times
-  b <- .Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 0.5)
+  b <- .Call(sora:::sora_map_next, h, 0L, 0, sig, NULL, 0.5)
   expect_identical(b[[2L]], 4)
-  b <- .Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 1.0)
+  b <- .Call(sora:::sora_map_next, h, 0L, 0, sig, NULL, 1.0)
   expect_identical(b[[2L]], 8)
   # shutdown observed at the next transition: NULL, mid-cursor
-  .Call(kioto:::kio_pool_destroy, p[["ctrl"]])
-  expect_null(.Call(kioto:::kio_map_next, h, 0L, 0, sig, NULL, 1.1))
-  .Call(kioto:::kio_pool_leave, p[["wk"]])
+  .Call(sora:::sora_pool_destroy, p[["ctrl"]])
+  expect_null(.Call(sora:::sora_map_next, h, 0L, 0, sig, NULL, 1.1))
+  .Call(sora:::sora_pool_leave, p[["wk"]])
 })

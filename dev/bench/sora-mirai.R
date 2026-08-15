@@ -1,4 +1,4 @@
-# Report-only benchmark: kioto's task pool against mirai, matched
+# Report-only benchmark: sora's task pool against mirai, matched
 # scenario-for-scenario on one machine. Prints each number as it lands and
 # a summary table at the end; asserts nothing.
 #
@@ -6,7 +6,7 @@
 #   2. pipelined throughput   evaluate 1L, 1 worker: fire n, collect n
 #   3. payload round-trip     identity task on numeric vectors of 8 KB /
 #                             800 KB / 8 MB, 1 worker: data both ways.
-#                             kioto slots are sized to the payload where
+#                             sora slots are sized to the payload where
 #                             the 2^20 slot_size cap allows, so 8 KB and
 #                             800 KB ride in-slot and 8 MB takes the spill
 #                             tier (SHM_VEC views; on Linux the churn
@@ -15,18 +15,18 @@
 #                             collect all (in-process loop as the anchor)
 #   5. streaming              one-way 1L messages: channel send_batch /
 #                             recv_batch against one mirai task per message
-#   6. parallel map           kio_map against mirai_map, 4 workers: trivial
+#   6. parallel map           sora_map against mirai_map, 4 workers: trivial
 #                             f per-element overhead (serial lapply as the
-#                             anchor, plus kio_map's .template and .seed
+#                             anchor, plus sora_map's .template and .seed
 #                             variants), then scenario 4's fan-out work as
 #                             one map call. The models differ by design:
 #                             mirai_map submits one mirai per element, so
 #                             its per-task cost is its per-element cost;
-#                             kio_map stages f/x once and submits ~8 chunk
+#                             sora_map stages f/x once and submits ~8 chunk
 #                             tasks per worker — that amortization is what
 #                             the scenario measures
 #
-# Scenarios 1 and 2 carry a raw-transport floor row: a kioto channel echoing
+# Scenarios 1 and 2 carry a raw-transport floor row: a sora channel echoing
 # 1L, no task model on top. Scenarios 1 and 5 also carry the socket-stack
 # floor — a nanonext ipc:// pair moving the same 1L serialization-free
 # (raw out, integer back), the transport under mirai. mirai's smallest
@@ -37,9 +37,9 @@
 # mirai runs every scenario both ways: dispatcher = TRUE and FALSE. Timings
 # are best-of-3 after warm-up; single runs on a busy machine still jitter.
 #
-# Run:  Rscript dev/bench/kioto-mirai.R
+# Run:  Rscript dev/bench/sora-mirai.R
 
-library(kioto)
+library(sora)
 library(mirai)
 library(nanonext)
 
@@ -101,28 +101,28 @@ pipeline <- function(fire, reap, n) {
   }
 }
 
-# pool up, f(pool), pool down. args reaches kio_pool, for the rows that size
+# pool up, f(pool), pool down. args reaches sora_pool, for the rows that size
 # slots to the payload
 with_pool <- function(workers, f, args = list()) {
-  p <- do.call(kio_pool, c(list(workers, max_submitters = 2L), args))
-  on.exit(kio_pool_stop(p))
+  p <- do.call(sora_pool, c(list(workers, max_submitters = 2L), args))
+  on.exit(sora_pool_stop(p))
   f(p)
 }
 
 with_channel <- function(expr, f, ...) {
-  ch <- kio_channel(expr, ...)
-  on.exit(kio_close(ch, timeout = 10))
+  ch <- sora_channel(expr, ...)
+  on.exit(sora_close(ch, timeout = 10))
   f(ch)
 }
 
 # the canonical echo peer: the raw-transport counterpart of a 1L task
 echo_expr <- quote(
   repeat {
-    x <- kio_recv(ch, timeout = 30)
-    if (inherits(x, "kio_sentinel")) {
+    x <- sora_recv(ch, timeout = 30)
+    if (inherits(x, "sora_sentinel")) {
       break
     }
-    kio_send(ch, x)
+    sora_send(ch, x)
   }
 )
 
@@ -139,7 +139,7 @@ new_child <- function(code) {
 # an ipc:// pair with `body` looping in a child peer, f(socket) driving it
 # from here; a 1-byte message is the poison pill that stops the peer
 with_nn_pair <- function(tag, body, f) {
-  url <- sprintf("ipc://%s/kioto-bench-%s-%d", tempdir(), tag, Sys.getpid())
+  url <- sprintf("ipc://%s/sora-bench-%s-%d", tempdir(), tag, Sys.getpid())
   s <- socket("pair", listen = url)
   new_child(sprintf(
     '
@@ -169,8 +169,8 @@ each_daemons <- function(n, prefix, f) {
 }
 
 cat(sprintf(
-  "kioto %s | mirai %s | R %s | %s\n",
-  packageVersion("kioto"),
+  "sora %s | mirai %s | R %s | %s\n",
+  packageVersion("sora"),
   packageVersion("mirai"),
   getRversion(),
   R.version[["platform"]]
@@ -214,17 +214,17 @@ with_channel(
   echo_expr,
   function(ch) {
     warmup(function() {
-      kio_send(ch, 1L)
-      kio_recv(ch, 30)
+      sora_send(ch, 1L)
+      sora_recv(ch, 30)
     })
     note_us(
       "sequential rt",
-      "kioto channel",
+      "sora channel",
       nc,
       function() {
         for (i in seq_len(nc)) {
-          kio_send(ch, 1L)
-          kio_recv(ch, 30)
+          sora_send(ch, 1L)
+          sora_recv(ch, 30)
         }
       },
       "us/rt"
@@ -234,10 +234,10 @@ with_channel(
 )
 
 with_pool(1L, function(p) {
-  warmup(function() kio_collect(kio_submit(p, 1L), timeout = 30))
-  note_us("sequential rt", "kioto pool", n, function() {
+  warmup(function() sora_collect(sora_submit(p, 1L), timeout = 30))
+  note_us("sequential rt", "sora pool", n, function() {
     for (i in seq_len(n)) {
-      kio_collect(kio_submit(p, 1L), timeout = 30)
+      sora_collect(sora_submit(p, 1L), timeout = 30)
     }
   })
 })
@@ -260,20 +260,20 @@ k <- 10L # cycles per rep, again outrunning mclock's ms granularity
 with_channel(echo_expr, function(ch) {
   # default capacity holds n
   warmup(function() {
-    kio_send(ch, 1L)
-    kio_recv(ch, 30)
+    sora_send(ch, 1L)
+    sora_recv(ch, 30)
   })
   note_rate(
     "pipelined",
-    "kioto channel",
+    "sora channel",
     k * n,
     function() {
       for (j in seq_len(k)) {
         for (i in seq_len(n)) {
-          kio_send(ch, 1L)
+          sora_send(ch, 1L)
         }
         for (i in seq_len(n)) {
-          kio_recv(ch, 30)
+          sora_recv(ch, 30)
         }
       }
     },
@@ -286,10 +286,10 @@ with_channel(echo_expr, function(ch) {
 with_pool(
   1L,
   function(p) {
-    fire <- function() kio_submit(p, 1L)
-    reap <- function(t) kio_collect(t, timeout = 30)
+    fire <- function() sora_submit(p, 1L)
+    reap <- function(t) sora_collect(t, timeout = 30)
     warmup(function() reap(fire()))
-    note_rate("pipelined", "kioto pool", n, function() pipeline(fire, reap, n))
+    note_rate("pipelined", "sora pool", n, function() pipeline(fire, reap, n))
   },
   list(result_slots = 20480L)
 )
@@ -336,12 +336,12 @@ for (pl in payloads) {
   with_pool(
     1L,
     function(p) {
-      if (!identical(kio_collect(kio_submit(p, x, x = x), timeout = 30), x)) {
+      if (!identical(sora_collect(sora_submit(p, x, x = x), timeout = 30), x)) {
         stop("pool roundtrip mismatch")
       }
-      note_us(payload_label(pl[["size"]]), "kioto pool", n, function() {
+      note_us(payload_label(pl[["size"]]), "sora pool", n, function() {
         for (i in seq_len(n)) {
-          kio_collect(kio_submit(p, x, x = x), timeout = 30)
+          sora_collect(sora_submit(p, x, x = x), timeout = 30)
         }
       })
     },
@@ -378,10 +378,10 @@ note_rate("fan-out", "in-process", n, function() {
 
 with_pool(4L, function(p) {
   # 2048 default slots for us
-  fire <- function() kio_submit(p, sum(runif(1e4)))
-  reap <- function(t) kio_collect(t, timeout = 30)
+  fire <- function() sora_submit(p, sum(runif(1e4)))
+  reap <- function(t) sora_collect(t, timeout = 30)
   pipeline(fire, reap, n)
-  note_rate("fan-out", "kioto pool", n, function() pipeline(fire, reap, n))
+  note_rate("fan-out", "sora pool", n, function() pipeline(fire, reap, n))
 })
 
 each_daemons(4L, "mirai", function(fw) {
@@ -403,13 +403,13 @@ with_channel(
   quote({
     total <- 0L
     repeat {
-      xs <- kio_recv_batch(ch, n = 4096L, timeout = 30)
-      if (inherits(xs, "kio_sentinel")) {
+      xs <- sora_recv_batch(ch, n = 4096L, timeout = 30)
+      if (inherits(xs, "sora_sentinel")) {
         break
       }
       total <- total + length(xs)
       if (total >= 200000L) {
-        kio_send(ch, total)
+        sora_send(ch, total)
         total <- 0L
       }
     }
@@ -420,14 +420,14 @@ with_channel(
       sent <- 0L
       while (sent < n) {
         want <- min(4096L, n - sent)
-        sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
+        sent <- sent + sora_send_batch(ch, batch[seq_len(want)])
       }
-      if (!identical(kio_recv(ch, 60), n)) stop("stream count mismatch")
+      if (!identical(sora_recv(ch, 60), n)) stop("stream count mismatch")
     }
     stream_round()
     note_rate(
       "streaming",
-      "kioto channel",
+      "sora channel",
       k * n,
       function() {
         for (j in seq_len(k)) {
@@ -503,25 +503,25 @@ note_us(
 )
 
 with_pool(4L, function(p) {
-  invisible(kio_map(p, x, f))
+  invisible(sora_map(p, x, f))
   note_us(
     "map trivial f",
-    "kio_map",
+    "sora_map",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        kio_map(p, x, f)
+        sora_map(p, x, f)
       }
     },
     "us/elt"
   )
   note_us(
     "map trivial f",
-    "kio_map template",
+    "sora_map template",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        kio_map(p, x, f, .template = numeric(1))
+        sora_map(p, x, f, .template = numeric(1))
       }
     },
     "us/elt"
@@ -529,26 +529,26 @@ with_pool(4L, function(p) {
   # per-element L'Ecuyer-CMRG streams: the price of reproducibility
   note_us(
     "map trivial f",
-    "kio_map .seed",
+    "sora_map .seed",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        kio_map(p, x, f, .seed = 42L)
+        sora_map(p, x, f, .seed = 42L)
       }
     },
     "us/elt"
   )
   # prepared: stage once, run many — per-run cost is submit + collect,
   # and back-to-back runs hit the workers' cached map contexts
-  pmap <- kio_map_prepare(p, x, f)
-  invisible(kio_map_run(pmap))
+  pmap <- sora_map_prepare(p, x, f)
+  invisible(sora_map_run(pmap))
   note_us(
     "map trivial f",
-    "kio_map_run prepared",
+    "sora_map_run prepared",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        kio_map_run(pmap)
+        sora_map_run(pmap)
       }
     },
     "us/elt"
@@ -572,12 +572,12 @@ n <- 2000L
 g <- function(i) sum(runif(1e4))
 
 with_pool(4L, function(p) {
-  invisible(kio_map(p, seq_len(n), g))
+  invisible(sora_map(p, seq_len(n), g))
   note_rate(
     "map fan-out",
-    "kio_map",
+    "sora_map",
     n,
-    function() kio_map(p, seq_len(n), g),
+    function() sora_map(p, seq_len(n), g),
     "elts/s"
   )
 })
@@ -601,11 +601,11 @@ xs <- seq_len(n) + 0
 h <- function(i) sum(runif(if (i <= 40) 2e5 else 200L))
 
 with_pool(4L, function(p) {
-  invisible(kio_map(p, xs, h))
+  invisible(sora_map(p, xs, h))
   note(
     "map skewed f",
-    "kio_map",
-    best_ms(function() timed(kio_map(p, xs, h))),
+    "sora_map",
+    best_ms(function() timed(sora_map(p, xs, h))),
     "ms wall"
   )
 })

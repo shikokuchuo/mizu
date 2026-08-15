@@ -1,4 +1,4 @@
-/* Bounded single-pass serialize stream — the second kioto-owned delta over the
+/* Bounded single-pass serialize stream — the second sora-owned delta over the
    vendored core. The vendored streams are strict count-then-write; the ring's
    INLINE fast path serializes directly into the slot's inline region and
    flips to count-only mode on overflow: one pass total for payloads that fit
@@ -7,16 +7,16 @@
    of discarded copy. Same R_outpstream discipline as mori_serialize_into;
    the vendored two-pass invariant is untouched on the spill path. */
 
-#include "kioto.h"
+#include "sora.h"
 
-typedef struct kio_bounded_s {
+typedef struct sora_bounded_s {
   unsigned char *buf;        /* NULL once overflowed: count-only mode */
   size_t limit;
   size_t total;
-} kio_bounded;
+} sora_bounded;
 
-static void kio_write_bounded(R_outpstream_t stream, void *src, int len) {
-  kio_bounded *b = (kio_bounded *) stream->data;
+static void sora_write_bounded(R_outpstream_t stream, void *src, int len) {
+  sora_bounded *b = (sora_bounded *) stream->data;
   size_t n = (size_t) len;
   if (b->buf != NULL) {
     if (b->total + n <= b->limit)
@@ -27,13 +27,13 @@ static void kio_write_bounded(R_outpstream_t stream, void *src, int len) {
   b->total += n;
 }
 
-size_t kio_serialize_bounded(unsigned char *dst, size_t limit, SEXP object) {
+size_t sora_serialize_bounded(unsigned char *dst, size_t limit, SEXP object) {
 
-  kio_bounded b = {.buf = dst, .limit = limit, .total = 0};
+  sora_bounded b = {.buf = dst, .limit = limit, .total = 0};
   struct R_outpstream_st out;
 
   R_InitOutPStream(&out, (R_pstream_data_t) &b, R_pstream_binary_format,
-                   3, NULL, kio_write_bounded, NULL, R_NilValue);
+                   3, NULL, sora_write_bounded, NULL, R_NilValue);
   R_Serialize(object, &out);
 
   return b.total;
@@ -43,13 +43,13 @@ size_t kio_serialize_bounded(unsigned char *dst, size_t limit, SEXP object) {
 
 /* Serialize object against a byte limit; returns list(size, bytes) where
    bytes is the complete stream if it fit within limit, else NULL. */
-SEXP kio_bounded_call(SEXP object, SEXP limit) {
+SEXP sora_bounded_call(SEXP object, SEXP limit) {
   double lim_in = Rf_asReal(limit);
-  if (!(lim_in >= 0)) Rf_error("kioto: invalid limit");
+  if (!(lim_in >= 0)) Rf_error("sora: invalid limit");
   size_t lim = (size_t) lim_in;
 
   unsigned char *buf = (unsigned char *) R_alloc(lim > 0 ? lim : 1, 1);
-  size_t n = kio_serialize_bounded(buf, lim, object);
+  size_t n = sora_serialize_bounded(buf, lim, object);
 
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(out, 0, Rf_ScalarReal((double) n));
@@ -62,7 +62,7 @@ SEXP kio_bounded_call(SEXP object, SEXP limit) {
   return out;
 }
 
-SEXP kio_unserialize_call(SEXP bytes) {
-  if (TYPEOF(bytes) != RAWSXP) Rf_error("kioto: expected a raw vector");
+SEXP sora_unserialize_call(SEXP bytes) {
+  if (TYPEOF(bytes) != RAWSXP) Rf_error("sora: expected a raw vector");
   return mori_unserialize_from(RAW(bytes), (size_t) XLENGTH(bytes));
 }

@@ -16,26 +16,26 @@
 #define MORI_FORMAT_BUFLEN   1024              /* formatter stack buffer */
 
 #ifdef _WIN32
-#define MORI_PREFIX_LITERAL  "Local\\kio_"
+#define MORI_PREFIX_LITERAL  "Local\\sora_"
 #else
-#define MORI_PREFIX_LITERAL  "/kio_"
+#define MORI_PREFIX_LITERAL  "/sora_"
 #endif
 
 // Region layout constants -----------------------------------------------------
 
 /* Region magics (first 4 bytes): atomic vector, string vector, list tree. */
-#define MORI_MAGIC_VEC   0x4B494F48u  /* "MORH" */
-#define MORI_MAGIC_STR   0x4B494F53u  /* "MORS" */
-#define MORI_MAGIC_LIST  0x4B494F4Cu  /* "MORL" */
+#define MORI_MAGIC_VEC   0x534F5248u  /* "MORH" */
+#define MORI_MAGIC_STR   0x534F5253u  /* "MORS" */
+#define MORI_MAGIC_LIST  0x534F524Cu  /* "MORL" */
 
 /* Every region layout opens with a 64-byte header. Bytes [24-63] are
    reserved (written zero): embedders keep cross-process state there. */
 #define MORI_HEADER_SIZE 64
 
 /* External-pointer tag strings (installed once at init). */
-#define MORI_TAG_SHM   "kio_mori_shm"
-#define MORI_TAG_HOST  "kio_mori_host"
-#define MORI_TAG_OWNED "kio_mori_owned"
+#define MORI_TAG_SHM   "sora_mori_shm"
+#define MORI_TAG_HOST  "sora_mori_host"
+#define MORI_TAG_OWNED "sora_mori_owned"
 
 // Types -----------------------------------------------------------------------
 

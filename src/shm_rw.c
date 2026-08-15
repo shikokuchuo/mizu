@@ -8,14 +8,14 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include "kioto.h"
+#include "sora.h"
 
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
+int sora_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 
   shm->addr = NULL;
   shm->size = 0;
@@ -64,18 +64,18 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 /* Same /dev/shm direct-open on Linux as the vendored core (avoids the -lrt
    link dependency of shm_open); macOS has shm_open in libc. */
 #ifdef __linux__
-static int kio_shm_os_open_rw(const char *name) {
+static int sora_shm_os_open_rw(const char *name) {
   char path[64];
   snprintf(path, sizeof(path), "/dev/shm%s", name);
   return open(path, O_RDWR, 0);
 }
 #else
-static int kio_shm_os_open_rw(const char *name) {
+static int sora_shm_os_open_rw(const char *name) {
   return shm_open(name, O_RDWR, 0);
 }
 #endif
 
-int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
+int sora_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 
   shm->addr = NULL;
   shm->size = 0;
@@ -85,7 +85,7 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
   shm->name[nl] = '\0';
   shm->name_len = (uint8_t) nl;
 
-  int fd = kio_shm_os_open_rw(name);
+  int fd = sora_shm_os_open_rw(name);
   if (fd < 0) return -1;
 
   struct stat st;
@@ -97,7 +97,7 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 
   /* Pre-fault when asked, unlike the vendored read-only consumer open:
      the whole ring is hot on the peer, so pre-faulting once beats faulting
-     on the hot path. kio_map's template contexts opt out — see kioto.h. */
+     on the hot path. sora_map's template contexts opt out — see sora.h. */
   void *addr = mmap(NULL, size, PROT_READ | PROT_WRITE,
                     MAP_SHARED | (populate ? MAP_POPULATE : 0), fd, 0);
   if (addr == MAP_FAILED) {
@@ -121,7 +121,7 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
   /* Collapse works on shm under shmem_enabled=[never] (kernel >= 6.1; see
      the spill-reuse note in payload.c) and installs PMD mappings for this
      process even when the creator already collapsed the folios. Populated
-     attaches only: a lazy attach (kio_map contexts) must keep demand
+     attaches only: a lazy attach (sora_map contexts) must keep demand
      paging. Failure is benign. */
   if (populate && size >= ((size_t) 2 << 20))
     (void) madvise(addr, size, MADV_COLLAPSE);
@@ -135,13 +135,13 @@ int kio_shm_open_rw(mori_shm *shm, const char *name, int populate) {
 #ifdef __linux__
 /* Read-only populated open for SHM_RAW payload reads. The vendored
    consumer open deliberately skips MAP_POPULATE — right for mori shared
-   objects read lazily, wrong for a payload stream kio_payload_read
+   objects read lazily, wrong for a payload stream sora_payload_read
    unserializes in full immediately: 2,048 read faults per 8 MB (each a
    stage-2 walk under a VM) where one populate syscall does. Linux-only —
    macOS has no mapping-time populate flag and fault-on-demand there is
    the vendored position (see the fallback below). NULL on failure, so
    the caller's gone semantics are unchanged. */
-mori_shm *kio_shm_open_ro_heap(const char *name) {
+mori_shm *sora_shm_open_ro_heap(const char *name) {
   mori_shm *shm = malloc(sizeof(mori_shm));
   if (shm == NULL) return NULL;
   shm->addr = NULL;
@@ -186,15 +186,15 @@ mori_shm *kio_shm_open_ro_heap(const char *name) {
 #endif /* _WIN32 */
 
 #ifndef __linux__
-mori_shm *kio_shm_open_ro_heap(const char *name) {
+mori_shm *sora_shm_open_ro_heap(const char *name) {
   return mori_shm_open_heap(name);
 }
 #endif
 
-mori_shm *kio_shm_open_rw_heap(const char *name, int populate) {
+mori_shm *sora_shm_open_rw_heap(const char *name, int populate) {
   mori_shm *shm = malloc(sizeof(mori_shm));
   if (shm == NULL) return NULL;
-  if (kio_shm_open_rw(shm, name, populate) != 0) {
+  if (sora_shm_open_rw(shm, name, populate) != 0) {
     free(shm);
     return NULL;
   }
@@ -211,7 +211,7 @@ mori_shm *kio_shm_open_rw_heap(const char *name, int populate) {
    supported page size, so no page is skipped (16 KiB pages on arm64 macOS
    just take four stores). Payload regions keep the vendored create: they
    are written in full immediately, so prefault would be a redundant pass. */
-int kio_shm_create_populate(mori_shm *shm, size_t size) {
+int sora_shm_create_populate(mori_shm *shm, size_t size) {
   int rc = mori_shm_create(shm, size);
 #ifndef __linux__
   if (rc == MORI_OK) {

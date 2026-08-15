@@ -1,4 +1,4 @@
-#' kioto: Lock-Free Shared-Memory Channels and Task Pools
+#' sora: Lock-Free Shared-Memory Channels and Task Pools
 #'
 #' Parallel computation and data exchange between R processes on the same
 #' machine. Lock-free channels and work-stealing task pools over 'POSIX'
@@ -8,7 +8,7 @@
 #' threads.
 #'
 #' @section Linux allocator tuning:
-#' On glibc Linux, loading kioto raises the mmap and trim thresholds of
+#' On glibc Linux, loading sora raises the mmap and trim thresholds of
 #' the C library allocator (to 32 MB and 128 MB). Payloads that cross a
 #' process boundary are materialized as fresh vectors, and the glibc
 #' defaults map, fault, and unmap every large one. A process that set its
@@ -16,12 +16,12 @@
 #' platforms are unaffected.
 #'
 #' @importFrom utils removeSource
-#' @useDynLib kioto, .registration = TRUE
+#' @useDynLib sora, .registration = TRUE
 #'
 #' @keywords internal
 "_PACKAGE"
 
-# kioto is 64-bit only: the wire formats are built on 64-bit monotonic
+# sora is 64-bit only: the wire formats are built on 64-bit monotonic
 # positions whose lock-freedom the wrap-arithmetic and crash-atomicity
 # arguments depend on; 32-bit targets would fall back to lock-based
 # 64-bit atomics, which do not work across processes. On Linux the death
@@ -31,15 +31,15 @@
 .onLoad <- function(libname, pkgname) {
   if (.Machine[["sizeof.pointer"]] < 8L) {
     stop(
-      "kioto requires 64-bit R: its cross-process wire formats depend on ",
+      "sora requires 64-bit R: its cross-process wire formats depend on ",
       "lock-free 64-bit atomics",
       call. = FALSE
     )
   }
-  .Call(kio_onload_probe)
+  .Call(sora_onload_probe)
 }
 
 .onUnload <- function(libpath) {
-  .Call(kio_onunload)
-  library.dynam.unload("kioto", libpath)
+  .Call(sora_onunload)
+  library.dynam.unload("sora", libpath)
 }

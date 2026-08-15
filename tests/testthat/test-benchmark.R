@@ -9,40 +9,40 @@
 # slowdown here is the first place a violation of that rule shows up).
 
 test_that("round-trip latency reports against the socket baseline", {
-  skip_if_no_child_kioto()
-  ch <- kio_channel(echo_expr, capacity = 1024L)
+  skip_if_no_child_sora()
+  ch <- sora_channel(echo_expr, capacity = 1024L)
 
   rt <- function(n) {
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
-      kio_send(ch, 0L)
-      kio_recv(ch, 30)
+      sora_send(ch, 0L)
+      sora_recv(ch, 30)
     }
     (proc.time()[[3]] - t0) / n * 1e6
   }
   rt(500L) # warm-up
   us <- min(rt(2000L), rt(2000L), rt(2000L))
   cat(sprintf("\nround-trip: %.2f us (baseline 31.73 us)\n", us))
-  expect_true(kio_close(ch, timeout = 10))
+  expect_true(sora_close(ch, timeout = 10))
 })
 
 test_that("one-way throughput reports against the >100k msg/s regime", {
-  skip_if_no_child_kioto()
+  skip_if_no_child_sora()
   n <- 200000L
-  ch <- kio_channel(
+  ch <- sora_channel(
     quote({
       total <- 0L
       repeat {
-        xs <- kio_recv_batch(ch, n = 4096L, timeout = 30)
-        if (inherits(xs, "kio_timeout")) {
+        xs <- sora_recv_batch(ch, n = 4096L, timeout = 30)
+        if (inherits(xs, "sora_timeout")) {
           next # an idle producer is not terminal (cf. echo_expr)
         }
-        if (inherits(xs, "kio_sentinel")) {
+        if (inherits(xs, "sora_sentinel")) {
           break
         }
         total <- total + length(xs)
         if (total >= 200000L) {
-          kio_send(ch, total)
+          sora_send(ch, total)
           break
         }
       }
@@ -55,22 +55,22 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
   sent <- 0L
   while (sent < n) {
     want <- min(4096L, n - sent)
-    sent <- sent + kio_send_batch(ch, batch[seq_len(want)])
+    sent <- sent + sora_send_batch(ch, batch[seq_len(want)])
   }
-  expect_identical(kio_recv(ch, 60), n) # peer's receipt count
+  expect_identical(sora_recv(ch, 60), n) # peer's receipt count
   rate <- n / (proc.time()[[3]] - t0)
   cat(sprintf("\none-way: %.0f msg/s (target > 100000)\n", rate))
-  expect_true(kio_close(ch, timeout = 10))
+  expect_true(sora_close(ch, timeout = 10))
 })
 
 test_that("pool task dispatch reports against the mirai baseline", {
-  skip_if_no_child_kioto()
-  p <- kio_pool(1L, max_submitters = 2L) # 2048 result slots for us
+  skip_if_no_child_sora()
+  p <- sora_pool(1L, max_submitters = 2L) # 2048 result slots for us
 
   rt <- function(n) {
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
-      kio_collect(kio_submit(p, NULL), timeout = 30)
+      sora_collect(sora_submit(p, NULL), timeout = 30)
     }
     (proc.time()[[3]] - t0) / n * 1e6
   }
@@ -85,10 +85,10 @@ test_that("pool task dispatch reports against the mirai baseline", {
     t0 <- proc.time()[[3]]
     ts <- vector("list", n)
     for (i in seq_len(n)) {
-      ts[[i]] <- kio_submit(p, NULL)
+      ts[[i]] <- sora_submit(p, NULL)
     }
     for (i in seq_len(n)) {
-      kio_collect(ts[[i]], timeout = 30)
+      sora_collect(ts[[i]], timeout = 30)
     }
     n / (proc.time()[[3]] - t0)
   }
@@ -98,25 +98,25 @@ test_that("pool task dispatch reports against the mirai baseline", {
 
   # once the worker parks, its stat mirror is exact
   total <- 200 + 2 * 1000 + 200 + 2 * 2000
-  expect_true(wait_until(kio_pool_stats(p)[["workers"]][["tasks"]] == total))
-  expect_true(kio_pool_stop(p))
+  expect_true(wait_until(sora_pool_stats(p)[["workers"]][["tasks"]] == total))
+  expect_true(sora_pool_stop(p))
 })
 
-test_that("kio_map reports against serial lapply and per-task dispatch", {
+test_that("sora_map reports against serial lapply and per-task dispatch", {
   skip_on_cran() # host + 2 workers exceeds 2 cores
-  skip_if_no_child_kioto()
-  p <- kio_pool(2L)
+  skip_if_no_child_sora()
+  p <- sora_pool(2L)
 
   # overhead regime: trivial f, where per-element cost is everything.
   # Baselines (M4 Pro, 2026-07): serial lapply ~0.2 us/element; per-element
-  # kio_submit/kio_collect ~4 us (the pool round-trip above); mirai_map
+  # sora_submit/sora_collect ~4 us (the pool round-trip above); mirai_map
   # ~63-124 us/element (one mirai task per element).
   n <- 100000L
   x <- seq_len(n) + 0L # materialized: RAWVEC path
   f <- function(i) i + 1L
   mp <- function() {
     t0 <- proc.time()[[3]]
-    r <- kio_map(p, x, f, .template = numeric(1), .timeout = 60)
+    r <- sora_map(p, x, f, .template = numeric(1), .timeout = 60)
     us <- (proc.time()[[3]] - t0) / n * 1e6
     expect_identical(r, x + 1)
     us
@@ -127,7 +127,7 @@ test_that("kio_map reports against serial lapply and per-task dispatch", {
   base <- vapply(x, f, numeric(1))
   lap <- (proc.time()[[3]] - t0) / n * 1e6
   cat(sprintf(
-    "\nkio_map trivial f: %.2f us/element (serial vapply %.2f, per-task dispatch ~4, mirai_map 63-124)\n",
+    "\nsora_map trivial f: %.2f us/element (serial vapply %.2f, per-task dispatch ~4, mirai_map 63-124)\n",
     us,
     lap
   ))
@@ -141,11 +141,11 @@ test_that("kio_map reports against serial lapply and per-task dispatch", {
     i
   }
   t0 <- proc.time()[[3]]
-  r <- kio_map(p, 1:64, slow, .timeout = 60)
+  r <- sora_map(p, 1:64, slow, .timeout = 60)
   el <- proc.time()[[3]] - t0
   expect_identical(r, as.list(1:64))
-  cat(sprintf("kio_map 64 x 5ms on 2 workers: %.2fs (serial 0.32s)\n", el))
-  expect_true(kio_pool_stop(p))
+  cat(sprintf("sora_map 64 x 5ms on 2 workers: %.2fs (serial 0.32s)\n", el))
+  expect_true(sora_pool_stop(p))
 })
 
 # Zero-copy plan, Phase 0: the memcpy-bound regime these next cases measure is
@@ -169,7 +169,7 @@ test_that("kio_map reports against serial lapply and per-task dispatch", {
 # host, so every timed interval is kept >> 1 ms by looping):
 #   channel round trip: 0.10 ms at 1 MiB (ARENA), 0.72 at 8 MiB, 19.0 at 64 MiB
 #   pool result:        0.18 ms at 1 MiB, 1.22 at 8 MiB, 16.0 at 64 MiB
-#   kio_map 64 MiB template: 0.69 s (0.08 us/element)
+#   sora_map 64 MiB template: 0.69 s (0.08 us/element)
 #   ALTREP 1:2^27 round trip ~3 us (133 B stream — never materializes)
 #   100 MiB matrix round trip 36 ms; the 3-of-100-column read then 0.74 ms
 #   held 8 x 16 MiB results: 8 spills, 7 reused, 1 fresh region (held R
@@ -180,7 +180,7 @@ test_that("kio_map reports against serial lapply and per-task dispatch", {
 # serialize pass IS the send memcpy (mori_write_fixed -> memmove) and
 # unserialize is allocVector + memcpy (mori_read_bytes -> memmove) — object-
 # graph parse is noise, and region create vanishes after warm-up (free list).
-# kio_map's stage + gather memcpys are ~1.5% of trivial-f wall time (per-
+# sora_map's stage + gather memcpys are ~1.5% of trivial-f wall time (per-
 # element eval dominates); the gather view matters for reduce-shaped maps.
 # Phase 3 (2026-08-12): the template case gained a ".collect = view" arm —
 # the result wraps the output area as an ALTREP view (no gather memcpy)
@@ -198,18 +198,18 @@ test_that("kio_map reports against serial lapply and per-task dispatch", {
 # is warranted.
 
 test_that("large-vector channel round trip reports the memcpy-bound regime", {
-  skip_if_no_child_kioto()
-  ch <- kio_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_sora()
+  ch <- sora_channel(echo_expr, capacity = 64L)
 
   rt <- function(x, n) {
-    kio_send(ch, x)
-    expect_identical(kio_recv(ch, 60), x) # correctness on the warm-up
+    sora_send(ch, x)
+    expect_identical(sora_recv(ch, 60), x) # correctness on the warm-up
     best <- Inf
     for (r in 1:3) {
       t0 <- proc.time()[[3]]
       for (i in seq_len(n)) {
-        kio_send(ch, x)
-        kio_recv(ch, 60)
+        sora_send(ch, x)
+        sora_recv(ch, 60)
       }
       best <- min(best, proc.time()[[3]] - t0)
     }
@@ -226,22 +226,22 @@ test_that("large-vector channel round trip reports the memcpy-bound regime", {
       2 * mb / s
     ))
   }
-  expect_true(kio_close(ch, timeout = 10))
+  expect_true(sora_close(ch, timeout = 10))
 })
 
 test_that("pool task returning a large vector reports the memcpy-bound regime", {
-  skip_if_no_child_kioto()
-  p <- kio_pool(1L, max_submitters = 2L)
+  skip_if_no_child_sora()
+  p <- sora_pool(1L, max_submitters = 2L)
 
   for (mb in c(1, 8, 64)) {
     n <- mb * 131072
-    t <- kio_submit(p, seq_len(n) + 0, n = n)
-    expect_identical(kio_collect(t, 60), seq_len(n) + 0) # warm-up
+    t <- sora_submit(p, seq_len(n) + 0, n = n)
+    expect_identical(sora_collect(t, 60), seq_len(n) + 0) # warm-up
     best <- Inf
     for (r in 1:3) {
       t0 <- proc.time()[[3]]
       for (i in seq_len(max(4L, 256L %/% mb))) {
-        kio_collect(kio_submit(p, seq_len(n) + 0, n = n), 60)
+        sora_collect(sora_submit(p, seq_len(n) + 0, n = n), 60)
       }
       best <- min(best, proc.time()[[3]] - t0)
     }
@@ -253,13 +253,13 @@ test_that("pool task returning a large vector reports the memcpy-bound regime", 
       mb / s
     ))
   }
-  expect_true(kio_pool_stop(p))
+  expect_true(sora_pool_stop(p))
 })
 
-test_that("template kio_map at large n reports the staging/gather memcpy regime", {
+test_that("template sora_map at large n reports the staging/gather memcpy regime", {
   skip_on_cran() # host + 2 workers exceeds 2 cores
-  skip_if_no_child_kioto()
-  p <- kio_pool(2L)
+  skip_if_no_child_sora()
+  p <- sora_pool(2L)
 
   # 64 MiB x section staged once (map.c), 64 MiB template output gathered back
   n <- 8 * 1024 * 1024
@@ -267,7 +267,7 @@ test_that("template kio_map at large n reports the staging/gather memcpy regime"
   f <- function(i) i + 1
   mp <- function() {
     t0 <- proc.time()[[3]]
-    r <- kio_map(p, x, f, .template = numeric(1), .timeout = 60)
+    r <- sora_map(p, x, f, .template = numeric(1), .timeout = 60)
     el <- proc.time()[[3]] - t0
     expect_identical(r, x + 1)
     el
@@ -275,7 +275,7 @@ test_that("template kio_map at large n reports the staging/gather memcpy regime"
   mp() # warm-up
   el <- min(mp(), mp())
   cat(sprintf(
-    "\nkio_map 64 MiB template: %.3fs (%.2f us/element)\n",
+    "\nsora_map 64 MiB template: %.3fs (%.2f us/element)\n",
     el,
     el / n * 1e6
   ))
@@ -284,7 +284,7 @@ test_that("template kio_map at large n reports the staging/gather memcpy regime"
   # ALTREP view over the output area); the full-sweep read faults pages
   mpv <- function() {
     t0 <- proc.time()[[3]]
-    r <- kio_map(
+    r <- sora_map(
       p,
       x,
       f,
@@ -299,27 +299,27 @@ test_that("template kio_map at large n reports the staging/gather memcpy regime"
   mpv() # warm-up
   elv <- min(mpv(), mpv())
   cat(sprintf(
-    "kio_map 64 MiB template, view collect + reduce: %.3fs (%.2f us/element)\n",
+    "sora_map 64 MiB template, view collect + reduce: %.3fs (%.2f us/element)\n",
     elv,
     elv / n * 1e6
   ))
-  expect_true(kio_pool_stop(p))
+  expect_true(sora_pool_stop(p))
 })
 
 test_that("guard: ALTREP input stays a compact stream", {
-  skip_if_no_child_kioto()
-  ch <- kio_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_sora()
+  ch <- sora_channel(echo_expr, capacity = 64L)
 
   x <- 1:(128 * 1024 * 1024) # ALTREP seq: 1 GiB materialized
   len <- length(serialize(x, NULL))
   expect_lt(len, 1024L) # the compact-stream premise
-  kio_send(ch, x)
-  expect_identical(kio_recv(ch, 60), x)
+  sora_send(ch, x)
+  expect_identical(sora_recv(ch, 60), x)
   n <- 1000L # looped: proc.time ticks at ~1 ms on this platform
   t0 <- proc.time()[[3]]
   for (i in seq_len(n)) {
-    kio_send(ch, x)
-    kio_recv(ch, 60)
+    sora_send(ch, x)
+    sora_recv(ch, 60)
   }
   el <- proc.time()[[3]] - t0
   cat(sprintf(
@@ -327,17 +327,17 @@ test_that("guard: ALTREP input stays a compact stream", {
     el / n * 1e6,
     len
   ))
-  expect_true(kio_close(ch, timeout = 10))
+  expect_true(sora_close(ch, timeout = 10))
 })
 
 test_that("guard: partial read of a wide matrix pays full unserialize today", {
-  skip_if_no_child_kioto()
-  ch <- kio_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_sora()
+  ch <- sora_channel(echo_expr, capacity = 64L)
 
   m <- matrix(seq_len(131072 * 100) + 0, nrow = 131072) # 100 MiB, 100 cols
-  kio_send(ch, m)
+  sora_send(ch, m)
   t0 <- proc.time()[[3]]
-  y <- kio_recv(ch, 60)
+  y <- sora_recv(ch, 60)
   t1 <- proc.time()[[3]]
   expect_identical(y, m)
   for (i in 1:100) {
@@ -350,19 +350,19 @@ test_that("guard: partial read of a wide matrix pays full unserialize today", {
     (t1 - t0) * 1e3,
     (t2 - t1) * 10
   ))
-  expect_true(kio_close(ch, timeout = 10))
+  expect_true(sora_close(ch, timeout = 10))
 })
 
 test_that("guard: held results do not pin payload regions today", {
-  skip_if_no_child_kioto()
-  p <- kio_pool(1L, max_submitters = 2L)
+  skip_if_no_child_sora()
+  p <- sora_pool(1L, max_submitters = 2L)
 
   n <- 2 * 1024 * 1024 # 16 MiB results
   held <- vector("list", 8L)
   for (i in seq_len(8L)) {
-    held[[i]] <- kio_collect(kio_submit(p, seq_len(n) + 0, n = n), 60)
+    held[[i]] <- sora_collect(sora_submit(p, seq_len(n) + 0, n = n), 60)
   }
-  st <- kio_pool_stats(p)[["submitters"]]
+  st <- sora_pool_stats(p)[["submitters"]]
   st <- st[st[["status"]] == "live", ] # one row per slot; the idle slot reads zero
   cat(sprintf(
     "\nheld 8 x 16 MiB: spills %d, spill_reuse %d, fresh regions %d\n",
@@ -371,22 +371,22 @@ test_that("guard: held results do not pin payload regions today", {
     st[["spills"]] - st[["spill_reuse"]]
   ))
   expect_identical(held[[8L]], seq_len(n) + 0)
-  expect_true(kio_pool_stop(p))
+  expect_true(sora_pool_stop(p))
 })
 
 test_that("guard: attributed large vector reports the attrs-parse share", {
-  skip_if_no_child_kioto()
-  ch <- kio_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_sora()
+  ch <- sora_channel(echo_expr, capacity = 64L)
 
   x <- seq_len(4 * 1024 * 1024) + 0 # 32 MiB
   names(x) <- paste0("n", seq_along(x)) # non-trivial attrs blob
   rt <- function(v, n) {
-    kio_send(ch, v)
-    expect_identical(kio_recv(ch, 60), v)
+    sora_send(ch, v)
+    expect_identical(sora_recv(ch, 60), v)
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
-      kio_send(ch, v)
-      kio_recv(ch, 60)
+      sora_send(ch, v)
+      sora_recv(ch, 60)
     }
     (proc.time()[[3]] - t0) / n
   }
@@ -398,5 +398,5 @@ test_that("guard: attributed large vector reports the attrs-parse share", {
     sx * 1e3,
     (s - sx) * 1e3
   ))
-  expect_true(kio_close(ch, timeout = 10))
+  expect_true(sora_close(ch, timeout = 10))
 })

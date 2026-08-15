@@ -9,7 +9,7 @@
    and the macOS / Windows allocators already recycle large blocks
    in-process. A process that set its own malloc tunables keeps them. */
 
-#include "kioto.h"
+#include "sora.h"
 
 #ifdef __GLIBC__
 #include <malloc.h>
@@ -17,7 +17,7 @@
 #include <string.h>
 #endif
 
-void kio_tune_malloc(void) {
+void sora_tune_malloc(void) {
 #ifdef __GLIBC__
   const char *gt = getenv("GLIBC_TUNABLES");
   if (gt != NULL && strstr(gt, "glibc.malloc") != NULL)

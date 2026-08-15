@@ -1,10 +1,10 @@
 /* Zero-copy payload tiers (zc.c): SHM_VEC — a mori-layout object (atomic
    vector, string vector, or list tree) in a spill region, wrapped ALTREP
-   at receive (no allocVector, no memcpy, no parse) — and REF — the /kio_
+   at receive (no allocVector, no memcpy, no parse) — and REF — the /sora_
    identifier of an object already in shared memory, resolved to a view of
    the same pages. The receive machinery is the vendored mori ALTREP
-   layer; what kioto adds is the cross-process release protocol: a
-   refcount in the region header's reserved bytes (kioto.h), a per-handle
+   layer; what sora adds is the cross-process release protocol: a
+   refcount in the region header's reserved bytes (sora.h), a per-handle
    lent-region ledger on the producer, and a once-only release callback
    per view (mori's embedder hook — fired at COW materialization or at the
    view finalizer, whichever comes first; list views fire at the finalizer
@@ -28,7 +28,7 @@
    with it the view) until then. */
 
 #include <stdlib.h>
-#include "kioto.h"
+#include "sora.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -38,29 +38,29 @@
 #include <unistd.h>
 #endif
 
-static SEXP kio_zc_marker;    /* SHM_VEC keeper identity (keeper slot 2) */
-static SEXP kio_rel_tag;      /* the release-record extptr */
-static SEXP kio_shm_tag_sym;  /* installed MORI_TAG_SHM: the chain terminus */
+static SEXP sora_zc_marker;    /* SHM_VEC keeper identity (keeper slot 2) */
+static SEXP sora_rel_tag;      /* the release-record extptr */
+static SEXP sora_shm_tag_sym;  /* installed MORI_TAG_SHM: the chain terminus */
 
-static void kio_zc_ref_mark(SEXP x);
-static void kio_zc_wire_resolve(SEXP view, mori_shm *shm);
+static void sora_zc_ref_mark(SEXP x);
+static void sora_zc_wire_resolve(SEXP view, mori_shm *shm);
 
-void kio_zc_init(void) {
-  kio_zc_marker = R_MakeExternalPtr(NULL, R_NilValue, R_NilValue);
-  R_PreserveObject(kio_zc_marker);
-  kio_rel_tag = Rf_install("kio_view_release");
-  kio_shm_tag_sym = Rf_install(MORI_TAG_SHM);
-  mori_set_wire_hooks(kio_zc_ref_mark, kio_zc_wire_resolve);
+void sora_zc_init(void) {
+  sora_zc_marker = R_MakeExternalPtr(NULL, R_NilValue, R_NilValue);
+  R_PreserveObject(sora_zc_marker);
+  sora_rel_tag = Rf_install("sora_view_release");
+  sora_shm_tag_sym = Rf_install(MORI_TAG_SHM);
+  mori_set_wire_hooks(sora_zc_ref_mark, sora_zc_wire_resolve);
 }
 
 // Refcount / flags words --------------------------------------------------------
 
 static inline _Atomic uint32_t *zc_rc(void *base) {
-  return (_Atomic uint32_t *) ((unsigned char *) base + KIO_ZC_REFCOUNT_OFF);
+  return (_Atomic uint32_t *) ((unsigned char *) base + SORA_ZC_REFCOUNT_OFF);
 }
 
 static inline _Atomic uint32_t *zc_flags(void *base) {
-  return (_Atomic uint32_t *) ((unsigned char *) base + KIO_ZC_FLAGS_OFF);
+  return (_Atomic uint32_t *) ((unsigned char *) base + SORA_ZC_FLAGS_OFF);
 }
 
 // View release ------------------------------------------------------------------
@@ -73,17 +73,17 @@ static inline _Atomic uint32_t *zc_flags(void *base) {
    of the region (wire-resolve records only — the vendored resolve maps
    fully RO, but the refcount word needs a writable page 0); NULL on the
    prep path, where the mapping belongs to the open cache / wrap chain. */
-typedef struct kio_zc_rel_s {
+typedef struct sora_zc_rel_s {
   unsigned char *base;
   mori_shm *owned;
   long pid;
   int armed;
-} kio_zc_rel;
+} sora_zc_rel;
 
-static void kio_rel_finalizer(SEXP ptr) {
-  kio_zc_rel *rel = (kio_zc_rel *) R_ExternalPtrAddr(ptr);
+static void sora_rel_finalizer(SEXP ptr) {
+  sora_zc_rel *rel = (sora_zc_rel *) R_ExternalPtrAddr(ptr);
   if (rel != NULL) {
-    if (rel->armed && rel->pid == kio_self_pid())
+    if (rel->armed && rel->pid == sora_self_pid())
       atomic_fetch_sub_explicit(zc_rc(rel->base), 1, memory_order_acq_rel);
     if (rel->owned != NULL) {
       mori_shm_close(rel->owned, 0);
@@ -97,8 +97,8 @@ static void kio_rel_finalizer(SEXP ptr) {
 /* The mori_owned release hook: run the finalizer early (it clears the
    extptr, so the GC pass is a no-op). Fires at COW materialization — the
    shared pages are dead weight from there. */
-static void kio_zc_rel_fire(void *arg) {
-  kio_rel_finalizer((SEXP) arg);
+static void sora_zc_rel_fire(void *arg) {
+  sora_rel_finalizer((SEXP) arg);
 }
 
 // Consumer open: split mapping ---------------------------------------------------
@@ -108,8 +108,8 @@ static void kio_zc_rel_fire(void *arg) {
    on demand, so eager PTE install would prefault never-read pages on the
    recv hot path (the SHM_RAW cache's populated open exists because a
    stream is unserialized in full immediately; a view is not). */
-static mori_shm *kio_zc_open(const char *name) {
-  mori_shm *shm = kio_shm_open_rw_heap(name, 0);
+static mori_shm *sora_zc_open(const char *name) {
+  mori_shm *shm = sora_shm_open_rw_heap(name, 0);
   if (shm == NULL) return NULL;
   size_t size = shm->size;
 #ifdef _WIN32
@@ -144,7 +144,7 @@ static mori_shm *kio_zc_open(const char *name) {
 /* Lower bound on the MORS layout size (header + offset table + packed
    string bytes; attrs excluded): 64 + align64(16 per entry) + the CHARSXP
    bytes. Walks string lengths only — no allocation, no serialize count. */
-static size_t kio_zc_str_probe(SEXP x) {
+static size_t sora_zc_str_probe(SEXP x) {
   R_xlen_t n = XLENGTH(x);
   size_t total = MORI_HEADER_SIZE + MORI_ALIGN64(16 * (size_t) n);
   for (R_xlen_t i = 0; i < n; i++) {
@@ -156,7 +156,7 @@ static size_t kio_zc_str_probe(SEXP x) {
 
 /* Lower bound on the MORL layout size: layout-eligible leaf bytes only
    (headers, directory, attrs, and serialized leaves all excluded), so the
-   exact mori_layout_size always exceeds it. A kioto view anywhere in the
+   exact mori_layout_size always exceeds it. A sora view anywhere in the
    tree rejects it outright: nested views must cross by reference on the
    serialize-hook path (the wire hooks keep them counted) — the layout
    writer would copy their bytes, and a copied view can never be REF'd
@@ -164,7 +164,7 @@ static size_t kio_zc_str_probe(SEXP x) {
    later. Serialized leaves cost 0 too, so a tree whose bulk is
    non-eligible (a big environment, a call) stays on the serialize tiers —
    MORL's win is the eligible leaves. */
-static size_t kio_zc_tree_probe(SEXP x, int *reject) {
+static size_t sora_zc_tree_probe(SEXP x, int *reject) {
   if (*reject || ALTREP(x)) {
     if (*reject == 0 && ALTREP(x) && mori_view_check(x)) *reject = 1;
     return 0;
@@ -172,25 +172,25 @@ static size_t kio_zc_tree_probe(SEXP x, int *reject) {
   int type = TYPEOF(x);
   size_t elt = mori_sizeof_elt(type);
   if (elt != 0) return (size_t) XLENGTH(x) * elt;
-  if (type == STRSXP) return kio_zc_str_probe(x);
+  if (type == STRSXP) return sora_zc_str_probe(x);
   if (type == VECSXP) {
     R_xlen_t n = XLENGTH(x);
     size_t total = 0;
     for (R_xlen_t i = 0; i < n && !*reject; i++)
-      total += kio_zc_tree_probe(VECTOR_ELT(x, i), reject);
+      total += sora_zc_tree_probe(VECTOR_ELT(x, i), reject);
     return total;
   }
   if (type == LISTSXP) {
     size_t total = 0;
     for (SEXP s = x; s != R_NilValue && !*reject; s = CDR(s))
-      total += kio_zc_tree_probe(CAR(s), reject);
+      total += sora_zc_tree_probe(CAR(s), reject);
     return total;
   }
   return 0;
 }
 
 /* SHM_VEC eligibility: an object the mori layouts cover whose layout
-   bytes exceed both the inline budget and KIO_ZC_FLOOR. Atomic vectors
+   bytes exceed both the inline budget and SORA_ZC_FLOOR. Atomic vectors
    gate on the O(1) data size (an ALTREP input must never stage: staging
    grabs DATAPTR and materializes it — 1:1e8 would become an 800 MB
    memcpy against the ~100-byte stream its serialized-state hook emits).
@@ -201,29 +201,29 @@ static size_t kio_zc_tree_probe(SEXP x, int *reject) {
    foreign ALTREP nodes and S4). Top-level LISTSXP stays on the serialize
    tiers: the layout coerces it to VECSXP, a type change a transport must
    not make. */
-int kio_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
+int sora_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   int type = TYPEOF(x);
   size_t elt = mori_sizeof_elt(type);
   if (elt != 0) {
     if (ALTREP(x) || Rf_isS4(x)) return 0;
     size_t data = (size_t) XLENGTH(x) * elt;
-    if (data <= (size_t) inline_max || data < KIO_ZC_FLOOR) return 0;
+    if (data <= (size_t) inline_max || data < SORA_ZC_FLOOR) return 0;
     size_t total = mori_layout_size(x);
     if (total == 0 || total <= (size_t) inline_max) return 0;
     *out_total = total;
     return 1;
   }
-  size_t gate = (size_t) inline_max > KIO_ZC_FLOOR ?
-    (size_t) inline_max : KIO_ZC_FLOOR;
+  size_t gate = (size_t) inline_max > SORA_ZC_FLOOR ?
+    (size_t) inline_max : SORA_ZC_FLOOR;
   if (type == STRSXP) {
     /* a foreign ALTREP string's Elt may materialize it — the probe must
-       not touch it (a kioto view is safe: its accessors read the shared
+       not touch it (a sora view is safe: its accessors read the shared
        pages or the materialized copy) */
     if ((ALTREP(x) && !mori_view_check(x)) || Rf_isS4(x)) return 0;
-    if (kio_zc_str_probe(x) <= gate) return 0;
+    if (sora_zc_str_probe(x) <= gate) return 0;
   } else if (type == VECSXP) {
     int reject = 0;
-    if (kio_zc_tree_probe(x, &reject) <= gate || reject) return 0;
+    if (sora_zc_tree_probe(x, &reject) <= gate || reject) return 0;
   } else {
     return 0;
   }
@@ -240,15 +240,15 @@ int kio_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
    store 1 (the producer's loan — both the field's only initialization and
    its own reference; a recycled region carries a stale count), and the
    name as the payload. Returns the keeper list(x, wrap, marker, key). */
-SEXP kio_zc_stage(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                  size_t total, kio_spill_fl *fl) {
+SEXP sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                  size_t total, sora_spill_fl *fl) {
   mori_shm *shm = NULL;
-  SEXP wrap = kio_spill_region_get(fl, total, &shm);   /* PROTECTed */
+  SEXP wrap = sora_spill_region_get(fl, total, &shm);   /* PROTECTed */
   mori_layout_write((unsigned char *) shm->addr, x);
   atomic_store_explicit(zc_rc(shm->addr), 1, memory_order_relaxed);
   atomic_store_explicit(zc_flags(shm->addr), 0, memory_order_relaxed);
   int type = TYPEOF(x);
-  hdr->kind = KIO_KIND_SHM_VEC;
+  hdr->kind = SORA_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) (type == LISTSXP ? VECSXP : type) |
     ((uint64_t) total << 8);
@@ -256,7 +256,7 @@ SEXP kio_zc_stage(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
   SEXP keep = PROTECT(Rf_allocVector(VECSXP, 4));
   SET_VECTOR_ELT(keep, 0, x);
   SET_VECTOR_ELT(keep, 1, wrap);
-  SET_VECTOR_ELT(keep, 2, kio_zc_marker);
+  SET_VECTOR_ELT(keep, 2, sora_zc_marker);
   SEXP key = Rf_allocVector(INTSXP, 1);
   INTEGER(key)[0] = -1;
   SET_VECTOR_ELT(keep, 3, key);
@@ -271,45 +271,45 @@ SEXP kio_zc_stage(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
    name_xp (the vendored chain-terminus tag) pinned on the mapping wrap.
    Returns the PROTECT count pushed, or -1 with *gone set when the region
    vanished and the caller absorbs that (NULL gone raises instead). */
-static int kio_zc_prep(const char *name, uint32_t name_len, int *gone,
-                       kio_open_cache *oc, mori_shm **shm_out,
+static int sora_zc_prep(const char *name, uint32_t name_len, int *gone,
+                       sora_open_cache *oc, mori_shm **shm_out,
                        SEXP *rel_xp_out, SEXP *name_xp_out) {
   SEXP map_wrap = oc != NULL ?
-    kio_oc_lookup_wrap(oc, (const unsigned char *) name, name_len) :
+    sora_oc_lookup_wrap(oc, (const unsigned char *) name, name_len) :
     R_NilValue;
-  mori_shm *shm = map_wrap == R_NilValue ? NULL : kio_shm_unwrap(map_wrap);
+  mori_shm *shm = map_wrap == R_NilValue ? NULL : sora_shm_unwrap(map_wrap);
   int nprotect = 0;
   if (shm == NULL) {
     char namebuf[MORI_NAME_MAX];
     memcpy(namebuf, name, name_len);
     namebuf[name_len] = '\0';
-    shm = kio_zc_open(namebuf);
+    shm = sora_zc_open(namebuf);
     if (shm == NULL) {
       if (gone != NULL) {
         *gone = 1;
         return -1;
       }
-      kio_stop_shm(NA_REAL, "kioto: cannot open payload region '%s'", namebuf);
+      sora_stop_shm(NA_REAL, "sora: cannot open payload region '%s'", namebuf);
     }
-    map_wrap = PROTECT(kio_shm_wrap_consumer(shm));
+    map_wrap = PROTECT(sora_shm_wrap_consumer(shm));
     nprotect++;
     if (oc != NULL)
-      kio_oc_store(oc, (const unsigned char *) name, name_len, map_wrap);
+      sora_oc_store(oc, (const unsigned char *) name, name_len, map_wrap);
   }
-  kio_zc_rel *rel = malloc(sizeof(kio_zc_rel));
+  sora_zc_rel *rel = malloc(sizeof(sora_zc_rel));
   if (rel == NULL) {
     UNPROTECT(nprotect);
-    Rf_error("kioto: allocation failure");
+    Rf_error("sora: allocation failure");
   }
   rel->base = (unsigned char *) shm->addr;
   rel->owned = NULL;
-  rel->pid = kio_self_pid();
+  rel->pid = sora_self_pid();
   rel->armed = 0;
-  SEXP rel_xp = PROTECT(R_MakeExternalPtr(rel, kio_rel_tag, map_wrap));
-  R_RegisterCFinalizerEx(rel_xp, kio_rel_finalizer, TRUE);
+  SEXP rel_xp = PROTECT(R_MakeExternalPtr(rel, sora_rel_tag, map_wrap));
+  R_RegisterCFinalizerEx(rel_xp, sora_rel_finalizer, TRUE);
   /* the vendored chain walk (identifier formatting) ends at the first
      shm-tag hop reading it as a mori_shm — name_xp borrows the mapping's */
-  SEXP name_xp = PROTECT(R_MakeExternalPtr(shm, kio_shm_tag_sym, rel_xp));
+  SEXP name_xp = PROTECT(R_MakeExternalPtr(shm, sora_shm_tag_sym, rel_xp));
   *shm_out = shm;
   *rel_xp_out = rel_xp;
   *name_xp_out = name_xp;
@@ -321,12 +321,12 @@ static int kio_zc_prep(const char *name, uint32_t name_len, int *gone,
    wire form) cross-checks the staged type and exact byte count against
    the header. The refcount add is the caller's — it lands after the wrap,
    before the consumer-done signal. */
-static SEXP kio_zc_wrap0(mori_shm *shm, SEXP name_xp, SEXP rel_xp,
+static SEXP sora_zc_wrap0(mori_shm *shm, SEXP name_xp, SEXP rel_xp,
                          uint64_t aux) {
   unsigned char *base = (unsigned char *) shm->addr;
   int64_t region_size = (int64_t) shm->size;
   if (region_size < (int64_t) MORI_HEADER_SIZE)
-    Rf_error("kioto: corrupt payload slot");
+    Rf_error("sora: corrupt payload slot");
   uint32_t magic;
   memcpy(&magic, base, 4);
   switch (magic) {
@@ -341,16 +341,16 @@ static SEXP kio_zc_wrap0(mori_shm *shm, SEXP name_xp, SEXP rel_xp,
         length > (region_size - (int64_t) MORI_HEADER_SIZE) / (int64_t) elt ||
         attrs_size >
           region_size - (int64_t) MORI_HEADER_SIZE - length * (int64_t) elt)
-      Rf_error("kioto: corrupt payload slot");
+      Rf_error("sora: corrupt payload slot");
     if (aux != 0 &&
         ((uint32_t) (aux & 0xff) != (uint32_t) type ||
          (aux >> 8) != (uint64_t) ((size_t) MORI_HEADER_SIZE +
                                    (size_t) length * elt +
                                    (size_t) attrs_size)))
-      Rf_error("kioto: corrupt payload slot");
+      Rf_error("sora: corrupt payload slot");
     SEXP view = PROTECT(mori_vec_wrap(base + MORI_HEADER_SIZE,
                                       (R_xlen_t) length, type, name_xp,
-                                      kio_zc_rel_fire, rel_xp));
+                                      sora_zc_rel_fire, rel_xp));
     if (attrs_size > 0)
       mori_restore_attrs(view,
                          base + MORI_HEADER_SIZE + (size_t) length * elt,
@@ -367,15 +367,15 @@ static SEXP kio_zc_wrap0(mori_shm *shm, SEXP name_xp, SEXP rel_xp,
     if (n < 0 || str_size < 0 || attrs_size < 0 ||
         str_size > region_size - (int64_t) MORI_HEADER_SIZE ||
         attrs_size > region_size - (int64_t) MORI_HEADER_SIZE - str_size)
-      Rf_error("kioto: corrupt payload slot");
+      Rf_error("sora: corrupt payload slot");
     if (aux != 0 &&
         ((uint32_t) (aux & 0xff) != (uint32_t) STRSXP ||
          (aux >> 8) != (uint64_t) ((size_t) MORI_HEADER_SIZE +
                                    (size_t) str_size +
                                    (size_t) attrs_size)))
-      Rf_error("kioto: corrupt payload slot");
+      Rf_error("sora: corrupt payload slot");
     SEXP view = PROTECT(mori_str_wrap(base + MORI_HEADER_SIZE, (R_xlen_t) n,
-                                      str_size, name_xp, kio_zc_rel_fire,
+                                      str_size, name_xp, sora_zc_rel_fire,
                                       rel_xp));
     if (attrs_size > 0)
       mori_restore_attrs(view, base + MORI_HEADER_SIZE + (size_t) str_size,
@@ -387,25 +387,25 @@ static SEXP kio_zc_wrap0(mori_shm *shm, SEXP name_xp, SEXP rel_xp,
     /* the list wrap validates the header and directory internally; the
        layout size isn't header-derivable, so aux cross-checks the type */
     if (aux != 0 && (uint32_t) (aux & 0xff) != (uint32_t) VECSXP)
-      Rf_error("kioto: corrupt payload slot");
-    return mori_list_wrap(base, region_size, -1, name_xp, kio_zc_rel_fire,
+      Rf_error("sora: corrupt payload slot");
+    return mori_list_wrap(base, region_size, -1, name_xp, sora_zc_rel_fire,
                           rel_xp);
   }
-  Rf_error("kioto: corrupt payload slot");
+  Rf_error("sora: corrupt payload slot");
 }
 
-SEXP kio_zc_read(const kio_slot_hdr *hdr, const unsigned char *payload,
-                 int *gone, kio_open_cache *oc) {
+SEXP sora_zc_read(const sora_slot_hdr *hdr, const unsigned char *payload,
+                 int *gone, sora_open_cache *oc) {
   if (hdr->len == 0 || hdr->len >= MORI_NAME_MAX)
-    Rf_error("kioto: corrupt payload slot");
+    Rf_error("sora: corrupt payload slot");
   mori_shm *shm;
   SEXP rel_xp, name_xp;
-  int np = kio_zc_prep((const char *) payload, hdr->len, gone, oc,
+  int np = sora_zc_prep((const char *) payload, hdr->len, gone, oc,
                        &shm, &rel_xp, &name_xp);
   if (np < 0) return R_NilValue;
-  SEXP view = PROTECT(kio_zc_wrap0(shm, name_xp, rel_xp, hdr->aux));
+  SEXP view = PROTECT(sora_zc_wrap0(shm, name_xp, rel_xp, hdr->aux));
   atomic_fetch_add_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
-  ((kio_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
+  ((sora_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
   UNPROTECT(np + 1);
   return view;
 }
@@ -413,12 +413,12 @@ SEXP kio_zc_read(const kio_slot_hdr *hdr, const unsigned char *payload,
 // REF -----------------------------------------------------------------------------
 
 /* The region behind a view: walk data1's protected chain to the shm-tag
-   terminus and read its mori_shm (kioto's name_xp and the vendored wraps
+   terminus and read its mori_shm (sora's name_xp and the vendored wraps
    both terminate there). R_NilValue for anything else. */
-static SEXP kio_view_terminus(SEXP x) {
+static SEXP sora_view_terminus(SEXP x) {
   SEXP hop = R_ExternalPtrProtected(R_altrep_data1(x));
   while (TYPEOF(hop) == EXTPTRSXP) {
-    if (R_ExternalPtrTag(hop) == kio_shm_tag_sym) return hop;
+    if (R_ExternalPtrTag(hop) == sora_shm_tag_sym) return hop;
     hop = R_ExternalPtrProtected(hop);
   }
   return R_NilValue;
@@ -426,29 +426,29 @@ static SEXP kio_view_terminus(SEXP x) {
 
 /* Mark a view's region REFHELD (the holder set widens beyond the direct
    peer, so the producer's death backstop must leak + unlink rather than
-   force-reclaim). A kioto zc mapping is page-0 RW already (the terminus's
+   force-reclaim). A sora zc mapping is page-0 RW already (the terminus's
    prot is the release extptr); a vendored (hook-path) mapping is fully
    RO, so set the flag through a brief RW open instead. */
-static void kio_zc_ref_mark(SEXP x) {
-  SEXP terminus = kio_view_terminus(x);
+static void sora_zc_ref_mark(SEXP x) {
+  SEXP terminus = sora_view_terminus(x);
   if (terminus == R_NilValue) return;
   mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(terminus);
   if (shm == NULL || shm->addr == NULL) return;
   SEXP prot = R_ExternalPtrProtected(terminus);
-  if (TYPEOF(prot) == EXTPTRSXP && R_ExternalPtrTag(prot) == kio_rel_tag) {
-    atomic_fetch_or_explicit(zc_flags(shm->addr), KIO_ZC_FLAG_REFHELD,
+  if (TYPEOF(prot) == EXTPTRSXP && R_ExternalPtrTag(prot) == sora_rel_tag) {
+    atomic_fetch_or_explicit(zc_flags(shm->addr), SORA_ZC_FLAG_REFHELD,
                              memory_order_acq_rel);
   } else {
     mori_shm tmp;
-    if (kio_shm_open_rw(&tmp, shm->name, 0) == 0) {
-      atomic_fetch_or_explicit(zc_flags(tmp.addr), KIO_ZC_FLAG_REFHELD,
+    if (sora_shm_open_rw(&tmp, shm->name, 0) == 0) {
+      atomic_fetch_or_explicit(zc_flags(tmp.addr), SORA_ZC_FLAG_REFHELD,
                                memory_order_acq_rel);
       mori_shm_close(&tmp, 0);
     }
   }
 }
 
-int kio_zc_ref_stage(kio_slot_hdr *hdr, unsigned char *payload,
+int sora_zc_ref_stage(sora_slot_hdr *hdr, unsigned char *payload,
                      uint32_t inline_max, SEXP x) {
   if (!mori_view_check(x)) return 0;
   /* data2 set on a vector or string view means COW-materialized: the
@@ -462,18 +462,18 @@ int kio_zc_ref_stage(kio_slot_hdr *hdr, unsigned char *payload,
   const char *s = CHAR(STRING_ELT(id, 0));
   size_t len = strlen(s);
   if (len == 0 || len > (size_t) inline_max) return 0;
-  kio_zc_ref_mark(x);
-  hdr->kind = KIO_KIND_REF;
+  sora_zc_ref_mark(x);
+  hdr->kind = SORA_KIND_REF;
   hdr->len = (uint32_t) len;
   hdr->aux = 0;
   memcpy(payload, s, len);
   return 1;
 }
 
-SEXP kio_zc_ref_read(const kio_slot_hdr *hdr, const unsigned char *payload,
-                     int *gone, kio_open_cache *oc) {
+SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
+                     int *gone, sora_open_cache *oc) {
   if (hdr->len == 0 || hdr->len >= MORI_IDENTIFIER_MAX)
-    Rf_error("kioto: corrupt payload slot");
+    Rf_error("sora: corrupt payload slot");
   char buf[MORI_IDENTIFIER_MAX];
   memcpy(buf, payload, hdr->len);
   buf[hdr->len] = '\0';
@@ -481,17 +481,17 @@ SEXP kio_zc_ref_read(const kio_slot_hdr *hdr, const unsigned char *payload,
   int32_t path[MORI_MAX_PATH];
   int path_len = 0;
   if (mori_parse_id(buf, name, sizeof(name), path, &path_len) < 0)
-    Rf_error("kioto: corrupt payload slot");
+    Rf_error("sora: corrupt payload slot");
   mori_shm *shm;
   SEXP rel_xp, name_xp;
-  int np = kio_zc_prep(name, (uint32_t) strlen(name), gone, oc,
+  int np = sora_zc_prep(name, (uint32_t) strlen(name), gone, oc,
                        &shm, &rel_xp, &name_xp);
   if (np < 0) return R_NilValue;
   SEXP view;
   if (path_len == 0) {
-    view = PROTECT(kio_zc_wrap0(shm, name_xp, rel_xp, 0));
+    view = PROTECT(sora_zc_wrap0(shm, name_xp, rel_xp, 0));
     atomic_fetch_add_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
-    ((kio_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
+    ((sora_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
   } else {
     view = PROTECT(mori_walk_path((unsigned char *) shm->addr,
                                   (int64_t) shm->size, path, path_len,
@@ -501,10 +501,10 @@ SEXP kio_zc_ref_read(const kio_slot_hdr *hdr, const unsigned char *payload,
     if (mori_view_check(view)) {
       mori_owned *o = (mori_owned *) R_ExternalPtrAddr(R_altrep_data1(view));
       if (o != NULL && o->release == NULL) {
-        o->release = kio_zc_rel_fire;
+        o->release = sora_zc_rel_fire;
         o->release_arg = (void *) rel_xp;
         atomic_fetch_add_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
-        ((kio_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
+        ((sora_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
       }
     }
   }
@@ -516,9 +516,9 @@ SEXP kio_zc_ref_read(const kio_slot_hdr *hdr, const unsigned char *payload,
    the record rides the view's mori_owned release slot (mori's once-only
    discipline fires it at materialize or finalizer — no extptr of our own
    to anchor) and owns its RW mapping of the region. */
-static void kio_zc_wire_rel(void *arg) {
-  kio_zc_rel *rel = (kio_zc_rel *) arg;
-  if (rel->armed && rel->pid == kio_self_pid())
+static void sora_zc_wire_rel(void *arg) {
+  sora_zc_rel *rel = (sora_zc_rel *) arg;
+  if (rel->armed && rel->pid == sora_self_pid())
     atomic_fetch_sub_explicit(zc_rc(rel->base), 1, memory_order_acq_rel);
   mori_shm_close(rel->owned, 0);
   free(rel->owned);
@@ -530,24 +530,24 @@ static void kio_zc_wire_rel(void *arg) {
    tiers. The add lands inside R_Unserialize — before the read returns,
    hence before the consumer-done signal, while the sender's keeper still
    pins the payload and with it the view's own count. */
-static void kio_zc_wire_resolve(SEXP view, mori_shm *shm) {
+static void sora_zc_wire_resolve(SEXP view, mori_shm *shm) {
   if (!mori_view_check(view)) return;  /* a serialized leaf references nothing */
   mori_owned *o = (mori_owned *) R_ExternalPtrAddr(R_altrep_data1(view));
   if (o == NULL || o->release != NULL) return;
-  mori_shm *rw = kio_zc_open(shm->name);
+  mori_shm *rw = sora_zc_open(shm->name);
   if (rw == NULL)
-    Rf_error("kioto: cannot open payload region '%s'", shm->name);
-  kio_zc_rel *rel = malloc(sizeof(kio_zc_rel));
+    Rf_error("sora: cannot open payload region '%s'", shm->name);
+  sora_zc_rel *rel = malloc(sizeof(sora_zc_rel));
   if (rel == NULL) {
     mori_shm_close(rw, 0);
     free(rw);
-    Rf_error("kioto: allocation failure");
+    Rf_error("sora: allocation failure");
   }
   rel->base = (unsigned char *) rw->addr;
   rel->owned = rw;
-  rel->pid = kio_self_pid();
+  rel->pid = sora_self_pid();
   rel->armed = 0;
-  o->release = kio_zc_wire_rel;
+  o->release = sora_zc_wire_rel;
   o->release_arg = rel;
   atomic_fetch_add_explicit(zc_rc(rw->addr), 1, memory_order_acq_rel);
   rel->armed = 1;
@@ -555,58 +555,58 @@ static void kio_zc_wire_resolve(SEXP view, mori_shm *shm) {
 
 // Producer-side release: keeper predicate, ledger --------------------------------
 
-int kio_zc_keeper(SEXP k) {
+int sora_zc_keeper(SEXP k) {
   return TYPEOF(k) == VECSXP && Rf_xlength(k) == 4 &&
-    VECTOR_ELT(k, 2) == kio_zc_marker;
+    VECTOR_ELT(k, 2) == sora_zc_marker;
 }
 
-void kio_zc_keeper_key(SEXP keeper, int32_t key) {
-  if (kio_zc_keeper(keeper))
+void sora_zc_keeper_key(SEXP keeper, int32_t key) {
+  if (sora_zc_keeper(keeper))
     INTEGER(VECTOR_ELT(keeper, 3))[0] = key;
 }
 
-/* The producer-loan drop, from kio_spill_fl_offer at the consumer-done
+/* The producer-loan drop, from sora_spill_fl_offer at the consumer-done
    release points: refcount sub, then the free list on 0 (no live views)
    or the lent-region ledger otherwise. A full ledger drops the wrap to GC
    — the name unlinks, live views keep their own mappings, and only
    recycling is forfeited. */
-void kio_zc_release(kio_spill_fl *fl, SEXP keeper) {
+void sora_zc_release(sora_spill_fl *fl, SEXP keeper) {
   SEXP wrap = VECTOR_ELT(keeper, 1);
-  mori_shm *shm = kio_shm_unwrap(wrap);
+  mori_shm *shm = sora_shm_unwrap(wrap);
   if (shm == NULL || shm->addr == NULL) return;
   uint32_t prev =
     atomic_fetch_sub_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
   if (prev <= 1) {
-    kio_spill_fl_insert(fl, wrap, shm);
+    sora_spill_fl_insert(fl, wrap, shm);
     return;
   }
-  if (fl->led_wraps == NULL || fl->led_n >= KIO_LEDGER_MAX) return;
+  if (fl->led_wraps == NULL || fl->led_n >= SORA_LEDGER_MAX) return;
   SET_VECTOR_ELT(fl->led_wraps, fl->led_n, wrap);
   fl->led_key[fl->led_n] = INTEGER(VECTOR_ELT(keeper, 3))[0];
   fl->led_n++;
 }
 
-static void kio_ledger_drop(kio_spill_fl *fl, uint32_t i) {
+static void sora_ledger_drop(sora_spill_fl *fl, uint32_t i) {
   fl->led_n--;
   SET_VECTOR_ELT(fl->led_wraps, i, VECTOR_ELT(fl->led_wraps, fl->led_n));
   SET_VECTOR_ELT(fl->led_wraps, fl->led_n, R_NilValue);
   fl->led_key[i] = fl->led_key[fl->led_n];
 }
 
-void kio_ledger_sweep(kio_spill_fl *fl, uint32_t quota) {
+void sora_ledger_sweep(sora_spill_fl *fl, uint32_t quota) {
   if (fl->led_wraps == NULL) return;
   uint32_t i = 0, visited = 0;
   while (i < fl->led_n && visited < quota) {
     SEXP wrap = VECTOR_ELT(fl->led_wraps, i);
-    mori_shm *shm = kio_shm_unwrap(wrap);
+    mori_shm *shm = sora_shm_unwrap(wrap);
     visited++;
     uint32_t count = 0;
     if (shm != NULL && shm->addr != NULL)
       count = atomic_load_explicit(zc_rc(shm->addr), memory_order_acquire);
     if (count == 0) {
       if (shm != NULL && shm->addr != NULL)
-        kio_spill_fl_insert(fl, wrap, shm);
-      kio_ledger_drop(fl, i);
+        sora_spill_fl_insert(fl, wrap, shm);
+      sora_ledger_drop(fl, i);
       fl->churn = 0;   /* releases are landing: zero-copy reuse is viable */
     } else {
       i++;
@@ -620,7 +620,7 @@ void kio_ledger_sweep(kio_spill_fl *fl, uint32_t quota) {
    while the dead peer is the sole possible view-holder. REFHELD entries
    have a wider holder set: leak the count and kill the name (live views
    keep their own mappings), never force-reclaim. */
-void kio_ledger_force(kio_spill_fl *fl, int32_t key) {
+void sora_ledger_force(sora_spill_fl *fl, int32_t key) {
   if (fl->led_wraps == NULL) return;
   uint32_t i = 0;
   while (i < fl->led_n) {
@@ -629,36 +629,36 @@ void kio_ledger_force(kio_spill_fl *fl, int32_t key) {
       continue;
     }
     SEXP wrap = VECTOR_ELT(fl->led_wraps, i);
-    mori_shm *shm = kio_shm_unwrap(wrap);
+    mori_shm *shm = sora_shm_unwrap(wrap);
     if (shm != NULL && shm->addr != NULL) {
       uint32_t flags =
         atomic_load_explicit(zc_flags(shm->addr), memory_order_acquire);
-      if (flags & KIO_ZC_FLAG_REFHELD) {
+      if (flags & SORA_ZC_FLAG_REFHELD) {
         SEXP host = R_ExternalPtrProtected(wrap);
         if (TYPEOF(host) == EXTPTRSXP) mori_host_finalizer(host);
       } else {
-        kio_spill_fl_insert(fl, wrap, shm);
+        sora_spill_fl_insert(fl, wrap, shm);
         fl->churn = 0;
       }
     }
-    kio_ledger_drop(fl, i);
+    sora_ledger_drop(fl, i);
   }
 }
 
 // Test / debug surface --------------------------------------------------------------
 
-SEXP kio_zc_view_check_call(SEXP x) {
+SEXP sora_zc_view_check_call(SEXP x) {
   return Rf_ScalarLogical(mori_view_check(x));
 }
 
 /* c(refcount, flags) of the region behind a view; integer(0) for anything
    else. Reads through the view's own chain (the refcount word is page 0,
    mapped at least RO on every holder). */
-SEXP kio_zc_refcount_call(SEXP x) {
+SEXP sora_zc_refcount_call(SEXP x) {
   /* the chain walk reads ALTREP slots: gate on view identity first —
      on a plain vector data1 aliases the length field */
   if (!mori_view_check(x)) return Rf_allocVector(INTSXP, 0);
-  SEXP terminus = kio_view_terminus(x);
+  SEXP terminus = sora_view_terminus(x);
   mori_shm *shm = terminus == R_NilValue ? NULL :
     (mori_shm *) R_ExternalPtrAddr(terminus);
   if (shm == NULL || shm->addr == NULL) return Rf_allocVector(INTSXP, 0);
@@ -671,7 +671,7 @@ SEXP kio_zc_refcount_call(SEXP x) {
 }
 
 /* c(free-list entries, lent-ledger entries) for a handle's spill state. */
-SEXP kio_zc_fl_info(kio_spill_fl *fl) {
+SEXP sora_zc_fl_info(sora_spill_fl *fl) {
   SEXP out = Rf_allocVector(INTSXP, 2);
   INTEGER(out)[0] = (int) fl->n;
   INTEGER(out)[1] = (int) fl->led_n;

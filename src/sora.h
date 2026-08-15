@@ -1,20 +1,20 @@
-#ifndef KIOTO_H
-#define KIOTO_H
+#ifndef SORA_H
+#define SORA_H
 
 #include "vendor/mori.h"
 #include <stdatomic.h>
 
 // Preamble --------------------------------------------------------------------
 
-/* First 64-byte line of every kioto channel region. Host-written before spawn
+/* First 64-byte line of every sora channel region. Host-written before spawn
    and immutable thereafter; validated by the peer before any shared atomic is
    read or written. The version governs the ring layout specifically and is
    independent of R's serialize version. */
 
-#define KIO_MAGIC        0x4B494F43u   /* "KIOC" */
-#define KIO_ABI_VERSION  2u            /* 2: SHM_VEC / REF payload kinds */
+#define SORA_MAGIC        0x534F5243u   /* "SORC" */
+#define SORA_ABI_VERSION  2u            /* 2: SHM_VEC / REF payload kinds */
 
-typedef struct kio_preamble_s {
+typedef struct sora_preamble_s {
   uint32_t magic;
   uint32_t version;
   uint32_t cap;              /* slots per ring, power of two */
@@ -25,67 +25,67 @@ typedef struct kio_preamble_s {
   uint64_t drop_size;
   uint64_t livedir_offset;   /* directory holding the two liveness files */
   uint64_t livedir_size;
-} kio_preamble;
+} sora_preamble;
 
 /* The struct is the wire format: it must own the region's first line exactly. */
-typedef char kio_preamble_assert[(sizeof(kio_preamble) == 64) ? 1 : -1];
+typedef char sora_preamble_assert[(sizeof(sora_preamble) == 64) ? 1 : -1];
 
 /* Fixed channel layout: preamble (0), rendezvous line (64), one entity block
    per side (128 host, 192 peer; park epoch (4), parked flag (4),
    wake-register (4)), then the four ring index lines from 256. */
-#define KIO_ENTITY_HOST  0
-#define KIO_ENTITY_PEER  1
-#define KIO_ENTITY_OFFSET(i)  ((size_t) 128 + 64 * (size_t) (i))
-#define KIO_FIXED_LAYOUT_SIZE ((size_t) 512)
+#define SORA_ENTITY_HOST  0
+#define SORA_ENTITY_PEER  1
+#define SORA_ENTITY_OFFSET(i)  ((size_t) 128 + 64 * (size_t) (i))
+#define SORA_FIXED_LAYOUT_SIZE ((size_t) 512)
 
 /* Rendezvous line fields. ready and closed (one bit per side) are the only
    atomics; peer_pid is peer-written at attach, before ready. flags is
    host-written before spawn and immutable thereafter, like the preamble —
    bit 0 opts the channel into pure-spin waiting (consumers never park, so
    producers skip the wake fence + parked-flag load on publish). */
-#define KIO_OFF_READY      ((size_t) 64)
-#define KIO_OFF_CLOSED     ((size_t) 68)
-#define KIO_OFF_PEER_PID   ((size_t) 72)
-#define KIO_OFF_FLAGS      ((size_t) 80)
-#define KIO_FLAG_SPIN      1u
+#define SORA_OFF_READY      ((size_t) 64)
+#define SORA_OFF_CLOSED     ((size_t) 68)
+#define SORA_OFF_PEER_PID   ((size_t) 72)
+#define SORA_OFF_FLAGS      ((size_t) 80)
+#define SORA_FLAG_SPIN      1u
 
-/* Entity block fields, offsets within KIO_ENTITY_OFFSET(i). */
-#define KIO_ENTITY_EPOCH   0
-#define KIO_ENTITY_PARKED  4
-#define KIO_ENTITY_REG     8
+/* Entity block fields, offsets within SORA_ENTITY_OFFSET(i). */
+#define SORA_ENTITY_EPOCH   0
+#define SORA_ENTITY_PARKED  4
+#define SORA_ENTITY_REG     8
 
 /* Ring index lines: one full cache line per shared index, producer and
    consumer writes never sharing a line. H->P is the ring the host produces. */
-#define KIO_OFF_HP_TAIL    ((size_t) 256)
-#define KIO_OFF_HP_HEAD    ((size_t) 320)
-#define KIO_OFF_PH_TAIL    ((size_t) 384)
-#define KIO_OFF_PH_HEAD    ((size_t) 448)
+#define SORA_OFF_HP_TAIL    ((size_t) 256)
+#define SORA_OFF_HP_HEAD    ((size_t) 320)
+#define SORA_OFF_PH_TAIL    ((size_t) 384)
+#define SORA_OFF_PH_HEAD    ((size_t) 448)
 
-void kio_preamble_write(void *region, const kio_preamble *p);
+void sora_preamble_write(void *region, const sora_preamble *p);
 /* Returns NULL and fills *out on success, else a static error message. */
-const char *kio_preamble_validate(const void *region, size_t region_size,
-                                  kio_preamble *out);
+const char *sora_preamble_validate(const void *region, size_t region_size,
+                                  sora_preamble *out);
 
 // Writable attach (peer side; both sides write ring indices) -------------------
 
 /* populate pre-faults the whole mapping (MAP_POPULATE on Linux, a read-touch
    pass on macOS / Windows). The channel and pool attaches populate — the
-   whole ring is hot there; kio_map's template-path contexts don't, so a
+   whole ring is hot there; sora_map's template-path contexts don't, so a
    large RAWVEC x still demand-pages per worker. */
-int kio_shm_open_rw(mori_shm *shm, const char *name, int populate);
-mori_shm *kio_shm_open_rw_heap(const char *name, int populate);
+int sora_shm_open_rw(mori_shm *shm, const char *name, int populate);
+mori_shm *sora_shm_open_rw_heap(const char *name, int populate);
 
 /* Read-only open for SHM_RAW payload reads: the vendored consumer open,
    except populated on Linux — the stream is unserialized in full
    immediately, so eager PTE install beats a fault per page. Elsewhere it
    defers to the vendored open. NULL on failure (the gone path). */
-mori_shm *kio_shm_open_ro_heap(const char *name);
+mori_shm *sora_shm_open_ro_heap(const char *name);
 
 /* Create for the pool / channel control regions: pre-faulted on every
    platform (a page-touch pass where mmap has no populate flag), so slot
    walks never zero-fill-fault on the hot path. Payload regions use the
    vendored mori_shm_create — written in full at stage time. */
-int kio_shm_create_populate(mori_shm *shm, size_t size);
+int sora_shm_create_populate(mori_shm *shm, size_t size);
 
 // Bounded single-pass serialize -------------------------------------------------
 
@@ -93,7 +93,7 @@ int kio_shm_create_populate(mori_shm *shm, size_t size);
    flipping to count-only mode on overflow. Returns the exact total serialized
    size n; dst holds the complete stream iff n <= limit (an overflowed prefix
    is discarded by the caller). */
-size_t kio_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
+size_t sora_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
 
 // Payload framing (payload.c) ----------------------------------------------------
 
@@ -103,31 +103,31 @@ size_t kio_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
    atomic vector (aux = SEXPTYPE) — byte-identical round-trip at allocVector +
    memcpy cost; ARENA (channel-only) one chunk in the channel's spill arena
    (aux = chunk offset, chunk byte length as a uint64 in the payload);
-   SHM_RAW the name of a fresh kioto region holding the stream (len = name
+   SHM_RAW the name of a fresh sora region holding the stream (len = name
    length, name bytes in the payload — root-form, bounded by MORI_NAME_MAX);
    SHM_VEC the name of a spill region holding a mori-layout object (aux =
    layout SEXPTYPE | exact used bytes << 8) — the consumer wraps it as an
-   ALTREP view instead of copying (zc.c); REF the /kio_ identifier of an
+   ALTREP view instead of copying (zc.c); REF the /sora_ identifier of an
    object already in shared memory (a view being passed on) — zero payload
    bytes beyond the identifier move, resolved via the consumer's zc cache. */
 
 enum {
-  KIO_KIND_INLINE = 0,
-  KIO_KIND_ARENA,
-  KIO_KIND_SHM_RAW,
-  KIO_KIND_RAWVEC,
-  KIO_KIND_SHM_VEC,
-  KIO_KIND_REF
+  SORA_KIND_INLINE = 0,
+  SORA_KIND_ARENA,
+  SORA_KIND_SHM_RAW,
+  SORA_KIND_RAWVEC,
+  SORA_KIND_SHM_VEC,
+  SORA_KIND_REF
 };
 
-typedef struct kio_slot_hdr_s {
+typedef struct sora_slot_hdr_s {
   uint32_t kind;
   uint32_t len;
   uint64_t aux;                    /* SHM_RAW: exact stream length — regions
                                       recycled from a free list carry slack */
-} kio_slot_hdr;
+} sora_slot_hdr;
 
-typedef char kio_slot_hdr_assert[(sizeof(kio_slot_hdr) == 16) ? 1 : -1];
+typedef char sora_slot_hdr_assert[(sizeof(sora_slot_hdr) == 16) ? 1 : -1];
 
 /* Producer spill-region free list: retired SHM_RAW regions recycled by the
    handle that spilled them, so steady-state spill traffic is region-churn-
@@ -140,13 +140,13 @@ typedef char kio_slot_hdr_assert[(sizeof(kio_slot_hdr) == 16) ? 1 : -1];
    created at power-of-two sizes (floor 4 KiB) so nearby payload sizes hit;
    caps are per size class and total bytes, the latter sized to admit one
    8 MiB entry. */
-#define KIO_SPILL_FL_MAX    16
-#define KIO_SPILL_FL_CLASS  2
-#define KIO_SPILL_FL_BYTES  ((size_t) 32 << 20)
-#define KIO_SPILL_FL_FLOOR  ((size_t) 4096)
+#define SORA_SPILL_FL_MAX    16
+#define SORA_SPILL_FL_CLASS  2
+#define SORA_SPILL_FL_BYTES  ((size_t) 32 << 20)
+#define SORA_SPILL_FL_FLOOR  ((size_t) 4096)
 
 /* Zero-copy view protocol (zc.c): a SHM_VEC region holds a mori-layout
-   object (64-byte header, then data). kioto owns header bytes [24-31] —
+   object (64-byte header, then data). sora owns header bytes [24-31] —
    reserved [24-63] in every mori layout — as a view refcount at [24-27]
    and a flags word at [28-31] (bit 0: staged as REF at least once, so the
    holder set may be wider than the direct peer and the death backstop
@@ -158,60 +158,60 @@ typedef char kio_slot_hdr_assert[(sizeof(kio_slot_hdr) == 16) ? 1 : -1];
    producer drops its
    loan at the existing keeper release points; regions at count 0 rejoin
    the spill free list, others wait in the lent-region ledger below. */
-#define KIO_ZC_REFCOUNT_OFF ((size_t) 24)
-#define KIO_ZC_FLAGS_OFF    ((size_t) 28)
-#define KIO_ZC_FLAG_REFHELD 1u
+#define SORA_ZC_REFCOUNT_OFF ((size_t) 24)
+#define SORA_ZC_FLAGS_OFF    ((size_t) 28)
+#define SORA_ZC_FLAG_REFHELD 1u
 
-typedef char kio_zc_off_assert[
-  (KIO_ZC_FLAGS_OFF + 4 <= MORI_HEADER_SIZE) ? 1 : -1];
+typedef char sora_zc_off_assert[
+  (SORA_ZC_FLAGS_OFF + 4 <= MORI_HEADER_SIZE) ? 1 : -1];
 
 /* SHM_VEC escalation floor: below max(inline budget, this) the copy tiers
    win — Phase 0 measured the wrap-vs-copy crossover in the 16-64 KiB band
    (ARENA ~2 µs flat vs a fresh-region spill ~6-7 µs under churn). */
-#define KIO_ZC_FLOOR ((size_t) 32768)
+#define SORA_ZC_FLOOR ((size_t) 32768)
 
 /* Lent-region ledger: producer wraps of SHM_VEC regions with views
    outstanding, pinned until the refcount hits 0 (then free-listed) or the
    consumer's death is confirmed (then force-reclaimed; REFHELD entries
-   leak + unlink instead). Full at KIO_LEDGER_MAX the wrap simply drops to
+   leak + unlink instead). Full at SORA_LEDGER_MAX the wrap simply drops to
    GC — the name unlinks, live views keep their own mappings, and only
    recycling is forfeited. key names the consumer: pool result regions the
    submitter slot, pool task-arg regions the consuming worker slot (set at
    the release point), channel regions unused (-1: the peer is the only
    possible holder); -1 entries are never force-reclaimed. */
-#define KIO_LEDGER_MAX 64
+#define SORA_LEDGER_MAX 64
 
-typedef struct kio_spill_fl_s {
-  SEXP wraps;                       /* VECSXP(KIO_SPILL_FL_MAX), handle-pinned */
-  size_t size[KIO_SPILL_FL_MAX];    /* region size; 0 = empty entry */
-  uint64_t stamp[KIO_SPILL_FL_MAX]; /* push order: largest-oldest eviction */
+typedef struct sora_spill_fl_s {
+  SEXP wraps;                       /* VECSXP(SORA_SPILL_FL_MAX), handle-pinned */
+  size_t size[SORA_SPILL_FL_MAX];    /* region size; 0 = empty entry */
+  uint64_t stamp[SORA_SPILL_FL_MAX]; /* push order: largest-oldest eviction */
   uint64_t tick;
   size_t total;
   uint32_t n;
   int last_reused;                  /* whether the last spill popped an entry */
   uint64_t hits;                    /* process-local reuse count (dump-only) */
-  SEXP led_wraps;                   /* VECSXP(KIO_LEDGER_MAX), handle-pinned */
-  int32_t led_key[KIO_LEDGER_MAX];
+  SEXP led_wraps;                   /* VECSXP(SORA_LEDGER_MAX), handle-pinned */
+  int32_t led_key[SORA_LEDGER_MAX];
   uint32_t led_n;
   /* set when a spill pop misses with lent regions outstanding (the sweep
      just proved consumer-side views outlive their traffic): the signal
-     for the copy-tier fallback in kio_payload_stage and chan_send1;
+     for the copy-tier fallback in sora_payload_stage and chan_send1;
      cleared when a ledger sweep or force-reclaim returns a lent region
      to the free list. Raised on Linux only (spill_fl_pop): fresh
      regions pre-fault there; macOS/Windows creates are lazy and
      SHM_VEC wins even under churn */
   int churn;
-} kio_spill_fl;
+} sora_spill_fl;
 
 /* Surrender a dropped keeper's region to the free list: a no-op unless
    keeper is a spill keeper (identified by pointer identity of a private
    marker, so no user value staged as its own keeper can alias one). Call
    only at consumer-done release points, before dropping the keeper. */
-void kio_spill_fl_offer(kio_spill_fl *fl, SEXP keeper);
+void sora_spill_fl_offer(sora_spill_fl *fl, SEXP keeper);
 /* Offer keepers[at], then nil the slot — the shape of every release point
    that drops a keeper table entry: offered exactly once, immediately
    before its sole reference goes. */
-void kio_spill_fl_surrender(kio_spill_fl *fl, SEXP keepers, R_xlen_t at);
+void sora_spill_fl_surrender(sora_spill_fl *fl, SEXP keepers, R_xlen_t at);
 
 /* Consumer-side mapping cache, the read counterpart of the free list: once
    producers repeat region names, a name -> consumer-wrap table skips the
@@ -222,40 +222,40 @@ void kio_spill_fl_surrender(kio_spill_fl *fl, SEXP keepers, R_xlen_t at);
    was evicted producer-side just never matches again and ages out (LRU).
    Producer death leaves hits readable (the mapping — and on Windows the
    cached handle — outlives the name); the gone path only ever ran on
-   misses and is unchanged. Counters are process-local, kio_pool_dump-only. */
-#define KIO_OPEN_CACHE_MAX 16
+   misses and is unchanged. Counters are process-local, sora_pool_dump-only. */
+#define SORA_OPEN_CACHE_MAX 16
 
-typedef struct kio_open_cache_s {
-  SEXP wraps;                       /* VECSXP(KIO_OPEN_CACHE_MAX), handle-pinned */
-  char names[KIO_OPEN_CACHE_MAX][MORI_NAME_MAX];
-  uint8_t name_len[KIO_OPEN_CACHE_MAX];   /* 0 = empty entry */
-  uint64_t stamp[KIO_OPEN_CACHE_MAX];
+typedef struct sora_open_cache_s {
+  SEXP wraps;                       /* VECSXP(SORA_OPEN_CACHE_MAX), handle-pinned */
+  char names[SORA_OPEN_CACHE_MAX][MORI_NAME_MAX];
+  uint8_t name_len[SORA_OPEN_CACHE_MAX];   /* 0 = empty entry */
+  uint64_t stamp[SORA_OPEN_CACHE_MAX];
   uint64_t tick;
   uint64_t hits, misses;
-} kio_open_cache;
+} sora_open_cache;
 
-void *kio_vec_ptr(SEXP x);
-int kio_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
+void *sora_vec_ptr(SEXP x);
+int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
 /* Pop the smallest fitting free-list region (a full ledger sweep first on
    a miss) or create one fresh — at the pow2 size class when a free list is
    in play, exact otherwise. Returns the PROTECTed producer wrap and sets
    *out. */
-SEXP kio_spill_region_get(kio_spill_fl *fl, size_t n, mori_shm **out);
+SEXP sora_spill_region_get(sora_spill_fl *fl, size_t n, mori_shm **out);
 /* Insert a producer wrap into the free list under the size-class and byte
    caps (evicting largest-oldest), or drop it to GC when it doesn't fit. */
-void kio_spill_fl_insert(kio_spill_fl *fl, SEXP wrap, mori_shm *shm);
-/* Serialize x into a kioto region — popped from fl when an entry fits,
+void sora_spill_fl_insert(sora_spill_fl *fl, SEXP wrap, mori_shm *shm);
+/* Serialize x into a sora region — popped from fl when an entry fits,
    created fresh otherwise (fl may be NULL: always fresh, exactly n bytes)
    — and frame it as SHM_RAW. Returns the keeper — list(x, producer
    wrapper, marker) — freshly allocated: the caller must protect it. */
-SEXP kio_payload_spill_shm(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                           size_t n, kio_spill_fl *fl);
-/* Stage x as REF (a kioto view), RAWVEC, INLINE, SHM_VEC (a mori-layout-
+SEXP sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                           size_t n, sora_spill_fl *fl);
+/* Stage x as REF (a sora view), RAWVEC, INLINE, SHM_VEC (a mori-layout-
    eligible object past the inline budget and the zc floor), or SHM_RAW —
    the pool framing, with no arena tier. Returns the keeper to pin: x
    itself, or the fresh spill list; the caller must protect it. */
-SEXP kio_payload_stage(kio_slot_hdr *hdr, unsigned char *payload,
-                       uint32_t inline_max, SEXP x, kio_spill_fl *fl);
+SEXP sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
+                       uint32_t inline_max, SEXP x, sora_spill_fl *fl);
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload (errors on ARENA — the
    channel resolves its own arena chunks), or wrap a SHM_VEC / REF payload
    as an ALTREP view. oc may be NULL: open per payload, mapping dropped at
@@ -264,94 +264,94 @@ SEXP kio_payload_stage(kio_slot_hdr *hdr, unsigned char *payload,
    lazy, unlike the SHM_RAW cache. */
 /* gone: NULL raises on a vanished out-of-line region; else set to 1 with a
    NULL-value return, for callers that can turn it into a task verdict */
-SEXP kio_payload_read(const kio_slot_hdr *hdr, const unsigned char *payload,
-                      uint32_t inline_max, int *gone, kio_open_cache *oc,
-                      kio_open_cache *zoc);
+SEXP sora_payload_read(const sora_slot_hdr *hdr, const unsigned char *payload,
+                      uint32_t inline_max, int *gone, sora_open_cache *oc,
+                      sora_open_cache *zoc);
 
 /* Open-cache primitives, shared by the SHM_RAW and zc read paths: the
    name-keyed wrap lookup (R_NilValue on a miss or a finalized entry) and
    the LRU store (evicted entries drop to GC). */
-SEXP kio_oc_lookup_wrap(kio_open_cache *oc, const unsigned char *name,
+SEXP sora_oc_lookup_wrap(sora_open_cache *oc, const unsigned char *name,
                         uint32_t len);
-void kio_oc_store(kio_open_cache *oc, const unsigned char *name, uint32_t len,
+void sora_oc_store(sora_open_cache *oc, const unsigned char *name, uint32_t len,
                   SEXP wrap);
 
 // Zero-copy payload tiers (zc.c) ---------------------------------------------
 
-void kio_zc_init(void);
+void sora_zc_init(void);
 /* SHM_VEC eligibility: a mori-layout-eligible object (non-ALTREP, non-S4
    atomic vector; string vector; list tree) whose layout bytes exceed both
-   the inline budget and KIO_ZC_FLOOR — cheap lower-bound probes keep the
-   layout-size walk off the inline path, and a kioto view nested in a list
+   the inline budget and SORA_ZC_FLOOR — cheap lower-bound probes keep the
+   layout-size walk off the inline path, and a sora view nested in a list
    tree rejects it (nested views cross by reference on the serialize-hook
    path). *out_total receives the exact layout size (header + data +
    attrs). */
-int kio_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total);
+int sora_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total);
 /* Stage x as SHM_VEC into a spill region and return the keeper —
    list(x, wrap, marker, key) with key an INTSXP(1) cell (-1) the release
    point may re-stamp with the consumer's identity (pool keying). */
-SEXP kio_zc_stage(kio_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                  size_t total, kio_spill_fl *fl);
-/* Stage a kioto-native view as REF (its identifier as the payload), marking
+SEXP sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                  size_t total, sora_spill_fl *fl);
+/* Stage a sora-native view as REF (its identifier as the payload), marking
    the region REFHELD. Returns 1 on success, 0 to fall through to the copy
    tiers (not a view, materialized view, or an identifier past the budget). */
-int kio_zc_ref_stage(kio_slot_hdr *hdr, unsigned char *payload,
+int sora_zc_ref_stage(sora_slot_hdr *hdr, unsigned char *payload,
                      uint32_t inline_max, SEXP x);
 /* The receive sides: wrap the SHM_VEC region / resolve the REF identifier
    as an ALTREP view over the shared pages, refcounted per the zc protocol
-   (zc.c). gone as in kio_payload_read. */
-SEXP kio_zc_read(const kio_slot_hdr *hdr, const unsigned char *payload,
-                 int *gone, kio_open_cache *oc);
-SEXP kio_zc_ref_read(const kio_slot_hdr *hdr, const unsigned char *payload,
-                     int *gone, kio_open_cache *oc);
+   (zc.c). gone as in sora_payload_read. */
+SEXP sora_zc_read(const sora_slot_hdr *hdr, const unsigned char *payload,
+                 int *gone, sora_open_cache *oc);
+SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
+                     int *gone, sora_open_cache *oc);
 /* The zc keeper predicate (pointer identity of a private marker). */
-int kio_zc_keeper(SEXP k);
+int sora_zc_keeper(SEXP k);
 /* Re-stamp a zc keeper's consumer key (no-op for other keepers). */
-void kio_zc_keeper_key(SEXP keeper, int32_t key);
+void sora_zc_keeper_key(SEXP keeper, int32_t key);
 /* The producer-loan release for a zc keeper: refcount sub, then free list
    on 0 or the lent-region ledger otherwise. */
-void kio_zc_release(kio_spill_fl *fl, SEXP keeper);
+void sora_zc_release(sora_spill_fl *fl, SEXP keeper);
 /* Move zero-count ledger entries to the free list, up to quota
-   (KIO_LEDGER_MAX = full sweep). */
-void kio_ledger_sweep(kio_spill_fl *fl, uint32_t quota);
+   (SORA_LEDGER_MAX = full sweep). */
+void sora_ledger_sweep(sora_spill_fl *fl, uint32_t quota);
 /* Force-reclaim ledger entries after a confirmed consumer death: key >= 0
    matches that consumer only, key < 0 all entries (the channel's single
    peer). REFHELD entries leak + unlink; the rest rejoin the free list. */
-void kio_ledger_force(kio_spill_fl *fl, int32_t key);
-/* Test / debug surface: is x a kioto-native view; c(refcount, flags) of
+void sora_ledger_force(sora_spill_fl *fl, int32_t key);
+/* Test / debug surface: is x a sora-native view; c(refcount, flags) of
    the region behind a view; c(free-list, ledger) entry counts for a
    handle. */
-SEXP kio_zc_view_check_call(SEXP x);
-SEXP kio_zc_refcount_call(SEXP x);
-SEXP kio_zc_fl_info(kio_spill_fl *fl);
+SEXP sora_zc_view_check_call(SEXP x);
+SEXP sora_zc_refcount_call(SEXP x);
+SEXP sora_zc_fl_info(sora_spill_fl *fl);
 
 /* Terminal-state sentinels (channel.c), shared across the verb surface. */
-extern SEXP kio_sent_full, kio_sent_timeout, kio_sent_closed, kio_sent_gone;
+extern SEXP sora_sent_full, sora_sent_timeout, sora_sent_closed, sora_sent_gone;
 
 /* Classed error conditions (condition.c): signal an R condition of class
-   c(subclass, "kio_error", "error", "condition") with a NULL call, so
+   c(subclass, "sora_error", "error", "condition") with a NULL call, so
    handlers dispatch on class instead of parsing messages. The typed
    variants add structured fields: _shm carries the requested byte count
    (NA_REAL on opens, where the size is unknown), _died the result slot's
    claimant record (negative = unknown -> NA) — informational reads, racy
-   against slot reuse exactly as kio_pool_dump is. Never return. */
+   against slot reuse exactly as sora_pool_dump is. Never return. */
 #ifndef R_PRINTF_FORMAT                        /* added in R 4.4.0 */
 #define R_PRINTF_FORMAT(M, N)
 #endif
-NORET void kio_stop(const char *subclass, const char *fmt, ...)
+NORET void sora_stop(const char *subclass, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
-NORET void kio_stop_shm(double bytes, const char *fmt, ...)
+NORET void sora_stop_shm(double bytes, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
-NORET void kio_stop_died(int slot, double pid, const char *fmt, ...)
+NORET void sora_stop_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
 /* Sentinel-mode variants: the same conditions returned boxed in a
-   length-1 list of class "kio_caught" instead of signalled, for hot
+   length-1 list of class "sora_caught" instead of signalled, for hot
    loops that branch on class rather than arm a tryCatch handler. Only C
    boxes, so a task value that is itself a condition stays bare. */
-SEXP kio_caught(SEXP cond);
-SEXP kio_caught_cond(const char *subclass, const char *fmt, ...)
+SEXP sora_caught(SEXP cond);
+SEXP sora_caught_cond(const char *subclass, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
-SEXP kio_caught_died(int slot, double pid, const char *fmt, ...)
+SEXP sora_caught_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
 
 // Per-entity parker ------------------------------------------------------------
@@ -364,14 +364,14 @@ SEXP kio_caught_died(int slot, double pid, const char *fmt, ...)
    so the sleep returns immediately. Spurious wakes are absorbed by the
    caller's re-check. */
 
-typedef struct kio_parker_s {
+typedef struct sora_parker_s {
   _Atomic uint32_t *epoch;   /* in the shared region */
 #ifdef _WIN32
   void *event;               /* named auto-reset event handle */
 #endif
-} kio_parker;
+} sora_parker;
 
-enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
+enum { SORA_PARK_WOKEN = 0, SORA_PARK_TIMEOUT = 1, SORA_PARK_INTR = 2 };
 
 /* POSIX parks are always timed: an untimed FUTEX_WAIT is silently restarted
    under SA_RESTART (which R's signal()-installed SIGINT handler implies) and
@@ -379,7 +379,7 @@ enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
    (timeout_ms < 0) parks use this nominal bound and rely on directed unparks.
    Windows uses INFINITE there: console-control cannot interrupt the wait
    either way. Fits in a uint32 of microseconds (the __ulock_wait argument). */
-#define KIO_PARK_NOMINAL_MS 3600000L
+#define SORA_PARK_NOMINAL_MS 3600000L
 
 /* Interrupt-latency bound on parks from R verbs run on interactive processes
    (see *Hybrid wait*): on POSIX a SIGINT EINTRs the timed wait, so the bound
@@ -387,9 +387,9 @@ enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
    be lazy; Windows console-control cannot interrupt WaitForSingleObject, so
    the bound is the Ctrl-C latency and stays short. */
 #ifdef _WIN32
-#define KIO_INTERRUPT_BOUND_MS 100L
+#define SORA_INTERRUPT_BOUND_MS 100L
 #else
-#define KIO_INTERRUPT_BOUND_MS 2000L
+#define SORA_INTERRUPT_BOUND_MS 2000L
 #endif
 
 /* Time-boxed pre-park spins: a park/wake round trip costs microseconds,
@@ -397,11 +397,11 @@ enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
    nanosecond budget, sized ~2x the measured park/wake round trip.
    Budgets adapt per handle (process-local words, never shared): an
    episode whose spin comes up empty halves the budget
-   (floor KIO_SPIN_FLOOR_NS); work found resets it to the constant.
-   KIO_SPIN_BUDGET_NS covers the worker pre-park scan and the channel
+   (floor SORA_SPIN_FLOOR_NS); work found resets it to the constant.
+   SORA_SPIN_BUDGET_NS covers the worker pre-park scan and the channel
    recv wait, absorbing sub-µs publish gaps without touching the entity
    line. */
-#define KIO_SPIN_BUDGET_NS 16000
+#define SORA_SPIN_BUDGET_NS 16000
 
 /* Collect's pre-announce spin budget, sized for a short task's whole
    submit -> publish turnaround rather than a publish gap: waiter_slot
@@ -410,102 +410,102 @@ enum { KIO_PARK_WOKEN = 0, KIO_PARK_TIMEOUT = 1, KIO_PARK_INTR = 2 };
    its park. That syscall-skip invariant is pre-first-park only: the spin
    re-runs after every bounded park wake, and waiter_slot stays announced
    from the first park until the collect returns. */
-#define KIO_COLLECT_SPIN_BUDGET_NS 32000
+#define SORA_COLLECT_SPIN_BUDGET_NS 32000
 
 /* Decay floor for both budgets: genuine idleness converges here, so an
    idle pool or channel parks instead of burning a core. */
-#define KIO_SPIN_FLOOR_NS 1000
+#define SORA_SPIN_FLOOR_NS 1000
 
-/* Pause iterations between kio_now() deadline checks at the
+/* Pause iterations between sora_now() deadline checks at the
    cheap-predicate spin sites (collect, channel: 1-2 loads per check).
    The worker scan passes a stride of 1: pool_work_hint() is
    O(max_workers) per iteration, so a ~20-25 ns vDSO clock read is noise
    next to it and a longer stride could overshoot the budget. */
-#define KIO_SPIN_CLOCK_EVERY 8
+#define SORA_SPIN_CLOCK_EVERY 8
 
 /* Busy-path bound on result-keeper reap visits per worker step: keeps the
    per-task reap cost O(1) against any number of results outstanding. The
    idle-path full sweep clears any residue before a park. */
-#define KIO_REAP_QUOTA 32
+#define SORA_REAP_QUOTA 32
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
-#define KIO_PAUSE() __builtin_ia32_pause()
+#define SORA_PAUSE() __builtin_ia32_pause()
 #elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-#define KIO_PAUSE() __asm__ __volatile__("isb" ::: "memory")
+#define SORA_PAUSE() __asm__ __volatile__("isb" ::: "memory")
 #else
-#define KIO_PAUSE() do { } while (0)
+#define SORA_PAUSE() do { } while (0)
 #endif
 
 /* Time-boxed pause-hinted spin, the shared pre-announce wait layer:
    evaluate cond each iteration until it holds (out = 1) or the
-   kio_now()-scale deadline `until` passes (out = 0), reading the clock
+   sora_now()-scale deadline `until` passes (out = 0), reading the clock
    every `stride` iterations. A macro, not an inline: the predicate must
    inline at each site. Callers clamp `until` to any outer wait deadline
    themselves. */
-#define KIO_SPIN_WAIT(cond, until, stride, out)                         \
+#define SORA_SPIN_WAIT(cond, until, stride, out)                         \
   do {                                                                  \
     (out) = 0;                                                          \
     for (;;) {                                                          \
-      int kio_sw_i = 0;                                                 \
-      for (; kio_sw_i < (stride); kio_sw_i++) {                         \
-        KIO_PAUSE();                                                    \
+      int sora_sw_i = 0;                                                 \
+      for (; sora_sw_i < (stride); sora_sw_i++) {                         \
+        SORA_PAUSE();                                                    \
         if (cond) { (out) = 1; break; }                                 \
       }                                                                 \
-      if ((out) || kio_now() >= (until)) break;                         \
+      if ((out) || sora_now() >= (until)) break;                         \
     }                                                                   \
   } while (0)
 
 /* region_name/entity name the Windows event ("<region>.pk.<entity>"), created
    by the region's host (create = 1) and opened by name by attachers; unused
    on POSIX. Returns 0 on success. */
-int kio_parker_attach(kio_parker *pk, _Atomic uint32_t *epoch,
+int sora_parker_attach(sora_parker *pk, _Atomic uint32_t *epoch,
                       const char *region_name, int entity, int create);
-void kio_parker_detach(kio_parker *pk);
+void sora_parker_detach(sora_parker *pk);
 
 /* Monotonic seconds / current pid (channel.c). */
-double kio_now(void);
-long kio_self_pid(void);
+double sora_now(void);
+long sora_self_pid(void);
 
 /* One 2^127-step CMRG stream jump in place (rng.c); the map batch loop's
    per-element step. */
-void kio_rng_jump(int *seed);
+void sora_rng_jump(int *seed);
 
-static inline uint32_t kio_parker_snapshot(const kio_parker *pk) {
+static inline uint32_t sora_parker_snapshot(const sora_parker *pk) {
   return atomic_load_explicit(pk->epoch, memory_order_acquire);
 }
 
 /* Sleeps while the epoch still equals snapshot, up to timeout_ms
    (0 = poll: never sleeps; < 0 = indefinite, see above). */
-int kio_park(kio_parker *pk, uint32_t snapshot, long timeout_ms);
-void kio_unpark(kio_parker *pk);
+int sora_park(sora_parker *pk, uint32_t snapshot, long timeout_ms);
+void sora_unpark(sora_parker *pk);
 
 // Per-process death listener -----------------------------------------------------
 
 /* Translates a watched pid's exit into *flag = 1 plus a directed unpark of
    pk (optional, copied). A pid that is already dead fires immediately. The
    flag target and the parker's epoch word / event must stay valid until
-   kio_death_watch_stop returns: stop synchronizes with any in-flight
+   sora_death_watch_stop returns: stop synchronizes with any in-flight
    callback (mutex / serial-queue drain / blocking UnregisterWaitEx), so
    after it returns nothing touches them. Detection is a wake trigger only —
    the liveness lock is the verdict; pid-reuse races are absorbed there. */
 
-typedef struct kio_death_watch_s kio_death_watch;
+typedef struct sora_death_watch_s sora_death_watch;
 
-kio_death_watch *kio_death_watch_start(long pid, _Atomic int *flag,
-                                       const kio_parker *pk);
+sora_death_watch *sora_death_watch_start(long pid, _Atomic int *flag,
+                                       const sora_parker *pk);
 /* As above plus a generic callback invoked after the flag store and
    unpark, on the listener's callback thread (or synchronously from start
    when the pid is already dead): pure C only — no R API, and the
-   callback's targets must stay valid until kio_death_watch_stop returns.
+   callback's targets must stay valid until sora_death_watch_stop returns.
    The pool's worker reap rides this. */
-kio_death_watch *kio_death_watch_start2(long pid, _Atomic int *flag,
-                                        const kio_parker *pk,
+sora_death_watch *sora_death_watch_start2(long pid, _Atomic int *flag,
+                                        const sora_parker *pk,
                                         void (*cb)(void *), void *cb_arg);
-void kio_death_watch_stop(kio_death_watch *w);
+void sora_death_watch_stop(sora_death_watch *w);
 
 /* Package-unload teardown; joins the Linux epoll thread (no-op elsewhere:
    macOS dispatch sources and Windows thread-pool waits are per-watch). */
-void kio_death_listener_teardown(void);
+void sora_death_listener_teardown(void);
 
 // Liveness lock -----------------------------------------------------------------
 
@@ -518,30 +518,30 @@ void kio_death_listener_teardown(void);
    spawned children cannot inherit the open file description and keep a dead
    host's lock alive. */
 
-enum { KIO_LIVE_ACQUIRED = 0, KIO_LIVE_HELD = 1 };
+enum { SORA_LIVE_ACQUIRED = 0, SORA_LIVE_HELD = 1 };
 
-/* Directory for liveness lock files: the KIOTO_LIVENESS_DIR override
+/* Directory for liveness lock files: the SORA_LIVENESS_DIR override
    (read-through, checked on every call) else a per-platform default
    resolved once — /dev/shm on Linux, the per-user temp dir on macOS and
    Windows. Trailing separators trimmed; NULL if unresolvable. Only region
    creators call this: participants read the embedded copy. */
-const char *kio_live_dir(void);
+const char *sora_live_dir(void);
 
-int kio_live_open(const char *path, intptr_t *out);
+int sora_live_open(const char *path, intptr_t *out);
 /* Open without creating: ENOENT reads as "indeterminate, treat as alive",
    never a verdict — the probe-by-path discipline (see the pool's worker
    death detection). */
-int kio_live_open_existing(const char *path, intptr_t *out);
-int kio_live_try(intptr_t h);
+int sora_live_open_existing(const char *path, intptr_t *out);
+int sora_live_try(intptr_t h);
 /* Release an acquired lock while keeping the fd — the kept-fd prober's
    epilogue after a reap, so a respawned holder can lock the same file. */
-void kio_live_unlock(intptr_t h);
-void kio_live_close(intptr_t h);
+void sora_live_unlock(intptr_t h);
+void sora_live_close(intptr_t h);
 /* The locked file's identity — (dev, inode) on POSIX, (volume serial, file
    index) on Windows — recorded in registry slots at join so a path-opened
    prober can discard a probe whose file was unlinked and recreated out from
    under the lock. Returns 0 on success. */
-int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino);
+int sora_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino);
 
 // Pool region (Part II) -----------------------------------------------------------
 
@@ -551,16 +551,16 @@ int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino);
    format; every section is 64-byte aligned and the layout is fixed from
    Phase 1 so later phases add capability without moving anything. */
 
-#define KIO_POOL_MAGIC  0x4B494F50u   /* "KIOP" */
+#define SORA_POOL_MAGIC  0x534F5250u   /* "SORP" */
 
-/* The worker-slot bound: parked_workers is one bit per slot, and kio_map
+/* The worker-slot bound: parked_workers is one bit per slot, and sora_map
    stages its CLAIM array (one word per runner ordinal) at this count. */
-#define KIO_MAX_WORKERS 64
+#define SORA_MAX_WORKERS 64
 
-typedef struct kio_pool_hdr_s {
+typedef struct sora_pool_hdr_s {
   uint32_t magic;
   uint32_t version;
-  uint32_t max_workers;      /* <= KIO_MAX_WORKERS */
+  uint32_t max_workers;      /* <= SORA_MAX_WORKERS */
   uint32_t max_submitters;   /* <= 64: inj_ready_sub / full_waiters bits */
   uint32_t inj_cap;          /* entries per submitter ring, power of two */
   uint32_t deque_cap;        /* entries per worker deque, power of two */
@@ -570,9 +570,9 @@ typedef struct kio_pool_hdr_s {
   uint64_t livedir_offset;   /* directory holding the liveness files */
   uint64_t livedir_size;
   uint8_t  pad[8];
-} kio_pool_hdr;
+} sora_pool_hdr;
 
-typedef char kio_pool_hdr_assert[(sizeof(kio_pool_hdr) == 64) ? 1 : -1];
+typedef char sora_pool_hdr_assert[(sizeof(sora_pool_hdr) == 64) ? 1 : -1];
 
 /* Worker registry slot: two cache lines. Line 0 is admin + owner-written
    fields; deque_top sits apart on line 1 so thief CAS traffic never pingpongs
@@ -584,7 +584,7 @@ typedef char kio_pool_hdr_assert[(sizeof(kio_pool_hdr) == 64) ? 1 : -1];
    per task, which would reintroduce the line-1 pingpong deque_top's
    placement exists to avoid — so under load they lag by up to one fairness
    tick and are exact whenever the worker is parked or departed. */
-typedef struct kio_wk_slot_s {
+typedef struct sora_wk_slot_s {
   _Atomic int32_t  status;        /* FREE, CLAIMING, LIVE, LEAVING, REAPING */
   int32_t          id;            /* slot index (redundant, for debugging) */
   int64_t          pid;           /* informational; never a liveness signal */
@@ -605,9 +605,9 @@ typedef struct kio_wk_slot_s {
   _Atomic uint64_t stat_inj;      /* entries claimed from injection rings */
   _Atomic uint64_t stat_parks;    /* kernel parks in the worker loop */
   _Atomic uint64_t stat_helps;    /* claims run in nested-collect help mode */
-} kio_wk_slot;
+} sora_wk_slot;
 
-typedef char kio_wk_slot_assert[(sizeof(kio_wk_slot) == 128) ? 1 : -1];
+typedef char sora_wk_slot_assert[(sizeof(sora_wk_slot) == 128) ? 1 : -1];
 
 /* Submitter registry slot: one cache line. The result-slot subrange is the
    static partition result_slots / max_submitters, stored for introspection.
@@ -618,7 +618,7 @@ typedef char kio_wk_slot_assert[(sizeof(kio_wk_slot) == 128) ? 1 : -1];
    recycled a region from the producer's free list instead of creating one:
    spills - reuse is the region-churn rate. Spill-path-only writes (even a
    recycled region dwarfs the cross-process fetch_add); reset at claim. */
-typedef struct kio_sub_slot_s {
+typedef struct sora_sub_slot_s {
   _Atomic int32_t  status;        /* FREE, LIVE, REAPING */
   _Atomic uint32_t park_epoch;    /* parker epoch word */
   int64_t          pid;
@@ -629,114 +629,114 @@ typedef struct kio_sub_slot_s {
   _Atomic uint64_t stat_spills;
   _Atomic uint64_t stat_spill_reuse;
   uint8_t          pad[8];
-} kio_sub_slot;
+} sora_sub_slot;
 
-typedef char kio_sub_slot_assert[(sizeof(kio_sub_slot) == 64) ? 1 : -1];
+typedef char sora_sub_slot_assert[(sizeof(sora_sub_slot) == 64) ? 1 : -1];
 
 /* Result slot header; the payload framing header sits at offset 24 and
    payload bytes at 40. status is the condition collect re-checks around its
    park; waiter_slot routes the publish-side unpark; sequence increments on
    every reuse so stale handles are detected; worker_slot is the keeper-drop
    unpark target. */
-typedef struct kio_rs_hdr_s {
+typedef struct sora_rs_hdr_s {
   _Atomic int32_t  status;        /* FREE, PENDING, OK, ERR, CANCEL */
   _Atomic int32_t  waiter_slot;   /* submitter slot parked on this (-1) */
   _Atomic uint64_t sequence;
   _Atomic int32_t  worker_slot;   /* executing worker (-1 until claimed) */
   uint32_t         pad;
-  kio_slot_hdr     ph;
-} kio_rs_hdr;
+  sora_slot_hdr     ph;
+} sora_rs_hdr;
 
-typedef char kio_rs_hdr_assert[(sizeof(kio_rs_hdr) == 40) ? 1 : -1];
+typedef char sora_rs_hdr_assert[(sizeof(sora_rs_hdr) == 40) ? 1 : -1];
 
 /* Injection ring / deque entry header; payload framing at offset 16 and
    payload bytes at 32. task_id is submitter slot in the high 16 bits, a
    per-submitter counter below — debug/tracing only. flags was the always-
    zeroed pad word, so repurposing it is backward-consistent (the ABI
    version gate rejects mixed builds regardless). */
-typedef struct kio_entry_hdr_s {
+typedef struct sora_entry_hdr_s {
   uint64_t task_id;
   uint32_t rs_index;
   uint16_t submitter_slot;
   uint16_t flags;
-  kio_slot_hdr ph;
-} kio_entry_hdr;
+  sora_slot_hdr ph;
+} sora_entry_hdr;
 
-typedef char kio_entry_hdr_assert[(sizeof(kio_entry_hdr) == 32) ? 1 : -1];
+typedef char sora_entry_hdr_assert[(sizeof(sora_entry_hdr) == 32) ? 1 : -1];
 
 /* RUNNER marks a map runner task — a map's join ticket: a worker joins the
    map's shared cursor exactly by executing one runner, so a doorbell help
    beat that claims one re-homes it onto the helper's own deque (stealable
    by idle peers) instead of executing it nested, which would silently
    serialize the map. Runner-only by design: a runner lost in the re-home
-   death window is backstopped by kio_map_abandon's lane trim; an ordinary
+   death window is backstopped by sora_map_abandon's lane trim; an ordinary
    task has no such backstop and must execute inline where it is claimed. */
-#define KIO_ENTRY_RUNNER 1u
+#define SORA_ENTRY_RUNNER 1u
 
-enum { KIO_WK_FREE = 0, KIO_WK_CLAIMING, KIO_WK_LIVE, KIO_WK_LEAVING,
-       KIO_WK_REAPING };
-enum { KIO_SUB_FREE = 0, KIO_SUB_LIVE, KIO_SUB_REAPING };
+enum { SORA_WK_FREE = 0, SORA_WK_CLAIMING, SORA_WK_LIVE, SORA_WK_LEAVING,
+       SORA_WK_REAPING };
+enum { SORA_SUB_FREE = 0, SORA_SUB_LIVE, SORA_SUB_REAPING };
 /* DIED is the reaper's terminal: status-word only, no payload — a reap
    cannot write payload bytes without racing a live worker's concurrent
    publish of the same slot (the benign died-before-claim-committed race),
    so the "worker died" message lives in collect, keyed off the status. */
-enum { KIO_RS_FREE = 0, KIO_RS_PENDING, KIO_RS_OK, KIO_RS_ERR, KIO_RS_CANCEL,
-       KIO_RS_DIED };
-enum { KIO_WPK_RUNNING = 0, KIO_WPK_IDLE, KIO_WPK_PARKED, KIO_WPK_WAKING };
+enum { SORA_RS_FREE = 0, SORA_RS_PENDING, SORA_RS_OK, SORA_RS_ERR, SORA_RS_CANCEL,
+       SORA_RS_DIED };
+enum { SORA_WPK_RUNNING = 0, SORA_WPK_IDLE, SORA_WPK_PARKED, SORA_WPK_WAKING };
 
 /* Per-submitter injection ring metadata: the shared tail (submitter-
    published) and head (worker-CAS'd) each own a full cache line, as in the
    channel; the ring's entry bytes follow. */
-#define KIO_INJ_META_SIZE   ((size_t) 128)
-#define KIO_INJ_TAIL_OFF    ((size_t) 0)
-#define KIO_INJ_HEAD_OFF    ((size_t) 64)
+#define SORA_INJ_META_SIZE   ((size_t) 128)
+#define SORA_INJ_TAIL_OFF    ((size_t) 0)
+#define SORA_INJ_HEAD_OFF    ((size_t) 64)
 
 /* Injection tier metadata (128 B): inj_ready_sub and full_waiters are two
    unrelated hot words, one line each. Control block (192 B): shutdown
    word, parked_workers, and the help_wanted doorbell — set by a publish
    that finds every worker busy, polled once per batch transition by map
    runners — one line each. */
-#define KIO_TIER_READY_OFF  ((size_t) 0)
-#define KIO_TIER_FULL_OFF   ((size_t) 64)
-#define KIO_CTRL_SHUTDOWN_OFF ((size_t) 0)
-#define KIO_CTRL_PARKED_OFF   ((size_t) 64)
-#define KIO_CTRL_HELP_OFF     ((size_t) 128)
+#define SORA_TIER_READY_OFF  ((size_t) 0)
+#define SORA_TIER_FULL_OFF   ((size_t) 64)
+#define SORA_CTRL_SHUTDOWN_OFF ((size_t) 0)
+#define SORA_CTRL_PARKED_OFF   ((size_t) 64)
+#define SORA_CTRL_HELP_OFF     ((size_t) 128)
 
 /* The opaque pool-signal trio a map runner loads relaxed once per batch
-   transition (kio_pool_signals mints it; map.c dereferences the words and
+   transition (sora_pool_signals mints it; map.c dereferences the words and
    stays pool-layout-free): the help_wanted doorbell, the pool's shared
    shutdown word, and the handle's process-local listener-written
    owner_dead flag — set independently in every worker process, which is
    what keeps owner death visible when no worker is in its step loop to
    broadcast it. */
-typedef struct kio_pool_sig_s {
+typedef struct sora_pool_sig_s {
   _Atomic uint32_t *help_wanted;
   _Atomic uint32_t *shutdown;
   _Atomic int      *owner_dead;
-} kio_pool_sig;
+} sora_pool_sig;
 
-/* The struct behind a kio_pool_signals extptr, or an error for anything
-   else — pool.c owns the tag; kio_map_next is the consumer. */
-kio_pool_sig *kio_pool_sig_get(SEXP xp);
+/* The struct behind a sora_pool_signals extptr, or an error for anything
+   else — pool.c owns the tag; sora_map_next is the consumer. */
+sora_pool_sig *sora_pool_sig_get(SEXP xp);
 
 // GC extptr wrappers (wrap.c) ------------------------------------------------------
 
-mori_shm *kio_region(SEXP xp);
-SEXP kio_shm_wrap_producer(mori_shm *shm);
-SEXP kio_shm_wrap_consumer(mori_shm *shm);
-SEXP kio_shm_wrap_host(mori_shm *shm);
-/* The region behind a kio_shm-tagged wrap, or NULL — keeps the tag private
+mori_shm *sora_region(SEXP xp);
+SEXP sora_shm_wrap_producer(mori_shm *shm);
+SEXP sora_shm_wrap_consumer(mori_shm *shm);
+SEXP sora_shm_wrap_host(mori_shm *shm);
+/* The region behind a sora_shm-tagged wrap, or NULL — keeps the tag private
    to wrap.c (a finalized wrap also reads NULL: its region is gone). */
-mori_shm *kio_shm_unwrap(SEXP x);
+mori_shm *sora_shm_unwrap(SEXP x);
 
 // init hooks ----------------------------------------------------------------------
 
-void kio_wrap_init(void);
-void kio_payload_init(void);
-void kio_entity_init(void);
-void kio_channel_init(void);
-void kio_pool_init(void);
-void kio_map_init(void);
-void kio_tune_malloc(void);
+void sora_wrap_init(void);
+void sora_payload_init(void);
+void sora_entity_init(void);
+void sora_channel_init(void);
+void sora_pool_init(void);
+void sora_map_init(void);
+void sora_tune_malloc(void);
 
-#endif /* KIOTO_H */
+#endif /* SORA_H */

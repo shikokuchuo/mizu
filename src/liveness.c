@@ -6,14 +6,14 @@
    reference the same inode and the verdict stands. */
 
 #include <stdlib.h>
-#include "kioto.h"
+#include "sora.h"
 
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-int kio_live_open(const char *path, intptr_t *out) {
+int sora_live_open(const char *path, intptr_t *out) {
   /* Handles are not inheritable (no SECURITY_ATTRIBUTES), so spawned
      children cannot keep a dead process's lock alive. */
   HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
@@ -24,7 +24,7 @@ int kio_live_open(const char *path, intptr_t *out) {
   return 0;
 }
 
-int kio_live_open_existing(const char *path, intptr_t *out) {
+int sora_live_open_existing(const char *path, intptr_t *out) {
   HANDLE h = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -33,26 +33,26 @@ int kio_live_open_existing(const char *path, intptr_t *out) {
   return 0;
 }
 
-int kio_live_try(intptr_t h) {
+int sora_live_try(intptr_t h) {
   OVERLAPPED ov;
   memset(&ov, 0, sizeof(ov));
   if (LockFileEx((HANDLE) h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
                  0, 1, 0, &ov))
-    return KIO_LIVE_ACQUIRED;
-  return GetLastError() == ERROR_LOCK_VIOLATION ? KIO_LIVE_HELD : -1;
+    return SORA_LIVE_ACQUIRED;
+  return GetLastError() == ERROR_LOCK_VIOLATION ? SORA_LIVE_HELD : -1;
 }
 
-void kio_live_unlock(intptr_t h) {
+void sora_live_unlock(intptr_t h) {
   OVERLAPPED ov;
   memset(&ov, 0, sizeof(ov));
   UnlockFileEx((HANDLE) h, 0, 1, 0, &ov);
 }
 
-void kio_live_close(intptr_t h) {
+void sora_live_close(intptr_t h) {
   CloseHandle((HANDLE) h);
 }
 
-int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
+int sora_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
   BY_HANDLE_FILE_INFORMATION info;
   if (!GetFileInformationByHandle((HANDLE) h, &info)) return -1;
   *dev = (uint64_t) info.dwVolumeSerialNumber;
@@ -63,7 +63,7 @@ int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
 /* Platform default: GetTempPathA — per-user local by default, and a TMP
    redirected to SMB keeps first-class LockFileEx semantics, degrading in
    latency only. */
-static int kio_live_dir_default(char *buf, size_t size) {
+static int sora_live_dir_default(char *buf, size_t size) {
   DWORD n = GetTempPathA((DWORD) size, buf);
   return (n > 0 && (size_t) n < size) ? 0 : -1;
 }
@@ -76,7 +76,7 @@ static int kio_live_dir_default(char *buf, size_t size) {
 #include <unistd.h>
 #include <errno.h>
 
-int kio_live_open(const char *path, intptr_t *out) {
+int sora_live_open(const char *path, intptr_t *out) {
   /* O_CLOEXEC is load-bearing: flock is scoped to the open file
      description, so a child spawned by the holder (the peer included)
      inheriting this fd would keep the lock alive past the holder's death
@@ -96,27 +96,27 @@ int kio_live_open(const char *path, intptr_t *out) {
   return 0;
 }
 
-int kio_live_open_existing(const char *path, intptr_t *out) {
+int sora_live_open_existing(const char *path, intptr_t *out) {
   int fd = open(path, O_RDWR | O_CLOEXEC);
   if (fd < 0) return -1;
   *out = (intptr_t) fd;
   return 0;
 }
 
-int kio_live_try(intptr_t h) {
-  if (flock((int) h, LOCK_EX | LOCK_NB) == 0) return KIO_LIVE_ACQUIRED;
-  return (errno == EWOULDBLOCK || errno == EAGAIN) ? KIO_LIVE_HELD : -1;
+int sora_live_try(intptr_t h) {
+  if (flock((int) h, LOCK_EX | LOCK_NB) == 0) return SORA_LIVE_ACQUIRED;
+  return (errno == EWOULDBLOCK || errno == EAGAIN) ? SORA_LIVE_HELD : -1;
 }
 
-void kio_live_unlock(intptr_t h) {
+void sora_live_unlock(intptr_t h) {
   flock((int) h, LOCK_UN);
 }
 
-void kio_live_close(intptr_t h) {
+void sora_live_close(intptr_t h) {
   close((int) h);
 }
 
-int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
+int sora_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
   struct stat st;
   if (fstat((int) h, &st) != 0) return -1;
   *dev = (uint64_t) st.st_dev;
@@ -129,7 +129,7 @@ int kio_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino) {
    flock failure mode cannot arise. Elsewhere the per-user temp dir,
    duplicating the resolution of the vendored mori_log_dir()
    (vendor/shm.c), which is static. */
-static int kio_live_dir_default(char *buf, size_t size) {
+static int sora_live_dir_default(char *buf, size_t size) {
 #ifdef __linux__
   int n = snprintf(buf, size, "/dev/shm");
   return (n > 0 && (size_t) n < size) ? 0 : -1;
@@ -152,7 +152,7 @@ static int kio_live_dir_default(char *buf, size_t size) {
 
 // Lock directory ------------------------------------------------------------------
 
-static size_t kio_live_dir_trim(char *buf, size_t n) {
+static size_t sora_live_dir_trim(char *buf, size_t n) {
   while (n > 1 && (buf[n - 1] == '/'
 #ifdef _WIN32
                    || buf[n - 1] == '\\'
@@ -162,7 +162,7 @@ static size_t kio_live_dir_trim(char *buf, size_t n) {
   return n;
 }
 
-const char *kio_live_dir(void) {
+const char *sora_live_dir(void) {
   /* The override is read-through so tests can set it per-call, and copied
      out rather than returned from getenv (a later Sys.setenv can invalidate
      that pointer). Oversized values return truncated, for the callers'
@@ -171,63 +171,63 @@ const char *kio_live_dir(void) {
   static char def[1024];
   static int resolved = 0;            /* 0 = untried, 1 = valid, -1 = failed */
 
-  const char *env = getenv("KIOTO_LIVENESS_DIR");
+  const char *env = getenv("SORA_LIVENESS_DIR");
   if (env != NULL && env[0] != '\0') {
     size_t n = strlen(env);
     if (n >= sizeof(ovr)) n = sizeof(ovr) - 1;
     memcpy(ovr, env, n);
-    kio_live_dir_trim(ovr, n);
+    sora_live_dir_trim(ovr, n);
     return ovr;
   }
   if (resolved == 0) {
-    resolved = kio_live_dir_default(def, sizeof(def)) == 0 ? 1 : -1;
-    if (resolved > 0) kio_live_dir_trim(def, strlen(def));
+    resolved = sora_live_dir_default(def, sizeof(def)) == 0 ? 1 : -1;
+    if (resolved > 0) sora_live_dir_trim(def, strlen(def));
   }
   return resolved > 0 ? def : NULL;
 }
 
 // .Call test surface -----------------------------------------------------------
 
-static void kio_live_finalizer(SEXP xp) {
+static void sora_live_finalizer(SEXP xp) {
   void *addr = R_ExternalPtrAddr(xp);
   if (addr != NULL) {
-    kio_live_close((intptr_t) addr);
+    sora_live_close((intptr_t) addr);
     R_ClearExternalPtr(xp);
   }
 }
 
-static intptr_t kio_live_handle(SEXP xp) {
-  if (TYPEOF(xp) != EXTPTRSXP) Rf_error("kioto: not a liveness handle");
+static intptr_t sora_live_handle(SEXP xp) {
+  if (TYPEOF(xp) != EXTPTRSXP) Rf_error("sora: not a liveness handle");
   void *addr = R_ExternalPtrAddr(xp);
-  if (addr == NULL) Rf_error("kioto: liveness handle is closed");
+  if (addr == NULL) Rf_error("sora: liveness handle is closed");
   return (intptr_t) addr;
 }
 
-SEXP kio_live_open_call(SEXP path) {
+SEXP sora_live_open_call(SEXP path) {
   if (TYPEOF(path) != STRSXP || XLENGTH(path) != 1)
-    Rf_error("kioto: expected a file path");
+    Rf_error("sora: expected a file path");
   intptr_t h;
-  if (kio_live_open(CHAR(STRING_ELT(path, 0)), &h) != 0)
-    Rf_error("kioto: cannot open liveness file '%s'", CHAR(STRING_ELT(path, 0)));
+  if (sora_live_open(CHAR(STRING_ELT(path, 0)), &h) != 0)
+    Rf_error("sora: cannot open liveness file '%s'", CHAR(STRING_ELT(path, 0)));
   /* fd 0 / NULL handle cannot occur (R holds stdin), so NULL marks closed */
   SEXP xp = R_MakeExternalPtr((void *) h, R_NilValue, R_NilValue);
-  R_RegisterCFinalizerEx(xp, kio_live_finalizer, TRUE);
+  R_RegisterCFinalizerEx(xp, sora_live_finalizer, TRUE);
   return xp;
 }
 
-SEXP kio_live_try_call(SEXP xp) {
-  int rc = kio_live_try(kio_live_handle(xp));
-  if (rc < 0) Rf_error("kioto: liveness probe failed");
+SEXP sora_live_try_call(SEXP xp) {
+  int rc = sora_live_try(sora_live_handle(xp));
+  if (rc < 0) Rf_error("sora: liveness probe failed");
   return Rf_ScalarInteger(rc);
 }
 
-SEXP kio_live_close_call(SEXP xp) {
-  kio_live_finalizer(xp);
+SEXP sora_live_close_call(SEXP xp) {
+  sora_live_finalizer(xp);
   return R_NilValue;
 }
 
-SEXP kio_live_dir_call(void) {
-  const char *dir = kio_live_dir();
-  if (dir == NULL) Rf_error("kioto: cannot resolve liveness lock directory");
+SEXP sora_live_dir_call(void) {
+  const char *dir = sora_live_dir();
+  if (dir == NULL) Rf_error("sora: cannot resolve liveness lock directory");
   return Rf_mkString(dir);
 }

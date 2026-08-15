@@ -1,13 +1,13 @@
-#' Print Methods for kioto Objects
+#' Print Methods for sora Objects
 #'
 #' One-line summaries. A channel prints its region name, side, and
 #' conversation state: `open`, `closed` once either side signalled close,
-#' or `peer gone` — the verdict of [kio_alive()], probed at print. A pool
+#' or `peer gone` — the verdict of [sora_alive()], probed at print. A pool
 #' prints its region name, the role of this handle, live workers out of
 #' registry capacity, and pending (uncompleted) tasks. A task handle
 #' prints its state, probed without consuming the result. The state is
 #' `pending`, `ok`, `err`, `cancel`, or `died` in the result-slot
-#' vocabulary of [kio_pool_status()]. It is `collected` once the result is
+#' vocabulary of [sora_pool_status()]. It is `collected` once the result is
 #' taken, or `dropped` when its pool is gone. Sentinels print as their
 #' class. The handle methods never error and never touch the rings. A
 #' handle whose resources are released (a closed channel, a stopped pool)
@@ -19,19 +19,19 @@
 #' @return `x`, invisibly.
 #'
 #' @export
-print.kio_channel <- function(x, ...) {
-  st <- tryCatch(.Call(kio_channel_stat, x), error = function(e) NULL)
+print.sora_channel <- function(x, ...) {
+  st <- tryCatch(.Call(sora_channel_stat, x), error = function(e) NULL)
   cat(
     if (is.null(st)) {
-      "<kio_channel: closed>\n"
+      "<sora_channel: closed>\n"
     } else {
       sprintf(
-        "<kio_channel %s: %s, %s>\n",
+        "<sora_channel %s: %s, %s>\n",
         st[["name"]],
         st[["side"]],
         if (st[["closed"]]) {
           "closed"
-        } else if (kio_alive(x)) {
+        } else if (sora_alive(x)) {
           "open"
         } else {
           "peer gone"
@@ -42,16 +42,16 @@ print.kio_channel <- function(x, ...) {
   invisible(x)
 }
 
-#' @rdname print.kio_channel
+#' @rdname print.sora_channel
 #' @export
-print.kio_pool <- function(x, ...) {
-  st <- tryCatch(kio_pool_status(x), error = function(e) NULL)
+print.sora_pool <- function(x, ...) {
+  st <- tryCatch(sora_pool_status(x), error = function(e) NULL)
   cat(
     if (is.null(st)) {
-      "<kio_pool: closed>\n"
+      "<sora_pool: closed>\n"
     } else {
       sprintf(
-        "<kio_pool %s: %s, %d/%d workers live, %d pending%s>\n",
+        "<sora_pool %s: %s, %d/%d workers live, %d pending%s>\n",
         st[["name"]],
         st[["role"]],
         sum(st[["workers"]] == "live"),
@@ -64,18 +64,18 @@ print.kio_pool <- function(x, ...) {
   invisible(x)
 }
 
-#' @rdname print.kio_channel
+#' @rdname print.sora_channel
 #' @export
-print.kio_task <- function(x, ...) {
-  cat(sprintf("<kio_task: %s>\n", .Call(kio_pool_task_state, x)))
+print.sora_task <- function(x, ...) {
+  cat(sprintf("<sora_task: %s>\n", .Call(sora_pool_task_state, x)))
   invisible(x)
 }
 
-#' @rdname print.kio_channel
+#' @rdname print.sora_channel
 #' @export
-print.kio_map_prepared <- function(x, ...) {
+print.sora_map_prepared <- function(x, ...) {
   cat(sprintf(
-    "<kio_map_prepared: %.0f elements, %s>\n",
+    "<sora_map_prepared: %.0f elements, %s>\n",
     length(x[["x"]]),
     if (is.null(x[["st"]])) {
       "stale (next run restages)"
@@ -88,9 +88,9 @@ print.kio_map_prepared <- function(x, ...) {
   invisible(x)
 }
 
-#' @rdname print.kio_channel
+#' @rdname print.sora_channel
 #' @export
-print.kio_sentinel <- function(x, ...) {
+print.sora_sentinel <- function(x, ...) {
   cat(sprintf("<%s>\n", class(x)[1L]))
   invisible(x)
 }

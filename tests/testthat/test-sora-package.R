@@ -2,5 +2,5 @@
 # (Linux). .onUnload is exercised only by an actual namespace unload.
 
 test_that(".onLoad's platform probe passes on this platform", {
-  expect_null(kioto:::.onLoad(NULL, "kioto"))
+  expect_null(sora:::.onLoad(NULL, "sora"))
 })

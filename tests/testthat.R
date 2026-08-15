@@ -1,4 +1,4 @@
 library(testthat)
-library(kioto)
+library(sora)
 
-test_check("kioto")
+test_check("sora")

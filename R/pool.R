@@ -10,9 +10,9 @@
 #'
 #' The lifetime of the pool is bound to the creating process, which holds
 #' submitter slot 0 of the returned handle. Use this handle directly with
-#' [kio_submit()] and [kio_collect()]. Other processes join as submitters
-#' through [kio_pool_attach()]. Dropping the handle (or exiting R) shuts
-#' the pool down as [kio_pool_stop()] does, but without the wait.
+#' [sora_submit()] and [sora_collect()]. Other processes join as submitters
+#' through [sora_pool_attach()]. Dropping the handle (or exiting R) shuts
+#' the pool down as [sora_pool_stop()] does, but without the wait.
 #'
 #' Payload contents interoperate transparently with mori. A `mori::share()`d
 #' object anywhere inside the arguments of a task or its result serializes
@@ -23,7 +23,7 @@
 #' in a per-platform directory chosen at create time. This is `/dev/shm` on
 #' Linux, and the per-user temporary directory on macOS and Windows. The
 #' chosen path is recorded in the region, so every participant uses the
-#' same files. The environment variable `KIOTO_LIVENESS_DIR`, read in the
+#' same files. The environment variable `SORA_LIVENESS_DIR`, read in the
 #' creating process, overrides the default.
 #'
 #' @param n_workers number of worker processes to spawn, at most
@@ -43,31 +43,31 @@
 #'   between 128 and 2^20. A payload (task or result) that serializes past
 #'   the inline budget travels in a fresh region per payload. This is an
 #'   order-of-magnitude latency cliff, surfaced per submitter as
-#'   [kio_pool_stats()]`$submitters$spills`. The default `512L` keeps
+#'   [sora_pool_stats()]`$submitters$spills`. The default `512L` keeps
 #'   typical expression-plus-arguments tasks inline. Pools that move only
 #'   scalar payloads can drop to `256L`.
 #' @param launcher a `function(token, slot)` that arranges for an R process
-#'   to call `kioto:::worker_main(token, slot)`. The default
-#'   [kio_launcher()] spawns `Rscript` and propagates the `.libPaths()` of
+#'   to call `sora:::worker_main(token, slot)`. The default
+#'   [sora_launcher()] spawns `Rscript` and propagates the `.libPaths()` of
 #'   the host. Its `stdout` and `stderr` arguments direct the worker
 #'   output. A custom launcher must arrange the library paths itself.
 #' @param startup_timeout seconds to wait for all workers to join. On
-#'   expiry, kioto destroys the pool and raises `kio_error_startup` (see
-#'   [kio_error]).
+#'   expiry, sora destroys the pool and raises `sora_error_startup` (see
+#'   [sora_error]).
 #'
-#' @return A pool handle (class `"kio_pool"`) holding submitter slot 0.
+#' @return A pool handle (class `"sora_pool"`) holding submitter slot 0.
 #'   Handles are process-private and do not survive `fork()`.
 #'
 #' @examples
 #' \dontrun{
-#' p <- kio_pool()
-#' t <- kio_submit(p, x + y, x = 1, y = 2)
-#' kio_collect(t)
-#' kio_pool_stop(p)
+#' p <- sora_pool()
+#' t <- sora_submit(p, x + y, x = 1, y = 2)
+#' sora_collect(t)
+#' sora_pool_stop(p)
 #' }
 #'
 #' @export
-kio_pool <- function(
+sora_pool <- function(
   n_workers = 1L,
   max_workers = n_workers,
   max_submitters = 8L,
@@ -75,18 +75,18 @@ kio_pool <- function(
   per_worker_cap = 1024L,
   result_slots = 4096L,
   slot_size = 512L,
-  launcher = kio_launcher(),
+  launcher = sora_launcher(),
   startup_timeout = 30
 ) {
   n_workers <- as.integer(n_workers)
   if (is.na(n_workers) || n_workers < 1L) {
-    stop("kioto: n_workers must be at least 1", call. = FALSE)
+    stop("sora: n_workers must be at least 1", call. = FALSE)
   }
   if (n_workers > as.integer(max_workers)) {
-    stop("kioto: n_workers exceeds max_workers", call. = FALSE)
+    stop("sora: n_workers exceeds max_workers", call. = FALSE)
   }
   p <- .Call(
-    kio_pool_create,
+    sora_pool_create,
     max_workers,
     max_submitters,
     injection_cap,
@@ -94,18 +94,18 @@ kio_pool <- function(
     result_slots,
     slot_size
   )
-  token <- .Call(kio_pool_suffix, p)
+  token <- .Call(sora_pool_suffix, p)
   for (slot in seq_len(n_workers) - 1L) {
     launcher(token, slot)
   }
   if (
-    !.Call(kio_pool_ready_wait, p, seq_len(n_workers) - 1L, startup_timeout)
+    !.Call(sora_pool_ready_wait, p, seq_len(n_workers) - 1L, startup_timeout)
   ) {
-    .Call(kio_pool_destroy, p)
-    stop_kio(
-      "kio_error_startup",
+    .Call(sora_pool_destroy, p)
+    stop_sora(
+      "sora_error_startup",
       paste0(
-        "kioto: workers failed to attach within ",
+        "sora: workers failed to attach within ",
         format(startup_timeout),
         " seconds"
       )
@@ -116,9 +116,9 @@ kio_pool <- function(
 
 #' Grow or Shrink the Worker Set of a Pool
 #'
-#' `kio_spawn_workers()` spawns additional workers into free registry
+#' `sora_spawn_workers()` spawns additional workers into free registry
 #' slots, up to the `max_workers` of the pool, and waits for them to join.
-#' `kio_retire_worker()` asks one worker to exit cleanly. The request is
+#' `sora_retire_worker()` asks one worker to exit cleanly. The request is
 #' non-blocking and never preemptive. The worker observes it between tasks
 #' and releases its slot. The remaining workers consume in place any work
 #' still queued on its deque. The process of a retired worker can linger
@@ -129,45 +129,45 @@ kio_pool <- function(
 #' reaped. So a pool can cycle workers within its registry capacity for
 #' its whole lifetime. Only the creating process can resize a pool.
 #'
-#' @inheritParams kio_submit
-#' @inheritParams kio_pool
+#' @inheritParams sora_submit
+#' @inheritParams sora_pool
 #' @param n number of workers to spawn.
 #' @param slot the slot index of the worker (0-based, as reported by
-#'   [kio_pool_dump()]).
+#'   [sora_pool_dump()]).
 #'
-#' @return `kio_spawn_workers()` invisibly returns the slot indices
-#'   spawned into. `kio_retire_worker()` invisibly returns `NULL`.
+#' @return `sora_spawn_workers()` invisibly returns the slot indices
+#'   spawned into. `sora_retire_worker()` invisibly returns `NULL`.
 #'
 #' @export
-kio_spawn_workers <- function(
+sora_spawn_workers <- function(
   pool,
   n = 1L,
-  launcher = kio_launcher(),
+  launcher = sora_launcher(),
   startup_timeout = 30
 ) {
   n <- as.integer(n)
   if (is.na(n) || n < 1L) {
-    stop("kioto: n must be at least 1", call. = FALSE)
+    stop("sora: n must be at least 1", call. = FALSE)
   }
-  free <- which(kio_pool_status(pool)[["workers"]] == "free") - 1L
+  free <- which(sora_pool_status(pool)[["workers"]] == "free") - 1L
   if (length(free) < n) {
     stop(
-      "kioto: not enough free worker slots (",
+      "sora: not enough free worker slots (",
       length(free),
       " free)",
       call. = FALSE
     )
   }
   slots <- free[seq_len(n)]
-  token <- .Call(kio_pool_suffix, pool)
+  token <- .Call(sora_pool_suffix, pool)
   for (slot in slots) {
     launcher(token, slot)
   }
-  if (!.Call(kio_pool_ready_wait, pool, as.integer(slots), startup_timeout)) {
-    stop_kio(
-      "kio_error_startup",
+  if (!.Call(sora_pool_ready_wait, pool, as.integer(slots), startup_timeout)) {
+    stop_sora(
+      "sora_error_startup",
       paste0(
-        "kioto: workers failed to attach within ",
+        "sora: workers failed to attach within ",
         format(startup_timeout),
         " seconds"
       )
@@ -176,52 +176,52 @@ kio_spawn_workers <- function(
   invisible(as.integer(slots))
 }
 
-#' @rdname kio_spawn_workers
+#' @rdname sora_spawn_workers
 #' @export
-kio_retire_worker <- function(pool, slot) {
-  invisible(.Call(kio_pool_retire, pool, as.integer(slot)))
+sora_retire_worker <- function(pool, slot) {
+  invisible(.Call(sora_pool_retire, pool, as.integer(slot)))
 }
 
 #' Attach to a Pool as a Submitter
 #'
 #' Joins an existing pool from another process. Claims a free submitter
 #' slot with its own injection ring and result-slot subrange. The name of
-#' the pool travels out of band: it is `kio_pool_status(p)$name` on the
+#' the pool travels out of band: it is `sora_pool_status(p)$name` on the
 #' creator.
 #'
 #' @param name the region name of the pool, or its suffix (the part after
 #'   the platform prefix).
 #'
-#' @return A pool handle (class `"kio_pool"`) holding a submitter slot.
+#' @return A pool handle (class `"sora_pool"`) holding a submitter slot.
 #'
 #' @export
-kio_pool_attach <- function(name) {
+sora_pool_attach <- function(name) {
   if (!is.character(name) || length(name) != 1L || is.na(name)) {
-    stop("kioto: name must be a character string", call. = FALSE)
+    stop("sora: name must be a character string", call. = FALSE)
   }
-  .Call(kio_pool_attach_call, sub("^.*kio_", "", name))
+  .Call(sora_pool_attach_call, sub("^.*sora_", "", name))
 }
 
 #' Submit a Task and Collect Its Result
 #'
-#' `kio_submit()` captures `expr` unevaluated, serializes it with its
+#' `sora_submit()` captures `expr` unevaluated, serializes it with its
 #' named arguments into the injection ring of the submitter, and returns a
 #' task handle immediately. Payloads past the inline budget travel in a
 #' fresh region. A worker evaluates the expression in a fresh environment
-#' that contains the arguments as bindings. `kio_collect()` blocks until
+#' that contains the arguments as bindings. `sora_collect()` blocks until
 #' the result is published, then returns the value of the task. If the
-#' task raised an error, `kio_collect()` signals that condition again in
+#' task raised an error, `sora_collect()` signals that condition again in
 #' the collecting process.
 #'
 #' Submission blocks only when the injection ring of the submitter is
 #' full: back-pressure is per-submitter. On `.timeout` expiry, submission
-#' raises `kio_error_submit_timeout` instead of stalling. If no result
-#' arrives within `timeout`, collection returns the `kio_timeout` sentinel
-#' (class `c("kio_timeout", "kio_sentinel")`). Collecting a task whose
+#' raises `sora_error_submit_timeout` instead of stalling. If no result
+#' arrives within `timeout`, collection returns the `sora_timeout` sentinel
+#' (class `c("sora_timeout", "sora_sentinel")`). Collecting a task whose
 #' handle was cancelled (or whose pool was stopped) raises
-#' `kio_error_cancelled`. Collecting a task whose executing worker died
-#' raises `kio_error_worker_died`, carrying the slot and pid of the worker
-#' (see [kio_error]). Worker death is detected at OS notification latency:
+#' `sora_error_cancelled`. Collecting a task whose executing worker died
+#' raises `sora_error_worker_died`, carrying the slot and pid of the worker
+#' (see [sora_error]). Worker death is detected at OS notification latency:
 #' a kernel-released lock is the verdict, with no heartbeats and no
 #' polling. The death fails exactly the tasks that the dead worker
 #' claimed, and the surviving workers consume the work still queued on its
@@ -229,24 +229,24 @@ kio_pool_attach <- function(name) {
 #'
 #' @section Outcomes:
 #' A timeout on collect is a normal outcome and is returned. Every
-#' exceptional outcome is raised as a classed condition (see [kio_error]):
+#' exceptional outcome is raised as a classed condition (see [sora_error]):
 #'
 #' | outcome | surfaced as | class |
 #' |---|---|---|
 #' | result published | the value, returned | — |
-#' | no result within `timeout` | sentinel, returned | `c("kio_timeout", "kio_sentinel")` |
-#' | ring full past `.timeout` | raised by `kio_submit()` | `kio_error_submit_timeout` |
-#' | result slots exhausted | raised by `kio_submit()` | `kio_error_slots_exhausted` |
-#' | pool stopped, or owner died | raised by `kio_submit()` | `kio_error_stopped` |
+#' | no result within `timeout` | sentinel, returned | `c("sora_timeout", "sora_sentinel")` |
+#' | ring full past `.timeout` | raised by `sora_submit()` | `sora_error_submit_timeout` |
+#' | result slots exhausted | raised by `sora_submit()` | `sora_error_slots_exhausted` |
+#' | pool stopped, or owner died | raised by `sora_submit()` | `sora_error_stopped` |
 #' | task raised an error | re-signalled on collect | the condition classes of the task itself |
-#' | cancelled, or pool stopped | raised on collect | `kio_error_cancelled` |
-#' | executing worker died | raised on collect | `kio_error_worker_died` |
+#' | cancelled, or pool stopped | raised on collect | `sora_error_cancelled` |
+#' | executing worker died | raised on collect | `sora_error_worker_died` |
 #'
 #' A task expression sees the handle of its evaluating worker as `pool`
 #' (beneath the arguments in `...`), so a task can submit nested subtasks.
-#' `kio_submit(pool, ...)` inside a task pushes onto the work-stealing
+#' `sora_submit(pool, ...)` inside a task pushes onto the work-stealing
 #' deque of the worker itself: no ring, no wait. A full deque runs the
-#' subtask inline instead. A worker blocked in `kio_collect()` on a nested
+#' subtask inline instead. A worker blocked in `sora_collect()` on a nested
 #' handle helps instead of sleeping. It executes work from its own deque
 #' (and steals from peers) until the awaited result is published. So
 #' nested fan-outs run at fork/join cost and never deadlock the pool. A
@@ -257,10 +257,10 @@ kio_pool_attach <- function(name) {
 #' garbage collector, a still-queued task is cancelled and a published
 #' result is discarded.
 #'
-#' @param pool a pool handle from [kio_pool()] or [kio_pool_attach()], or —
+#' @param pool a pool handle from [sora_pool()] or [sora_pool_attach()], or —
 #'   inside a task — the own handle of the worker, bound as `pool`.
 #' @param expr an expression, captured unevaluated. This differs from
-#'   [kio_channel()], which requires its expression pre-quoted. The
+#'   [sora_channel()], which requires its expression pre-quoted. The
 #'   expression sees only the arguments in `...` and the global environment
 #'   of the worker. The expression itself must load any packages it needs.
 #' @param ... named values bound in the evaluation environment. The values
@@ -269,36 +269,36 @@ kio_pool_attach <- function(name) {
 #' @param .timeout seconds to wait for injection-ring space before the
 #'   call errors. `Inf` (the default) waits indefinitely. Ctrl-C stays
 #'   responsive.
-#' @param task a task handle from `kio_submit()`.
+#' @param task a task handle from `sora_submit()`.
 #' @param timeout seconds to wait for the result before the call returns
-#'   the `kio_timeout` sentinel. `Inf` (the default) waits indefinitely,
+#'   the `sora_timeout` sentinel. `Inf` (the default) waits indefinitely,
 #'   and `0` polls.
 #'
-#' @return `kio_submit()` returns a task handle (class `"kio_task"`).
-#'   `kio_collect()` returns the value of the task, or the `kio_timeout`
+#' @return `sora_submit()` returns a task handle (class `"sora_task"`).
+#'   `sora_collect()` returns the value of the task, or the `sora_timeout`
 #'   sentinel.
 #'
 #' @examples
 #' \dontrun{
-#' p <- kio_pool()
-#' t <- kio_submit(p, sum(x), x = runif(10))
-#' kio_collect(t, timeout = 30)
-#' kio_pool_stop(p)
+#' p <- sora_pool()
+#' t <- sora_submit(p, sum(x), x = runif(10))
+#' sora_collect(t, timeout = 30)
+#' sora_pool_stop(p)
 #' }
 #'
 #' @export
-kio_submit <- function(pool, expr, ..., .timeout = Inf) {
+sora_submit <- function(pool, expr, ..., .timeout = Inf) {
   args <- list(...)
   if (length(args) && (is.null(names(args)) || !all(nzchar(names(args))))) {
-    stop("kioto: all task arguments must be named", call. = FALSE)
+    stop("sora: all task arguments must be named", call. = FALSE)
   }
-  .Call(kio_pool_submit, pool, list(substitute(expr), args), .timeout, 0L)
+  .Call(sora_pool_submit, pool, list(substitute(expr), args), .timeout, 0L)
 }
 
-#' @rdname kio_submit
+#' @rdname sora_submit
 #' @export
-kio_collect <- function(task, timeout = Inf) {
-  .Call(kio_pool_collect, task, timeout)
+sora_collect <- function(task, timeout = Inf) {
+  .Call(sora_pool_collect, task, timeout)
 }
 
 #' Cancel a Task
@@ -306,27 +306,27 @@ kio_collect <- function(task, timeout = Inf) {
 #' Advisory and discard-only, never preemptive. The worker skips a task
 #' that is still queued. A task already executing runs to completion, and
 #' its result is dropped. Collecting a cancelled handle raises
-#' `kio_error_cancelled` (see [kio_error]).
+#' `sora_error_cancelled` (see [sora_error]).
 #'
-#' @inheritParams kio_submit
+#' @inheritParams sora_submit
 #'
 #' @return Invisibly, `TRUE` if this call cancelled the task. `FALSE` if
 #'   the call was too late: the task completed, was already cancelled, or
 #'   its pool is gone.
 #'
 #' @export
-kio_cancel <- function(task) invisible(.Call(kio_pool_cancel, task))
+sora_cancel <- function(task) invisible(.Call(sora_pool_cancel, task))
 
 #' Stop a Pool
 #'
 #' Broadcasts shutdown, wakes every parked participant, and cancels all
-#' pending tasks (blocked collectors raise `kio_error_cancelled`). Then
+#' pending tasks (blocked collectors raise `sora_error_cancelled`). Then
 #' waits up to `timeout` seconds for the workers to exit cleanly, and
 #' unlinks the region and the liveness files. The handle is dead
 #' afterwards, and stopping it again is a no-op. Only the creating process
 #' can stop a pool.
 #'
-#' @inheritParams kio_submit
+#' @inheritParams sora_submit
 #' @param timeout seconds to wait for the clean exit of the workers.
 #'
 #' @return Invisibly, `TRUE` if all workers exited within the timeout.
@@ -334,11 +334,11 @@ kio_cancel <- function(task) invisible(.Call(kio_pool_cancel, task))
 #'   own).
 #'
 #' @export
-kio_pool_stop <- function(pool, timeout = 5) {
-  ok <- .Call(kio_pool_stop_call, pool, timeout)
+sora_pool_stop <- function(pool, timeout = 5) {
+  ok <- .Call(sora_pool_stop_call, pool, timeout)
   if (!ok) {
     warning(
-      "kioto: pool stop timed out waiting for workers; they exit on ",
+      "sora: pool stop timed out waiting for workers; they exit on ",
       "their own once they observe shutdown",
       call. = FALSE
     )
@@ -351,7 +351,7 @@ kio_pool_stop <- function(pool, timeout = 5) {
 #' A read-only snapshot of the pool region: registry states, parked-worker
 #' count, queued injection entries, and result-slot occupancy.
 #'
-#' @inheritParams kio_submit
+#' @inheritParams sora_submit
 #'
 #' @return A list with elements `name`, `role`, `max_workers`,
 #'   `max_submitters`, `injection_cap`, `result_slots`, `slot_size`,
@@ -361,8 +361,8 @@ kio_pool_stop <- function(pool, timeout = 5) {
 #'   depths), and `shutdown`.
 #'
 #' @export
-kio_pool_status <- function(pool) {
-  st <- .Call(kio_pool_status_call, pool)
+sora_pool_status <- function(pool) {
+  st <- .Call(sora_pool_status_call, pool)
   st[["workers"]] <- c("free", "claiming", "live", "leaving", "reaping")[
     st[["workers"]] + 1L
   ]
@@ -374,7 +374,7 @@ kio_pool_status <- function(pool) {
 #' Dump the Distributed State of a Pool
 #'
 #' A read-only debugging snapshot of the entire pool region, one level
-#' deeper than [kio_pool_status()]. It shows per-slot registry detail, the
+#' deeper than [sora_pool_status()]. It shows per-slot registry detail, the
 #' park, ready, and back-pressure masks unpacked per slot, and every
 #' occupied result slot. State is distributed across processes and
 #' execution is non-deterministic, so reach for this tool first when a
@@ -382,7 +382,7 @@ kio_pool_status <- function(pool) {
 #' Each field is a consistent single read. The rows need not be mutually
 #' consistent.
 #'
-#' @inheritParams kio_submit
+#' @inheritParams sora_submit
 #'
 #' @return A list with elements `name`, `shutdown`, `workers` (data frame:
 #'   slot, status, pid, park_state, parked, deque `top` and `bottom`, and
@@ -397,8 +397,8 @@ kio_pool_status <- function(pool) {
 #'   this handle parked waiting for a result).
 #'
 #' @export
-kio_pool_dump <- function(pool) {
-  d <- .Call(kio_pool_dump_call, pool)
+sora_pool_dump <- function(pool) {
+  d <- .Call(sora_pool_dump_call, pool)
   w <- d[["workers"]]
   w[["status"]] <- c("free", "claiming", "live", "leaving", "reaping")[
     w[["status"]] + 1L
@@ -422,7 +422,7 @@ kio_pool_dump <- function(pool) {
 #'
 #' Per-worker and per-submitter counters, accumulated since each
 #' participant joined. They complement the point-in-time snapshots of
-#' [kio_pool_status()] and [kio_pool_dump()]. Nothing here costs the hot
+#' [sora_pool_status()] and [sora_pool_dump()]. Nothing here costs the hot
 #' paths anything. The submitter counts are the monotonic positions of the
 #' injection rings themselves: submission writes nothing extra, and the
 #' spill counter moves only on the spill path, which a fresh region per
@@ -432,7 +432,7 @@ kio_pool_dump <- function(pool) {
 #' can lag by up to 61 claims. The row is exact whenever that worker is
 #' parked or retired, or the pool is quiescent.
 #'
-#' @inheritParams kio_submit
+#' @inheritParams sora_submit
 #'
 #' @return A list of two data frames. `workers`: one row per worker slot,
 #'   with `status`, `pid`, `tasks` (task evaluations run, help-mode and
@@ -454,8 +454,8 @@ kio_pool_dump <- function(pool) {
 #'   a new joiner reuses a slot.
 #'
 #' @export
-kio_pool_stats <- function(pool) {
-  st <- .Call(kio_pool_stats_call, pool)
+sora_pool_stats <- function(pool) {
+  st <- .Call(sora_pool_stats_call, pool)
   w <- st[["workers"]]
   w[["status"]] <- c("free", "claiming", "live", "leaving", "reaping")[
     w[["status"]] + 1L
@@ -491,22 +491,22 @@ kio_pool_stats <- function(pool) {
 #' own handle sees only `"submit"`. Execution events happen on the
 #' workers. To trace a worker, install the hook from a task, on the own
 #' handle of the worker bound as `pool`:
-#' `kio_submit(p, kio_pool_trace(pool, fn))`. The disabled hook costs one
+#' `sora_submit(p, sora_pool_trace(pool, fn))`. The disabled hook costs one
 #' pointer check per event site, and no event sites exist on the channel
 #' hot path. An error raised by the hook propagates as an infrastructure
 #' failure at its site. On a worker, it takes the worker down. This
 #' differs from the own error of a task, which is published as the ERR
 #' result of that task.
 #'
-#' @inheritParams kio_submit
+#' @inheritParams sora_submit
 #' @param fn a `function(event, id)`, or `NULL` to remove a registered
 #'   hook.
 #'
 #' @return Invisibly, `NULL`.
 #'
 #' @export
-kio_pool_trace <- function(pool, fn = NULL) {
-  invisible(.Call(kio_pool_set_trace, pool, fn))
+sora_pool_trace <- function(pool, fn = NULL) {
+  invisible(.Call(sora_pool_set_trace, pool, fn))
 }
 
 # Worker entry point: invoked through the Rscript child runner by the launcher.
@@ -514,34 +514,34 @@ kio_pool_trace <- function(pool, fn = NULL) {
 # name's suffix), attaches writable, validates the header,
 # claims its host-assigned slot (liveness lock before status CAS), points
 # its death listener at the owner, and unparks the creator on reaching
-# LIVE. The loop then lives in kio_pool_run: claims in tier order
+# LIVE. The loop then lives in sora_pool_run: claims in tier order
 # (fairness tick, own deque, steal, injection), parked indefinitely when
 # idle, returning only on shutdown, owner death, or retire — the per-task
 # R round-trip is replaced by an interrupt check and a deadline recompute
-# in C. kio_pool_step remains for the test harness's single-stepping. The
+# in C. sora_pool_step remains for the test harness's single-stepping. The
 # eval hot path arms no error handler: a task error longjmps out of the
-# run, and kio_pool_run_outcome dispatches on what the run produced —
+# run, and sora_pool_run_outcome dispatches on what the run produced —
 # an exit code passes through to end the loop, a caught condition is
 # published as that task's ERR result, and 1 marks an error from outside
 # any task eval, which is infrastructure failure and takes the worker
 # down.
 worker_main <- function(token, slot) {
-  if (!"package:kioto" %in% search()) {
-    attachNamespace("kioto")
+  if (!"package:sora" %in% search()) {
+    attachNamespace("sora")
   }
-  h <- .Call(kio_pool_worker_join, token, slot)
-  .Call(kio_pool_set_eval, h)
+  h <- .Call(sora_pool_worker_join, token, slot)
+  .Call(sora_pool_set_eval, h)
   status <- 0L
   rc <- -1L
   repeat {
-    e <- tryCatch(.Call(kio_pool_run, h, 3600), error = function(e) e)
-    rc <- .Call(kio_pool_run_outcome, h, e)
+    e <- tryCatch(.Call(sora_pool_run, h, 3600), error = function(e) e)
+    rc <- .Call(sora_pool_run_outcome, h, e)
     if (rc < 0L) {
       break
     }
     if (rc > 0L) {
       cat(
-        "kioto worker error: ",
+        "sora worker error: ",
         conditionMessage(e),
         "\n",
         sep = "",
@@ -551,12 +551,12 @@ worker_main <- function(token, slot) {
       break
     }
   }
-  .Call(kio_pool_leave, h)
+  .Call(sora_pool_leave, h)
   # a retired worker (-2) lingers as a lifetime anchor for its uncollected
   # results: plain bounded sleeps, since no unpark can reach a released
   # slot; shutdown or owner death ends the linger
   if (rc == -2L) {
-    while (!.Call(kio_pool_lame_duck, h)) {
+    while (!.Call(sora_pool_lame_duck, h)) {
       Sys.sleep(1)
     }
   }

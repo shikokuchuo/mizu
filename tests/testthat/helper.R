@@ -60,16 +60,16 @@ wait_until <- function(expr, timeout = 10) {
   }
 }
 
-# Cross-process tests spawn fresh Rscript children that library(kioto):
-# available under R CMD check (kioto is installed in the check library and
-# kio_spawn propagates its path via argv), but not under a bare load_all().
-child_kioto_ok <- local({
+# Cross-process tests spawn fresh Rscript children that library(sora):
+# available under R CMD check (sora is installed in the check library and
+# sora_spawn propagates its path via argv), but not under a bare load_all().
+child_sora_ok <- local({
   val <- NULL
   function() {
     if (is.null(val)) {
       f <- tfile()
-      kioto:::kio_spawn(sprintf(
-        'if (requireNamespace("kioto", quietly = TRUE)) file.create(%s)',
+      sora:::sora_spawn(sprintf(
+        'if (requireNamespace("sora", quietly = TRUE)) file.create(%s)',
         deparse(f)
       ))
       val <<- wait_for_file(f)
@@ -79,10 +79,10 @@ child_kioto_ok <- local({
   }
 })
 
-skip_if_no_child_kioto <- function() {
+skip_if_no_child_sora <- function() {
   testthat::skip_if_not(
-    child_kioto_ok(),
-    "kioto not loadable from child processes"
+    child_sora_ok(),
+    "sora not loadable from child processes"
   )
 }
 
@@ -97,7 +97,7 @@ channel_pair <- function(
   spin = FALSE
 ) {
   host <- .Call(
-    kioto:::kio_channel_create,
+    sora:::sora_channel_create,
     quote(NULL),
     capacity,
     slot_size,
@@ -105,12 +105,12 @@ channel_pair <- function(
     spin
   )
   att <- .Call(
-    kioto:::kio_channel_attach,
-    .Call(kioto:::kio_channel_suffix, host)
+    sora:::sora_channel_attach,
+    .Call(sora:::sora_channel_suffix, host)
   )
   peer <- att[[1L]]
-  .Call(kioto:::kio_channel_ready_set, peer)
-  if (!.Call(kioto:::kio_channel_ready_wait, host, 10)) {
+  .Call(sora:::sora_channel_ready_set, peer)
+  if (!.Call(sora:::sora_channel_ready_wait, host, 10)) {
     stop("channel peer not ready")
   }
   list(host = host, peer = peer)
@@ -121,23 +121,23 @@ channel_pair <- function(
 # producer can exceed any idle bound — so only other sentinels end the loop.
 echo_expr <- quote(
   repeat {
-    x <- kio_recv(ch, timeout = 30)
-    if (inherits(x, "kio_timeout")) {
+    x <- sora_recv(ch, timeout = 30)
+    if (inherits(x, "sora_timeout")) {
       next
     }
-    if (inherits(x, "kio_sentinel")) {
+    if (inherits(x, "sora_sentinel")) {
       break
     }
-    kio_send(ch, x)
+    sora_send(ch, x)
   }
 )
 
 # Orderly in-process channel teardown: the peer signals its close (flush +
 # bit + wake), so both ends' close rendezvous succeeds.
 channel_end <- function(p) {
-  .Call(kioto:::kio_channel_close_signal, p[["peer"]])
-  .Call(kioto:::kio_channel_close, p[["host"]], 5)
-  .Call(kioto:::kio_channel_close, p[["peer"]], 5)
+  .Call(sora:::sora_channel_close_signal, p[["peer"]])
+  .Call(sora:::sora_channel_close, p[["host"]], 5)
+  .Call(sora:::sora_channel_close, p[["peer"]], 5)
 }
 
 # In-process pool pair: controller plus one or more worker handles joined
@@ -154,7 +154,7 @@ pool_pair <- function(
   slot_size = 256L
 ) {
   ctrl <- .Call(
-    kioto:::kio_pool_create,
+    sora:::sora_pool_create,
     workers,
     max_submitters,
     injection_cap,
@@ -162,10 +162,10 @@ pool_pair <- function(
     result_slots,
     slot_size
   )
-  suffix <- .Call(kioto:::kio_pool_suffix, ctrl)
+  suffix <- .Call(sora:::sora_pool_suffix, ctrl)
   wks <- lapply(seq_len(workers) - 1L, function(slot) {
-    wk <- .Call(kioto:::kio_pool_worker_join, suffix, slot)
-    .Call(kioto:::kio_pool_set_eval, wk)
+    wk <- .Call(sora:::sora_pool_worker_join, suffix, slot)
+    .Call(sora:::sora_pool_set_eval, wk)
     wk
   })
   list(ctrl = ctrl, wk = wks[[1L]], wks = wks)
@@ -176,10 +176,10 @@ pool_pair <- function(
 # handler — so publish it as the task's ERR result, as worker_main does.
 pool_step <- function(p, timeout = 0, wk = p[["wk"]]) {
   e <- tryCatch(
-    return(.Call(kioto:::kio_pool_step, wk, timeout)),
+    return(.Call(sora:::sora_pool_step, wk, timeout)),
     error = function(e) e
   )
-  if (.Call(kioto:::kio_pool_run_outcome, wk, e) != 0L) {
+  if (.Call(sora:::sora_pool_run_outcome, wk, e) != 0L) {
     stop(e)
   }
   1L
@@ -188,14 +188,14 @@ pool_step <- function(p, timeout = 0, wk = p[["wk"]]) {
 # Test-only: move up to n queued injection entries onto the worker's own
 # deque (the stand-in for Phase 3's nested submit)
 pool_pull <- function(p, n, wk = p[["wk"]]) {
-  .Call(kioto:::kio_pool_deque_pull, wk, n)
+  .Call(sora:::sora_pool_deque_pull, wk, n)
 }
 
 # Orderly in-process teardown: the workers leave (their slots free), then
 # the controller destroys (broadcast + unlink + release).
 pool_end <- function(p) {
   for (wk in p[["wks"]]) {
-    .Call(kioto:::kio_pool_leave, wk)
+    .Call(sora:::sora_pool_leave, wk)
   }
-  .Call(kioto:::kio_pool_destroy, p[["ctrl"]])
+  .Call(sora:::sora_pool_destroy, p[["ctrl"]])
 }

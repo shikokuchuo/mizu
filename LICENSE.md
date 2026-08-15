@@ -1,6 +1,6 @@
 # MIT License
 
-Copyright (c) 2026 kioto authors
+Copyright (c) 2026 sora authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

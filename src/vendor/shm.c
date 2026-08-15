@@ -223,7 +223,7 @@ static const char *mori_log_dir(void) {
   size_t bl = strlen(base);
   while (bl > 1 && base[bl - 1] == '/') base[--bl] = '\0';   /* avoid "//mori" */
 
-  int n = snprintf(dir, sizeof(dir), "%s/kioto", base);
+  int n = snprintf(dir, sizeof(dir), "%s/sora", base);
   if (n <= 0 || (size_t) n >= sizeof(dir)) return NULL;
   resolved = 1;
   return dir;
@@ -465,7 +465,7 @@ static int mori_create_fail(int fd, const char *name, int code) {
 /* Create a new region under a fresh name. O_EXCL never reuses or mutates an
    existing region (the write-once model); EEXIST means the name is held by an
    orphan from a crashed process that reused this PID — surfaced as an error
-   rather than worked around, since kio_prune() reclaims such orphans. */
+   rather than worked around, since sora_prune() reclaims such orphans. */
 int mori_shm_create(mori_shm *shm, size_t size) {
 
   shm->addr = NULL;
@@ -584,9 +584,9 @@ void mori_err_describe(int category, const char **summary, const char **hint) {
   case MORI_EEXIST:
     /* Preventative, not curative: the colliding orphans carry this PID, so the
        erroring process cannot reap them itself (it reads its own PID as alive)
-       — kio_prune() must run while the PID is free, before reuse. */
+       — sora_prune() must run while the PID is free, before reuse. */
     *summary = "the region name is already in use";
-    *hint = "Clear orphans of crashed processes with kio_prune() before a "
+    *hint = "Clear orphans of crashed processes with sora_prune() before a "
             "PID is reused.";
     break;
   default:

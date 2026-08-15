@@ -8,10 +8,10 @@
 #' as a command-line argument.
 #'
 #' `expr` is a quoted expression, not a closure. It captures nothing, and
-#' unlike [kio_submit()] kioto does not capture it for you: pass it
+#' unlike [sora_submit()] sora does not capture it for you: pass it
 #' pre-quoted. The peer evaluates it in a fresh environment whose parent is
 #' the global environment of the child. `ch` (the peer-side channel handle)
-#' is the only binding that kioto provides. Data crosses the ring, and the
+#' is the only binding that sora provides. Data crosses the ring, and the
 #' expression itself loads any packages it needs. When the expression
 #' returns or errors, the peer signals an orderly close and exits. An error
 #' message goes to the stderr of the child.
@@ -24,7 +24,7 @@
 #' live in a per-platform directory chosen at create time. This is
 #' `/dev/shm` on Linux, and the per-user temporary directory on macOS and
 #' Windows. The chosen path is recorded in the region, so both sides use
-#' the same files. The environment variable `KIOTO_LIVENESS_DIR`, read in
+#' the same files. The environment variable `SORA_LIVENESS_DIR`, read in
 #' the creating process, overrides the default.
 #'
 #' @param expr a quoted expression (for example `quote({ ... })`), evaluated
@@ -42,56 +42,56 @@
 #'   consumer never yields. If a spin-mode consumer parks, the producer
 #'   never wakes it.
 #' @param launcher a `function(token)` that arranges for an R process to
-#'   call `kioto:::peer_main(token)`. The default [kio_launcher()] spawns
+#'   call `sora:::peer_main(token)`. The default [sora_launcher()] spawns
 #'   `Rscript` and propagates the `.libPaths()` of the host. Its `stdout`
 #'   and `stderr` arguments direct the peer output, including the error
 #'   epilogue. A custom launcher must arrange the library paths itself.
 #' @param startup_timeout seconds to wait for the peer to attach and signal
-#'   ready. On expiry, kioto releases the channel and raises
-#'   `kio_error_startup` (see [kio_error]).
+#'   ready. On expiry, sora releases the channel and raises
+#'   `sora_error_startup` (see [sora_error]).
 #'
-#' @return A channel handle (class `"kio_channel"`). Handles are
+#' @return A channel handle (class `"sora_channel"`). Handles are
 #'   process-private and do not survive `fork()`.
 #'
 #' @examples
 #' \dontrun{
-#' ch <- kio_channel(quote(
+#' ch <- sora_channel(quote(
 #'   repeat {
-#'     x <- kio_recv(ch, timeout = 30)
-#'     if (inherits(x, "kio_sentinel")) break
-#'     kio_send(ch, x)
+#'     x <- sora_recv(ch, timeout = 30)
+#'     if (inherits(x, "sora_sentinel")) break
+#'     sora_send(ch, x)
 #'   }
 #' ))
-#' kio_send(ch, 42L)
-#' kio_recv(ch, timeout = 5)
-#' kio_close(ch)
+#' sora_send(ch, 42L)
+#' sora_recv(ch, timeout = 5)
+#' sora_close(ch)
 #' }
 #'
 #' @export
-kio_channel <- function(
+sora_channel <- function(
   expr,
   capacity = 16384L,
   slot_size = 256L,
   arena_size = 4194304,
   spin = FALSE,
-  launcher = kio_launcher(),
+  launcher = sora_launcher(),
   startup_timeout = 30
 ) {
   if (!is.language(expr)) {
     stop(
-      "kioto: expr must be a quoted expression (wrap it in quote())",
+      "sora: expr must be a quoted expression (wrap it in quote())",
       call. = FALSE
     )
   }
-  ch <- .Call(kio_channel_create, expr, capacity, slot_size, arena_size, spin)
-  token <- .Call(kio_channel_suffix, ch)
+  ch <- .Call(sora_channel_create, expr, capacity, slot_size, arena_size, spin)
+  token <- .Call(sora_channel_suffix, ch)
   launcher(token)
-  if (!.Call(kio_channel_ready_wait, ch, startup_timeout)) {
-    .Call(kio_channel_destroy, ch)
-    stop_kio(
-      "kio_error_startup",
+  if (!.Call(sora_channel_ready_wait, ch, startup_timeout)) {
+    .Call(sora_channel_destroy, ch)
+    stop_sora(
+      "sora_error_startup",
       paste0(
-        "kioto: child failed to attach within ",
+        "sora: child failed to attach within ",
         format(startup_timeout),
         " seconds"
       )
@@ -102,85 +102,85 @@ kio_channel <- function(
 
 #' Send and Receive over a Channel
 #'
-#' `kio_send()` publishes a message to the peer. The message is visible the
-#' moment the call returns, with no separate flush step. `kio_recv()`
+#' `sora_send()` publishes a message to the peer. The message is visible the
+#' moment the call returns, with no separate flush step. `sora_recv()`
 #' returns the next message, and waits up to `timeout` seconds for it.
 #'
 #' Sends never block for ring space. Receives surface every terminal state
 #' as a class-tagged sentinel, not an error. Dispatch with
-#' `inherits(x, "kio_sentinel")`, or on the specific classes:
+#' `inherits(x, "sora_sentinel")`, or on the specific classes:
 #'
-#' * `kio_full` — the ring is full (send). Back off until the peer drains,
+#' * `sora_full` — the ring is full (send). Back off until the peer drains,
 #'   or drop the message.
-#' * `kio_timeout` — no message arrived within `timeout` (recv).
-#' * `kio_closed` — the other side closed the channel. A receive drains all
+#' * `sora_timeout` — no message arrived within `timeout` (recv).
+#' * `sora_closed` — the other side closed the channel. A receive drains all
 #'   published messages before it reports this.
-#' * `kio_peer_gone` — the peer died without closing. The verdict comes
+#' * `sora_peer_gone` — the peer died without closing. The verdict comes
 #'   from the kernel-released liveness lock, at OS death-notification
 #'   latency. A receive drains first here too: the published messages of a
 #'   dead peer are complete and valid. Sticky once returned.
 #'
 #' `NULL` is a legal payload. Sentinels are ordinary values, identifiable
-#' by class alone, and never signalled conditions. [kio_is_sentinel()]
+#' by class alone, and never signalled conditions. [sora_is_sentinel()]
 #' checks identity where payloads are untrusted.
 #' Attribute-free non-ALTREP atomic vectors that fit the inline budget ride
 #' a serialization-free fast path with a byte-identical round-trip.
 #' Anything else is R-serialized. Mori-shared objects reduce to identifier
 #' wire forms through the mori hooks.
 #'
-#' @param ch a channel handle from [kio_channel()] (or the `ch` binding
+#' @param ch a channel handle from [sora_channel()] (or the `ch` binding
 #'   inside a peer expression).
 #' @param x the payload: any R object.
-#' @param timeout seconds to wait before the call returns the `kio_timeout`
+#' @param timeout seconds to wait before the call returns the `sora_timeout`
 #'   sentinel. `Inf` (the default) waits indefinitely, and `0` polls.
 #'   Ctrl-C stays responsive during the wait.
 #'
-#' @return `kio_send()` returns `TRUE` (invisibly) on success, or a
-#'   sentinel otherwise. `kio_recv()` returns the received payload or a
+#' @return `sora_send()` returns `TRUE` (invisibly) on success, or a
+#'   sentinel otherwise. `sora_recv()` returns the received payload or a
 #'   sentinel.
 #'
 #' @examples
 #' \dontrun{
-#' ch <- kio_channel(quote(kio_send(ch, kio_recv(ch))))
-#' kio_send(ch, list(1, "a"))
-#' kio_recv(ch, timeout = 5)
-#' kio_close(ch)
+#' ch <- sora_channel(quote(sora_send(ch, sora_recv(ch))))
+#' sora_send(ch, list(1, "a"))
+#' sora_recv(ch, timeout = 5)
+#' sora_close(ch)
 #' }
 #'
 #' @export
-kio_send <- function(ch, x) invisible(.Call(kio_channel_send, ch, x))
+sora_send <- function(ch, x) invisible(.Call(sora_channel_send, ch, x))
 
-#' @rdname kio_send
+#' @rdname sora_send
 #' @export
-kio_recv <- function(ch, timeout = Inf) .Call(kio_channel_recv, ch, timeout)
+sora_recv <- function(ch, timeout = Inf) .Call(sora_channel_recv, ch, timeout)
 
 #' Batched Send and Receive
 #'
 #' At target rates the R call boundary is a first-order cost.
-#' `kio_send_batch()` moves a list of payloads in a single `.Call` and
+#' `sora_send_batch()` moves a list of payloads in a single `.Call` and
 #' publishes them to the peer in one batched tail store.
-#' `kio_recv_batch()` drains up to `n` messages in a single park cycle and
+#' `sora_recv_batch()` drains up to `n` messages in a single park cycle and
 #' a single batched head publication.
 #'
-#' @inheritParams kio_send
+#' @inheritParams sora_send
 #' @param xs a list of payloads.
 #' @param n maximum number of messages to return.
 #'
-#' @return `kio_send_batch()` returns the number of messages accepted. This
+#' @return `sora_send_batch()` returns the number of messages accepted. This
 #'   is less than `length(xs)` when the ring filled or the channel closed
-#'   midway. Send the next element with [kio_send()] to learn which.
-#'   `kio_recv_batch()` waits for the first message like [kio_recv()] and
+#'   midway. Send the next element with [sora_send()] to learn which.
+#'   `sora_recv_batch()` waits for the first message like [sora_recv()] and
 #'   returns its sentinels on timeout, close, or peer death. It then
 #'   returns a list of 1 to `n` already-published messages without waiting
 #'   further.
 #'
 #' @export
-kio_send_batch <- function(ch, xs) .Call(kio_channel_send_batch, ch, xs)
+sora_send_batch <- function(ch, xs) .Call(sora_channel_send_batch, ch, xs)
 
-#' @rdname kio_send_batch
+#' @rdname sora_send_batch
 #' @export
-kio_recv_batch <- function(ch, n = 256L, timeout = Inf) {
-  .Call(kio_channel_recv_batch, ch, n, timeout)
+sora_recv_batch <- function(ch, n = 256L, timeout = Inf) {
+  .Call(sora_channel_recv_batch, ch, n, timeout)
 }
 
 #' Close a Channel
@@ -195,21 +195,21 @@ kio_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 #' check again.
 #'
 #' After either side signals close, sends on both sides return the
-#' `kio_closed` sentinel, and receives drain the remaining messages before
+#' `sora_closed` sentinel, and receives drain the remaining messages before
 #' they return the same.
 #'
-#' @inheritParams kio_send
+#' @inheritParams sora_send
 #' @param timeout seconds to wait for the close of the peer.
 #'
 #' @return Invisibly, `TRUE` on rendezvous, `FALSE` on timeout (with a
 #'   warning).
 #'
 #' @export
-kio_close <- function(ch, timeout = 5) {
-  ok <- .Call(kio_channel_close, ch, timeout)
+sora_close <- function(ch, timeout = 5) {
+  ok <- .Call(sora_channel_close, ch, timeout)
   if (!ok) {
     warning(
-      "kioto: close timed out waiting for the peer; resources release ",
+      "sora: close timed out waiting for the peer; resources release ",
       "when the handle is garbage collected",
       call. = FALSE
     )
@@ -221,33 +221,33 @@ kio_close <- function(ch, timeout = 5) {
 #'
 #' An explicit probe for supervisors. Reports whether the peer process
 #' holds its liveness lock, in about 1 microsecond with no waiting.
-#' [kio_recv()] and [kio_send()] surface peer death automatically as
-#' `kio_peer_gone`. Use this probe to ask without touching the rings. A
+#' [sora_recv()] and [sora_send()] surface peer death automatically as
+#' `sora_peer_gone`. Use this probe to ask without touching the rings. A
 #' peer that closed the channel but still runs reads as alive.
 #'
-#' @inheritParams kio_send
+#' @inheritParams sora_send
 #'
 #' @return `TRUE` while the peer process is alive, `FALSE` after it dies.
 #'   At that point the survivor unlinked the names of the channel.
 #'
 #' @export
-kio_alive <- function(ch) .Call(kio_channel_alive, ch)
+sora_alive <- function(ch) .Call(sora_channel_alive, ch)
 
 # Peer entry point: invoked through the Rscript child runner by the launcher.
 # Rebuilds the region name from the compiled-in prefix plus the token (the
 # name's suffix), attaches writable, validates the preamble, takes its liveness
 # lock, points its death listener at the host, and materializes the staged
-# expression *before* signalling ready — the host's kio_channel frame holds
+# expression *before* signalling ready — the host's sora_channel frame holds
 # the expression (and every region its identifiers name) alive exactly until
 # then. The epilogue is the peer half of the close protocol.
 peer_main <- function(token) {
-  if (!"package:kioto" %in% search()) {
-    attachNamespace("kioto")
+  if (!"package:sora" %in% search()) {
+    attachNamespace("sora")
   }
-  att <- .Call(kio_channel_attach, token)
+  att <- .Call(sora_channel_attach, token)
   ch <- att[[1L]]
   expr <- att[[2L]]
-  .Call(kio_channel_ready_set, ch)
+  .Call(sora_channel_ready_set, ch)
   env <- new.env(parent = globalenv())
   env[["ch"]] <- ch
   status <- 0L
@@ -255,7 +255,7 @@ peer_main <- function(token) {
     eval(expr, envir = env),
     error = function(e) {
       cat(
-        "kioto peer error: ",
+        "sora peer error: ",
         conditionMessage(e),
         "\n",
         sep = "",
@@ -265,6 +265,6 @@ peer_main <- function(token) {
     },
     interrupt = function(e) status <<- 2L
   )
-  .Call(kio_channel_close_signal, ch)
+  .Call(sora_channel_close_signal, ch)
   quit(save = "no", status = status)
 }

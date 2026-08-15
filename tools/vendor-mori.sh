@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Vendors mori's platform SHM core, exact-size serialize streams, and
 # ALTREP layer into src/vendor/, applying the enumerated substitution set
-# that forks the runtime namespace to /kio_ (see ipc-plan.md, *Vendored
+# that forks the runtime namespace to /sora_ (see ipc-plan.md, *Vendored
 # mori code*).
 #
 # Usage: tools/vendor-mori.sh [ref]
@@ -62,43 +62,43 @@ done
 # 1. Fork the runtime namespace in one line: region names, the macOS
 #    registry-log filename prefix, and the reaper's scan filter all
 #    derive from MORI_PREFIX_LITERAL.
-# 2. Region magics: kioto regions are refcounted and recycled, never
+# 2. Region magics: sora regions are refcounted and recycled, never
 #    mori-owned and immortal — distinct magics keep the namespaces from
 #    aliasing under a hand-crafted identifier.
 # 3. Extptr tag strings: installed symbols are process-global, so the
 #    vendored view chain must not share tag names with a loaded mori.
 sed -i.bak \
-  -e 's|"/mori_"|"/kio_"|' \
-  -e 's|"Local\\\\mori_"|"Local\\\\kio_"|' \
-  -e 's|0x4D4F5248u|0x4B494F48u|' \
-  -e 's|0x4D4F5253u|0x4B494F53u|' \
-  -e 's|0x4D4F524Cu|0x4B494F4Cu|' \
-  -e 's|"mori_shm"|"kio_mori_shm"|' \
-  -e 's|"mori_host"|"kio_mori_host"|' \
-  -e 's|"mori_owned"|"kio_mori_owned"|' \
+  -e 's|"/mori_"|"/sora_"|' \
+  -e 's|"Local\\\\mori_"|"Local\\\\sora_"|' \
+  -e 's|0x4D4F5248u|0x534F5248u|' \
+  -e 's|0x4D4F5253u|0x534F5253u|' \
+  -e 's|0x4D4F524Cu|0x534F524Cu|' \
+  -e 's|"mori_shm"|"sora_mori_shm"|' \
+  -e 's|"mori_host"|"sora_mori_host"|' \
+  -e 's|"mori_owned"|"sora_mori_owned"|' \
   "$DEST/mori.h"
 
 # 4. The macOS registry dir; 5. the user-facing reaper name in the
 #    MORI_EEXIST hint string and its comments.
 sed -i.bak \
-  -e 's|"%s/mori"|"%s/kioto"|' \
-  -e 's|prune_shared()|kio_prune()|g' \
+  -e 's|"%s/mori"|"%s/sora"|' \
+  -e 's|prune_shared()|sora_prune()|g' \
   "$DEST/shm.c"
 
-# 6. ALTREP class names + registering package: kioto's classes stay
+# 6. ALTREP class names + registering package: sora's classes stay
 #    distinguishable from an installed mori's (class identity is name +
 #    package + DllInfo; the first two are user-visible).
-# 7. Error message prefix, package-consistent with the rest of kioto.
+# 7. Error message prefix, package-consistent with the rest of sora.
 sed -i.bak \
-  -e 's|"mori_list"|"kio_list"|g' \
-  -e 's|"mori_real"|"kio_real"|g' \
-  -e 's|"mori_integer"|"kio_integer"|g' \
-  -e 's|"mori_logical"|"kio_logical"|g' \
-  -e 's|"mori_raw"|"kio_raw"|g' \
-  -e 's|"mori_complex"|"kio_complex"|g' \
-  -e 's|"mori_string"|"kio_string"|g' \
-  -e 's|, "mori", dll)|, "kioto", dll)|g' \
-  -e 's|"mori: |"kioto: |g' \
+  -e 's|"mori_list"|"sora_list"|g' \
+  -e 's|"mori_real"|"sora_real"|g' \
+  -e 's|"mori_integer"|"sora_integer"|g' \
+  -e 's|"mori_logical"|"sora_logical"|g' \
+  -e 's|"mori_raw"|"sora_raw"|g' \
+  -e 's|"mori_complex"|"sora_complex"|g' \
+  -e 's|"mori_string"|"sora_string"|g' \
+  -e 's|, "mori", dll)|, "sora", dll)|g' \
+  -e 's|"mori: |"sora: |g' \
   "$DEST/altrep.c"
 
 rm -f "$DEST"/*.bak

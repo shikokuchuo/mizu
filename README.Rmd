@@ -15,17 +15,17 @@ knitr::opts_chunk$set(
 )
 ```
 
-# kioto
+# sora 空
 
 <!-- badges: start -->
-[![R-CMD-check](https://github.com/shikokuchuo/kioto/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/shikokuchuo/kioto/actions/workflows/R-CMD-check.yaml)
+[![R-CMD-check](https://github.com/shikokuchuo/sora/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/shikokuchuo/sora/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
 ```
   ________
- /\ k     \
-/  \ i o   \
-\  /   t o /
+ /\       \
+/  \  sora \
+\  /       /
  \/_______/
 ```
 
@@ -37,8 +37,8 @@ In both, one process writes data and the other reads it in place — never copie
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
 R evaluates code on a single thread, so parallelism in R means multiple processes.
-kioto makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
-kioto complements [mirai](https://mirai.r-lib.org), the general solution for parallel and distributed computing in R.
+sora makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
+sora complements [mirai](https://mirai.r-lib.org), the general solution for parallel and distributed computing in R.
 Payload contents interoperate transparently with [mori](https://github.com/r-lib/mori) shared objects.
 
 ## Installation
@@ -46,47 +46,47 @@ Payload contents interoperate transparently with [mori](https://github.com/r-lib
 Install the development version from GitHub:
 
 ``` r
-pak::pak("shikokuchuo/kioto")
+pak::pak("shikokuchuo/sora")
 ```
 
 ## Channels
 
-The essential function is `kio_channel()`.
+The essential function is `sora_channel()`.
 It creates a two-way shared-memory channel — one lock-free ring per direction — and spawns a child R process connected to the other end.
 The child evaluates a quoted expression with `ch` bound to its side of the channel.
 All data crosses the rings, not the process boundary.
 
 ```{r channel}
-library(kioto)
+library(sora)
 
-ch <- kio_channel(quote(
+ch <- sora_channel(quote(
   repeat {
-    x <- kio_recv(ch, timeout = 30)
-    if (inherits(x, "kio_sentinel")) break
-    kio_send(ch, x * 2)
+    x <- sora_recv(ch, timeout = 30)
+    if (inherits(x, "sora_sentinel")) break
+    sora_send(ch, x * 2)
   }
 ))
 
-kio_send(ch, 21)
-kio_recv(ch, timeout = 5)
-kio_close(ch)
+sora_send(ch, 21)
+sora_recv(ch, timeout = 5)
+sora_close(ch)
 ```
 
 ## Task pools
 
-`kio_pool()` spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop.
-`kio_submit()` captures an expression together with the values it needs and returns a task handle immediately.
-`kio_collect()` waits for the result of that task:
+`sora_pool()` spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop.
+`sora_submit()` captures an expression together with the values it needs and returns a task handle immediately.
+`sora_collect()` waits for the result of that task:
 
 ```{r pool}
-p <- kio_pool(n_workers = 4L)
+p <- sora_pool(n_workers = 4L)
 
-t <- kio_submit(p, sum(x) + y, x = 1:10, y = 100)
-kio_collect(t)
+t <- sora_submit(p, sum(x) + y, x = 1:10, y = 100)
+sora_collect(t)
 
-kio_pool_stop(p)
+sora_pool_stop(p)
 ```
 
 ## Reference vignette
 
-`vignette("reference", package = "kioto")` covers the full surface: batch operations and sentinel values, nested tasks and `kio_map()`, growing, attaching to, and observing a running pool, benchmarks against mirai, sizing `/dev/shm` on Linux, and crash semantics.
+`vignette("reference", package = "sora")` covers the full surface: batch operations and sentinel values, nested tasks and `sora_map()`, growing, attaching to, and observing a running pool, benchmarks against mirai, sizing `/dev/shm` on Linux, and crash semantics.
