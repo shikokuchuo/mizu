@@ -7,8 +7,11 @@
 # tripwire for anything added to the worker's per-task path (Phase 5's
 # stat counters deliberately publish only at park/tick cadence — a
 # slowdown here is the first place a violation of that rule shows up).
+# Every test skips on CRAN (timing reports are a CI-log tool only); CI
+# sets NOT_CRAN.
 
 test_that("round-trip latency reports against the socket baseline", {
+  skip_on_cran()
   skip_if_no_child_sora()
   ch <- sora_channel(echo_expr, capacity = 1024L)
 
@@ -27,6 +30,7 @@ test_that("round-trip latency reports against the socket baseline", {
 })
 
 test_that("one-way throughput reports against the >100k msg/s regime", {
+  skip_on_cran()
   skip_if_no_child_sora()
   n <- 200000L
   ch <- sora_channel(
@@ -64,6 +68,7 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
 })
 
 test_that("pool task dispatch reports against the mirai baseline", {
+  skip_on_cran()
   skip_if_no_child_sora()
   p <- sora_pool(1L, max_submitters = 2L) # 2048 result slots for us
 
@@ -198,6 +203,7 @@ test_that("sora_map reports against serial lapply and per-task dispatch", {
 # is warranted.
 
 test_that("large-vector channel round trip reports the memcpy-bound regime", {
+  skip_on_cran()
   skip_if_no_child_sora()
   ch <- sora_channel(echo_expr, capacity = 64L)
 
@@ -230,6 +236,7 @@ test_that("large-vector channel round trip reports the memcpy-bound regime", {
 })
 
 test_that("pool task returning a large vector reports the memcpy-bound regime", {
+  skip_on_cran()
   skip_if_no_child_sora()
   p <- sora_pool(1L, max_submitters = 2L)
 
@@ -307,6 +314,7 @@ test_that("template sora_map at large n reports the staging/gather memcpy regime
 })
 
 test_that("guard: ALTREP input stays a compact stream", {
+  skip_on_cran()
   skip_if_no_child_sora()
   ch <- sora_channel(echo_expr, capacity = 64L)
 
@@ -335,6 +343,7 @@ test_that("guard: ALTREP input stays a compact stream", {
 })
 
 test_that("guard: partial read of a wide matrix pays full unserialize today", {
+  skip_on_cran()
   skip_if_no_child_sora()
   ch <- sora_channel(echo_expr, capacity = 64L)
 
@@ -358,6 +367,7 @@ test_that("guard: partial read of a wide matrix pays full unserialize today", {
 })
 
 test_that("guard: held results do not pin payload regions today", {
+  skip_on_cran()
   skip_if_no_child_sora()
   p <- sora_pool(1L, max_submitters = 2L)
 
@@ -379,6 +389,7 @@ test_that("guard: held results do not pin payload regions today", {
 })
 
 test_that("guard: attributed large vector reports the attrs-parse share", {
+  skip_on_cran()
   skip_if_no_child_sora()
   ch <- sora_channel(echo_expr, capacity = 64L)
 

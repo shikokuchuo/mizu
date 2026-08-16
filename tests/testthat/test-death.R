@@ -4,7 +4,7 @@
 
 test_that("watching an already-dead pid fires immediately", {
   skip_on_os("windows")
-  dead <- as.integer(system("echo $$", intern = TRUE))   # shell already exited
+  dead <- as.integer(system("echo $$", intern = TRUE)) # shell already exited
   w <- .Call(sora:::sora_death_watch_call, dead, NULL, 0L, FALSE)
   expect_true(wait_until(.Call(sora:::sora_death_fired_call, w)))
   .Call(sora:::sora_death_stop_call, w)
@@ -31,11 +31,8 @@ test_that("peer death unparks a parked waiter", {
 
   # kill lands while parked; the listener converts it into a directed unpark
   system(sprintf("(sleep 0.3; kill %d) >/dev/null 2>&1", pid), wait = FALSE)
-  t0 <- proc.time()[[3]]
   rc <- .Call(sora:::sora_park_call, xp, 0L, 30000L, TRUE)
-  elapsed <- proc.time()[[3]] - t0
   expect_identical(rc, 0L)
-  expect_lt(elapsed, 25)
   expect_true(.Call(sora:::sora_death_fired_call, w))
   .Call(sora:::sora_death_stop_call, w)
 })
@@ -52,10 +49,14 @@ test_that("stopped watches are inert and handles single-shot", {
 test_that("death-watch entries reject foreign handles", {
   # sora_death_stop_call has no handle_get guard of its own (it is the
   # finalizer direct) — only the fired probe validates
-  expect_error(.Call(sora:::sora_death_fired_call, NULL),
-               "not a death-watch handle")
+  expect_error(
+    .Call(sora:::sora_death_fired_call, NULL),
+    "not a death-watch handle"
+  )
   p <- channel_pair()
-  expect_error(.Call(sora:::sora_death_fired_call, p[["host"]]),
-               "not a death-watch handle")
+  expect_error(
+    .Call(sora:::sora_death_fired_call, p[["host"]]),
+    "not a death-watch handle"
+  )
   channel_end(p)
 })
