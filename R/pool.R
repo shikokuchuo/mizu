@@ -311,6 +311,61 @@ sora_collect <- function(task, timeout = Inf) {
   .Call(sora_pool_collect, task, timeout)
 }
 
+#' Collect the First Available Result From Several Tasks
+#'
+#' `sora_collect_any()` waits on several task handles at once and returns
+#' as soon as any of them reaches a terminal state — result published,
+#' error raised, cancelled, or its worker died. Among handles already
+#' terminal, the earliest in `tasks` is reported. The wait parks on the
+#' submitter's single parker: any publishing worker wakes it directly,
+#' with no polling.
+#'
+#' @section Outcomes:
+#' As for [sora_collect()], but attributed to a handle by position:
+#'
+#' | outcome | surfaced as | class |
+#' |---|---|---|
+#' | result published | `list(index, value)`, returned | — |
+#' | nothing terminal within `timeout` | sentinel, returned | `c("sora_timeout", "sora_sentinel")` |
+#' | task raised an error | re-signalled with an `index` field | the condition classes of the task itself |
+#' | cancelled, or pool stopped | raised with an `index` field | `sora_error_cancelled` |
+#' | executing worker died | raised with an `index` field | `sora_error_worker_died` |
+#'
+#' The `index` field of a raised condition is the 1-based position of the
+#' task in `tasks` (conditions are lists, so the field travels in place).
+#' The reported handle is consumed; the remaining handles stay valid and
+#' collectible.
+#'
+#' @param tasks a non-empty list of task handles from [sora_submit()] on
+#'   the same pool handle.
+#' @inheritParams sora_submit
+#'
+#' @return For a published result, `list(index = i, value = v)`: the
+#'   1-based position of the task in `tasks` and its value. Otherwise the
+#'   `sora_timeout` sentinel.
+#'
+#' @examplesIf interactive()
+#' p <- sora_pool(2L)
+#' slow <- sora_submit(p, { Sys.sleep(0.5); "slow" })
+#' fast <- sora_submit(p, "fast")
+#' # completion order, not submission order
+#' sora_collect_any(list(slow, fast), timeout = 30)
+#' sora_collect(slow, timeout = 30)
+#' sora_pool_stop(p)
+#'
+#' @export
+sora_collect_any <- function(tasks, timeout = Inf) {
+  res <- .Call(sora_pool_collect_any, tasks, timeout)
+  if (inherits(res, "sora_caught")) {
+    cond <- res[[1L]]
+    if (is.list(cond)) {
+      cond$index <- attr(res, "index")
+    }
+    stop(cond)
+  }
+  res
+}
+
 #' Cancel a Task
 #'
 #' Advisory and discard-only, never preemptive. The worker skips a task
