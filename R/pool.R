@@ -298,11 +298,7 @@ sora_pool_attach <- function(name) {
 #'
 #' @export
 sora_submit <- function(pool, expr, ..., .timeout = Inf) {
-  args <- list(...)
-  if (length(args) && (is.null(names(args)) || !all(nzchar(names(args))))) {
-    stop("sora: all task arguments must be named", call. = FALSE)
-  }
-  .Call(sora_pool_submit, pool, list(substitute(expr), args), .timeout, 0L)
+  .Call(sora_pool_submit_expr, pool, substitute(expr), list(...), .timeout, 0L)
 }
 
 #' @rdname sora_submit

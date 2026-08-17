@@ -44,6 +44,30 @@ int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
   return 1;
 }
 
+int sora_str1_stage(sora_slot_hdr *hdr, unsigned char *payload,
+                   uint32_t inline_max, SEXP x) {
+  /* The ALTREP exclusion keeps foreign ALTSTRINGs on the serialize path
+     (their Elt may materialize); sora's own string views never reach here
+     (the REF check upstream claims them first) */
+  if (TYPEOF(x) != STRSXP || XLENGTH(x) != 1 || ALTREP(x) ||
+      ANY_ATTRIB(x) || Rf_isS4(x))
+    return 0;
+  SEXP s = STRING_ELT(x, 0);
+  if (s == NA_STRING) {
+    hdr->kind = SORA_KIND_STR1;
+    hdr->len = 0;
+    hdr->aux = SORA_STR1_NA;
+    return 1;
+  }
+  size_t n = (size_t) LENGTH(s);
+  if (n > (size_t) inline_max) return 0;
+  hdr->kind = SORA_KIND_STR1;
+  hdr->len = (uint32_t) n;
+  hdr->aux = (uint64_t) Rf_getCharCE(s);
+  memcpy(payload, CHAR(s), n);
+  return 1;
+}
+
 // Producer spill-region free list ---------------------------------------------
 
 /* Spill keepers are identified by pointer identity of this preserved,
@@ -223,9 +247,22 @@ SEXP sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
   return keep;
 }
 
+/* The NIL, RAWVEC, and STR1 kinds return R_NilValue as the keeper — pin
+   nothing: their slot bytes are self-contained (RAWVEC and STR1 exclude
+   ALTREP, attributes, and S4, so no hook-emitted identifier can ride
+   along), unlike the serialize tiers, where a stream may carry mori
+   identifiers whose regions the keeper pins until consumer-done. */
 SEXP sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
                        uint32_t inline_max, SEXP x, sora_spill_fl *fl) {
   size_t rawlen, total;
+  /* NULL stages as the immediate kind: the canonical empty result / ACK
+     pays no serialize pass and no receive-side allocation */
+  if (x == R_NilValue) {
+    hdr->kind = SORA_KIND_NIL;
+    hdr->len = 0;
+    hdr->aux = 0;
+    return R_NilValue;
+  }
   /* a sora-native view crosses by reference (REF) at any size — required
      once SHM_VEC views exist: the serialize-hook fallback resolves
      uncounted, and the producer could recycle under the far side's view */
@@ -236,8 +273,10 @@ SEXP sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
     hdr->kind = SORA_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
-    return x;
+    return R_NilValue;
   }
+  if (sora_str1_stage(hdr, payload, inline_max, x))
+    return R_NilValue;
   /* SHM_VEC: mori-layout-eligible objects (atomic vectors, strings, list
      trees) past the budget and the zc floor — cheap probes keep the
      layout-size walk off the inline path (zc.c). Under churn (the last
@@ -295,6 +334,23 @@ SEXP sora_payload_read(const sora_slot_hdr *hdr, const unsigned char *payload,
                       uint32_t inline_max, int *gone, sora_open_cache *oc,
                       sora_open_cache *zoc) {
   switch (hdr->kind) {
+  case SORA_KIND_NIL:
+    return R_NilValue;
+  case SORA_KIND_STR1: {
+    if (hdr->aux == SORA_STR1_NA) {
+      if (hdr->len != 0) Rf_error("sora: corrupt payload slot");
+      SEXP y = Rf_allocVector(STRSXP, 1);
+      SET_STRING_ELT(y, 0, NA_STRING);
+      return y;
+    }
+    if (hdr->len > inline_max || hdr->aux > CE_BYTES)
+      Rf_error("sora: corrupt payload slot");
+    SEXP y = Rf_allocVector(STRSXP, 1);
+    SET_STRING_ELT(y, 0, Rf_mkCharLenCE((const char *) payload,
+                                        (int) hdr->len,
+                                        (cetype_t) hdr->aux));
+    return y;
+  }
   case SORA_KIND_INLINE:
     if (hdr->len > inline_max)
       Rf_error("sora: corrupt payload slot");

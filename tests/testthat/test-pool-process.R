@@ -171,7 +171,10 @@ test_that("a second worker picks up tasks while the first is busy", {
     Sys.sleep(1)
     Sys.getpid()
   })
-  Sys.sleep(0.2)
+  # once slow is claimed, the quick tasks can only land on the other worker
+  expect_true(wait_until(any(
+    sora_pool_dump(p)[["workers"]][["in_flight"]] != -1L
+  )))
   quick <- lapply(1:5, function(i) sora_submit(p, Sys.getpid()))
   pids <- vapply(quick, sora_collect, integer(1), timeout = 30)
   expect_identical(

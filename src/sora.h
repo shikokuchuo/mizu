@@ -12,7 +12,7 @@
    independent of R's serialize version. */
 
 #define SORA_MAGIC        0x534F5243u   /* "SORC" */
-#define SORA_ABI_VERSION  2u            /* 2: SHM_VEC / REF payload kinds */
+#define SORA_ABI_VERSION  1u
 
 typedef struct sora_preamble_s {
   uint32_t magic;
@@ -109,7 +109,10 @@ size_t sora_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
    layout SEXPTYPE | exact used bytes << 8) — the consumer wraps it as an
    ALTREP view instead of copying (zc.c); REF the /sora_ identifier of an
    object already in shared memory (a view being passed on) — zero payload
-   bytes beyond the identifier move, resolved via the consumer's zc cache. */
+   bytes beyond the identifier move, resolved via the consumer's zc cache;
+   NIL is R_NilValue immediate in the header — no bytes move either way;
+   STR1 is a length-1 string: the CHARSXP bytes in the payload, aux the
+   cetype (NA_character_ is len 0 + aux = SORA_STR1_NA). */
 
 enum {
   SORA_KIND_INLINE = 0,
@@ -117,8 +120,13 @@ enum {
   SORA_KIND_SHM_RAW,
   SORA_KIND_RAWVEC,
   SORA_KIND_SHM_VEC,
-  SORA_KIND_REF
+  SORA_KIND_REF,
+  SORA_KIND_NIL,       /* R_NilValue, immediate: no bytes move either way */
+  SORA_KIND_STR1       /* length-1 STRSXP: bytes + encoding, no serialize */
 };
+
+/* STR1's NA marker in aux (a cetype is 0-3, so this cannot alias one). */
+#define SORA_STR1_NA UINT64_MAX
 
 typedef struct sora_slot_hdr_s {
   uint32_t kind;
@@ -236,6 +244,12 @@ typedef struct sora_open_cache_s {
 
 void *sora_vec_ptr(SEXP x);
 int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
+/* STR1 staging, shared by the channel and pool send paths: frames a
+   length-1, attribute-free, non-ALTREP, non-S4 string whose bytes fit the
+   inline budget (views were already filtered by the REF check upstream).
+   Returns 1 when staged, 0 to fall through to the serialize tiers. */
+int sora_str1_stage(sora_slot_hdr *hdr, unsigned char *payload,
+                   uint32_t inline_max, SEXP x);
 /* Pop the smallest fitting free-list region (a full ledger sweep first on
    a miss) or create one fresh — at the pow2 size class when a free list is
    in play, exact otherwise. Returns the PROTECTed producer wrap and sets
@@ -252,8 +266,11 @@ SEXP sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
                            size_t n, sora_spill_fl *fl);
 /* Stage x as REF (a sora view), RAWVEC, INLINE, SHM_VEC (a mori-layout-
    eligible object past the inline budget and the zc floor), or SHM_RAW —
-   the pool framing, with no arena tier. Returns the keeper to pin: x
-   itself, or the fresh spill list; the caller must protect it. */
+   the pool framing, with no arena tier. Returns the keeper to pin (the
+   caller must protect it): the fresh spill list, x itself for the
+   serialize tiers (a stream may carry hook-emitted mori identifiers), or
+   R_NilValue for the self-contained kinds (NIL, RAWVEC, STR1) — pin
+   nothing. */
 SEXP sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
                        uint32_t inline_max, SEXP x, sora_spill_fl *fl);
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload (errors on ARENA — the
@@ -416,11 +433,11 @@ enum { SORA_PARK_WOKEN = 0, SORA_PARK_TIMEOUT = 1, SORA_PARK_INTR = 2 };
    idle pool or channel parks instead of burning a core. */
 #define SORA_SPIN_FLOOR_NS 1000
 
-/* Pause iterations between sora_now() deadline checks at the
-   cheap-predicate spin sites (collect, channel: 1-2 loads per check).
-   The worker scan passes a stride of 1: pool_work_hint() is
-   O(max_workers) per iteration, so a ~20-25 ns vDSO clock read is noise
-   next to it and a longer stride could overshoot the budget. */
+/* Pause iterations between sora_now() deadline checks at the spin
+   sites. The predicates are 1-2 loads (collect, channel) or an
+   O(max_workers) scan (worker): a clock read per iteration measurably
+   dominates the small scans (macOS has no vDSO; the commpage read is
+   ~25 ns), and the worst-case budget overshoot is one stride of scans. */
 #define SORA_SPIN_CLOCK_EVERY 8
 
 /* Busy-path bound on result-keeper reap visits per worker step: keeps the
@@ -431,7 +448,7 @@ enum { SORA_PARK_WOKEN = 0, SORA_PARK_TIMEOUT = 1, SORA_PARK_INTR = 2 };
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
 #define SORA_PAUSE() __builtin_ia32_pause()
 #elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
-#define SORA_PAUSE() __asm__ __volatile__("isb" ::: "memory")
+#define SORA_PAUSE() __asm__ __volatile__("yield" ::: "memory")
 #else
 #define SORA_PAUSE() do { } while (0)
 #endif

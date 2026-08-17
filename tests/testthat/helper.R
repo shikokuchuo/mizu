@@ -49,7 +49,12 @@ pid_alive <- function(pid) {
 pid_zombie <- function(pid) {
   status <- sprintf("/proc/%d/status", pid)
   if (file.exists(status)) {
-    state <- tryCatch(readLines(status), error = function(e) character())
+    # the process can be reaped between the exists probe and the read: a
+    # failed read (a warning, then an error) means gone entirely, not zombie
+    state <- tryCatch(
+      suppressWarnings(readLines(status)),
+      error = function(e) character()
+    )
     return(any(grepl("^State:\\s+Z", state)))
   }
   stat <- suppressWarnings(system2(

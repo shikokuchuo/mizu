@@ -80,6 +80,7 @@ SEXP sora_pool_lame_duck(SEXP);
 SEXP sora_pool_retire(SEXP, SEXP);
 SEXP sora_pool_attach_call(SEXP);
 SEXP sora_pool_submit(SEXP, SEXP, SEXP, SEXP);
+SEXP sora_pool_submit_expr(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP sora_pool_submit_try(SEXP, SEXP, SEXP, SEXP);
 SEXP sora_pool_step(SEXP, SEXP);
 SEXP sora_pool_run(SEXP, SEXP);
@@ -179,6 +180,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"sora_pool_retire",           (DL_FUNC) &sora_pool_retire,           2},
   {"sora_pool_attach_call",      (DL_FUNC) &sora_pool_attach_call,      1},
   {"sora_pool_submit",           (DL_FUNC) &sora_pool_submit,           4},
+  {"sora_pool_submit_expr",      (DL_FUNC) &sora_pool_submit_expr,      5},
   {"sora_pool_submit_try",       (DL_FUNC) &sora_pool_submit_try,       4},
   {"sora_pool_step",             (DL_FUNC) &sora_pool_step,             2},
   {"sora_pool_run",              (DL_FUNC) &sora_pool_run,              2},

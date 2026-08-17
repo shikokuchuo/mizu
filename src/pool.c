@@ -1481,6 +1481,33 @@ SEXP sora_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
   return pool_submit(xp, payload, Rf_asReal(timeout), flags_sexp, 0);
 }
 
+/* sora_submit's entry: takes the quoted expression and the evaluated args
+   list separately and assembles the list(expr, args) wire payload here —
+   the R wrapper's per-call cost is then one substitute + one list(...) +
+   one .Call, with the names validation a C loop instead of R closures. */
+SEXP sora_pool_submit_expr(SEXP xp, SEXP expr, SEXP args, SEXP timeout,
+                           SEXP flags_sexp) {
+  if (TYPEOF(args) != VECSXP)
+    Rf_error("sora: expected a list of task arguments");
+  R_xlen_t n = XLENGTH(args);
+  if (n > 0) {
+    SEXP names = Rf_getAttrib(args, R_NamesSymbol);
+    int bad = TYPEOF(names) != STRSXP || XLENGTH(names) != n;
+    for (R_xlen_t i = 0; !bad && i < n; i++) {
+      SEXP nm = STRING_ELT(names, i);
+      if (nm == NA_STRING || LENGTH(nm) == 0) bad = 1;
+    }
+    if (bad)
+      Rf_error("sora: all task arguments must be named");
+  }
+  SEXP payload = PROTECT(Rf_allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(payload, 0, expr);
+  SET_VECTOR_ELT(payload, 1, args);
+  SEXP out = pool_submit(xp, payload, Rf_asReal(timeout), flags_sexp, 0);
+  UNPROTECT(1);
+  return out;
+}
+
 /* The map path's entries take the map's one deadline absolute (sora_now()
    timescale, Inf waits indefinitely) and convert once, at entry: R
    threads a single deadline through submit and collect instead of
@@ -1621,9 +1648,14 @@ static void pool_announce_clear(sora_pool *p) {
    slot-bounded copy is safe — it is discarded with the failed CAS. */
 static size_t pool_entry_copy_bytes(sora_pool *p, const sora_entry_hdr *eh) {
   switch (eh->ph.kind) {
+  case SORA_KIND_NIL:
+    return sizeof(*eh);
   case SORA_KIND_INLINE:
   case SORA_KIND_RAWVEC:
+  case SORA_KIND_STR1:
   case SORA_KIND_SHM_RAW:
+  case SORA_KIND_SHM_VEC:
+  case SORA_KIND_REF:
     if (eh->ph.len <= p->inline_entry) return sizeof(*eh) + eh->ph.len;
   }
   return p->hdr.slot;               /* torn or foreign header: full slot */
@@ -2226,7 +2258,8 @@ static int pool_publish_result(sora_pool *p, SEXP xp, uint32_t rs_index,
        in between, so that region surrenders rather than falling to GC */
     sora_spill_fl_offer(&p->fl, VECTOR_ELT(keepers, (R_xlen_t) rs_index));
     SET_VECTOR_ELT(keepers, (R_xlen_t) rs_index, keep);
-    pool_rk_add(p, rs_index, seq);
+    /* a nil keeper (the self-contained kinds) pins nothing: no record */
+    if (keep != R_NilValue) pool_rk_add(p, rs_index, seq);
     pool_unpark_result_waiter(p, rs);
   } else {
     /* cancelled while we ran: drop the result, return the slot — a spilled
@@ -2430,14 +2463,12 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
     }
 
     /* time-boxed spin before announcing: sub-µs submit gaps are
-       absorbed without touching the parked_workers line. Clock stride
-       1: pool_work_hint() is O(max_workers) per iteration, so a vDSO
-       clock read is noise next to it. The budget decays only when the
-       spin comes up empty. */
+       absorbed without touching the parked_workers line. The budget
+       decays only when the spin comes up empty. */
     double until = sora_now() + (double) p->scan_budget_ns / 1e9;
     if (deadline >= 0 && deadline < until) until = deadline;
     int caught;
-    SORA_SPIN_WAIT(pool_work_hint(p), until, 1, caught);
+    SORA_SPIN_WAIT(pool_work_hint(p), until, SORA_SPIN_CLOCK_EVERY, caught);
     if (caught) {
       p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
       continue;

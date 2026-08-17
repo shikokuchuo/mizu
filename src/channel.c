@@ -450,16 +450,27 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
   int nprotect = 0;
 
   size_t rawlen, total;
-  /* a sora-native view crosses by reference (REF) at any size — required
-     once SHM_VEC views exist: the serialize-hook fallback resolves
-     uncounted, and the producer could recycle under the far side's view */
-  if (sora_zc_ref_stage(hdr, payload, c->inline_max, x)) {
-    /* keeper is x itself */
+  int pinned = 1;
+  /* NULL is the immediate kind — no serialize pass, no receive alloc */
+  if (x == R_NilValue) {
+    hdr->kind = SORA_KIND_NIL;
+    hdr->len = 0;
+    hdr->aux = 0;
+    pinned = 0;
+  } else if (sora_zc_ref_stage(hdr, payload, c->inline_max, x)) {
+    /* a sora-native view crosses by reference (REF) at any size — required
+       once SHM_VEC views exist: the serialize-hook fallback resolves
+       uncounted, and the producer could recycle under the far side's view;
+       keeper is x itself */
   } else if (sora_raw_eligible(x, c->inline_max, &rawlen)) {
     memcpy(payload, sora_vec_ptr(x), rawlen);
     hdr->kind = SORA_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
+    pinned = 0;
+  } else if (sora_str1_stage(hdr, payload, c->inline_max, x)) {
+    /* a length-1 string's bytes are self-contained: pin nothing */
+    pinned = 0;
   } else if (!c->fl.churn && sora_zc_eligible(x, c->inline_max, &total)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
@@ -496,11 +507,12 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
     }
   }
 
-  /* Pin unconditionally — whether a stream carries hook-emitted mori
-     identifiers is not knowable without inspecting it, so INLINE and RAWVEC
-     pin too; the store costs nothing and the keeper story stays free of
-     kind analysis. */
-  SET_VECTOR_ELT(keepers, (R_xlen_t) idx, keep);
+  /* Pin the serialize and spill kinds — whether a stream carries
+     hook-emitted mori identifiers is not knowable without inspecting it.
+     The self-contained kinds (NIL, RAWVEC) skip the store: the full-check
+     invariant guarantees the slot's previous keeper was already reaped,
+     so the entry is R_NilValue without writing it. */
+  if (pinned) SET_VECTOR_ELT(keepers, (R_xlen_t) idx, keep);
   r->aend[idx] = r->aalloc;
   r->ltail++;
   UNPROTECT(nprotect);

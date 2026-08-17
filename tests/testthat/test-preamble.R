@@ -19,7 +19,7 @@ new_channel_region <- function() {
 test_that("a written preamble validates and round-trips its fields", {
   xp <- new_channel_region()
   p <- .Call(sora:::sora_preamble_validate_call, xp)
-  expect_identical(p[["version"]], 2) # ABI 2: SHM_VEC / REF payload kinds
+  expect_identical(p[["version"]], 1) # update with the ABI version
   expect_identical(p[["cap"]], 4)
   expect_identical(p[["slot"]], 64)
   expect_identical(p[["host_pid"]], as.double(Sys.getpid()))

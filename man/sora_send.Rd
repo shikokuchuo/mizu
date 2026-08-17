@@ -48,8 +48,11 @@ dead peer are complete and valid. Sticky once returned.
 \code{NULL} is a legal payload. Sentinels are ordinary values, identifiable
 by class alone, and never signalled conditions. \code{\link[=sora_is_sentinel]{sora_is_sentinel()}}
 checks identity where payloads are untrusted.
-Attribute-free non-ALTREP atomic vectors that fit the inline budget ride
-a serialization-free fast path with a byte-identical round-trip.
+\code{NULL} crosses as an immediate: no serialization and no receive-side
+allocation. Length-1 character vectors that fit the inline budget cross
+with a single byte copy, encoding mark preserved. Attribute-free
+non-ALTREP atomic vectors that fit the inline budget ride a
+serialization-free fast path with a byte-identical round-trip.
 Anything else is R-serialized. Mori-shared objects reduce to identifier
 wire forms through the mori hooks.
 }

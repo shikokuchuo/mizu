@@ -6,16 +6,25 @@
 test_that("a task round-trips every result payload kind", {
   p <- pool_pair()
   tasks <- list(
+    nil = sora_submit(p[["ctrl"]], NULL), # NIL
     raw = sora_submit(p[["ctrl"]], x * 2L, x = 21L), # RAWVEC
+    str = sora_submit(p[["ctrl"]], paste0("task-", x), x = 1), # STR1
+    na_str = sora_submit(p[["ctrl"]], NA_character_), # STR1 (NA)
     inline = sora_submit(p[["ctrl"]], list(a = x, b = "y"), x = 1), # INLINE
     shm = sora_submit(p[["ctrl"]], seq_len(n) + 0, n = 100000L) # SHM_RAW
   )
-  expect_identical(sora_pool_status(p[["ctrl"]])[["injection"]], 3)
+  expect_identical(sora_pool_status(p[["ctrl"]])[["injection"]], 6)
   while (pool_step(p) == 1L) {
     NULL
   }
+  expect_null(sora_collect(tasks[["nil"]], timeout = 5))
   expect_identical(sora_collect(tasks[["raw"]], timeout = 5), 42L)
-  expect_identical(sora_collect(tasks[["inline"]], timeout = 5), list(a = 1, b = "y"))
+  expect_identical(sora_collect(tasks[["str"]], timeout = 5), "task-1")
+  expect_identical(sora_collect(tasks[["na_str"]], timeout = 5), NA_character_)
+  expect_identical(
+    sora_collect(tasks[["inline"]], timeout = 5),
+    list(a = 1, b = "y")
+  )
   expect_identical(
     sora_collect(tasks[["shm"]], timeout = 5),
     as.double(seq_len(100000L))
@@ -65,7 +74,10 @@ test_that("a task error is published and re-signalled at collect", {
   expect_s3_class(err, "simpleError")
   expect_identical(conditionMessage(err), "boom today")
   # the slot released with the collect: reusable immediately
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -98,7 +110,10 @@ test_that("only error conditions fail a task: a warning passes through", {
 test_that("collect times out with the sentinel and later succeeds", {
   p <- pool_pair()
   t <- sora_submit(p[["ctrl"]], "done")
-  expect_s3_class(sora_collect(t, timeout = 0), c("sora_timeout", "sora_sentinel"))
+  expect_s3_class(
+    sora_collect(t, timeout = 0),
+    c("sora_timeout", "sora_sentinel")
+  )
   expect_s3_class(sora_collect(t, timeout = 0.1), "sora_timeout")
   pool_step(p)
   expect_identical(sora_collect(t, timeout = 5), "done")
@@ -123,7 +138,10 @@ test_that("cancel discards a still-queued task; the worker frees the slot", {
   expect_identical(sora_pool_status(p[["ctrl"]])[["tasks"]][["cancel"]], 1L)
   # the queued entry is consumed later; only then does CANCEL become FREE
   pool_step(p)
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -143,7 +161,10 @@ test_that("a dropped handle cancels its pending task at finalization", {
   gc()
   expect_identical(sora_pool_status(p[["ctrl"]])[["tasks"]][["cancel"]], 1L)
   pool_step(p) # consume + free
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -154,7 +175,10 @@ test_that("a dropped handle frees an uncollected published result", {
   expect_identical(sora_pool_status(p[["ctrl"]])[["tasks"]][["ok"]], 1L)
   rm(t)
   gc() # OK -> FREE without mapping
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -179,7 +203,10 @@ test_that("injection back-pressure is per-submitter and error-bounded", {
   p <- pool_pair(injection_cap = 2L)
   t1 <- sora_submit(p[["ctrl"]], 1L)
   t2 <- sora_submit(p[["ctrl"]], 2L)
-  expect_error(sora_submit(p[["ctrl"]], 3L, .timeout = 0.2), "submission timed out")
+  expect_error(
+    sora_submit(p[["ctrl"]], 3L, .timeout = 0.2),
+    "submission timed out"
+  )
   # a worker pop frees exactly this ring's space
   pool_step(p)
   t3 <- sora_submit(p[["ctrl"]], 3L, .timeout = 0)
@@ -233,7 +260,13 @@ test_that("collect_try boxes a cancellation instead of raising", {
 
 test_that("a corrupt task payload is infrastructure failure, not the task's", {
   p <- pool_pair()
-  t1 <- .Call(sora:::sora_pool_submit, p[["ctrl"]], list(quote(1L), "args"), Inf, 0L)
+  t1 <- .Call(
+    sora:::sora_pool_submit,
+    p[["ctrl"]],
+    list(quote(1L), "args"),
+    Inf,
+    0L
+  )
   t2 <- .Call(
     sora:::sora_pool_submit,
     p[["ctrl"]],

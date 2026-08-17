@@ -10,7 +10,7 @@
 # targets are always spawned processes, never children of fork.
 
 test_that("a worker killed mid-task fails exactly that task", {
-  skip_on_cran()   # host + 2 workers exceeds 2 cores
+  skip_on_cran() # host + 2 workers exceeds 2 cores
   skip_if_no_child_sora()
   p <- sora_pool(n_workers = 2L)
   t <- sora_submit(p, {
@@ -19,7 +19,9 @@ test_that("a worker killed mid-task fails exactly that task", {
   })
   t2 <- sora_submit(p, "survivor")
   expect_identical(sora_collect(t2, timeout = 10), "survivor")
-  expect_true(wait_until(any(sora_pool_dump(p)[["workers"]][["in_flight"]] != -1L)))
+  expect_true(wait_until(any(
+    sora_pool_dump(p)[["workers"]][["in_flight"]] != -1L
+  )))
   d <- sora_pool_dump(p)
   claimant <- which(d[["workers"]][["in_flight"]] != -1L)
   kill_hard(d[["workers"]][["pid"]][claimant])
@@ -87,7 +89,9 @@ test_that("collect's backstop probe reaps with no listener registered", {
   sora:::spawn_worker(.Call(sora:::sora_pool_suffix, ctrl), 0L)
   expect_true(wait_until(sora_pool_status(ctrl)[["workers"]] == "live"))
   t <- sora_submit(ctrl, Sys.sleep(30))
-  expect_true(wait_until(sora_pool_dump(ctrl)[["workers"]][["in_flight"]][1L] != -1L))
+  expect_true(wait_until(
+    sora_pool_dump(ctrl)[["workers"]][["in_flight"]][1L] != -1L
+  ))
   kill_hard(sora_pool_dump(ctrl)[["workers"]][["pid"]][1L])
   err <- tryCatch(sora_collect(t, timeout = 10), error = identity)
   expect_s3_class(err, "sora_error_worker_died")
@@ -108,11 +112,19 @@ test_that("a dead worker's queued deque work is consumed in place", {
   dir.create(d)
   # occupy the second worker so the nested pushes stay on the first's deque
   blocker <- sora_submit(p, Sys.sleep(1.5))
-  Sys.sleep(0.2)
-  t <- sora_submit(p, {
-    for (i in 1:3) sora_submit(pool, file.create(f), f = file.path(d, i))
-    Sys.sleep(30)
-  }, d = d)
+  expect_true(wait_until(any(
+    sora_pool_dump(p)[["workers"]][["in_flight"]] != -1L
+  )))
+  t <- sora_submit(
+    p,
+    {
+      for (i in 1:3) {
+        sora_submit(pool, file.create(f), f = file.path(d, i))
+      }
+      Sys.sleep(30)
+    },
+    d = d
+  )
   expect_true(wait_until({
     dm <- sora_pool_dump(p)
     any(dm[["workers"]][["bottom"]] - dm[["workers"]][["top"]] == 3)
@@ -138,16 +150,30 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
   d <- tfile()
   dir.create(d)
   blocker <- sora_submit(p, Sys.sleep(1.5))
-  Sys.sleep(0.2)
+  expect_true(wait_until(any(
+    sora_pool_dump(p)[["workers"]][["in_flight"]] != -1L
+  )))
   # the blob forces each nested entry's payload out-of-line, into regions
   # the victim creates and takes down with it on Windows
-  t <- sora_submit(p, {
-    for (i in 1:3) sora_submit(pool, {
-      length(x)
-      file.create(f)
-    }, x = blob, f = file.path(d, i))
-    Sys.sleep(30)
-  }, d = d, blob = as.raw(seq_len(70000) %% 256))
+  t <- sora_submit(
+    p,
+    {
+      for (i in 1:3) {
+        sora_submit(
+          pool,
+          {
+            length(x)
+            file.create(f)
+          },
+          x = blob,
+          f = file.path(d, i)
+        )
+      }
+      Sys.sleep(30)
+    },
+    d = d,
+    blob = as.raw(seq_len(70000) %% 256)
+  )
   expect_true(wait_until({
     dm <- sora_pool_dump(p)
     any(dm[["workers"]][["bottom"]] - dm[["workers"]][["top"]] == 3)
@@ -160,10 +186,13 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
   # on Windows they vanished with the victim and the drain fails each as
   # DIED — either way the deque empties, the slot frees, and the thief
   # survives to keep serving the pool
-  if (.Platform[["OS.type"]] != "windows")
+  if (.Platform[["OS.type"]] != "windows") {
     expect_true(wait_until(length(dir(d)) == 3L, timeout = 15))
-  expect_true(wait_until(sora_pool_status(p)[["workers"]][victim] == "free",
-                         timeout = 15))
+  }
+  expect_true(wait_until(
+    sora_pool_status(p)[["workers"]][victim] == "free",
+    timeout = 15
+  ))
   err <- tryCatch(sora_collect(t, timeout = 10), error = identity)
   expect_match(conditionMessage(err), "worker died")
   expect_identical(sora_collect(blocker, timeout = 10), NULL)
@@ -173,31 +202,46 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
 })
 
 test_that("a worker's failed publish reaps the dead submitter", {
-  skip_on_cran()   # host + worker + attached submitter exceeds 2 cores
+  skip_on_cran() # host + worker + attached submitter exceeds 2 cores
   skip_if_no_child_sora()
   p <- sora_pool(n_workers = 1L)
   f <- tfile()
   g <- tfile()
-  sora:::sora_spawn(sprintf('
+  k <- tfile()
+  sora:::sora_spawn(sprintf(
+    '
     q <- sora::sora_pool_attach("%s")
     t <- sora::sora_submit(q, {
-      Sys.sleep(2)
+      for (i in 1:1200) if (file.exists(%s)) break else Sys.sleep(0.05)
       "slow"
     })
-    writeLines("submitted", %s)
+    writeLines(as.character(Sys.getpid()), %s)
     for (i in 1:600) if (file.exists(%s)) break else Sys.sleep(0.05)
-  ', .Call(sora:::sora_pool_suffix, p), deparse(f), deparse(g)))
+  ',
+    .Call(sora:::sora_pool_suffix, p),
+    deparse(k),
+    deparse(f),
+    deparse(g)
+  ))
   expect_true(wait_for_file(f, timeout = 30))
+  pid <- as.integer(readLines(f))
   # hold the child until the worker is mid-eval: its CANCEL pre-check has
   # passed while the slot was still PENDING, so the publish CAS is the one
-  # that meets the CANCEL — and it lands ~2s after the child's quick death
-  expect_true(wait_until(sora_pool_dump(p)[["workers"]][["in_flight"]][1L] != -1L))
+  # that meets the CANCEL
+  expect_true(wait_until(
+    sora_pool_dump(p)[["workers"]][["in_flight"]][1L] != -1L
+  ))
   file.create(g)
   # the child exits: R shutdown finalizes the handle (PENDING -> CANCEL)
-  # and the kernel releases its submitter lock. The worker's publish CAS
-  # fails on the CANCEL, probes the owning submitter, and reaps in-line.
+  # and the kernel releases its submitter lock — both implied by its death
+  expect_true(wait_until(!pid_alive(pid), timeout = 20))
+  # only now release the worker's eval: the publish CAS fails on the
+  # CANCEL, probes the owning submitter, and reaps in-line
+  file.create(k)
   expect_true(wait_until(
-    all(sora_pool_status(p)[["submitters"]][-1L] == "free"), timeout = 20))
+    all(sora_pool_status(p)[["submitters"]][-1L] == "free"),
+    timeout = 20
+  ))
   expect_identical(unname(sora_pool_status(p)[["tasks"]]), rep(0L, 5L))
   expect_true(sora_pool_stop(p, timeout = 10))
 })
@@ -207,13 +251,17 @@ test_that("the stop sweep reaps a killed submitter's published results", {
   skip_if_no_child_sora()
   p <- sora_pool(n_workers = 1L)
   f <- tfile()
-  sora:::sora_spawn(sprintf('
+  sora:::sora_spawn(sprintf(
+    '
     q <- sora::sora_pool_attach("%s")
     t <- sora::sora_submit(q, "orphaned result")
     Sys.sleep(0.5)                       # give the worker time to publish
     writeLines(as.character(Sys.getpid()), %s)
     Sys.sleep(60)
-  ', .Call(sora:::sora_pool_suffix, p), deparse(f)))
+  ',
+    .Call(sora:::sora_pool_suffix, p),
+    deparse(f)
+  ))
   expect_true(wait_for_file(f, timeout = 30))
   expect_true(wait_until(sora_pool_status(p)[["tasks"]][["ok"]] == 1L))
   kill_hard(as.integer(readLines(f)[1L]))
@@ -223,21 +271,24 @@ test_that("the stop sweep reaps a killed submitter's published results", {
 })
 
 test_that("a killed controller's worker tears the orphan pool down", {
-  skip_on_cran()   # host + spawned controller + its worker exceeds 2 cores
+  skip_on_cran() # host + spawned controller + its worker exceeds 2 cores
   skip_if_no_child_sora()
   f <- tfile()
-  sora:::sora_spawn(sprintf('
+  sora:::sora_spawn(sprintf(
+    '
     library(sora)
     p <- sora_pool(n_workers = 1L)
     writeLines(c(as.character(Sys.getpid()),
                  as.character(sora_pool_dump(p)$workers$pid[1L])), %s)
     Sys.sleep(60)
-  ', deparse(f)))
+  ',
+    deparse(f)
+  ))
   expect_true(wait_for_file(f, timeout = 30))
   expect_true(wait_until(length(readLines(f)) == 2L))
   pids <- as.integer(readLines(f))
-  expect_true(pid_alive(pids[2L]))                   # worker alive
-  kill_hard(pids[1L])                                # controller dies
+  expect_true(pid_alive(pids[2L])) # worker alive
+  kill_hard(pids[1L]) # controller dies
   # the worker's owner watch fires; it acquires the owner lock, broadcasts
   # shutdown, cleans up, and exits — no process is leaked
   expect_true(wait_until(!pid_alive(pids[2L]), timeout = 15))
@@ -261,16 +312,30 @@ test_that("retire frees the slot; the pool keeps working and respawns", {
 test_that("a retiree lingers as the anchor for its uncollected result", {
   skip_if_no_child_sora()
   p <- sora_pool(n_workers = 1L)
+  t <- sora_submit(p, runif(100000L)) # a spilled result needs its anchor
+  expect_true(wait_until(sora_pool_status(p)[["tasks"]][["ok"]] == 1L))
+  pid <- sora_pool_dump(p)[["workers"]][["pid"]][1L]
+  sora_retire_worker(p, 0L)
+  expect_true(wait_until(sora_pool_status(p)[["workers"]] == "free"))
+  # slot released, but the process anchors the uncollected result's region
+  Sys.sleep(2)
+  expect_true(pid_alive(pid))
+  expect_length(sora_collect(t, timeout = 10), 100000L)
+  # the keeper drop ends the lame-duck loop on its next beat
+  expect_true(wait_until(!pid_alive(pid), timeout = 15))
+  expect_true(sora_pool_stop(p, timeout = 10))
+})
+
+test_that("a retiree with only inline results exits without lingering", {
+  skip_if_no_child_sora()
+  p <- sora_pool(n_workers = 1L)
   t <- sora_submit(p, Sys.getpid())
   expect_true(wait_until(sora_pool_status(p)[["tasks"]][["ok"]] == 1L))
   pid <- sora_pool_dump(p)[["workers"]][["pid"]][1L]
   sora_retire_worker(p, 0L)
   expect_true(wait_until(sora_pool_status(p)[["workers"]] == "free"))
-  # slot released, but the process anchors the uncollected result
-  Sys.sleep(2)
-  expect_true(pid_alive(pid))
-  expect_identical(sora_collect(t, timeout = 10), as.integer(pid))
-  # the keeper drop ends the lame-duck loop on its next beat
+  # inline results live in the pool region itself: nothing to anchor
   expect_true(wait_until(!pid_alive(pid), timeout = 15))
+  expect_identical(sora_collect(t, timeout = 10), as.integer(pid))
   expect_true(sora_pool_stop(p, timeout = 10))
 })

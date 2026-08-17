@@ -201,6 +201,16 @@ test_that("sora_map reports against serial lapply and per-task dispatch", {
 # ~8-16 KiB even before region churn (fresh create ~6-7 us vs arena flat).
 # Crossover sits in the 16-64 KiB band: an internal floor constant (Phase 1)
 # is warranted.
+#
+# 2026-08-17 (same host, Sys.time-timed A/B against the previous build):
+# SORA_KIND_NIL stages NULL as an immediate (no serialize pass, no receive
+# allocation) and the self-contained kinds (NIL, RAWVEC) skip the keeper
+# pin; sora_submit assembles its payload in C. Pool round trip 2.4 -> 1.5
+# us/task, channel NULL round trip 3.1 -> 1.3 us, one-way streaming
+# 30 -> 34-40M msg/s, pool pipelined 0.57 -> 0.69M tasks/s.
+# Same day: SORA_KIND_STR1 frames a length-1 string as bytes + cetype
+# (encoding-faithful, NA as an aux sentinel) — channel string round trip
+# 2.6 -> 1.4 us, at the RAWVEC scalar floor.
 
 test_that("large-vector channel round trip reports the memcpy-bound regime", {
   skip_on_cran()
