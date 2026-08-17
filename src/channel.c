@@ -18,6 +18,9 @@
 #include <unistd.h>
 #include <time.h>
 #include <sys/mman.h>
+#ifdef __APPLE__
+#include <mach/mach_time.h>
+#endif
 #endif
 
 /* Consumer head publication cadence: publish every K messages, on
@@ -148,6 +151,19 @@ double sora_now(void) {
   if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
   QueryPerformanceCounter(&count);
   return (double) count.QuadPart / (double) freq.QuadPart;
+#elif defined(__APPLE__)
+  /* CLOCK_MONOTONIC is documented as mach_absolute_time scaled, but the
+     libsystem wrapper routes through several frames (in profiles the
+     wrapper, not the counter read, is the cost); call the commpage
+     export directly. The timebase is constant after boot — a racing
+     double-init writes identical values. */
+  static double tick_ns;
+  if (tick_ns == 0) {
+    mach_timebase_info_data_t tb;
+    mach_timebase_info(&tb);
+    tick_ns = (double) tb.numer / (double) tb.denom;
+  }
+  return (double) mach_absolute_time() * tick_ns / 1e9;
 #else
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -450,6 +466,7 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
   int nprotect = 0;
 
   size_t rawlen, total;
+  uint64_t off;
   int pinned = 1;
   /* NULL is the immediate kind — no serialize pass, no receive alloc */
   if (x == R_NilValue) {
@@ -471,6 +488,23 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
   } else if (sora_str1_stage(hdr, payload, c->inline_max, x)) {
     /* a length-1 string's bytes are self-contained: pin nothing */
     pinned = 0;
+  } else if (sora_raw_type(x, &rawlen) && rawlen > c->inline_max &&
+             rawlen <= UINT32_MAX &&
+             (rawlen <= SORA_ZC_FLOOR_RAW || c->fl.churn) &&
+             chan_arena_alloc(c, keepers, MORI_ALIGN64(rawlen), &off)) {
+    /* Raw-bytes arena spill: the vectors RAWVEC takes inline, past the
+       inline budget. Bare bytes skip the serialize pass here and the
+       parse at the far end; the chunk's lifetime tracks ring advance like
+       any arena payload, and nothing is pinned (no identifier can ride
+       along). Sits ahead of the zc tier up to SORA_ZC_FLOOR_RAW (the
+       arena copy beats the view there) and serves as the churn-immune
+       fallback past it; an arena miss falls through to zc/serialize. */
+    memcpy(r->arena + off, sora_vec_ptr(x), rawlen);
+    hdr->kind = SORA_KIND_RAWSPILL;
+    hdr->len = (uint32_t) rawlen;
+    hdr->aux = (uint64_t) TYPEOF(x);
+    memcpy(payload, &off, sizeof(off));
+    pinned = 0;
   } else if (!c->fl.churn && sora_zc_eligible(x, c->inline_max, &total)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
@@ -489,7 +523,6 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
       hdr->len = (uint32_t) n;
       hdr->aux = 0;
     } else {
-      uint64_t off;
       if (chan_arena_alloc(c, keepers, MORI_ALIGN64(n), &off)) {
         mori_serialize_into(r->arena + off, x);
         hdr->kind = SORA_KIND_ARENA;
@@ -498,8 +531,8 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
         uint64_t n64 = (uint64_t) n;
         memcpy(payload, &n64, sizeof(n64));
       } else {
-        /* reap before staging: the consumer's latest head publish may have
-           released a fitting region for this very spill to pop */
+        /* reap before staging: the consumer's latest head publish may
+           have released a fitting region for this very spill to pop */
         chan_reap(c, keepers);
         keep = PROTECT(sora_payload_spill_shm(hdr, payload, x, n, &c->fl));
         nprotect++;
@@ -575,6 +608,20 @@ static SEXP chan_materialize(sora_chan *c, const unsigned char *sl) {
     /* already mapped: no open, no syscall */
     return mori_unserialize_from(c->rx.arena + off, (size_t) n);
   }
+  if (hdr->kind == SORA_KIND_RAWSPILL) {
+    /* the channel framing: raw vector bytes in an arena chunk, the offset
+       in the payload (the pool's region framing reads via payload.c) */
+    uint64_t off;
+    memcpy(&off, payload, sizeof(off));
+    int type = (int) hdr->aux;
+    size_t elt = mori_sizeof_elt(type);
+    if (c->rx.arena == NULL || elt == 0 || hdr->len % elt != 0 ||
+        off > c->rx.arena_size || hdr->len > c->rx.arena_size - off)
+      Rf_error("sora: corrupt payload slot");
+    SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
+    memcpy(sora_vec_ptr(y), c->rx.arena + off, hdr->len);
+    return y;
+  }
   return sora_payload_read(hdr, payload, c->inline_max, NULL, &c->oc, &c->zoc);
 }
 
@@ -615,16 +662,19 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
       chan_publish_head(c, keepers);
       return SORA_ST_TIMEOUT;
     }
+    /* one clock read serves the deadline compute and the spin bound */
+    double now = sora_now();
     if (deadline < 0 && R_FINITE(timeout_s))
-      deadline = sora_now() + timeout_s;
+      deadline = now + timeout_s;
 
     /* time-boxed spin before the park announce, clamped to the recv
        deadline: sub-µs publish gaps are absorbed without the park/wake
        syscall pair on either side */
-    double until = sora_now() + (double) c->wait_budget_ns / 1e9;
+    double until = now + (double) c->wait_budget_ns / 1e9;
     if (deadline >= 0 && deadline < until) until = deadline;
     int caught;
-    SORA_SPIN_WAIT(chan_rx_avail(c), until, SORA_SPIN_CLOCK_EVERY, caught);
+    SORA_SPIN_WAIT(chan_rx_avail(c), until, SORA_SPIN_CLOCK_EVERY_LIGHT,
+                   caught);
     if (caught) {
       c->wait_budget_ns = SORA_SPIN_BUDGET_NS;
       return SORA_ST_OK;

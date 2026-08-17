@@ -124,8 +124,9 @@ sora_channel <- function(
 #' `NULL` crosses as an immediate: no serialization and no receive-side
 #' allocation. Length-1 character vectors that fit the inline budget cross
 #' with a single byte copy, encoding mark preserved. Attribute-free
-#' non-ALTREP atomic vectors that fit the inline budget ride a
-#' serialization-free fast path with a byte-identical round-trip.
+#' non-ALTREP atomic vectors ride a serialization-free fast path with a
+#' byte-identical round-trip — inline within the budget, and past it as
+#' bare bytes in the arena or a spill region (no serialize, no parse).
 #' Anything else is R-serialized. Mori-shared objects reduce to identifier
 #' wire forms through the mori hooks.
 #'

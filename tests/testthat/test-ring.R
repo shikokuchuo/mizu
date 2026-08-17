@@ -108,6 +108,42 @@ test_that("payloads past the arena fall back to fresh regions (SHM_RAW)", {
   expect_identical(sora_recv(p[["peer"]], 5), big)
 })
 
+test_that("mid-size atomic vectors ride the arena as bare bytes (RAWSPILL)", {
+  p <- channel_pair(capacity = 8L, arena_size = 8192)
+  # past the 240 B inline budget, under the zc floor: no serialize pass
+  for (x in list(
+    runif(100), # 800 B
+    1L + seq_len(1000L) * 1L, # 4 KB int
+    as.raw(1:200),
+    rep(c(TRUE, NA), 500),
+    (1:300) + 1i
+  )) {
+    sora_send(p[["host"]], x)
+    expect_identical(sora_recv(p[["peer"]], 5), x)
+    sora_send(p[["peer"]], x)
+    expect_identical(sora_recv(p[["host"]], 5), x)
+  }
+  # 4 KB chunks in an 8 KB arena: the byte-ring wraps every other send
+  x <- runif(500)
+  for (i in 1:10) {
+    expect_true(sora_send(p[["host"]], x))
+    expect_identical(sora_recv(p[["peer"]], 5), x)
+  }
+  channel_end(p)
+})
+
+test_that("an arena-full raw spill degrades to a region, never an error", {
+  p <- channel_pair(capacity = 16L, arena_size = 4096)
+  x <- runif(500) # 4 KB chunks: the second in-flight send overflows
+  for (i in 1:4) {
+    expect_true(sora_send(p[["host"]], x))
+  }
+  for (i in 1:4) {
+    expect_identical(sora_recv(p[["peer"]], 5), x)
+  }
+  channel_end(p)
+})
+
 test_that("a disabled arena sends every spill through a region", {
   p <- channel_pair(arena_size = 0)
   x <- as.list(1:200) # > inline budget

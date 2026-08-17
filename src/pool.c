@@ -1213,10 +1213,39 @@ static int pool_ring_space_wait(sora_pool *p, _Atomic int64_t *head,
   }
 }
 
+/* A task handle carries no heap memory of its own: the result-slot index
+   (< 2^24, the result_slots cap) and the slot sequence it was minted
+   against pack into the extptr address itself, the sequence truncated to
+   40 bits (2^40 reuses of one slot is ~34 years at 1M tasks/s). The
+   address is opaque to R — the GC and finalizer machinery never
+   dereference it — so a handle costs no malloc at submit and no free at
+   GC. seq >= 1 keeps the packed address non-NULL (the mod-2^40 wrap to 0
+   needs 2^40 reuses of slot 0), so NULL still reads as a finalized
+   handle. */
+#define SORA_TASK_SEQ_BITS 40
+#define SORA_TASK_SEQ_MASK ((((uint64_t) 1) << SORA_TASK_SEQ_BITS) - 1)
+
 typedef struct sora_task_s {
   uint32_t idx;                  /* global result-slot index */
-  uint64_t seq;
+  uint64_t seq;                  /* slot sequence, SORA_TASK_SEQ_BITS wide */
 } sora_task;
+
+static void *sora_task_addr(uint32_t idx, uint64_t seq) {
+  return (void *) (uintptr_t)
+    (((seq & SORA_TASK_SEQ_MASK) << 24) | (uint64_t) idx);
+}
+
+static sora_task sora_task_unpack(const void *addr) {
+  uintptr_t v = (uintptr_t) addr;
+  sora_task t = { (uint32_t) (v & 0xffffffu), v >> 24 };
+  return t;
+}
+
+/* Handle-vs-slot sequence check, mask-truncated on the slot side. */
+static int sora_task_seq_match(_Atomic uint64_t *slot_seq, uint64_t seq) {
+  return (atomic_load_explicit(slot_seq, memory_order_relaxed) &
+          SORA_TASK_SEQ_MASK) == seq;
+}
 
 static void pool_unpark_result_waiter(sora_pool *p, sora_rs_hdr *rs) {
   int32_t ws = atomic_load_explicit(&rs->waiter_slot, memory_order_acquire);
@@ -1239,15 +1268,17 @@ static void pool_unpark_keeper_drop(sora_pool *p, int32_t w) {
     sora_unpark(pool_wk_pk(p, (uint32_t) w));
 }
 
-/* Spill staging (SHM_RAW or SHM_VEC) is the off-ramp from the inline fast
-   path — a region per payload, recycled from the handle's free list when
-   steady-state traffic permits. Counted against the task's submitter for
-   task and result payloads alike, so sora_pool_stats surfaces an undersized
-   slot_size from either direction of the traffic; the reuse count
-   alongside says how much of that spill traffic is churn-free. */
+/* Spill staging (SHM_RAW, SHM_VEC, or RAWSPILL) is the off-ramp from the
+   inline fast path — a region per payload, recycled from the handle's free
+   list when steady-state traffic permits. Counted against the task's
+   submitter for task and result payloads alike, so sora_pool_stats
+   surfaces an undersized slot_size from either direction of the traffic;
+   the reuse count alongside says how much of that spill traffic is
+   churn-free. */
 static void pool_count_spill(sora_pool *p, uint32_t sub_slot,
                              const sora_slot_hdr *ph) {
-  if ((ph->kind == SORA_KIND_SHM_RAW || ph->kind == SORA_KIND_SHM_VEC) &&
+  if ((ph->kind == SORA_KIND_SHM_RAW || ph->kind == SORA_KIND_SHM_VEC ||
+       ph->kind == SORA_KIND_RAWSPILL) &&
       sub_slot < p->hdr.max_submitters) {
     atomic_fetch_add_explicit(&p->sub[sub_slot].stat_spills, 1,
                               memory_order_relaxed);
@@ -1262,14 +1293,15 @@ static void pool_count_spill(sora_pool *p, uint32_t sub_slot,
    not a release point — FREE strictly implies the worker is done with the
    entry, materialize included, so release-at-reuse stays safe. */
 static void sora_task_finalizer(SEXP xp) {
-  sora_task *t = (sora_task *) R_ExternalPtrAddr(xp);
-  if (t == NULL) return;
+  void *addr = R_ExternalPtrAddr(xp);
+  if (addr == NULL) return;
+  sora_task t = sora_task_unpack(addr);
   SEXP pool_xp = R_ExternalPtrProtected(xp);
   sora_pool *p = (sora_pool *) R_ExternalPtrAddr(pool_xp);
   if (p != NULL && !p->released && p->base != NULL &&
       p->self_pid == sora_self_pid()) {
-    sora_rs_hdr *rs = pool_rs(p, t->idx);
-    if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) == t->seq) {
+    sora_rs_hdr *rs = pool_rs(p, t.idx);
+    if (sora_task_seq_match(&rs->sequence, t.seq)) {
       for (;;) {
         int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
         if (st == SORA_RS_PENDING) {
@@ -1300,7 +1332,6 @@ static void sora_task_finalizer(SEXP xp) {
       }
     }
   }
-  free(t);
   R_ClearExternalPtr(xp);
 }
 
@@ -1335,12 +1366,10 @@ static uint32_t pool_alloc_rs(sora_pool *p, SEXP keepers) {
 /* The handle carries the sequence about to be installed at commit, so
    until the bump it is simply stale. */
 static SEXP pool_make_task(sora_pool *p, SEXP xp, uint32_t rs_index) {
-  sora_task *t = malloc(sizeof(*t));
-  if (t == NULL) Rf_error("sora: allocation failure");
-  t->idx = rs_index;
-  t->seq = atomic_load_explicit(&pool_rs(p, rs_index)->sequence,
-                                memory_order_relaxed) + 1;
-  SEXP txp = PROTECT(R_MakeExternalPtr(t, sora_task_tag, xp));
+  uint64_t seq = atomic_load_explicit(&pool_rs(p, rs_index)->sequence,
+                                      memory_order_relaxed) + 1;
+  SEXP txp = PROTECT(R_MakeExternalPtr(sora_task_addr(rs_index, seq),
+                                       sora_task_tag, xp));
   R_RegisterCFinalizerEx(txp, sora_task_finalizer, TRUE);
   Rf_setAttrib(txp, R_ClassSymbol, sora_class_task);
   UNPROTECT(1);
@@ -1657,6 +1686,12 @@ static size_t pool_entry_copy_bytes(sora_pool *p, const sora_entry_hdr *eh) {
   case SORA_KIND_SHM_VEC:
   case SORA_KIND_REF:
     if (eh->ph.len <= p->inline_entry) return sizeof(*eh) + eh->ph.len;
+    break;
+  case SORA_KIND_RAWSPILL:
+    /* the framed bytes are the region name, its length in aux >> 8 */
+    if ((eh->ph.aux >> 8) < MORI_NAME_MAX)
+      return sizeof(*eh) + (uint32_t) (eh->ph.aux >> 8);
+    break;
   }
   return p->hdr.slot;               /* torn or foreign header: full slot */
 }
@@ -2464,11 +2499,16 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
 
     /* time-boxed spin before announcing: sub-µs submit gaps are
        absorbed without touching the parked_workers line. The budget
-       decays only when the spin comes up empty. */
+       decays only when the spin comes up empty. The hint scan is
+       O(max_workers): the light stride applies only to small pools,
+       where the scan is a few loads and the clock would dominate */
     double until = sora_now() + (double) p->scan_budget_ns / 1e9;
     if (deadline >= 0 && deadline < until) until = deadline;
     int caught;
-    SORA_SPIN_WAIT(pool_work_hint(p), until, SORA_SPIN_CLOCK_EVERY, caught);
+    SORA_SPIN_WAIT(pool_work_hint(p), until,
+                   p->hdr.max_workers <= 4 ? SORA_SPIN_CLOCK_EVERY_LIGHT / 2
+                                           : SORA_SPIN_CLOCK_EVERY,
+                   caught);
     if (caught) {
       p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
       continue;
@@ -2574,16 +2614,16 @@ SEXP sora_pool_deque_pull(SEXP xp, SEXP n_sexp) {
 
 // Collect and cancel ----------------------------------------------------------------------
 
-static sora_task *task_get(SEXP xp, sora_pool **pool_out, SEXP *pool_xp_out) {
+static sora_task task_get(SEXP xp, sora_pool **pool_out, SEXP *pool_xp_out) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != sora_task_tag)
     Rf_error("sora: not a task handle");
-  sora_task *t = (sora_task *) R_ExternalPtrAddr(xp);
-  if (t == NULL) Rf_error("sora: task handle is stale");
+  void *addr = R_ExternalPtrAddr(xp);
+  if (addr == NULL) Rf_error("sora: task handle is stale");
   SEXP pool_xp = R_ExternalPtrProtected(xp);
   sora_pool *p = pool_get(pool_xp);
   *pool_out = p;
   if (pool_xp_out != NULL) *pool_xp_out = pool_xp;
-  return t;
+  return sora_task_unpack(addr);
 }
 
 /* Drop the task keeper of a terminal slot in this submitter's subrange.
@@ -2612,6 +2652,7 @@ static SEXP pool_rs_claim(sora_pool *p, SEXP pool_xp, sora_rs_hdr *rs,
                                     (unsigned char *) rs +
                                     sizeof(sora_rs_hdr), p->inline_rs,
                                     NULL, &p->oc, &p->zoc));
+  uint32_t kind = rs->ph.kind;
   int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
   pool_task_keeper_drop(p, pool_xp, idx, w);
   int32_t expected = st;
@@ -2622,7 +2663,17 @@ static SEXP pool_rs_claim(sora_pool *p, SEXP pool_xp, sora_rs_hdr *rs,
     UNPROTECT(1);
     Rf_error("sora: task handle already collected");
   }
-  pool_unpark_keeper_drop(p, w);
+  /* The keeper-drop wake exists for the worker's keeper reap: a FREE slot
+     gives it a record to consume. The self-contained kinds (NIL, RAWVEC,
+     STR1 — the ones sora_payload_stage pins nothing for) create no record
+     (pool_publish_result skips it), so the FREE is invisible to the reap
+     and the fence + parked-mask load + syscall are pure cost — under a
+     fire-then-collect burst with a parked worker, one wake per collect.
+     The lame-duck retiree is unaffected: it lingers only while rk_n > 0,
+     i.e. while a keepered (waking) result is still outstanding. */
+  if (kind != SORA_KIND_NIL && kind != SORA_KIND_RAWVEC &&
+      kind != SORA_KIND_STR1)
+    pool_unpark_keeper_drop(p, w);
   UNPROTECT(1);
   return v;
 }
@@ -2656,15 +2707,15 @@ static void pool_rs_claim_died(sora_pool *p, SEXP pool_xp, sora_rs_hdr *rs,
 static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
   sora_pool *p;
   SEXP pool_xp;
-  sora_task *t = task_get(xp, &p, &pool_xp);
+  sora_task t = task_get(xp, &p, &pool_xp);
   if (p->sub_slot < 0)
     Rf_error("sora: not a submitter's task handle");
-  sora_rs_hdr *rs = pool_rs(p, t->idx);
+  sora_rs_hdr *rs = pool_rs(p, t.idx);
   double deadline = -1;
 
   int32_t st;
   for (;;) {
-    if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
+    if (!sora_task_seq_match(&rs->sequence, t.seq))
       Rf_error("sora: task handle already collected or invalidated");
     if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0)
       pool_orphan_teardown_try(p);   /* its cancel sweep ends this wait */
@@ -2700,9 +2751,10 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
        too — a finite timeout's clock covers the whole wait. Still after
        the fast-path break and the timeout_s <= 0 return and still
        R_FINITE-guarded, so the Inf and already-done paths pay no extra
-       clock read */
+       clock read. One read serves the deadline compute and the bound. */
+    double now = sora_now();
     if (deadline < 0 && R_FINITE(timeout_s))
-      deadline = sora_now() + timeout_s;
+      deadline = now + timeout_s;
 
     /* time-boxed spin before the park announce: a short task's publish
        is absorbed without the park/wake syscall pair on either side,
@@ -2714,12 +2766,13 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
        A halve and a double never both fire in one episode (that pair
        nets to zero growth from the floor — the sticky-floor flaw). */
     uint64_t budget = p->collect_budget_ns;
-    double until = sora_now() + (double) budget / 1e9;
+    double until = now + (double) budget / 1e9;
     if (deadline >= 0 && deadline < until) until = deadline;
     int caught;
     SORA_SPIN_WAIT((st = atomic_load_explicit(&rs->status,
                                              memory_order_acquire)) !=
-                  SORA_RS_PENDING, until, SORA_SPIN_CLOCK_EVERY, caught);
+                  SORA_RS_PENDING, until, SORA_SPIN_CLOCK_EVERY_LIGHT,
+                  caught);
     if (caught) {
       p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
       break;
@@ -2781,7 +2834,7 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
   switch (st) {
   case SORA_RS_OK:
   case SORA_RS_ERR: {
-    SEXP v = PROTECT(pool_rs_claim(p, pool_xp, rs, t->idx, st));
+    SEXP v = PROTECT(pool_rs_claim(p, pool_xp, rs, t.idx, st));
     if (st == SORA_RS_ERR) {
       if (tryflag) {
         SEXP out = sora_caught(v);
@@ -2797,7 +2850,7 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
   case SORA_RS_DIED: {
     int32_t w;
     double wpid;
-    pool_rs_claim_died(p, pool_xp, rs, t->idx, &w, &wpid);
+    pool_rs_claim_died(p, pool_xp, rs, t.idx, &w, &wpid);
     if (tryflag)
       return sora_caught_died((int) w, wpid,
                              "sora: worker died while executing this task");
@@ -2862,7 +2915,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
   R_xlen_t n = XLENGTH(tasks);
   sora_pool *p = NULL;
   SEXP pool_xp = R_NilValue;
-  sora_task **ts = (sora_task **) R_alloc(n, sizeof(sora_task *));
+  sora_task *ts = (sora_task *) R_alloc(n, sizeof(*ts));
   sora_rs_hdr **rss = (sora_rs_hdr **) R_alloc(n, sizeof(sora_rs_hdr *));
   for (R_xlen_t i = 0; i < n; i++) {
     sora_pool *pi;
@@ -2876,9 +2929,8 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
     } else if (pi != p) {
       Rf_error("sora: task handles must belong to the same pool handle");
     }
-    sora_rs_hdr *rs = pool_rs(pi, ts[i]->idx);
-    if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) !=
-        ts[i]->seq)
+    sora_rs_hdr *rs = pool_rs(pi, ts[i].idx);
+    if (!sora_task_seq_match(&rs->sequence, ts[i].seq))
       Rf_error("sora: task handle already collected or invalidated");
     rss[i] = rs;
   }
@@ -2910,18 +2962,22 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
     if (timeout_s <= 0) return sora_sent_timeout;
 
     /* hoisted above the spin so the first episode's `until` is clamped
-       too — a finite timeout's clock covers the whole wait */
+       too — a finite timeout's clock covers the whole wait. One read
+       serves the deadline compute and the bound. */
+    double now = sora_now();
     if (deadline < 0 && R_FINITE(timeout_s))
-      deadline = sora_now() + timeout_s;
+      deadline = now + timeout_s;
 
     /* time-boxed spin before the park announce, as in collect: a fast
        result caught here costs neither side a syscall, waiter_slot
-       staying unannounced through the spin */
+       staying unannounced through the spin. The predicate is O(n), so
+       the light stride applies only to the common small-n case */
     uint64_t budget = p->collect_budget_ns;
-    double until = sora_now() + (double) budget / 1e9;
+    double until = now + (double) budget / 1e9;
     if (deadline >= 0 && deadline < until) until = deadline;
     int caught;
     SORA_SPIN_WAIT(pool_any_terminal(rss, n, &found, &st), until,
+                   n <= 4 ? SORA_SPIN_CLOCK_EVERY_LIGHT :
                    SORA_SPIN_CLOCK_EVERY, caught);
     if (caught) {
       p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
@@ -2987,7 +3043,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
   switch (st) {
   case SORA_RS_OK:
   case SORA_RS_ERR: {
-    SEXP v = PROTECT(pool_rs_claim(p, pool_xp, rs, ts[found]->idx, st));
+    SEXP v = PROTECT(pool_rs_claim(p, pool_xp, rs, ts[found].idx, st));
     if (st == SORA_RS_ERR) {
       SEXP out = PROTECT(sora_caught(v));
       Rf_setAttrib(out, sora_index_sym, Rf_ScalarInteger(index));
@@ -3007,7 +3063,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
   case SORA_RS_DIED: {
     int32_t w;
     double wpid;
-    pool_rs_claim_died(p, pool_xp, rs, ts[found]->idx, &w, &wpid);
+    pool_rs_claim_died(p, pool_xp, rs, ts[found].idx, &w, &wpid);
     SEXP out = PROTECT(sora_caught_died((int) w, wpid,
                                        "sora: worker died while executing "
                                        "this task"));
@@ -3049,14 +3105,15 @@ SEXP sora_pool_collect_try(SEXP xp, SEXP deadline) {
 SEXP sora_pool_cancel(SEXP xp) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != sora_task_tag)
     Rf_error("sora: not a task handle");
-  sora_task *t = (sora_task *) R_ExternalPtrAddr(xp);
-  if (t == NULL) return Rf_ScalarLogical(FALSE);
+  void *addr = R_ExternalPtrAddr(xp);
+  if (addr == NULL) return Rf_ScalarLogical(FALSE);
+  sora_task t = sora_task_unpack(addr);
   SEXP pool_xp = R_ExternalPtrProtected(xp);
   sora_pool *p = (sora_pool *) R_ExternalPtrAddr(pool_xp);
   if (p == NULL || p->released || p->self_pid != sora_self_pid())
     return Rf_ScalarLogical(FALSE);
-  sora_rs_hdr *rs = pool_rs(p, t->idx);
-  if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
+  sora_rs_hdr *rs = pool_rs(p, t.idx);
+  if (!sora_task_seq_match(&rs->sequence, t.seq))
     return Rf_ScalarLogical(FALSE);
   int32_t expected = SORA_RS_PENDING;
   if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
@@ -3077,13 +3134,14 @@ SEXP sora_pool_cancel(SEXP xp) {
 SEXP sora_pool_task_state(SEXP xp) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != sora_task_tag)
     Rf_error("sora: not a task handle");
-  sora_task *t = (sora_task *) R_ExternalPtrAddr(xp);
+  void *addr = R_ExternalPtrAddr(xp);
   sora_pool *p = (sora_pool *) R_ExternalPtrAddr(R_ExternalPtrProtected(xp));
-  if (t == NULL || p == NULL || p->released || p->base == NULL ||
+  if (addr == NULL || p == NULL || p->released || p->base == NULL ||
       p->self_pid != sora_self_pid())
     return Rf_mkString("dropped");
-  sora_rs_hdr *rs = pool_rs(p, t->idx);
-  if (atomic_load_explicit(&rs->sequence, memory_order_relaxed) != t->seq)
+  sora_task t = sora_task_unpack(addr);
+  sora_rs_hdr *rs = pool_rs(p, t.idx);
+  if (!sora_task_seq_match(&rs->sequence, t.seq))
     return Rf_mkString("collected");
   switch (atomic_load_explicit(&rs->status, memory_order_acquire)) {
   case SORA_RS_PENDING: return Rf_mkString("pending");

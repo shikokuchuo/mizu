@@ -112,7 +112,11 @@ size_t sora_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
    bytes beyond the identifier move, resolved via the consumer's zc cache;
    NIL is R_NilValue immediate in the header — no bytes move either way;
    STR1 is a length-1 string: the CHARSXP bytes in the payload, aux the
-   cetype (NA_character_ is len 0 + aux = SORA_STR1_NA). */
+   cetype (NA_character_ is len 0 + aux = SORA_STR1_NA); RAWSPILL is RAWVEC
+   out of line — the bare bytes of the same eligible vectors, in a channel
+   arena chunk (payload = uint64 chunk offset) or a pool spill region
+   (payload = name bytes, name length in aux >> 8) — len is the byte count
+   and aux & 0xff the SEXPTYPE in both. */
 
 enum {
   SORA_KIND_INLINE = 0,
@@ -122,7 +126,8 @@ enum {
   SORA_KIND_SHM_VEC,
   SORA_KIND_REF,
   SORA_KIND_NIL,       /* R_NilValue, immediate: no bytes move either way */
-  SORA_KIND_STR1       /* length-1 STRSXP: bytes + encoding, no serialize */
+  SORA_KIND_STR1,      /* length-1 STRSXP: bytes + encoding, no serialize */
+  SORA_KIND_RAWSPILL   /* RAWVEC out of line: arena chunk / spill region */
 };
 
 /* STR1's NA marker in aux (a cetype is 0-3, so this cannot alias one). */
@@ -177,6 +182,16 @@ typedef char sora_zc_off_assert[
    win — Phase 0 measured the wrap-vs-copy crossover in the 16-64 KiB band
    (ARENA ~2 µs flat vs a fresh-region spill ~6-7 µs under churn). */
 #define SORA_ZC_FLOOR ((size_t) 32768)
+
+/* The channel's raw-vector floor, higher: the arena's bare-bytes copy has
+   no region machinery to amortize, so it beats SHM_VEC well past the
+   serialize-era floor — measured crossover in the 256-512 KiB band on the
+   echo round trip, zc's friendliest pattern (the REF return ride is free
+   there). The pool keeps SORA_ZC_FLOOR: its raw spill is a region too, so
+   the view's no-copy receive decides from 64 KiB. Under the (Linux-only)
+   churn signal the arena stays the churn-immune tier at any size, so the
+   gate lifts. */
+#define SORA_ZC_FLOOR_RAW ((size_t) (256 << 10))
 
 /* Lent-region ledger: producer wraps of SHM_VEC regions with views
    outstanding, pinned until the refcount hits 0 (then free-listed) or the
@@ -244,6 +259,10 @@ typedef struct sora_open_cache_s {
 
 void *sora_vec_ptr(SEXP x);
 int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
+/* Raw-bytes eligibility with no budget gate (the spill tiers size-gate
+   themselves): attribute-free, non-ALTREP, non-S4 atomic vector; *out_len
+   receives the byte length. */
+int sora_raw_type(SEXP x, size_t *out_len);
 /* STR1 staging, shared by the channel and pool send paths: frames a
    length-1, attribute-free, non-ALTREP, non-S4 string whose bytes fit the
    inline budget (views were already filtered by the REF check upstream).
@@ -263,6 +282,12 @@ void sora_spill_fl_insert(sora_spill_fl *fl, SEXP wrap, mori_shm *shm);
    — and frame it as SHM_RAW. Returns the keeper — list(x, producer
    wrapper, marker) — freshly allocated: the caller must protect it. */
 SEXP sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                           size_t n, sora_spill_fl *fl);
+/* The raw-bytes counterpart for RAWSPILL: copies x's bytes into a spill
+   region instead of serializing. Same keeper shape and consumer-done
+   release discipline as SHM_RAW, minus x itself (bare bytes can carry no
+   hook-emitted identifiers, so only the region wrap needs the pin). */
+SEXP sora_payload_spill_raw(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
                            size_t n, sora_spill_fl *fl);
 /* Stage x as REF (a sora view), RAWVEC, INLINE, SHM_VEC (a mori-layout-
    eligible object past the inline budget and the zc floor), or SHM_RAW —
@@ -437,8 +462,13 @@ enum { SORA_PARK_WOKEN = 0, SORA_PARK_TIMEOUT = 1, SORA_PARK_INTR = 2 };
    sites. The predicates are 1-2 loads (collect, channel) or an
    O(max_workers) scan (worker): a clock read per iteration measurably
    dominates the small scans (macOS has no vDSO; the commpage read is
-   ~25 ns), and the worst-case budget overshoot is one stride of scans. */
+   ~25 ns), and the worst-case budget overshoot is one stride of scans.
+   Two tiers: the default for O(n) scan predicates, and LIGHT for the
+   1-2-load predicates — there a stride of 8 makes the clock half the
+   spin (measured ~1/3 of a channel round trip's host CPU), while 64
+   iterations of a 2-4 ns predicate bound the overshoot at ~200 ns. */
 #define SORA_SPIN_CLOCK_EVERY 8
+#define SORA_SPIN_CLOCK_EVERY_LIGHT 64
 
 /* Busy-path bound on result-keeper reap visits per worker step: keeps the
    per-task reap cost O(1) against any number of results outstanding. The

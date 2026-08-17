@@ -27,7 +27,7 @@ void *sora_vec_ptr(SEXP x) {
   return NULL;
 }
 
-int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
+int sora_raw_type(SEXP x, size_t *out_len) {
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
     break;
@@ -38,8 +38,13 @@ int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
      vectors on the hook path; the S4 bit is recorded by serialize, so it
      disqualifies alongside attributes. */
   if (ALTREP(x) || ANY_ATTRIB(x) || Rf_isS4(x)) return 0;
-  size_t n = (size_t) XLENGTH(x) * mori_sizeof_elt(TYPEOF(x));
-  if (n > inline_max) return 0;
+  *out_len = (size_t) XLENGTH(x) * mori_sizeof_elt(TYPEOF(x));
+  return 1;
+}
+
+int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
+  size_t n;
+  if (!sora_raw_type(x, &n) || n > inline_max) return 0;
   *out_len = n;
   return 1;
 }
@@ -247,6 +252,23 @@ SEXP sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
   return keep;
 }
 
+SEXP sora_payload_spill_raw(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                           size_t n, sora_spill_fl *fl) {
+  mori_shm *shm = NULL;
+  SEXP wrap = sora_spill_region_get(fl, n, &shm);       /* PROTECTed */
+  memcpy(shm->addr, sora_vec_ptr(x), n);
+  hdr->kind = SORA_KIND_RAWSPILL;
+  hdr->len = (uint32_t) n;
+  hdr->aux = (uint64_t) TYPEOF(x) | ((uint64_t) shm->name_len << 8);
+  memcpy(payload, shm->name, shm->name_len);
+  SEXP keep = Rf_allocVector(VECSXP, 3);
+  SET_VECTOR_ELT(keep, 0, R_NilValue);
+  SET_VECTOR_ELT(keep, 1, wrap);
+  SET_VECTOR_ELT(keep, 2, sora_spill_marker);
+  UNPROTECT(1);
+  return keep;
+}
+
 /* The NIL, RAWVEC, and STR1 kinds return R_NilValue as the keeper — pin
    nothing: their slot bytes are self-contained (RAWVEC and STR1 exclude
    ALTREP, attributes, and S4, so no hook-emitted identifier can ride
@@ -286,7 +308,14 @@ SEXP sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
      surrenders deterministically at consumer-done. */
   if ((fl == NULL || !fl->churn) && sora_zc_eligible(x, inline_max, &total))
     return sora_zc_stage(hdr, payload, x, total, fl);
-  size_t n = sora_serialize_bounded(payload, inline_max, x);
+  /* Raw-bytes spill: the vectors RAWVEC takes inline, past the inline
+     budget — the layout tier above already passed (under the zc floor, or
+     churn-gated), and bare bytes skip both the serialize pass here and
+     the parse at the far end. */
+  size_t n;
+  if (sora_raw_type(x, &n) && n <= UINT32_MAX)
+    return sora_payload_spill_raw(hdr, payload, x, n, fl);
+  n = sora_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {
     hdr->kind = SORA_KIND_INLINE;
     hdr->len = (uint32_t) n;
@@ -330,6 +359,40 @@ void sora_oc_store(sora_open_cache *oc, const unsigned char *name, uint32_t len,
   oc->misses++;
 }
 
+/* Open the named payload region read-only, through the cache when given.
+   A vanished region reports through *gone when the caller can absorb it,
+   else raises. A freshly opened wrap is PROTECTed and *nprotect receives
+   the count (the caller unprotects); a cached wrap needs none. */
+static mori_shm *payload_region_open(const unsigned char *name_bytes,
+                                     uint32_t name_len, int *gone,
+                                     sora_open_cache *oc, int *nprotect) {
+  mori_shm *shm = NULL;
+  if (oc != NULL) {
+    SEXP cached = sora_oc_lookup_wrap(oc, name_bytes, name_len);
+    if (cached != R_NilValue) shm = sora_shm_unwrap(cached);
+  }
+  if (shm == NULL) {
+    char name[MORI_NAME_MAX];
+    memcpy(name, name_bytes, name_len);
+    name[name_len] = '\0';
+    shm = sora_shm_open_ro_heap(name);
+    if (shm == NULL) {
+      /* the region died with its creator (Win32 mappings cannot outlive
+         theirs): report rather than raise when the caller can absorb it */
+      if (gone != NULL) {
+        *gone = 1;
+        return NULL;
+      }
+      sora_stop_shm(NA_REAL, "sora: cannot open payload region '%s'", name);
+    }
+    SEXP wrap = PROTECT(sora_shm_wrap_consumer(shm));
+    *nprotect = 1;               /* no cache: mapping drops at the wrap's GC */
+    if (oc != NULL)
+      sora_oc_store(oc, name_bytes, name_len, wrap);
+  }
+  return shm;
+}
+
 SEXP sora_payload_read(const sora_slot_hdr *hdr, const unsigned char *payload,
                       uint32_t inline_max, int *gone, sora_open_cache *oc,
                       sora_open_cache *zoc) {
@@ -368,34 +431,33 @@ SEXP sora_payload_read(const sora_slot_hdr *hdr, const unsigned char *payload,
     return sora_zc_read(hdr, payload, gone, zoc);
   case SORA_KIND_REF:
     return sora_zc_ref_read(hdr, payload, gone, zoc);
+  case SORA_KIND_RAWSPILL: {
+    /* pool framing: the region name in the payload, its length and the
+       SEXPTYPE packed in aux (the channel's arena framing of the same
+       kind is resolved in chan_materialize, never reaching here) */
+    int type = (int) (hdr->aux & 0xff);
+    uint32_t name_len = (uint32_t) (hdr->aux >> 8);
+    size_t elt = mori_sizeof_elt(type);
+    if (elt == 0 || hdr->len % elt != 0 ||
+        name_len == 0 || name_len >= MORI_NAME_MAX)
+      Rf_error("sora: corrupt payload slot");
+    int nprotect = 0;
+    mori_shm *shm = payload_region_open(payload, name_len, gone, oc,
+                                        &nprotect);
+    if (shm == NULL) return R_NilValue;                /* *gone set */
+    if (hdr->len > shm->size) Rf_error("sora: corrupt payload slot");
+    SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
+    memcpy(sora_vec_ptr(y), shm->addr, hdr->len);
+    UNPROTECT(nprotect);
+    return y;
+  }
   case SORA_KIND_SHM_RAW: {
     if (hdr->len == 0 || hdr->len >= MORI_NAME_MAX)
       Rf_error("sora: corrupt payload slot");
-    mori_shm *shm = NULL;
     int nprotect = 0;
-    if (oc != NULL) {
-      SEXP cached = sora_oc_lookup_wrap(oc, payload, hdr->len);
-      if (cached != R_NilValue) shm = sora_shm_unwrap(cached);
-    }
-    if (shm == NULL) {
-      char name[MORI_NAME_MAX];
-      memcpy(name, payload, hdr->len);
-      name[hdr->len] = '\0';
-      shm = sora_shm_open_ro_heap(name);
-      if (shm == NULL) {
-        /* the region died with its creator (Win32 mappings cannot outlive
-           theirs): report rather than raise when the caller can absorb it */
-        if (gone != NULL) {
-          *gone = 1;
-          return R_NilValue;
-        }
-        sora_stop_shm(NA_REAL, "sora: cannot open payload region '%s'", name);
-      }
-      SEXP wrap = PROTECT(sora_shm_wrap_consumer(shm));
-      nprotect = 1;              /* no cache: mapping drops at the wrap's GC */
-      if (oc != NULL)
-        sora_oc_store(oc, payload, hdr->len, wrap);
-    }
+    mori_shm *shm = payload_region_open(payload, hdr->len, gone, oc,
+                                        &nprotect);
+    if (shm == NULL) return R_NilValue;                /* *gone set */
     /* aux is the exact stream length: a recycled region is larger than the
        stream it carries, and the slack bytes are a previous payload's */
     size_t len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?

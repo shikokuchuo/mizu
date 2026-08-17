@@ -32,6 +32,18 @@ test_that("a task round-trips every result payload kind", {
   pool_end(p)
 })
 
+test_that("mid-size vector results spill as bare bytes (RAWSPILL)", {
+  p <- pool_pair() # 256 B slots: a 4 KB result spills to a region
+  t <- sora_submit(p[["ctrl"]], x * 2, x = seq_len(500L) + 0)
+  pool_step(p)
+  expect_identical(sora_collect(t, timeout = 5), (seq_len(500L) + 0) * 2)
+  # recycled region, same discipline: a second equal-size spill pops it
+  t2 <- sora_submit(p[["ctrl"]], x + 1, x = seq_len(500L) + 0)
+  pool_step(p)
+  expect_identical(sora_collect(t2, timeout = 5), seq_len(500L) + 1)
+  pool_end(p)
+})
+
 test_that("task arguments arrive as the only bindings", {
   p <- pool_pair()
   t <- sora_submit(p[["ctrl"]], sort(ls(environment())), a = 1, b = 2)

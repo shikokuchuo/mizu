@@ -6,7 +6,9 @@
 
 is_view <- function(x) .Call(sora:::sora_zc_view_check, x)
 rc_of <- function(x) .Call(sora:::sora_zc_refcount, x) # c(refcount, flags)
-chan_ledger <- function(ch) .Call(sora:::sora_channel_stat, ch)[["ledger_entries"]]
+chan_ledger <- function(ch) {
+  .Call(sora:::sora_channel_stat, ch)[["ledger_entries"]]
+}
 chan_fl <- function(ch) .Call(sora:::sora_channel_stat, ch)[["fl_entries"]]
 
 test_that("tier selection: big atomic vectors cross as views, others copy", {
@@ -31,6 +33,22 @@ test_that("tier selection: big atomic vectors cross as views, others copy", {
   ya <- sora_recv(p[["peer"]], 5)
   expect_true(is_view(ya))
   expect_identical(ya, xa)
+  channel_end(p)
+})
+
+test_that("the channel's raw floor: mid-size vectors copy, big ones view", {
+  p <- channel_pair(arena_size = 2 * 1024 * 1024)
+  x <- runif(20000) # 160 KB: past the zc floor, under the raw floor
+  sora_send(p[["host"]], x)
+  y <- sora_recv(p[["peer"]], 5)
+  expect_false(is_view(y)) # the arena's bare-bytes copy wins here
+  expect_identical(y, x)
+
+  big <- runif(100000) # 800 KB: past the raw floor — the view wins
+  sora_send(p[["host"]], big)
+  z <- sora_recv(p[["peer"]], 5)
+  expect_true(is_view(z))
+  expect_identical(as.numeric(z), big)
   channel_end(p)
 })
 
@@ -519,7 +537,10 @@ test_that("pool string and list results cross as views", {
   expect_true(is_view(r))
   expect_identical(r, paste0("w-", 1:30000))
 
-  t2 <- sora_submit(p[["ctrl"]], list(a = runif(100000), b = paste0("x", 1:20000)))
+  t2 <- sora_submit(
+    p[["ctrl"]],
+    list(a = runif(100000), b = paste0("x", 1:20000))
+  )
   pool_step(p)
   r2 <- sora_collect(t2, 5)
   expect_true(is_view(r2))
@@ -552,7 +573,14 @@ test_that("string and list views round-trip cross-process", {
       l <- sora_recv(ch, timeout = 30)
       sora_send(
         ch,
-        list(is_view(s), is_view(l), length(s), s[[1L]], l[["a"]][[1L]], length(l[["b"]]))
+        list(
+          is_view(s),
+          is_view(l),
+          length(s),
+          s[[1L]],
+          l[["a"]][[1L]],
+          length(l[["b"]])
+        )
       )
     }),
     arena_size = 0
@@ -607,14 +635,18 @@ test_that("a pairlist inside a list tree rides the layout as a list", {
 
 test_that("a re-sent map view degrades to a materializing copy", {
   p <- pool_pair()
-  st <- sora:::map_stage(p[["ctrl"]], 1:1000 + 0, function(i) i * 2, list(),
-                          template = numeric(1))
+  st <- sora:::map_stage(
+    p[["ctrl"]],
+    1:1000 + 0,
+    function(i) i * 2,
+    list(),
+    template = numeric(1)
+  )
   sora:::map_submit(p[["ctrl"]], st)
   while (pool_step(p) == 1L) {
     NULL
   }
-  v <- sora:::map_collect(st, sora:::mono_time() + 30,
-                           collect = "view")
+  v <- sora:::map_collect(st, sora:::mono_time() + 30, collect = "view")
   expect_true(is_view(v))
   ch <- channel_pair(arena_size = 0)
   sora_send(ch[["host"]], v)
