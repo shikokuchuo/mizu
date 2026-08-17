@@ -18,10 +18,18 @@
 
 static SEXP sora_map_tag;
 static SEXP sora_rs_sym;
+static SEXP sora_srcref_sym;
+static SEXP sora_srcfile_sym;
+static SEXP sora_wholesrcref_sym;
+static SEXP sora_function_sym;
 
 void sora_map_init(void) {
   sora_map_tag = Rf_install("sora_map");
   sora_rs_sym = Rf_install(".Random.seed");
+  sora_srcref_sym = Rf_install("srcref");
+  sora_srcfile_sym = Rf_install("srcfile");
+  sora_wholesrcref_sym = Rf_install("wholeSrcref");
+  sora_function_sym = Rf_install("function");
 }
 
 enum { SORA_MAP_X_DESC = 0, SORA_MAP_X_RAWVEC };
@@ -995,4 +1003,90 @@ SEXP sora_map_claim_state(SEXP xp, SEXP r_sexp) {
    `.timeout` follows the sentinel discipline (returned, never raised). */
 SEXP sora_map_timeout_call(void) {
   return sora_sent_timeout;
+}
+
+/* ANY_ATTRIB(), the closure accessors and R_mkClosure() joined the C API
+   in R 4.5.0; backports for earlier R per Writing R Extensions, "Moving
+   into C API compliance" (the closure constructor is the allocSExp +
+   setters idiom — no mkClosure entry point existed before 4.5.0). */
+#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
+#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
+#endif
+#if R_VERSION < R_Version(4, 5, 0)
+#define R_ClosureFormals(x) FORMALS(x)
+#define R_ClosureBody(x)    BODY(x)
+#define R_ClosureEnv(x)     CLOENV(x)
+
+SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env) {
+  SEXP fun = Rf_allocSExp(CLOSXP);
+  SET_FORMALS(fun, formals);
+  SET_BODY(fun, body);
+  SET_CLOENV(fun, env);
+  return fun;
+}
+#endif
+
+/* In-place strip of a private tree: the three source-reference attributes
+   on every call / pairlist / expression node, plus the srcref object the
+   parser stores as the fourth element of a `function` call literal — the
+   nested-closure case, truncated rather than copied out. Backbone cells
+   are walked iteratively; only child recursion grows the stack, so depth
+   stays the expression nesting the parser already bounded. */
+static void sora_strip_walk(SEXP x) {
+  switch (TYPEOF(x)) {
+  case LANGSXP:
+  case LISTSXP:
+    if (ANY_ATTRIB(x)) {
+      Rf_setAttrib(x, sora_srcref_sym, R_NilValue);
+      Rf_setAttrib(x, sora_srcfile_sym, R_NilValue);
+      Rf_setAttrib(x, sora_wholesrcref_sym, R_NilValue);
+    }
+    if (CAR(x) == sora_function_sym && CDDR(x) != R_NilValue) {
+      SETCDR(CDDR(x), R_NilValue);
+    }
+    sora_strip_walk(CAR(x));
+    for (SEXP node = CDR(x); node != R_NilValue; node = CDR(node)) {
+      sora_strip_walk(CAR(node));
+    }
+    break;
+  case EXPRSXP:
+    if (ANY_ATTRIB(x)) {
+      Rf_setAttrib(x, sora_srcref_sym, R_NilValue);
+      Rf_setAttrib(x, sora_srcfile_sym, R_NilValue);
+      Rf_setAttrib(x, sora_wholesrcref_sym, R_NilValue);
+    }
+    for (R_xlen_t i = 0; i < XLENGTH(x); i++) {
+      sora_strip_walk(VECTOR_ELT(x, i));
+    }
+    break;
+  default:
+    break;
+  }
+}
+
+/* removeSource for the staging path: deep-duplicate formals (and a
+   language body — pairlist/language duplicates are deep), strip the
+   private trees in place, and rebuild the closure with R_mkClosure (the
+   slots have no public setters), cloning the original's attributes and
+   zapping srcref. Constants, symbols and bytecode bodies are shared
+   untouched. Non-closures pass through. */
+SEXP sora_strip_srcref(SEXP f) {
+  if (TYPEOF(f) != CLOSXP) {
+    return f;
+  }
+  SEXP formals = PROTECT(Rf_duplicate(R_ClosureFormals(f)));
+  sora_strip_walk(formals);
+  SEXP body = R_ClosureBody(f);
+  if (TYPEOF(body) == LANGSXP || TYPEOF(body) == LISTSXP ||
+      TYPEOF(body) == EXPRSXP) {
+    body = PROTECT(Rf_duplicate(body));
+    sora_strip_walk(body);
+  } else {
+    PROTECT(body);
+  }
+  SEXP out = PROTECT(R_mkClosure(formals, body, R_ClosureEnv(f)));
+  DUPLICATE_ATTRIB(out, f);
+  Rf_setAttrib(out, sora_srcref_sym, R_NilValue);
+  UNPROTECT(3);
+  return out;
 }

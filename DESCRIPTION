@@ -21,8 +21,6 @@ URL: https://github.com/shikokuchuo/sora
 BugReports: https://github.com/shikokuchuo/sora/issues
 Depends:
     R (>= 4.3)
-Imports:
-    utils
 Suggests:
     mori,
     quarto,

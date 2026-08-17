@@ -20,6 +20,87 @@ run_map <- function(p, x, f, dots = list(), ..., steps = 256L) {
   collect30(p[["ctrl"]], st)
 }
 
+test_that("strip_srcref strips source references, original and attrs intact", {
+  f <- eval(parse(
+    text = "function(x, d = {\n  1\n}) {\n  if (x > 0) {\n    log(x)\n  } else {\n    0\n  }\n}",
+    keep.source = TRUE
+  ))
+  attr(f, "foo") <- "bar"
+  z <- sora:::strip_srcref(f)
+  expect_null(attributes(body(z)[[2L]][[3L]]))
+  expect_null(attributes(formals(z)[["d"]]))
+  expect_identical(attr(z, "foo"), "bar")
+  expect_identical(z, utils::removeSource(f))
+  expect_s3_class(attr(f, "srcref"), "srcref")
+  expect_identical(z(2), log(2))
+  g <- eval(quote(function(x) x))
+  expect_identical(sora:::strip_srcref(g), g)
+})
+
+test_that("strip_srcref drops nested function literals' inline srcrefs", {
+  f <- eval(parse(
+    text = "function(x) {\n  g <- function(y) y + 1\n  g(x)\n}",
+    keep.source = TRUE
+  ))
+  z <- sora:::strip_srcref(f)
+  expect_length(body(f)[[2L]][[3L]], 4L)
+  expect_length(body(z)[[2L]][[3L]], 3L)
+  expect_identical(z(1), 2)
+  h <- eval(parse(
+    text = "function(x) {\n  (function(y) y + 1)(x)\n}",
+    keep.source = TRUE
+  ))
+  zh <- sora:::strip_srcref(h)
+  expect_length(body(zh)[[2L]][[1L]][[2L]], 3L)
+  expect_identical(zh(1), 2)
+})
+
+test_that("strip_srcref makes the staged form keep.source-invariant", {
+  sourced <- eval(parse(
+    text = "function(x) {\n  g <- function(y) y + 1\n  g(x)\n}",
+    keep.source = TRUE
+  ))
+  plain <- eval(parse(
+    text = "function(x) {\n  g <- function(y) y + 1\n  g(x)\n}",
+    keep.source = FALSE
+  ))
+  expect_identical(
+    serialize(sora:::strip_srcref(sourced), NULL),
+    serialize(sora:::strip_srcref(plain), NULL)
+  )
+})
+
+test_that("strip_srcref handles edge bodies and non-closures", {
+  expect_identical(sora:::strip_srcref(1:3), 1:3)
+  expect_identical(sora:::strip_srcref(function() 1)(), 1)
+  fc <- compiler::cmpfun(function(x) {
+    y <- x + 1
+    y
+  })
+  expect_identical(sora:::strip_srcref(fc)(2), 3)
+  cl <- quote(function(x) x)
+  cl[[3L]] <- expression(1 + 1)
+  expect_identical(body(sora:::strip_srcref(eval(cl))), expression(1 + 1))
+})
+
+test_that("map staging is keep.source-invariant", {
+  p <- pool_pair(slot_size = 512L)
+  sourced <- eval(parse(
+    text = "function(i) {\n  g <- function(j) j + 1\n  g(i)\n}",
+    keep.source = TRUE
+  ))
+  plain <- eval(parse(
+    text = "function(i) {\n  g <- function(j) j + 1\n  g(i)\n}",
+    keep.source = FALSE
+  ))
+  environment(sourced) <- environment(plain) <- globalenv()
+  st1 <- sora:::map_stage(p[["ctrl"]], list(1), sourced, list())
+  st2 <- sora:::map_stage(p[["ctrl"]], list(1), plain, list())
+  expect_type(st1[["blob"]], "raw")
+  expect_identical(st1[["blob"]], st2[["blob"]])
+  pool_end(p)
+})
+
 test_that("a map returns results in input order with names reapplied", {
   p <- pool_pair()
   x <- setNames(1:10, letters[1:10])
@@ -199,6 +280,7 @@ test_that("a small map over a view stays inline and reads off the pages", {
   st <- sora:::map_stage(p[["ctrl"]], v, f, list())
   expect_type(st[["blob"]], "raw") # the identifier keeps the descriptor inline
   sora:::map_submit(p[["ctrl"]], st)
+  gc() # the count check below assumes no GC finalizes the chunk's view first
   expect_identical(pool_step(p), 1L) # the first chunk
   # the chunk's resolve was counted and its reads did not materialize the
   # view (a COW materialize would already have released the count)

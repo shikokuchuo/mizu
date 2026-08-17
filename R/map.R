@@ -559,6 +559,8 @@ map_empty <- function(x, template) {
   out
 }
 
+strip_srcref <- function(f) .Call(sora_strip_srcref, f)
+
 # Stage one map call: the RAWVEC gate, the region-less probe, morsel
 # geometry, and the region create — in that order, so slot exhaustion
 # errors before anything exists. Returns the mutable map state the other
@@ -578,7 +580,7 @@ map_stage <- function(
   # deterministic across keep.source settings — often the difference
   # between the region-less path and a region
   if (typeof(f) == "closure") {
-    f <- removeSource(f)
+    f <- strip_srcref(f)
   }
   # lapply's coercion rule, so [[ on the workers sees what lapply's would
   if (!is.vector(x) || is.object(x)) {

@@ -124,6 +124,7 @@ SEXP sora_map_timeout_call(void);
 SEXP sora_map_rng_base(SEXP);
 SEXP sora_map_rng_seek(SEXP, SEXP);
 SEXP sora_map_rng_install(SEXP);
+SEXP sora_strip_srcref(SEXP);
 SEXP sora_zc_view_check_call(SEXP);
 SEXP sora_zc_refcount_call(SEXP);
 SEXP sora_pool_zc_info(SEXP);
@@ -221,6 +222,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"sora_map_rng_base",          (DL_FUNC) &sora_map_rng_base,          1},
   {"sora_map_rng_seek",          (DL_FUNC) &sora_map_rng_seek,          2},
   {"sora_map_rng_install",       (DL_FUNC) &sora_map_rng_install,       1},
+  {"sora_strip_srcref",          (DL_FUNC) &sora_strip_srcref,          1},
   {"sora_zc_view_check",         (DL_FUNC) &sora_zc_view_check_call,    1},
   {"sora_zc_refcount",           (DL_FUNC) &sora_zc_refcount_call,      1},
   {"sora_pool_zc_info",          (DL_FUNC) &sora_pool_zc_info,          1},
