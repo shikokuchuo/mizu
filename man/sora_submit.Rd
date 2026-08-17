@@ -91,7 +91,9 @@ nested submission claims a submitter slot for the worker on first use.
 A handle can be collected exactly once: the result slot is released to
 the pool as the value is returned. If an uncollected handle goes to the
 garbage collector, a still-queued task is cancelled and a published
-result is discarded.
+result is discarded. To wait on several handles at once,
+\code{\link[=sora_collect_any]{sora_collect_any()}} reports the first terminal task and
+\code{\link[=sora_collect_all]{sora_collect_all()}} returns every result in input order.
 }
 
 \examples{

@@ -100,8 +100,23 @@ test_that("pool task dispatch reports against the mirai baseline", {
   rate <- max(tp(2000L), tp(2000L))
   cat(sprintf("pool pipelined: %.0f tasks/s\n", rate))
 
+  # fire-then-collect with one batch collect: the R call boundary paid
+  # once per burst instead of once per task
+  tpa <- function(n) {
+    t0 <- proc.time()[[3]]
+    ts <- vector("list", n)
+    for (i in seq_len(n)) {
+      ts[[i]] <- sora_submit(p, NULL)
+    }
+    sora_collect_all(ts, timeout = 30)
+    n / (proc.time()[[3]] - t0)
+  }
+  tpa(200L)
+  ratea <- max(tpa(2000L), tpa(2000L))
+  cat(sprintf("pool pipelined, collect_all: %.0f tasks/s\n", ratea))
+
   # once the worker parks, its stat mirror is exact
-  total <- 200 + 2 * 1000 + 200 + 2 * 2000
+  total <- 200 + 2 * 1000 + 2 * (200 + 2 * 2000)
   expect_true(wait_until(sora_pool_stats(p)[["workers"]][["tasks"]] == total))
   expect_true(sora_pool_stop(p))
 })

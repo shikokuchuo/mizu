@@ -211,3 +211,27 @@ After the codec, profiles of the pool round trip and pipelined loops are
 API itself); the sora C share is single-digit percent. The remaining
 floor is the call boundary — the batch verbs and sora_map are the
 answers for throughput-bound callers.
+
+## 2026-08-17: sora_collect_all() — batch collect for fire-then-collect
+
+Same host. The pipelined case in test-benchmark.R gained a
+fire-then-collect-all arm: N submits, then one sora_collect_all()
+instead of N sora_collect() closures plus N list extractions — the
+>85% R-interpreter-boundary share the codec left behind, paid once per
+burst. The wait is collect_any's mechanics with an all-terminal
+predicate (announce on every pending slot, one park, scan on wake);
+the claim runs in input order.
+
+Measured (same run, so the ratio is the valid comparison — absolute
+rates drift with host load; the per-collect loop's standing record on
+this host is 2.0M tasks/s):
+
+| case | per-collect loop | collect_all |
+|---|---|---|
+| pool pipelined | 1.0M tasks/s | 2.0M tasks/s |
+
+The 2x matches the prediction (~200 ns of the ~500 ns/task floor was
+the collect closure plus `ts[[i]]`). The worst-case wake/scan shape
+(announced on every pending slot, so K slow completions cost K wakes x
+O(N) scans) stays below the per-collect loop it replaces: scans are
+~1 ns/load against a ~3 us park/wake pair.

@@ -267,7 +267,9 @@ sora_pool_attach <- function(name) {
 #' A handle can be collected exactly once: the result slot is released to
 #' the pool as the value is returned. If an uncollected handle goes to the
 #' garbage collector, a still-queued task is cancelled and a published
-#' result is discarded.
+#' result is discarded. To wait on several handles at once,
+#' [sora_collect_any()] reports the first terminal task and
+#' [sora_collect_all()] returns every result in input order.
 #'
 #' @param pool a pool handle from [sora_pool()] or [sora_pool_attach()], or —
 #'   inside a task — the own handle of the worker, bound as `pool`.
@@ -314,7 +316,9 @@ sora_collect <- function(task, timeout = Inf) {
 #' error raised, cancelled, or its worker died. Among handles already
 #' terminal, the earliest in `tasks` is reported. The wait parks on the
 #' submitter's single parker: any publishing worker wakes it directly,
-#' with no polling.
+#' with no polling. For the whole set at once, [sora_collect_all()]
+#' waits until every task is terminal and returns all results in input
+#' order.
 #'
 #' @section Outcomes:
 #' As for [sora_collect()], but attributed to a handle by position:
@@ -352,6 +356,68 @@ sora_collect <- function(task, timeout = Inf) {
 #' @export
 sora_collect_any <- function(tasks, timeout = Inf) {
   res <- .Call(sora_pool_collect_any, tasks, timeout)
+  if (inherits(res, "sora_caught")) {
+    cond <- res[[1L]]
+    if (is.list(cond)) {
+      cond$index <- attr(res, "index")
+    }
+    stop(cond)
+  }
+  res
+}
+
+#' Collect the Results of Several Tasks, in Order
+#'
+#' `sora_collect_all()` waits until every task in `tasks` reaches a
+#' terminal state and returns all results in input order — the batch
+#' counterpart of [sora_collect()] for fire-then-collect patterns, with
+#' one R call boundary for the whole set instead of one per task. The
+#' wait parks on the submitter's single parker: any publishing worker
+#' wakes it directly, with no polling.
+#'
+#' For homogeneous element-wise work, [sora_map()] remains the right
+#' answer (it batches submission and staging, not just collection).
+#' `sora_collect_all()` is for heterogeneous handle sets — different
+#' expressions and arguments — which is what the per-task API is for.
+#'
+#' @section Outcomes:
+#' As for [sora_collect()], attributed to a handle by position as in
+#' [sora_collect_any()]:
+#'
+#' | outcome | surfaced as | class |
+#' |---|---|---|
+#' | all results published | list of values, returned | — |
+#' | not all terminal within `timeout` | sentinel, returned | `c("sora_timeout", "sora_sentinel")` |
+#' | a task raised an error | re-signalled with an `index` field | the condition classes of the task itself |
+#' | a task cancelled, or pool stopped | raised with an `index` field | `sora_error_cancelled` |
+#' | an executing worker died | raised with an `index` field | `sora_error_worker_died` |
+#'
+#' The `index` field of a raised condition is the 1-based position in
+#' `tasks` of the first such task. Handles up to and including the
+#' reported one are consumed; the remaining handles stay valid and
+#' collectible. A timeout consumes nothing: every handle stays valid and
+#' collectible.
+#'
+#' @param tasks a non-empty list of task handles from [sora_submit()] on
+#'   the same pool handle.
+#' @inheritParams sora_submit
+#'
+#' @return A plain list of the task values in the order of `tasks`; the
+#'   names of `tasks` carry over. On timeout, the `sora_timeout`
+#'   sentinel.
+#'
+#' @examplesIf interactive()
+#' p <- sora_pool(2L)
+#' ts <- list(
+#'   total = sora_submit(p, sum(x), x = runif(10)),
+#'   label = sora_submit(p, "done")
+#' )
+#' sora_collect_all(ts, timeout = 30)
+#' sora_pool_stop(p)
+#'
+#' @export
+sora_collect_all <- function(tasks, timeout = Inf) {
+  res <- .Call(sora_pool_collect_all, tasks, timeout)
   if (inherits(res, "sora_caught")) {
     cond <- res[[1L]]
     if (is.list(cond)) {

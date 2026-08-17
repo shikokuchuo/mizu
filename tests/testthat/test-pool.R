@@ -449,6 +449,102 @@ test_that("collect_any helps instead of parking in a nested wait", {
   pool_end(p)
 })
 
+test_that("collect_all returns results in input order with names", {
+  p <- pool_pair()
+  x <- runif(100) # past the inline budget: the spill tier
+  tasks <- list(
+    nil = sora_submit(p[["ctrl"]], NULL),
+    str = sora_submit(p[["ctrl"]], "one"),
+    vec = sora_submit(p[["ctrl"]], 1:10),
+    inl = sora_submit(p[["ctrl"]], list(a = 1, b = "x")),
+    spl = sora_submit(p[["ctrl"]], x, x = x)
+  )
+  for (i in seq_along(tasks)) {
+    pool_step(p)
+  }
+  expect_identical(
+    sora_collect_all(tasks, timeout = 5),
+    list(
+      nil = NULL,
+      str = "one",
+      vec = 1:10,
+      inl = list(a = 1, b = "x"),
+      spl = x
+    )
+  )
+  pool_end(p)
+})
+
+test_that("collect_all parks until every result publishes", {
+  p <- pool_pair()
+  t1 <- sora_submit(p[["ctrl"]], "one")
+  t2 <- sora_submit(p[["ctrl"]], "two")
+  expect_s3_class(sora_collect_all(list(t1, t2), timeout = 0), "sora_timeout")
+  pool_step(p)
+  # one still pending: the wait runs to the deadline and consumes nothing
+  expect_s3_class(sora_collect_all(list(t1, t2), timeout = 0.1), "sora_timeout")
+  pool_step(p)
+  expect_identical(
+    sora_collect_all(list(t1, t2), timeout = 5),
+    list("one", "two")
+  )
+  pool_end(p)
+})
+
+test_that("collect_all re-raises the first task error with its index", {
+  p <- pool_pair()
+  t1 <- sora_submit(p[["ctrl"]], "ok")
+  t2 <- sora_submit(p[["ctrl"]], stop("boom"))
+  t3 <- sora_submit(p[["ctrl"]], stop("later boom"))
+  pool_step(p)
+  pool_step(p)
+  pool_step(p)
+  err <- tryCatch(
+    sora_collect_all(list(t1, t2, t3), timeout = 5),
+    error = identity
+  )
+  expect_s3_class(err, "simpleError")
+  expect_identical(conditionMessage(err), "boom")
+  expect_identical(err$index, 2L)
+  # earlier handles are consumed, later ones stay collectible
+  expect_error(sora_collect(t1, timeout = 0), "already collected")
+  err3 <- tryCatch(sora_collect(t3, timeout = 5), error = identity)
+  expect_identical(conditionMessage(err3), "later boom")
+  pool_end(p)
+})
+
+test_that("collect_all reports a cancellation with its index", {
+  p <- pool_pair()
+  t1 <- sora_submit(p[["ctrl"]], "runs")
+  t2 <- sora_submit(p[["ctrl"]], "never")
+  expect_true(sora_cancel(t2))
+  pool_step(p)
+  err <- tryCatch(
+    sora_collect_all(list(t1, t2), timeout = 5),
+    error = identity
+  )
+  expect_s3_class(err, "sora_error_cancelled")
+  expect_identical(err$index, 2L)
+  pool_end(p)
+})
+
+test_that("collect_all validates its task list", {
+  p <- pool_pair()
+  expect_error(sora_collect_all(list()), "non-empty")
+  expect_error(sora_collect_all(list(1)), "not a task handle")
+  p2 <- pool_pair()
+  t1 <- sora_submit(p[["ctrl"]], 1L)
+  t2 <- sora_submit(p2[["ctrl"]], 2L)
+  expect_error(sora_collect_all(list(t1, t2), timeout = 0), "same pool")
+  pool_step(p)
+  expect_identical(sora_collect_all(list(t1), timeout = 5), list(1L))
+  expect_error(sora_collect_all(list(t1), timeout = 0), "already collected")
+  pool_step(p2)
+  expect_identical(sora_collect(t2, timeout = 5), 2L)
+  pool_end(p)
+  pool_end(p2)
+})
+
 test_that("collect_any reports completion order across real workers", {
   skip_if_no_child_sora()
   p <- sora_pool(2L)

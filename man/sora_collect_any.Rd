@@ -25,7 +25,9 @@ as soon as any of them reaches a terminal state — result published,
 error raised, cancelled, or its worker died. Among handles already
 terminal, the earliest in \code{tasks} is reported. The wait parks on the
 submitter's single parker: any publishing worker wakes it directly,
-with no polling.
+with no polling. For the whole set at once, \code{\link[=sora_collect_all]{sora_collect_all()}}
+waits until every task is terminal and returns all results in input
+order.
 }
 \section{Outcomes}{
 

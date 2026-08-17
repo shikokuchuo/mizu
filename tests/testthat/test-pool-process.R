@@ -26,6 +26,22 @@ test_that("a spawned worker round-trips every payload kind", {
   expect_error(sora_submit(p, 1), "pool handle is closed")
 })
 
+test_that("collect_all round-trips a heterogeneous set across processes", {
+  skip_if_no_child_sora()
+  p <- sora_pool(2L)
+  tasks <- list(
+    a = sora_submit(p, x * 2L, x = 21L),
+    b = sora_submit(p, "done"),
+    c = sora_submit(p, sum(v), v = runif(100000))
+  )
+  res <- sora_collect_all(tasks, timeout = 30)
+  expect_identical(names(res), c("a", "b", "c"))
+  expect_identical(res[["a"]], 42L)
+  expect_identical(res[["b"]], "done")
+  expect_type(res[["c"]], "double")
+  expect_true(sora_pool_stop(p, timeout = 10))
+})
+
 test_that("a blocked collect is woken by the worker's publish", {
   skip_if_no_child_sora()
   p <- sora_pool()

@@ -3099,6 +3099,207 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
   }
 }
 
+/* The collect-all predicate: every slot terminal (OK, ERR, DIED, or
+   CANCEL — a cancelled task is "done", as in collect_any). */
+static int pool_all_terminal(sora_rs_hdr **rss, R_xlen_t n) {
+  for (R_xlen_t i = 0; i < n; i++) {
+    if (atomic_load_explicit(&rss[i]->status, memory_order_acquire) ==
+        SORA_RS_PENDING)
+      return 0;
+  }
+  return 1;
+}
+
+/* Wait on all of a submitter's outstanding tasks, on the collect_any
+   mechanics with an all-terminal predicate: announce on every pending
+   slot, park once on the submitter's one parker, scan on wake. While
+   parked the waiter is announced on every pending slot, so each
+   publishing worker unparks it — K slow completions cost K wakes x O(N)
+   scans, still well under the per-collect loop the verb replaces. One
+   overall deadline; a timeout claims nothing, so no completed result is
+   silently discarded. On success the claim runs in list order and the
+   first ERR/DIED/CANCEL by position reports sora_caught-boxed with its
+   1-based index: slots before it are claimed, slots after it stay
+   collectible. */
+SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
+  if (TYPEOF(tasks) != VECSXP || XLENGTH(tasks) == 0)
+    Rf_error("sora: tasks must be a non-empty list of task handles");
+  double timeout_s = Rf_asReal(timeout);
+  R_xlen_t n = XLENGTH(tasks);
+  sora_pool *p = NULL;
+  SEXP pool_xp = R_NilValue;
+  sora_task *ts = (sora_task *) R_alloc(n, sizeof(*ts));
+  sora_rs_hdr **rss = (sora_rs_hdr **) R_alloc(n, sizeof(sora_rs_hdr *));
+  for (R_xlen_t i = 0; i < n; i++) {
+    sora_pool *pi;
+    SEXP pool_xpi;
+    ts[i] = task_get(VECTOR_ELT(tasks, i), &pi, &pool_xpi);
+    if (pi->sub_slot < 0)
+      Rf_error("sora: not a submitter's task handle");
+    if (p == NULL) {
+      p = pi;
+      pool_xp = pool_xpi;
+    } else if (pi != p) {
+      Rf_error("sora: task handles must belong to the same pool handle");
+    }
+    sora_rs_hdr *rs = pool_rs(pi, ts[i].idx);
+    if (!sora_task_seq_match(&rs->sequence, ts[i].seq))
+      Rf_error("sora: task handle already collected or invalidated");
+    rss[i] = rs;
+  }
+
+  double deadline = -1;
+
+  for (;;) {
+    if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0)
+      pool_orphan_teardown_try(p);   /* its cancel sweep ends this wait */
+    if (pool_all_terminal(rss, n)) break;
+
+    /* Help mode, as in collect: a worker blocked on its own subtree must
+       make progress on runnable work, not park. */
+    if (p->role == SORA_ROLE_WORKER && p->wk_slot >= 0) {
+      int got = pool_deque_pop(p);
+      if (!got)
+        got = pool_steal_any(p, p->help_depth >= SORA_HELP_DEPTH_LIMIT);
+      if (got) {
+        p->st_helps++;
+        p->help_depth++;
+        pool_execute(p, pool_xp, 1);
+        p->help_depth--;
+        continue;
+      }
+    }
+
+    if (timeout_s <= 0) return sora_sent_timeout;
+
+    /* hoisted above the spin so the first episode's `until` is clamped
+       too — a finite timeout's clock covers the whole wait. One read
+       serves the deadline compute and the bound. */
+    double now = sora_now();
+    if (deadline < 0 && R_FINITE(timeout_s))
+      deadline = now + timeout_s;
+
+    /* time-boxed spin before the park announce, as in collect_any: a
+       fast completion caught here costs neither side a syscall,
+       waiter_slot staying unannounced through the spin */
+    uint64_t budget = p->collect_budget_ns;
+    double until = now + (double) budget / 1e9;
+    if (deadline >= 0 && deadline < until) until = deadline;
+    int caught;
+    SORA_SPIN_WAIT(pool_all_terminal(rss, n), until,
+                   n <= 4 ? SORA_SPIN_CLOCK_EVERY_LIGHT :
+                   SORA_SPIN_CLOCK_EVERY, caught);
+    if (caught) {
+      p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
+      break;
+    }
+
+    /* announce on every pending slot -> fence -> re-check -> park
+       bounded; each publishing worker reads its slot's waiter_slot after
+       the publish CAS and unparks this submitter's one parker */
+    uint32_t e = sora_parker_snapshot(pool_sub_pk(p, (uint32_t) p->sub_slot));
+    for (R_xlen_t i = 0; i < n; i++)
+      if (atomic_load_explicit(&rss[i]->status, memory_order_acquire) ==
+          SORA_RS_PENDING)
+        atomic_store_explicit(&rss[i]->waiter_slot, p->sub_slot,
+                              memory_order_relaxed);
+    atomic_thread_fence(memory_order_seq_cst);
+    if (pool_all_terminal(rss, n)) {
+      p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
+        SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
+      break;
+    }
+    long ms = SORA_INTERRUPT_BOUND_MS;
+    if (deadline >= 0) {
+      double rem = deadline - sora_now();
+      if (rem <= 0) {
+        pool_any_unannounce(rss, n);
+        return sora_sent_timeout;
+      }
+      long rem_ms = (long) (rem * 1000) + 1;
+      if (rem_ms < ms) ms = rem_ms;
+    }
+    double park_t0 = sora_now();
+    sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    p->st_collect_parks++;
+    double parked_ns = (sora_now() - park_t0) * 1e9;
+    R_CheckUserInterrupt();
+    if (pool_all_terminal(rss, n)) {
+      if (parked_ns < 2.0 * SORA_COLLECT_SPIN_BUDGET_NS)
+        p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
+          SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
+      else
+        p->collect_budget_ns = budget / 2 < SORA_SPIN_FLOOR_NS ?
+          SORA_SPIN_FLOOR_NS : budget / 2;
+      break;
+    }
+    /* backstop for a missed death notification, piggybacked on a wake
+       that happened regardless — never a wakeup of its own */
+    for (R_xlen_t i = 0; i < n; i++) {
+      int32_t claimant = atomic_load_explicit(&rss[i]->worker_slot,
+                                              memory_order_acquire);
+      if (claimant >= 0 && (uint32_t) claimant < p->hdr.max_workers)
+        pool_probe_worker(p, (uint32_t) claimant);
+    }
+    if (deadline >= 0 && sora_now() >= deadline &&
+        !pool_all_terminal(rss, n)) {
+      pool_any_unannounce(rss, n);
+      return sora_sent_timeout;
+    }
+  }
+
+  pool_any_unannounce(rss, n);
+
+  /* every slot terminal: claim in list order */
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+  SEXP nms = Rf_getAttrib(tasks, R_NamesSymbol);
+  if (nms != R_NilValue)
+    Rf_setAttrib(out, R_NamesSymbol, nms);
+  for (R_xlen_t i = 0; i < n; i++) {
+    int32_t st = atomic_load_explicit(&rss[i]->status, memory_order_acquire);
+    int index = (int) i + 1;   /* R 1-based */
+    switch (st) {
+    case SORA_RS_OK:
+      SET_VECTOR_ELT(out, i,
+                     pool_rs_claim(p, pool_xp, rss[i], ts[i].idx, st));
+      break;
+    case SORA_RS_ERR: {
+      SEXP v = PROTECT(pool_rs_claim(p, pool_xp, rss[i], ts[i].idx, st));
+      SEXP caught = PROTECT(sora_caught(v));
+      Rf_setAttrib(caught, sora_index_sym, Rf_ScalarInteger(index));
+      UNPROTECT(3);
+      return caught;
+    }
+    case SORA_RS_DIED: {
+      int32_t w;
+      double wpid;
+      pool_rs_claim_died(p, pool_xp, rss[i], ts[i].idx, &w, &wpid);
+      SEXP caught = PROTECT(sora_caught_died((int) w, wpid,
+                                            "sora: worker died while "
+                                            "executing this task"));
+      Rf_setAttrib(caught, sora_index_sym, Rf_ScalarInteger(index));
+      UNPROTECT(2);
+      return caught;
+    }
+    case SORA_RS_CANCEL: {
+      /* the task keeper releases at slot reuse, not here — the worker may
+         not have materialized yet */
+      SEXP caught = PROTECT(sora_caught_cond("sora_error_cancelled",
+                                            "sora: task cancelled or pool "
+                                            "stopped"));
+      Rf_setAttrib(caught, sora_index_sym, Rf_ScalarInteger(index));
+      UNPROTECT(2);
+      return caught;
+    }
+    case SORA_RS_FREE:
+    default:
+      Rf_error("sora: task handle already collected");
+    }
+  }
+  UNPROTECT(1);
+  return out;
+}
+
 SEXP sora_pool_collect(SEXP xp, SEXP timeout) {
   return pool_collect(xp, Rf_asReal(timeout), 0);
 }

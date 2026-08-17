@@ -94,6 +94,7 @@ SEXP sora_pool_dump_call(SEXP);
 SEXP sora_pool_collect(SEXP, SEXP);
 SEXP sora_pool_collect_try(SEXP, SEXP);
 SEXP sora_pool_collect_any(SEXP, SEXP);
+SEXP sora_pool_collect_all(SEXP, SEXP);
 SEXP sora_pool_cancel(SEXP);
 SEXP sora_pool_task_state(SEXP);
 SEXP sora_pool_stop_call(SEXP, SEXP);
@@ -196,6 +197,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"sora_pool_collect",          (DL_FUNC) &sora_pool_collect,          2},
   {"sora_pool_collect_try",      (DL_FUNC) &sora_pool_collect_try,      2},
   {"sora_pool_collect_any",      (DL_FUNC) &sora_pool_collect_any,      2},
+  {"sora_pool_collect_all",      (DL_FUNC) &sora_pool_collect_all,      2},
   {"sora_pool_cancel",           (DL_FUNC) &sora_pool_cancel,           1},
   {"sora_pool_task_state",       (DL_FUNC) &sora_pool_task_state,       1},
   {"sora_pool_stop_call",        (DL_FUNC) &sora_pool_stop_call,        2},
