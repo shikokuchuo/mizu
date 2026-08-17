@@ -35,6 +35,8 @@ SEXP sora_onunload(void) {
 
 SEXP sora_bounded_call(SEXP, SEXP);
 SEXP sora_unserialize_call(SEXP);
+SEXP sora_codec_write_call(SEXP);
+SEXP sora_codec_read_call(SEXP);
 SEXP sora_region_create(SEXP);
 SEXP sora_region_open(SEXP, SEXP);
 SEXP sora_region_name(SEXP);
@@ -135,6 +137,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"sora_onunload",              (DL_FUNC) &sora_onunload,              0},
   {"sora_bounded_call",          (DL_FUNC) &sora_bounded_call,          2},
   {"sora_unserialize_call",      (DL_FUNC) &sora_unserialize_call,      1},
+  {"sora_codec_write_call",      (DL_FUNC) &sora_codec_write_call,      1},
+  {"sora_codec_read_call",       (DL_FUNC) &sora_codec_read_call,       1},
   {"sora_region_create",         (DL_FUNC) &sora_region_create,         1},
   {"sora_region_open",           (DL_FUNC) &sora_region_open,           2},
   {"sora_region_name",           (DL_FUNC) &sora_region_name,           1},

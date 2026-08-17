@@ -1,6 +1,6 @@
 PKG_CFLAGS = -pthread
 PKG_LIBS = -pthread
-OBJECTS = bounded.o channel.o condition.o entity.o init.o liveness.o map.o \
+OBJECTS = bounded.o channel.o codec.o condition.o entity.o init.o liveness.o map.o \
           payload.o pool.o preamble.o rng.o shm_rw.o tune.o wait_linux.o \
           wait_macos.o wait_win32.o wrap.o zc.o vendor/altrep.o \
           vendor/serialize.o vendor/shm.o

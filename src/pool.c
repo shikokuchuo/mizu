@@ -506,11 +506,22 @@ static SEXP pool_eval_task(sora_pool *p, SEXP xp, SEXP payload, int catching,
   R_xlen_t n = Rf_xlength(args);
   if (n > 0 && TYPEOF(names) != STRSXP)
     Rf_error("sora: corrupt task payload");
+  SEXP expr = VECTOR_ELT(payload, 0);
+  /* eval is the identity on value types: a constant task (the canonical
+     trivial task, and every constant result of a nested computation)
+     binds no arguments and needs no fresh environment — the per-task
+     R_NewEnv is the whole cost here */
+  switch (TYPEOF(expr)) {
+  case NILSXP: case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP:
+  case STRSXP: case RAWSXP: case VECSXP:
+    *ok = 1;
+    return expr;
+  }
   SEXP env = PROTECT(R_NewEnv(pool_eval_env(xp), 0, 0));
   for (R_xlen_t i = 0; i < n; i++)
     Rf_defineVar(Rf_installTrChar(STRING_ELT(names, i)),
                  VECTOR_ELT(args, i), env);
-  struct sora_eval_ctx c = { VECTOR_ELT(payload, 0), env, 1 };
+  struct sora_eval_ctx c = { expr, env, 1 };
   SEXP value;
   if (catching) {
     value = R_tryCatchError(pool_eval_body, &c, pool_eval_handler, &c);
@@ -2664,15 +2675,16 @@ static SEXP pool_rs_claim(sora_pool *p, SEXP pool_xp, sora_rs_hdr *rs,
     Rf_error("sora: task handle already collected");
   }
   /* The keeper-drop wake exists for the worker's keeper reap: a FREE slot
-     gives it a record to consume. The self-contained kinds (NIL, RAWVEC,
-     STR1 — the ones sora_payload_stage pins nothing for) create no record
-     (pool_publish_result skips it), so the FREE is invisible to the reap
-     and the fence + parked-mask load + syscall are pure cost — under a
-     fire-then-collect burst with a parked worker, one wake per collect.
-     The lame-duck retiree is unaffected: it lingers only while rk_n > 0,
-     i.e. while a keepered (waking) result is still outstanding. */
-  if (kind != SORA_KIND_NIL && kind != SORA_KIND_RAWVEC &&
-      kind != SORA_KIND_STR1)
+     gives it a record to consume. The keeperless kinds (the immediates and
+     self-contained codec streams inline — the ones sora_payload_stage pins
+     nothing for) create no record (pool_publish_result skips it), so the
+     FREE is invisible to the reap and the fence + parked-mask load +
+     syscall are pure cost — under a fire-then-collect burst with a parked
+     worker, one wake per collect. The lame-duck retiree is unaffected: it
+     lingers only while rk_n > 0, i.e. while a keepered (waking) result is
+     still outstanding. */
+  if (!sora_keeperless(kind, (const unsigned char *) rs +
+                       sizeof(sora_rs_hdr)))
     pool_unpark_keeper_drop(p, w);
   UNPROTECT(1);
   return v;

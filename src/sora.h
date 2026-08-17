@@ -95,6 +95,25 @@ int sora_shm_create_populate(mori_shm *shm, size_t size);
    is discarded by the caller). */
 size_t sora_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
 
+// Compact codec (codec.c) --------------------------------------------------------
+
+/* The sora-native binary framing for the hot-path payload subset: NULL,
+   symbols, atomic vectors (attributes included), strings, list/vector
+   trees, and calls. Streams are self-describing — the first byte is
+   SORA_CODEC_MAGIC where an R binary stream carries 'B', so readers
+   dispatch on it and the slot header is untouched. The writer rejects
+   ALTREP anywhere in the graph, so a codec stream carries no mori
+   identifier and needs no keeper pin. */
+#define SORA_CODEC_MAGIC 0x53u   /* 'S'; R's binary and xdr streams are 'B'/'X' */
+
+/* Bounded single-pass write with count-only flip on overflow (the
+   sora_serialize_bounded discipline). Returns the exact total stream size
+   (complete in dst iff <= limit), or 0 when object is outside the subset
+   and must fall back to R_Serialize. */
+size_t sora_codec_write(unsigned char *dst, size_t limit, SEXP object);
+/* Read a codec stream (magic included); raises on any malformation. */
+SEXP sora_codec_read(const unsigned char *buf, size_t len);
+
 // Payload framing (payload.c) ----------------------------------------------------
 
 /* Shared between Part I channel slots and Part II pool entries / result
@@ -132,6 +151,17 @@ enum {
 
 /* STR1's NA marker in aux (a cetype is 0-3, so this cannot alias one). */
 #define SORA_STR1_NA UINT64_MAX
+
+/* Whether a staged payload created no keeper record, so the collect-side
+   keeper-drop wake is pure cost: the immediate kinds, or a self-contained
+   codec stream inline (payload byte 0 is the magic — an INLINE stream is
+   never empty). Must match sora_payload_stage's keeper discipline. */
+static inline int sora_keeperless(uint32_t kind,
+                                 const unsigned char *payload) {
+  return kind == SORA_KIND_NIL || kind == SORA_KIND_RAWVEC ||
+    kind == SORA_KIND_STR1 ||
+    (kind == SORA_KIND_INLINE && payload[0] == SORA_CODEC_MAGIC);
+}
 
 typedef struct sora_slot_hdr_s {
   uint32_t kind;
@@ -289,6 +319,10 @@ SEXP sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
    hook-emitted identifiers, so only the region wrap needs the pin). */
 SEXP sora_payload_spill_raw(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
                            size_t n, sora_spill_fl *fl);
+/* The SHM_RAW spill of a codec stream (n from the counting first pass):
+   the same keeper shape minus x, on the same self-containment argument. */
+SEXP sora_payload_spill_codec(sora_slot_hdr *hdr, unsigned char *payload,
+                             SEXP x, size_t n, sora_spill_fl *fl);
 /* Stage x as REF (a sora view), RAWVEC, INLINE, SHM_VEC (a mori-layout-
    eligible object past the inline budget and the zc floor), or SHM_RAW —
    the pool framing, with no arena tier. Returns the keeper to pin (the

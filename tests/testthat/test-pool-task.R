@@ -32,6 +32,23 @@ test_that("a task round-trips every result payload kind", {
   pool_end(p)
 })
 
+test_that("codec streams carry task args and attributed results", {
+  p <- pool_pair()
+  # named args cross as a codec stream (the envelope is a named list)
+  t <- sora_submit(p[["ctrl"]], x + 1, x = c(a = 1, b = 2))
+  pool_step(p)
+  expect_identical(sora_collect(t, timeout = 5), c(a = 2, b = 3))
+  # an attributed result crosses as a codec stream and needs no keeper wake
+  t <- sora_submit(p[["ctrl"]], factor(rep(x, 2L)), x = c("a", "b"))
+  pool_step(p)
+  expect_identical(sora_collect(t, timeout = 5), factor(rep(c("a", "b"), 2L)))
+  # a codec-ineligible arg (a closure) falls back to R_Serialize inline
+  t <- sora_submit(p[["ctrl"]], f(3L), f = function(x) x * 2L)
+  pool_step(p)
+  expect_identical(sora_collect(t, timeout = 5), 6L)
+  pool_end(p)
+})
+
 test_that("mid-size vector results spill as bare bytes (RAWSPILL)", {
   p <- pool_pair() # 256 B slots: a 4 KB result spills to a region
   t <- sora_submit(p[["ctrl"]], x * 2, x = seq_len(500L) + 0)

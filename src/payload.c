@@ -269,6 +269,28 @@ SEXP sora_payload_spill_raw(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
   return keep;
 }
 
+/* The SHM_RAW spill of a codec stream (n from the counting first pass):
+   the same keeper shape minus x — the writer rejected ALTREP, so no
+   hook-emitted identifier can ride along and only the region wrap needs
+   the pin. */
+SEXP sora_payload_spill_codec(sora_slot_hdr *hdr, unsigned char *payload,
+                             SEXP x, size_t n, sora_spill_fl *fl) {
+  mori_shm *shm = NULL;
+  SEXP wrap = sora_spill_region_get(fl, n, &shm);       /* PROTECTed */
+  if (sora_codec_write((unsigned char *) shm->addr, shm->size, x) != n)
+    Rf_error("sora: codec write mismatch");   /* the walk is deterministic */
+  hdr->kind = SORA_KIND_SHM_RAW;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = (uint64_t) n;
+  memcpy(payload, shm->name, shm->name_len);
+  SEXP keep = Rf_allocVector(VECSXP, 3);
+  SET_VECTOR_ELT(keep, 0, R_NilValue);
+  SET_VECTOR_ELT(keep, 1, wrap);
+  SET_VECTOR_ELT(keep, 2, sora_spill_marker);
+  UNPROTECT(1);
+  return keep;
+}
+
 /* The NIL, RAWVEC, and STR1 kinds return R_NilValue as the keeper — pin
    nothing: their slot bytes are self-contained (RAWVEC and STR1 exclude
    ALTREP, attributes, and S4, so no hook-emitted identifier can ride
@@ -315,6 +337,20 @@ SEXP sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
   size_t n;
   if (sora_raw_type(x, &n) && n <= UINT32_MAX)
     return sora_payload_spill_raw(hdr, payload, x, n, fl);
+  /* the compact codec ahead of R_Serialize: no per-call ref-table
+     allocation on either side, and a self-contained stream (the writer
+     rejects ALTREP, so no mori identifier can ride along) that pins no
+     keeper — the NIL/RAWVEC/STR1 discipline */
+  n = sora_codec_write(payload, inline_max, x);
+  if (n != 0) {
+    if (n <= inline_max) {
+      hdr->kind = SORA_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = 0;
+      return R_NilValue;
+    }
+    return sora_payload_spill_codec(hdr, payload, x, n, fl);
+  }
   n = sora_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {
     hdr->kind = SORA_KIND_INLINE;
@@ -415,9 +451,11 @@ SEXP sora_payload_read(const sora_slot_hdr *hdr, const unsigned char *payload,
     return y;
   }
   case SORA_KIND_INLINE:
-    if (hdr->len > inline_max)
+    if (hdr->len > inline_max || hdr->len == 0)
       Rf_error("sora: corrupt payload slot");
-    return mori_unserialize_from((unsigned char *) payload, hdr->len);
+    return payload[0] == SORA_CODEC_MAGIC ?
+      sora_codec_read(payload, hdr->len) :
+      mori_unserialize_from((unsigned char *) payload, hdr->len);
   case SORA_KIND_RAWVEC: {
     int type = (int) hdr->aux;
     size_t elt = mori_sizeof_elt(type);
@@ -462,7 +500,9 @@ SEXP sora_payload_read(const sora_slot_hdr *hdr, const unsigned char *payload,
        stream it carries, and the slack bytes are a previous payload's */
     size_t len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
       (size_t) hdr->aux : shm->size;
-    SEXP y = mori_unserialize_from((unsigned char *) shm->addr, len);
+    unsigned char *stream = (unsigned char *) shm->addr;
+    SEXP y = stream[0] == SORA_CODEC_MAGIC ?
+      sora_codec_read(stream, len) : mori_unserialize_from(stream, len);
     UNPROTECT(nprotect);
     return y;
   }

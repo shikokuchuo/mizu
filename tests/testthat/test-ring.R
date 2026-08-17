@@ -89,6 +89,41 @@ test_that("INLINE carries arbitrary R objects, NULL included", {
   }
 })
 
+test_that("the compact codec carries the serialize subset across every tier", {
+  p <- channel_pair(arena_size = 4096)
+  # inline: attributed vectors, lists, calls
+  for (x in list(
+    c(a = 1, b = 2),
+    list(a = 1L, b = "two", c = list(3)),
+    quote(f(x, a = 1:3 + 0L)),
+    factor(c("a", "b"))
+  )) {
+    sora_send(p[["host"]], x)
+    expect_identical(sora_recv(p[["peer"]], 5), x)
+  }
+  # past the 240 B inline budget: the arena carries a codec stream
+  mid <- structure(lapply(1:50, function(i) c(i, i^2)), label = "arena")
+  sora_send(p[["host"]], mid)
+  expect_identical(sora_recv(p[["peer"]], 5), mid)
+  # past the arena: a call tree (zc-ineligible) spills as a codec SHM_RAW
+  big <- as.call(c(list(quote(f)), replicate(2000, quote(x + 1))))
+  sora_send(p[["host"]], big)
+  expect_identical(sora_recv(p[["peer"]], 5), big)
+  channel_end(p)
+})
+
+test_that("codec-ineligible payloads still cross by R_Serialize", {
+  p <- channel_pair()
+  f <- function(x) x + 1L # a closure
+  sora_send(p[["host"]], f)
+  expect_identical(sora_recv(p[["peer"]], 5)(1L), 2L)
+  sora_send(p[["host"]], list(f, 1:5)) # closure and ALTREP inside a list
+  y <- sora_recv(p[["peer"]], 5)
+  expect_identical(y[[1]](2L), 3L)
+  expect_identical(y[[2]], 1:5)
+  channel_end(p)
+})
+
 test_that("mid-size payloads spill to the arena and wrap its byte-ring", {
   p <- channel_pair(capacity = 8L, arena_size = 4096)
   x <- raw(1000) # + attr -> ~1KB serialized

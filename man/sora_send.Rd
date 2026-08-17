@@ -54,6 +54,8 @@ with a single byte copy, encoding mark preserved. Attribute-free
 non-ALTREP atomic vectors ride a serialization-free fast path with a
 byte-identical round-trip — inline within the budget, and past it as
 bare bytes in the arena or a spill region (no serialize, no parse).
+Other plain values — attributed vectors, strings, lists, calls — cross
+as a compact binary stream written and read without R's serializer.
 Anything else is R-serialized. Mori-shared objects reduce to identifier
 wire forms through the mori hooks.
 }

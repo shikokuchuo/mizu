@@ -161,3 +161,53 @@ iterations capped at ~32 MiB of payload, the channel case tops at 32 MiB
 runs single iterations. Channel/map numbers printed from this date on are
 not directly comparable with the 64 MiB records above. Suite peak
 /dev/shm use after the change: ~440 MiB (was ~1.8 GB).
+
+## 2026-08-17: the compact codec (src/codec.c) ahead of R_Serialize
+
+Same host, Sys.time-timed A/B against the previous build (min of 5 x
+4-5k iterations).
+
+The finding that mattered: R_Serialize allocates a VECSXP(1099)
+ref-tracking hash table on EVERY call (R_Unserialize a VECSXP(128) read
+table) — several hundred ns plus ~10 KB of immediate garbage per payload
+per side, the largest remaining cost of a small pool task or channel
+message once the immediate kinds landed. R's writer never references
+vectors or pairlist nodes through that table (only symbols, environments,
+pointers), so a writer that never emits references loses nothing for the
+hot-path subset.
+
+The codec frames NULL, symbols, atomic vectors (attributes included),
+strings, list/vector trees, and calls as a self-describing stream (first
+byte SORA_CODEC_MAGIC where an R binary stream carries 'B' — readers
+dispatch on it, the slot header is untouched). It rejects ALTREP anywhere
+in the graph, so no mori identifier can ride along: codec streams pin NO
+keeper (the NIL/RAWVEC/STR1 discipline extended to the serialize tiers).
+Closures, environments, S4, ALTREP, attributed pairlist nodes
+(R_getAttributes synthesizes a spurious "names" from tail tags there),
+and over-deep graphs fall back to R_Serialize exactly as before. The
+gp/LEVELS word is not carried (identical() never compares it).
+
+Measured (base -> codec):
+
+| case | base | codec |
+|---|---|---|
+| channel round trip (0L, RAWVEC) | 1.00 us | 0.80 us |
+| channel round trip (list(1, "a")) | 2.60 us | 1.20 us |
+| pool round trip (NULL task) | 1.50 us | 0.75 us |
+| pool round trip (sum(x), x = runif(10)) | 1.75 us | 1.25 us |
+| pool pipelined | 1.0M tasks/s | 2.0M tasks/s |
+
+Two companion changes, same theme of not paying for what the payload
+doesn't need: the channel's per-verb keeper reap is now gated on
+outstanding keepers / arena bytes / lent regions (keeperless traffic
+skips the cross-core head load entirely), and the worker skips the
+per-task fresh environment when the task expression is a value type
+(eval is the identity there — no env, no arg binding). The pool collect
+keeperless-wake gate now keys on sora_keeperless() (immediates + inline
+codec streams), not the three immediate kinds alone.
+
+After the codec, profiles of the pool round trip and pipelined loops are
+>85% R-interpreter boundary (the closures, substitute, list(...) of the
+API itself); the sora C share is single-digit percent. The remaining
+floor is the call boundary — the batch verbs and sora_map are the
+answers for throughput-bound callers.
