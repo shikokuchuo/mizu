@@ -141,6 +141,14 @@ void sora_channel_init(void) {
   sora_sent_gone = sora_make_sentinel("peer_gone", "sora_peer_gone");
 }
 
+void sora_channel_fini(void) {
+  R_ReleaseObject(sora_sent_gone);
+  R_ReleaseObject(sora_sent_closed);
+  R_ReleaseObject(sora_sent_timeout);
+  R_ReleaseObject(sora_sent_full);
+  R_ReleaseObject(sora_class_channel);
+}
+
 // Small helpers -------------------------------------------------------------------
 
 double sora_now(void) {

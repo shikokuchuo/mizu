@@ -53,6 +53,10 @@ void sora_zc_init(void) {
   mori_set_wire_hooks(sora_zc_ref_mark, sora_zc_wire_resolve);
 }
 
+void sora_zc_fini(void) {
+  R_ReleaseObject(sora_zc_marker);
+}
+
 // Refcount / flags words --------------------------------------------------------
 
 static inline _Atomic uint32_t *zc_rc(void *base) {

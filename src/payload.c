@@ -102,6 +102,11 @@ void sora_payload_init(void) {
 #endif
 }
 
+void sora_payload_fini(void) {
+  R_ReleaseObject(empty_args);
+  R_ReleaseObject(sora_spill_marker);
+}
+
 static int spill_keeper(SEXP k) {
   return TYPEOF(k) == VECSXP && Rf_xlength(k) == 3 &&
     VECTOR_ELT(k, 2) == sora_spill_marker;

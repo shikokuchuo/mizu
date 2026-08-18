@@ -358,6 +358,7 @@ void sora_oc_store(sora_open_cache *oc, const unsigned char *name, uint32_t len,
 // Zero-copy payload tiers (zc.c) ---------------------------------------------
 
 void sora_zc_init(void);
+void sora_zc_fini(void);
 /* SHM_VEC eligibility: a mori-layout-eligible object (non-ALTREP, non-S4
    atomic vector; string vector; list tree) whose layout bytes exceed both
    the inline budget and SORA_ZC_FLOOR — cheap lower-bound probes keep the
@@ -822,5 +823,10 @@ void sora_channel_init(void);
 void sora_pool_init(void);
 void sora_map_init(void);
 void sora_tune_malloc(void);
+/* Unload counterparts (R_unload_sora): release the objects the inits
+   preserve — only payload, channel, pool and zc hold any. */
+void sora_payload_fini(void);
+void sora_channel_fini(void);
+void sora_pool_fini(void);
 
 #endif /* SORA_H */

@@ -134,6 +134,11 @@ void sora_pool_init(void) {
   sora_index_sym = Rf_install("index");
 }
 
+void sora_pool_fini(void) {
+  R_ReleaseObject(sora_class_task);
+  R_ReleaseObject(sora_class_pool);
+}
+
 // Layout ----------------------------------------------------------------------------
 
 static uint64_t pool_ring_bytes(const sora_pool_hdr *h) {

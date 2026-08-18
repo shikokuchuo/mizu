@@ -20,25 +20,12 @@
 #' @keywords internal
 "_PACKAGE"
 
-# sora is 64-bit only: the wire formats are built on 64-bit monotonic
-# positions whose lock-freedom the wrap-arithmetic and crash-atomicity
-# arguments depend on; 32-bit targets would fall back to lock-based
-# 64-bit atomics, which do not work across processes. On Linux the death
-# listener requires pidfd_open (kernel >= 5.3) with no fallback: without
-# a listener, host death while a non-interactive peer is parked would be
-# a permanent hang, not a late detection.
+# Load-time guards live in C (sora_onload_probe, src/init.c): 64-bit
+# pointer width and, on Linux, pidfd_open for the peer death listener.
 .onLoad <- function(libname, pkgname) {
-  if (.Machine[["sizeof.pointer"]] < 8L) {
-    stop(
-      "sora requires 64-bit R: its cross-process wire formats depend on ",
-      "lock-free 64-bit atomics",
-      call. = FALSE
-    )
-  }
   .Call(sora_onload_probe)
 }
 
-.onUnload <- function(libpath) {
-  .Call(sora_onunload)
-  library.dynam.unload("sora", libpath)
-}
+# No .onUnload: the DLL must stay mapped — live handles carry finalizers
+# into it, and unloading would leave R calling unmapped code at process
+# exit. R_unload_sora covers any forced unload (e.g. pkgload).

@@ -10,12 +10,20 @@
 #endif
 #endif
 
-/* Load-time guard (with the 64-bit refusal on the R side): the Linux death
-   listener has no pre-pidfd fallback, by decision — a listener-less mode
-   would turn host death under a parked non-interactive peer into a permanent
-   hang, and a second liveness design would double exactly the surface this
-   package works hardest to keep small. */
+/* Load-time guards. sora is 64-bit only: the wire formats are built on
+   64-bit monotonic positions whose lock-freedom the wrap-arithmetic and
+   crash-atomicity arguments depend on; 32-bit targets would fall back to
+   lock-based 64-bit atomics, which do not work across processes. (A
+   compile-time constant — the check folds away on every supported target.)
+   On Linux the death listener has no pre-pidfd fallback, by decision — a
+   listener-less mode would turn host death under a parked non-interactive
+   peer into a permanent hang, and a second liveness design would double
+   exactly the surface this package works hardest to keep small. */
 SEXP sora_onload_probe(void) {
+  if (sizeof(void *) < 8) {
+    Rf_error("sora requires 64-bit R: its cross-process wire formats depend on "
+             "lock-free 64-bit atomics");
+  }
 #ifdef __linux__
   long fd = syscall(SYS_pidfd_open, (long) getpid(), 0);
   if (fd >= 0) {
@@ -25,11 +33,6 @@ SEXP sora_onload_probe(void) {
              "which the peer death listener depends on");
   }
 #endif
-  return R_NilValue;
-}
-
-SEXP sora_onunload(void) {
-  sora_death_listener_teardown();
   return R_NilValue;
 }
 
@@ -135,7 +138,6 @@ SEXP sora_pool_zc_info(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
   {"sora_onload_probe",          (DL_FUNC) &sora_onload_probe,          0},
-  {"sora_onunload",              (DL_FUNC) &sora_onunload,              0},
   {"sora_bounded_call",          (DL_FUNC) &sora_bounded_call,          2},
   {"sora_unserialize_call",      (DL_FUNC) &sora_unserialize_call,      1},
   {"sora_codec_write_call",      (DL_FUNC) &sora_codec_write_call,      1},
@@ -249,4 +251,16 @@ void R_init_sora(DllInfo *dll) {
   sora_map_init();
   sora_zc_init();
   mori_altrep_init(dll);
+}
+
+/* Called by R if the DLL is ever unloaded (the package deliberately has no
+   .onUnload — see R/sora-package.R — so this is dev-tooling territory):
+   death-listener teardown, then the preserved-object releases in reverse
+   init order. The ALTREP class registrations stay — R has no unregister. */
+void R_unload_sora(DllInfo *dll) {
+  sora_death_listener_teardown();
+  sora_zc_fini();
+  sora_pool_fini();
+  sora_channel_fini();
+  sora_payload_fini();
 }
