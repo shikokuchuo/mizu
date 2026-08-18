@@ -110,8 +110,16 @@ test_that("a dead worker's queued deque work is consumed in place", {
   p <- sora_pool(n_workers = 2L, slot_size = 1024L)
   d <- tfile()
   dir.create(d)
-  # occupy the second worker so the nested pushes stay on the first's deque
-  blocker <- sora_submit(p, Sys.sleep(1.5))
+  # the blocker holds the second worker on a file gate until the reap has
+  # run, so the nested pushes stay on the first's deque and orphan whole
+  g <- tfile()
+  blocker <- sora_submit(
+    p,
+    for (i in 1:1200) {
+      if (file.exists(g)) break else Sys.sleep(0.05)
+    },
+    g = g
+  )
   expect_true(wait_until(any(
     sora_pool_dump(p)[["workers"]][["in_flight"]] != -1L
   )))
@@ -133,7 +141,12 @@ test_that("a dead worker's queued deque work is consumed in place", {
   victim <- which(dm[["workers"]][["bottom"]] - dm[["workers"]][["top"]] == 3)
   kill_hard(dm[["workers"]][["pid"]][victim])
 
-  # the survivor drains the orphaned REAPING deque through ordinary steals
+  # the reap has run once the in-flight task fails; with the survivor still
+  # gated, the deque is REAPING with all three entries orphaned
+  expect_true(wait_until(sora_pool_status(p)[["tasks"]][["died"]] == 1L))
+  file.create(g)
+  # the released survivor drains the orphaned REAPING deque through
+  # ordinary steals
   expect_true(wait_until(length(dir(d)) == 3L, timeout = 15))
   expect_true(wait_until(sora_pool_status(p)[["workers"]][victim] == "free"))
   err <- tryCatch(sora_collect(t, timeout = 10), error = identity)
@@ -149,7 +162,16 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
   p <- sora_pool(n_workers = 2L)
   d <- tfile()
   dir.create(d)
-  blocker <- sora_submit(p, Sys.sleep(1.5))
+  # the blocker holds the second worker on a file gate until the reap has
+  # run, so the nested pushes stay on the first's deque and orphan whole
+  g <- tfile()
+  blocker <- sora_submit(
+    p,
+    for (i in 1:1200) {
+      if (file.exists(g)) break else Sys.sleep(0.05)
+    },
+    g = g
+  )
   expect_true(wait_until(any(
     sora_pool_dump(p)[["workers"]][["in_flight"]] != -1L
   )))
@@ -182,6 +204,10 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
   victim <- which(dm[["workers"]][["bottom"]] - dm[["workers"]][["top"]] == 3)
   kill_hard(dm[["workers"]][["pid"]][victim])
 
+  # the reap has run once the in-flight task fails; with the survivor still
+  # gated, the deque is REAPING with all three entries orphaned
+  expect_true(wait_until(sora_pool_status(p)[["tasks"]][["died"]] == 1L))
+  file.create(g)
   # POSIX regions outlive their creator, so the drain executes the orphans;
   # on Windows they vanished with the victim and the drain fails each as
   # DIED — either way the deque empties, the slot frees, and the thief
