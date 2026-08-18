@@ -103,11 +103,10 @@ typedef struct sora_pool_s {
   /* cumulative stat counters, mirrored into the slot's stat_* fields by
      pool_stats_publish at park/fairness-tick cadence */
   uint64_t st_tasks, st_steals, st_inj, st_parks, st_helps;
-  /* process-local adaptive spin budgets (ns) and collect park count:
-     budgets halve when an episode's spin comes up empty and reset to
-     the constant on a catch; st_collect_parks is the collect-side
-     mirror of st_parks. None of these are mirrored to shm; the dump
-     surfaces them under "local" */
+  /* process-local adaptive spin budgets (ns; see sora_spin_learn) and
+     collect park count: st_collect_parks is the collect-side mirror of
+     st_parks. None are mirrored to shm; the dump surfaces them under
+     "local" */
   uint64_t scan_budget_ns;
   uint64_t collect_budget_ns;
   uint64_t st_collect_parks;
@@ -2769,6 +2768,16 @@ static void pool_rs_claim_died(sora_pool *p, SEXP pool_xp, sora_rs_hdr *rs,
     Rf_error("sora: task handle already collected");
 }
 
+/* Learn the collect budget from a completed wait (t_wait < 0 on the
+   never-waited fast path); the tried budget seeds the halve branch. */
+static void pool_collect_learn(sora_pool *p, double t_wait,
+                               uint64_t budget) {
+  if (t_wait < 0) return;
+  p->collect_budget_ns =
+    sora_spin_learn((sora_now() - t_wait) * 1e9, budget,
+                    (uint64_t) SORA_COLLECT_SPIN_BUDGET_NS);
+}
+
 /* tryflag: the expected terminal outcomes (ERR payload, DIED, CANCEL)
    return sora_caught-boxed instead of signalling, so the map collect loops
    need no handler; contract violations (stale or already-collected
@@ -2781,6 +2790,7 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
     Rf_error("sora: not a submitter's task handle");
   sora_rs_hdr *rs = pool_rs(p, t.idx);
   double deadline = -1;
+  double t_wait = -1;
 
   int32_t st;
   for (;;) {
@@ -2822,18 +2832,15 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
        R_FINITE-guarded, so the Inf and already-done paths pay no extra
        clock read. One read serves the deadline compute and the bound. */
     double now = sora_now();
+    if (t_wait < 0) t_wait = now;
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = now + timeout_s;
 
     /* time-boxed spin before the park announce: a short task's publish
        is absorbed without the park/wake syscall pair on either side,
        since waiter_slot stays unannounced through the spin and the
-       publisher skips its wake. The budget update is exclusive — once
-       per wait episode, on the budget that was tried (B): a spin catch
-       pins the max; a catch at the announce re-check or a parked wait
-       under 2x the constant doubles B; a longer parked wait halves B.
-       A halve and a double never both fire in one episode (that pair
-       nets to zero growth from the floor — the sticky-floor flaw). */
+       publisher skips its wake. Every wait exit learns its measured
+       turnaround via sora_spin_learn. */
     uint64_t budget = p->collect_budget_ns;
     double until = now + (double) budget / 1e9;
     if (deadline >= 0 && deadline < until) until = deadline;
@@ -2843,7 +2850,7 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
                   SORA_RS_PENDING, until, SORA_SPIN_CLOCK_EVERY_LIGHT,
                   caught);
     if (caught) {
-      p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
 
@@ -2855,10 +2862,7 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
     atomic_thread_fence(memory_order_seq_cst);
     if (atomic_load_explicit(&rs->status, memory_order_acquire) !=
         SORA_RS_PENDING) {
-      /* caught at the re-check: the turnaround sat just past the tried
-         budget — grow toward catching the next one in the spin */
-      p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
-        SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
+      pool_collect_learn(p, t_wait, budget);
       continue;
     }
     long ms = SORA_INTERRUPT_BOUND_MS;
@@ -2868,22 +2872,12 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
-    /* the bracketing clock reads measure the parked wait for the budget
-       update; the common timeout = Inf collect has no other clock in its
-       wait loop, and the pair is negligible against the park syscalls */
-    double park_t0 = sora_now();
     sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
     p->st_collect_parks++;
-    double parked_ns = (sora_now() - park_t0) * 1e9;
     R_CheckUserInterrupt();
     st = atomic_load_explicit(&rs->status, memory_order_acquire);
     if (st != SORA_RS_PENDING) {
-      if (parked_ns < 2.0 * SORA_COLLECT_SPIN_BUDGET_NS)
-        p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
-          SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
-      else
-        p->collect_budget_ns = budget / 2 < SORA_SPIN_FLOOR_NS ?
-          SORA_SPIN_FLOOR_NS : budget / 2;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
     /* backstop for a missed death notification, piggybacked on a wake
@@ -3005,6 +2999,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
   }
 
   double deadline = -1;
+  double t_wait = -1;
   R_xlen_t found = -1;
   int32_t st = SORA_RS_PENDING;
 
@@ -3034,6 +3029,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
        too — a finite timeout's clock covers the whole wait. One read
        serves the deadline compute and the bound. */
     double now = sora_now();
+    if (t_wait < 0) t_wait = now;
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = now + timeout_s;
 
@@ -3049,7 +3045,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
                    n <= 4 ? SORA_SPIN_CLOCK_EVERY_LIGHT :
                    SORA_SPIN_CLOCK_EVERY, caught);
     if (caught) {
-      p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
 
@@ -3062,8 +3058,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
                             memory_order_relaxed);
     atomic_thread_fence(memory_order_seq_cst);
     if (pool_any_terminal(rss, n, &found, &st)) {
-      p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
-        SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
     long ms = SORA_INTERRUPT_BOUND_MS;
@@ -3076,18 +3071,11 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
-    double park_t0 = sora_now();
     sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
     p->st_collect_parks++;
-    double parked_ns = (sora_now() - park_t0) * 1e9;
     R_CheckUserInterrupt();
     if (pool_any_terminal(rss, n, &found, &st)) {
-      if (parked_ns < 2.0 * SORA_COLLECT_SPIN_BUDGET_NS)
-        p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
-          SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
-      else
-        p->collect_budget_ns = budget / 2 < SORA_SPIN_FLOOR_NS ?
-          SORA_SPIN_FLOOR_NS : budget / 2;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
     /* backstop for a missed death notification, piggybacked on a wake
@@ -3206,6 +3194,7 @@ SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
   }
 
   double deadline = -1;
+  double t_wait = -1;
 
   for (;;) {
     if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0)
@@ -3233,6 +3222,7 @@ SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
        too — a finite timeout's clock covers the whole wait. One read
        serves the deadline compute and the bound. */
     double now = sora_now();
+    if (t_wait < 0) t_wait = now;
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = now + timeout_s;
 
@@ -3247,7 +3237,7 @@ SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
                    n <= 4 ? SORA_SPIN_CLOCK_EVERY_LIGHT :
                    SORA_SPIN_CLOCK_EVERY, caught);
     if (caught) {
-      p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
 
@@ -3262,8 +3252,7 @@ SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
                               memory_order_relaxed);
     atomic_thread_fence(memory_order_seq_cst);
     if (pool_all_terminal(rss, n)) {
-      p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
-        SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
     long ms = SORA_INTERRUPT_BOUND_MS;
@@ -3276,18 +3265,11 @@ SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
-    double park_t0 = sora_now();
     sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
     p->st_collect_parks++;
-    double parked_ns = (sora_now() - park_t0) * 1e9;
     R_CheckUserInterrupt();
     if (pool_all_terminal(rss, n)) {
-      if (parked_ns < 2.0 * SORA_COLLECT_SPIN_BUDGET_NS)
-        p->collect_budget_ns = budget * 2 > SORA_COLLECT_SPIN_BUDGET_NS ?
-          SORA_COLLECT_SPIN_BUDGET_NS : budget * 2;
-      else
-        p->collect_budget_ns = budget / 2 < SORA_SPIN_FLOOR_NS ?
-          SORA_SPIN_FLOOR_NS : budget / 2;
+      pool_collect_learn(p, t_wait, budget);
       break;
     }
     /* backstop for a missed death notification, piggybacked on a wake

@@ -486,10 +486,10 @@ enum { SORA_PARK_WOKEN = 0, SORA_PARK_TIMEOUT = 1, SORA_PARK_INTR = 2 };
    nanosecond budget, sized ~2x the measured park/wake round trip.
    Budgets adapt per handle (process-local words, never shared): an
    episode whose spin comes up empty halves the budget
-   (floor SORA_SPIN_FLOOR_NS); work found resets it to the constant.
-   SORA_SPIN_BUDGET_NS covers the worker pre-park scan and the channel
-   recv wait, absorbing sub-µs publish gaps without touching the entity
-   line. */
+   (floor SORA_SPIN_FLOOR_NS); a completed wait learns its measured
+   turnaround via sora_spin_learn. SORA_SPIN_BUDGET_NS covers the worker
+   pre-park scan and the channel recv wait, absorbing sub-µs publish
+   gaps without touching the entity line. */
 #define SORA_SPIN_BUDGET_NS 16000
 
 /* Collect's pre-announce spin budget, sized for a short task's whole
@@ -504,6 +504,27 @@ enum { SORA_PARK_WOKEN = 0, SORA_PARK_TIMEOUT = 1, SORA_PARK_INTR = 2 };
 /* Decay floor for both budgets: genuine idleness converges here, so an
    idle pool or channel parks instead of burning a core. */
 #define SORA_SPIN_FLOOR_NS 1000
+
+/* Adaptation ceiling for the wait budgets: sora_spin_learn grows the
+   next budget to 1.5x the just-measured turnaround plus headroom (never
+   below the site constant), so a repeat wait catches its publish in the
+   spin — no syscall either side — and halves toward the floor past the
+   cap, where a catching spin would burn more than the park/wake pair it
+   saves. 64 us: where the pair (~8 us macOS, ~16 us virtualized Linux;
+   dev/bench/notes.md) stops being a double-digit share of the period. */
+#define SORA_SPIN_CAP_NS 64000
+
+static inline uint64_t sora_spin_learn(double gap_ns, uint64_t budget,
+                                       uint64_t base) {
+  if (gap_ns <= (double) SORA_SPIN_CAP_NS) {
+    uint64_t b = (uint64_t) (1.5 * gap_ns) + 8000;
+    if (b < base) b = base;
+    return b > (uint64_t) SORA_SPIN_CAP_NS ? (uint64_t) SORA_SPIN_CAP_NS
+                                           : b;
+  }
+  budget = budget / 2;
+  return budget < SORA_SPIN_FLOOR_NS ? SORA_SPIN_FLOOR_NS : budget;
+}
 
 /* Pause iterations between sora_now() deadline checks at the spin
    sites. The predicates are 1-2 loads (collect, channel) or an

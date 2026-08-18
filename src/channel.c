@@ -669,6 +669,15 @@ static SEXP chan_materialize(sora_chan *c, const unsigned char *sl) {
   return sora_payload_read(hdr, payload, c->inline_max, NULL, &c->oc, &c->zoc);
 }
 
+/* Learn the budget from a completed wait; t_wait < 0 on the
+   never-waited hot path (no clock read, no update there). */
+static void chan_wait_learn(sora_chan *c, double t_wait) {
+  if (t_wait < 0) return;
+  c->wait_budget_ns = sora_spin_learn((sora_now() - t_wait) * 1e9,
+                                      (uint64_t) c->wait_budget_ns,
+                                      (uint64_t) SORA_SPIN_BUDGET_NS);
+}
+
 /* Block until a message is available at rx.lhead (SORA_ST_OK) or a verdict.
    Drain-before-verdict: closed and peer-death are reported only through an
    empty ring, with one final tail refresh after the flag read so a
@@ -676,11 +685,12 @@ static SEXP chan_materialize(sora_chan *c, const unsigned char *sl) {
 static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
   SEXP keepers = VECTOR_ELT(prot, 0);
   double deadline = -1;
+  double t_wait = -1;
   chan_reap(c, keepers, 0);      /* recv is a reap trigger: the quiet-sender
                                     case pins at most cap payloads otherwise */
   for (;;) {
     if (chan_rx_avail(c)) {
-      c->wait_budget_ns = SORA_SPIN_BUDGET_NS;
+      chan_wait_learn(c, t_wait);
       return SORA_ST_OK;
     }
 
@@ -689,7 +699,7 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
     if (atomic_load_explicit(c->self_reg, memory_order_relaxed) & 1u) {
       atomic_fetch_and_explicit(c->self_reg, ~1u, memory_order_acq_rel);
       if (chan_rx_avail(c)) {
-        c->wait_budget_ns = SORA_SPIN_BUDGET_NS;
+        chan_wait_learn(c, t_wait);
         return SORA_ST_OK;
       }
     }
@@ -708,6 +718,7 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
     }
     /* one clock read serves the deadline compute and the spin bound */
     double now = sora_now();
+    if (t_wait < 0) t_wait = now;
     if (deadline < 0 && R_FINITE(timeout_s))
       deadline = now + timeout_s;
 
@@ -720,7 +731,7 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
     SORA_SPIN_WAIT(chan_rx_avail(c), until, SORA_SPIN_CLOCK_EVERY_LIGHT,
                    caught);
     if (caught) {
-      c->wait_budget_ns = SORA_SPIN_BUDGET_NS;
+      chan_wait_learn(c, t_wait);
       return SORA_ST_OK;
     }
 
