@@ -2570,7 +2570,12 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
        the bit, so that unpark turns the park below into an immediate
        return */
     pool_idle_sweep(p, xp);
+    /* retire joins the wake conditions here: its store + unpark landing
+       between the loop-top check and the epoch snapshot above would
+       otherwise be a lost wake, and the park below sleeps for the full
+       run bound (worker_main passes 3600s) */
     if (pool_any_work(p) ||
+        atomic_load_explicit(&me->retire, memory_order_acquire) != 0 ||
         atomic_load_explicit(p->shutdown, memory_order_acquire) != 0 ||
         atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
       atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
