@@ -26,6 +26,24 @@ test_that("a spawned worker round-trips every payload kind", {
   expect_error(sora_submit(p, 1), "pool handle is closed")
 })
 
+test_that("an untransportable task error flattens instead of killing the worker", {
+  skip_if_no_child_sora()
+  p <- sora_pool()
+  t <- sora_submit(p, {
+    stop(structure(
+      list(message = "typed", call = NULL, payload = new.env()),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  err <- tryCatch(sora_collect(t, timeout = 30), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(conditionMessage(err), "typed")
+  expect_identical(err[["dropped_fields"]], "payload")
+  # the publish cannot fail: the worker runs on
+  expect_identical(sora_collect(sora_submit(p, 42L), timeout = 30), 42L)
+  expect_true(sora_pool_stop(p, timeout = 10))
+})
+
 test_that("submit captures expr and args through forwarding wrappers", {
   skip_if_no_child_sora()
   p <- sora_pool()

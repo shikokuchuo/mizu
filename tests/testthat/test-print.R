@@ -15,8 +15,10 @@ test_that("channel handles print one line and survive release", {
 
 test_that("pool and task handles print one line and survive destroy", {
   p <- pool_pair(workers = 2L)
-  expect_output(print(p[["ctrl"]]),
-                "<sora_pool .*sora_.*: controller, 2/2 workers live, 0 pending>")
+  expect_output(
+    print(p[["ctrl"]]),
+    "<sora_pool .*sora_.*: controller, 2/2 workers live, 0 pending>"
+  )
   expect_output(print(p[["wk"]]), "<sora_pool .*: worker, 2/2 workers live")
   t <- sora_submit(p[["ctrl"]], 1 + 1)
   expect_output(print(t), "<sora_task: pending>", fixed = TRUE)
@@ -56,7 +58,7 @@ test_that("a channel whose peer is gone prints the verdict", {
 })
 
 test_that("a prepared map prints its staging", {
-  p <- pool_pair(slot_size = 512L)
+  p <- pool_pair()
   f <- function(i) i + 1L
   environment(f) <- globalenv()
   pm <- sora_map_prepare(p[["ctrl"]], 1:4, f)

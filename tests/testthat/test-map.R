@@ -84,7 +84,7 @@ test_that("strip_srcref handles edge bodies and non-closures", {
 })
 
 test_that("map staging is keep.source-invariant", {
-  p <- pool_pair(slot_size = 512L)
+  p <- pool_pair()
   sourced <- eval(parse(
     text = "function(i) {\n  g <- function(j) j + 1\n  g(i)\n}",
     keep.source = TRUE
@@ -268,7 +268,7 @@ test_that("a view x rides the descriptor by reference and reads off the shared p
 })
 
 test_that("a small map over a view stays inline and reads off the pages", {
-  p <- pool_pair(slot_size = 512L)
+  p <- pool_pair()
   t <- sora_submit(p[["ctrl"]], seq_len(10000) + 0)
   pool_step(p)
   v <- sora_collect(t, 5)
@@ -776,7 +776,7 @@ test_that("zero live workers floors R at 1; a rejoined worker drains it", {
 })
 
 test_that("a small map rides entirely inline, no region", {
-  p <- pool_pair(slot_size = 512L) # the default 480-byte entry budget
+  p <- pool_pair()
   f <- function(i) i + 1L
   environment(f) <- globalenv()
   st <- sora:::map_stage(p[["ctrl"]], 1:4, f, list(), chunks = 2)
@@ -791,7 +791,7 @@ test_that("a small map rides entirely inline, no region", {
 })
 
 test_that("the region runner wrapper fits a slot_size = 256 entry budget", {
-  p <- pool_pair() # slot_size 256: 224-byte entry inline budget
+  p <- pool_pair(slot_size = 256L) # 224-byte entry inline budget
   st <- sora:::map_stage(
     p[["ctrl"]],
     1:100,
@@ -1077,7 +1077,7 @@ test_that("a deadline already expired at submit stages no tasks", {
 })
 
 test_that("blob-path collect times out, cancels, and re-signals f's errors", {
-  p <- pool_pair(slot_size = 512L)
+  p <- pool_pair()
   f <- function(i) stop("blob boom") # a conditional f overflows the budget
   environment(f) <- globalenv()
   # a deadline expiring before the loop enters cancels everything
@@ -1114,8 +1114,30 @@ test_that("blob-path collect times out, cancels, and re-signals f's errors", {
   pool_end(p)
 })
 
+test_that("a hostile condition from f flattens, keeping class and index", {
+  p <- pool_pair()
+  f <- function(i) {
+    stop(structure(
+      list(message = paste("boom", i), call = NULL, payload = new.env()),
+      class = c("sora_test_map_error", "error", "condition")
+    ))
+  }
+  environment(f) <- globalenv()
+  st <- sora:::map_stage(p[["ctrl"]], 1:4, f, list(), chunks = 2)
+  sora:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  e <- tryCatch(collect30(p[["ctrl"]], st), error = identity)
+  expect_s3_class(e, "sora_test_map_error")
+  expect_identical(conditionMessage(e), "boom 1")
+  expect_identical(e[["sora_map_index"]], 1)
+  expect_identical(e[["dropped_fields"]], "payload")
+  pool_end(p)
+})
+
 test_that("seeded blob-path chunks draw the same per-element streams", {
-  p <- pool_pair(slot_size = 512L)
+  p <- pool_pair()
   f <- function(i) rnorm(2)
   environment(f) <- globalenv()
   st <- sora:::map_stage(p[["ctrl"]], 1:4, f, list(), chunks = 2, seed = 42L)

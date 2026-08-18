@@ -2286,16 +2286,43 @@ static void pool_orphan_teardown_try(sora_pool *p) {
    and probe the (possibly dead) submitter. Retires the in-flight announce.
    Payload writes are plain stores into a slot no allocator can touch
    (status stays PENDING/CANCEL until the FREE transition); the publish CAS
-   is the release barrier a collector's acquire load pairs with. */
+   is the release barrier a collector's acquire load pairs with. An ERR
+   outcome never stages the caught condition itself: it is flattened to a
+   transport condition (condition.c) framed INLINE, so the publish cannot
+   raise — fail the task, never the worker. */
 static int pool_publish_result(sora_pool *p, SEXP xp, uint32_t rs_index,
                                uint16_t sub_slot, uint64_t seq, int ok,
                                SEXP value) {
   sora_rs_hdr *rs = pool_rs(p, rs_index);
+  unsigned char *payload = (unsigned char *) rs + sizeof(sora_rs_hdr);
   pool_rk_reserve(p);
-  SEXP keep = PROTECT(sora_payload_stage(&rs->ph,
-                                        (unsigned char *) rs +
-                                        sizeof(sora_rs_hdr),
-                                        p->inline_rs, value, &p->fl));
+  SEXP keep = R_NilValue, staged = value;
+  int nprot = 0, framed = 0;
+  if (!ok) {
+    staged = PROTECT(sora_condition_flatten(value, (size_t) p->inline_rs));
+    nprot = 1;
+    size_t n = sora_codec_write(payload, (size_t) p->inline_rs, staged);
+    if (n != 0 && n <= (size_t) p->inline_rs) {
+      rs->ph.kind = SORA_KIND_INLINE;
+      rs->ph.len = (uint32_t) n;
+      rs->ph.aux = 0;
+      framed = 1;
+      /* a self-contained codec stream pins nothing — the keeperless
+         kinds' discipline, which pool_rs_claim's keeperless gate already
+         reads off the magic byte. Framed INLINE directly rather than
+         through the tiered stage: flatten's verification pass already
+         guarantees the fit, so the tier probes would only repeat the
+         codec write to arrive at the same frame. Below flatten's
+         guarantee (a 128-byte slot holds no classed condition inline)
+         the tiered stage carries the terminal fallback out of line —
+         the pre-flattening behavior for that configuration. */
+    }
+  }
+  if (!framed) {
+    keep = PROTECT(sora_payload_stage(&rs->ph, payload, p->inline_rs,
+                                      staged, &p->fl));
+    nprot++;
+  }
   /* a spilled result region's consumer is the task's submitter — key the
      zc keeper so the submitter-death backstop can force-reclaim it */
   sora_zc_keeper_key(keep, (int32_t) sub_slot);
@@ -2333,7 +2360,7 @@ static int pool_publish_result(sora_pool *p, SEXP xp, uint32_t rs_index,
   }
   atomic_store_explicit(&p->wk[p->wk_slot].in_flight_rs, -1,
                         memory_order_relaxed);
-  UNPROTECT(1);
+  UNPROTECT(nprot);
   return published;
 }
 

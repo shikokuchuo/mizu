@@ -78,6 +78,12 @@ exceptional outcome is raised as a classed condition (see \link{sora_error}):\ta
 }
 
 
+A re-signalled task error is a transport condition: it carries the
+original classes, \code{message}, \code{call}, and every named field the
+payload codec can carry within the result slot's inline budget, with
+anything untransportable dropped and named in a \code{dropped_fields}
+field. See the Task error transport section of \link{sora_error}.
+
 A task expression sees the handle of its evaluating worker as \code{pool}
 (beneath the arguments in \code{...}), so a task can submit nested subtasks.
 \code{sora_submit(pool, ...)} inside a task pushes onto the work-stealing

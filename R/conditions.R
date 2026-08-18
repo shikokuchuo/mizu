@@ -58,6 +58,23 @@
 #' `sora_error_cancelled`, `sora_error_worker_died`. A sentinel invites the
 #' next iteration of the loop. A condition means stop and deal with it.
 #'
+#' @section Task error transport:
+#' A task's own error, re-signalled by [sora_collect()] (and
+#' [sora_collect_any()] / [sora_collect_all()]), is a transport condition
+#' built on the worker at publish time. The caught condition itself never
+#' crosses, so a condition that cannot be serialized can never kill the
+#' worker. The transport condition carries the original classes, the raw
+#' `message` field (custom `conditionMessage()` methods are bypassed;
+#' the message is truncated past its share of the result slot's inline
+#' budget), `call`, and every named field the compact payload codec can
+#' carry within that budget, in the priority order message, `call`,
+#' fields, then `dropped_fields`. Fields the codec cannot carry
+#' (environments, closures, S4 objects, ALTREP vectors, external
+#' pointers) and fields past the remaining budget are dropped and named
+#' in a `dropped_fields` field, absent when nothing was dropped. Only
+#' the named elements of a condition are considered: an unnamed element
+#' cannot be named in `dropped_fields` and is dropped silently.
+#'
 #' @name sora_error
 #' @aliases sora_error_submit_timeout sora_error_slots_exhausted sora_error_stopped sora_error_cancelled sora_error_worker_died sora_error_startup sora_error_shm
 NULL

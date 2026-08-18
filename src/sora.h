@@ -433,6 +433,15 @@ SEXP sora_caught_cond(const char *subclass, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
 SEXP sora_caught_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
+/* Task-error transport (the pool's ERR publish): flatten a caught
+   condition into a transport condition that is safe by construction —
+   message (truncated at a UTF-8 boundary past half the budget, else a
+   fixed fallback), class verbatim, and call + every named field the codec
+   can carry within the whole-condition budget; drops named in
+   dropped_fields. Fits the budget (the result slot's inline budget)
+   wherever a classed condition fits at all, so the publish frames INLINE
+   and cannot fail. Returns UNPROTECTED: protect before any allocation. */
+SEXP sora_condition_flatten(SEXP cond, size_t budget);
 
 // Per-entity parker ------------------------------------------------------------
 

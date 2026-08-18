@@ -17,7 +17,7 @@ reuse_of <- function(p, slot = 1L) {
 }
 
 test_that("collect surrenders the task region; an equal-size spill pops it", {
-  p <- pool_pair() # 256 B slots: these all spill
+  p <- pool_pair() # 512 B slots: these all spill
   v1 <- big_obj(100000)
   t1 <- sora_submit(p[["ctrl"]], sum(v[[1]]), v = v1)
   pool_step(p)
@@ -168,7 +168,9 @@ test_that("a seventeenth distinct region evicts from the mapping cache", {
   v <- runif(100)
   # no collect until the end: no surrender, so every spill is a fresh
   # region and the worker's 16-entry mapping cache must evict at the 17th
-  hs <- lapply(1:17, function(i) sora_submit(p[["ctrl"]], sum(v) + i, v = v, i = i))
+  hs <- lapply(1:17, function(i) {
+    sora_submit(p[["ctrl"]], sum(v) + i, v = v, i = i)
+  })
   for (i in 1:17) {
     pool_step(p)
   }

@@ -125,6 +125,323 @@ test_that("a classed condition re-signals with class and fields intact", {
   pool_end(p)
 })
 
+test_that("an untransportable condition field is dropped and named, worker stays live", {
+  p <- pool_pair()
+  # built on the worker: an environment never crosses as a field (it would
+  # zombie or worse on the serialize tiers) — it is dropped and named
+  t <- sora_submit(p[["ctrl"]], {
+    stop(structure(
+      list(message = "typed", call = NULL, payload = new.env()),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(conditionMessage(err), "typed")
+  expect_identical(err[["dropped_fields"]], "payload")
+  # the publish cannot fail: the worker runs on
+  t2 <- sora_submit(p[["ctrl"]], 42L)
+  pool_step(p)
+  expect_identical(sora_collect(t2, timeout = 5), 42L)
+  pool_end(p)
+})
+
+test_that("codec-eligible fields cross intact alongside the original classes", {
+  p <- pool_pair()
+  df <- data.frame(x = c(1L, 2L, 3L))
+  attr(df, "row.names") <- c(1L, 2L, 4L) # a sequence would be ALTREP
+  cond <- structure(
+    list(
+      message = "typed",
+      call = NULL,
+      frame = df,
+      tree = list(a = c(1L, 2L), b = list(c = "leaf"))
+    ),
+    class = c("sora_test_error", "error", "condition")
+  )
+  t <- sora_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(err[["frame"]], df)
+  expect_identical(err[["tree"]], list(a = c(1L, 2L), b = list(c = "leaf")))
+  expect_null(err[["dropped_fields"]])
+  pool_end(p)
+})
+
+test_that("a custom conditionMessage method is bypassed at transport", {
+  p <- pool_pair()
+  conditionMessage.sora_test_method <- function(e) "method output"
+  cond <- structure(
+    list(message = "raw field", call = NULL),
+    class = c("sora_test_method", "error", "condition")
+  )
+  t <- sora_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  # the raw message field crosses; the method still dispatches collect-side
+  expect_identical(err[["message"]], "raw field")
+  expect_identical(conditionMessage(err), "method output")
+  pool_end(p)
+})
+
+test_that("a field past the budget is dropped and named; smaller fields arrive", {
+  p <- pool_pair()
+  cond <- structure(
+    list(message = "typed", call = NULL, big = numeric(1000), small = 42L),
+    class = c("sora_test_error", "error", "condition")
+  )
+  t <- sora_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_null(err[["big"]])
+  expect_identical(err[["small"]], 42L)
+  expect_identical(err[["dropped_fields"]], "big")
+  pool_end(p)
+})
+
+test_that("a message past its budget share arrives truncated at a character boundary", {
+  p <- pool_pair()
+  t <- sora_submit(p[["ctrl"]], {
+    msg <- paste(rep("x", 1000), collapse = "")
+    stop(structure(
+      list(message = msg, call = NULL),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(nchar(err[["message"]]), 236L) # half the 472 budget
+  # multibyte characters are never split
+  t2 <- sora_submit(p[["ctrl"]], {
+    msg <- paste(rep("\u20ac", 134), collapse = "")
+    stop(structure(
+      list(message = msg, call = NULL),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  pool_step(p)
+  err2 <- tryCatch(sora_collect(t2, timeout = 5), error = identity)
+  expect_identical(nchar(err2[["message"]]), 78L) # 236 bytes backs off to 234
+  pool_end(p)
+})
+
+test_that("a whole condition past the budget falls back, and still stages inline", {
+  p <- pool_pair(slot_size = 256L) # a 216-byte budget forces the fallback
+  t <- sora_submit(p[["ctrl"]], {
+    msg <- paste(rep("x", 1000), collapse = "")
+    stop(structure(
+      list(message = msg, call = NULL),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  spills_before <- sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1]
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(
+    conditionMessage(err),
+    "sora: task error (untransportable condition)"
+  )
+  # the publish staged inline: no spill counted across the step
+  expect_identical(
+    sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1],
+    spills_before
+  )
+  t2 <- sora_submit(p[["ctrl"]], "alive")
+  pool_step(p)
+  expect_identical(sora_collect(t2, timeout = 5), "alive")
+  pool_end(p)
+})
+
+test_that("codec-ineligible fields are dropped and named, not zombied", {
+  p <- pool_pair()
+  t <- sora_submit(p[["ctrl"]], {
+    stop(structure(
+      list(message = "typed", call = NULL, ptr = pool, seq = 1:100000),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_null(err[["ptr"]])
+  expect_null(err[["seq"]])
+  expect_identical(err[["dropped_fields"]], c("ptr", "seq"))
+  pool_end(p)
+})
+
+test_that("a non-list condition crosses as the fallback message with its class", {
+  p <- pool_pair()
+  # stop() can signal any classed object; an environment survives its
+  # conditionMessage/conditionCall probes where an atomic vector cannot
+  t <- sora_submit(
+    p[["ctrl"]],
+    stop(structure(
+      new.env(),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  )
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_identical(class(err), c("sora_test_error", "error", "condition"))
+  expect_identical(
+    conditionMessage(err),
+    "sora: task error (untransportable condition)"
+  )
+  expect_null(err[["dropped_fields"]])
+  pool_end(p)
+})
+
+test_that("a non-scalar message field crosses as the fallback", {
+  p <- pool_pair()
+  cond <- structure(
+    list(message = c("a", "b"), call = NULL),
+    class = c("sora_test_error", "error", "condition")
+  )
+  t <- sora_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(
+    conditionMessage(err),
+    "sora: task error (untransportable condition)"
+  )
+  pool_end(p)
+})
+
+test_that("a class vector past the budget spills the fallback out of line", {
+  p <- pool_pair()
+  klass <- c(paste0("cls", 1:1000), "sora_test_error", "error", "condition")
+  # no classed condition fits the budget: the terminal fallback crosses
+  # out of line through the tiered stage, the class carried verbatim
+  t <- sora_submit(p[["ctrl"]], {
+    stop(structure(
+      list(message = "typed", call = NULL),
+      class = c(
+        paste0("cls", 1:1000),
+        "sora_test_error",
+        "error",
+        "condition"
+      )
+    ))
+  })
+  spills_before <- sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1]
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_identical(class(err), klass)
+  expect_identical(
+    conditionMessage(err),
+    "sora: task error (untransportable condition)"
+  )
+  expect_identical(
+    sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1],
+    spills_before + 1
+  )
+  t2 <- sora_submit(p[["ctrl"]], 42L)
+  pool_step(p)
+  expect_identical(sora_collect(t2, timeout = 5), 42L)
+  pool_end(p)
+})
+
+test_that("the terminal fallback itself spills at the minimum slot size", {
+  p <- pool_pair(slot_size = 128L) # an 88-byte budget: the fallback spills
+  t <- sora_submit(p[["ctrl"]], {
+    stop(structure(
+      list(message = "typed", call = NULL),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(
+    conditionMessage(err),
+    "sora: task error (untransportable condition)"
+  )
+  t2 <- sora_submit(p[["ctrl"]], "alive")
+  pool_step(p)
+  expect_identical(sora_collect(t2, timeout = 5), "alive")
+  pool_end(p)
+})
+
+test_that("a non-UTF-8 message crosses translated to UTF-8", {
+  p <- pool_pair()
+  lat <- iconv("café au lait", from = "UTF-8", to = "latin1")
+  cond <- structure(
+    list(message = lat, call = NULL),
+    class = c("sora_test_error", "error", "condition")
+  )
+  t <- sora_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_identical(conditionMessage(err), "café au lait")
+  expect_identical(Encoding(err[["message"]]), "UTF-8")
+  pool_end(p)
+})
+
+test_that("a codec-ineligible call is dropped and named", {
+  p <- pool_pair()
+  # a closure constant embedded in the call is codec-ineligible
+  cond <- structure(
+    list(message = "typed", call = call("identity", function(x) x)),
+    class = c("sora_test_error", "error", "condition")
+  )
+  t <- sora_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(conditionMessage(err), "typed")
+  expect_identical(err[["dropped_fields"]], "call")
+  pool_end(p)
+})
+
+test_that("an NA message falls back; unnamed elements drop silently", {
+  p <- pool_pair()
+  cond <- structure(
+    list(message = NA_character_, call = NULL, 42L),
+    class = c("sora_test_error", "error", "condition")
+  )
+  t <- sora_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(
+    conditionMessage(err),
+    "sora: task error (untransportable condition)"
+  )
+  # the unnamed element cannot be named in dropped_fields
+  expect_null(err[["dropped_fields"]])
+  pool_end(p)
+})
+
+test_that("an over-deep field is dropped and named, worker stays live", {
+  p <- pool_pair()
+  # past the codec's recursion bound the vet fails cleanly — no crash, no
+  # zombie: the field drops and is named
+  t <- sora_submit(p[["ctrl"]], {
+    deep <- list(1L)
+    for (i in 1:600) {
+      deep <- list(deep)
+    }
+    stop(structure(
+      list(message = "typed", call = NULL, deep = deep),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  })
+  pool_step(p)
+  err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "sora_test_error")
+  expect_identical(err[["dropped_fields"]], "deep")
+  t2 <- sora_submit(p[["ctrl"]], 42L)
+  pool_step(p)
+  expect_identical(sora_collect(t2, timeout = 5), 42L)
+  pool_end(p)
+})
+
 test_that("only error conditions fail a task: a warning passes through", {
   p <- pool_pair()
   t <- sora_submit(p[["ctrl"]], {

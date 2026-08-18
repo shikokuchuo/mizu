@@ -71,3 +71,22 @@ value can never arrive: the own error of the task re-signalled,
 \code{sora_error_cancelled}, \code{sora_error_worker_died}. A sentinel invites the
 next iteration of the loop. A condition means stop and deal with it.
 }
+\section{Task error transport}{
+
+A task's own error, re-signalled by \code{\link[=sora_collect]{sora_collect()}} (and
+\code{\link[=sora_collect_any]{sora_collect_any()}} / \code{\link[=sora_collect_all]{sora_collect_all()}}), is a transport condition
+built on the worker at publish time. The caught condition itself never
+crosses, so a condition that cannot be serialized can never kill the
+worker. The transport condition carries the original classes, the raw
+\code{message} field (custom \code{conditionMessage()} methods are bypassed;
+the message is truncated past its share of the result slot's inline
+budget), \code{call}, and every named field the compact payload codec can
+carry within that budget, in the priority order message, \code{call},
+fields, then \code{dropped_fields}. Fields the codec cannot carry
+(environments, closures, S4 objects, ALTREP vectors, external
+pointers) and fields past the remaining budget are dropped and named
+in a \code{dropped_fields} field, absent when nothing was dropped. Only
+the named elements of a condition are considered: an unnamed element
+cannot be named in \code{dropped_fields} and is dropped silently.
+}
+

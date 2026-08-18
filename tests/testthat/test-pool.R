@@ -403,6 +403,45 @@ test_that("collect_any re-signals a task error with its index", {
   pool_end(p)
 })
 
+test_that("collect_any and collect_all attach index to a flattened condition", {
+  p <- pool_pair()
+  t1 <- sora_submit(
+    p[["ctrl"]],
+    stop(structure(
+      list(message = "typed", call = NULL, payload = new.env()),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  )
+  t2 <- sora_submit(p[["ctrl"]], "ok")
+  pool_step(p)
+  pool_step(p)
+  err <- tryCatch(
+    sora_collect_any(list(t1, t2), timeout = 5),
+    sora_test_error = identity
+  )
+  expect_identical(err[["index"]], 1L)
+  expect_identical(err[["dropped_fields"]], "payload")
+  expect_identical(sora_collect(t2, timeout = 5), "ok")
+
+  t3 <- sora_submit(p[["ctrl"]], "ok")
+  t4 <- sora_submit(
+    p[["ctrl"]],
+    stop(structure(
+      list(message = "typed", call = NULL, payload = new.env()),
+      class = c("sora_test_error", "error", "condition")
+    ))
+  )
+  pool_step(p)
+  pool_step(p)
+  err <- tryCatch(
+    sora_collect_all(list(t3, t4), timeout = 5),
+    sora_test_error = identity
+  )
+  expect_identical(err[["index"]], 2L)
+  expect_identical(err[["dropped_fields"]], "payload")
+  pool_end(p)
+})
+
 test_that("collect_any reports a cancellation with its index", {
   p <- pool_pair()
   t1 <- sora_submit(p[["ctrl"]], "runs")

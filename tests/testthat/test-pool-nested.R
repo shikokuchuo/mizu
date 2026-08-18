@@ -52,7 +52,10 @@ test_that("a full deque runs nested subtasks inline (work-first)", {
   })
   expect_identical(pool_step(p), 1L)
   expect_identical(sora_collect(t, timeout = 5), 100L)
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -70,7 +73,10 @@ test_that("help mode contains an erroring subtask at its own boundary", {
   })
   expect_identical(pool_step(p), 1L)
   expect_identical(sora_collect(t, timeout = 5), "caught: sub boom")
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -90,7 +96,10 @@ test_that("a full deque's inline execution contains subtask errors", {
   })
   expect_identical(pool_step(p), 1L)
   expect_identical(sora_collect(t, timeout = 5), paste("boom", 1:4))
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -109,7 +118,10 @@ test_that("a task error after nested activity publishes to its own slot", {
   err <- tryCatch(sora_collect(t, timeout = 5), error = identity)
   expect_s3_class(err, "simpleError")
   expect_identical(conditionMessage(err), "outer boom")
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -133,6 +145,30 @@ test_that("classed conditions survive help-mode containment", {
   )
   expect_identical(pool_step(p), 1L)
   expect_identical(sora_collect(t, timeout = 5), "typed: typed sub")
+  pool_end(p)
+})
+
+test_that("help mode flattens a hostile condition at the in-band publish", {
+  p <- pool_pair()
+  # the subtask errors with a field that cannot cross (an environment):
+  # executed by the outer task's own collect in help mode, its ERR publish
+  # is the in-band site — the field is dropped and named, never staged
+  t <- sora_submit(p[["ctrl"]], {
+    s <- sora_submit(pool, {
+      stop(structure(
+        list(message = "typed sub", call = NULL, payload = new.env()),
+        class = c("sora_test_error", "error", "condition")
+      ))
+    })
+    tryCatch(
+      sora_collect(s, timeout = 5),
+      sora_test_error = function(e) {
+        paste(conditionMessage(e), e[["dropped_fields"]])
+      }
+    )
+  })
+  expect_identical(pool_step(p), 1L)
+  expect_identical(sora_collect(t, timeout = 5), "typed sub payload")
   pool_end(p)
 })
 
@@ -170,7 +206,10 @@ test_that("a cancelled nested entry frees at its later pop", {
   # the cancelled entry still queues on the deque; the next pop frees it
   expect_identical(sora_pool_status(p[["ctrl"]])[["deque"]], 1)
   expect_identical(pool_step(p), 1L)
-  expect_identical(unname(sora_pool_status(p[["ctrl"]])[["tasks"]]), rep(0L, 5L))
+  expect_identical(
+    unname(sora_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
   pool_end(p)
 })
 
@@ -192,14 +231,21 @@ test_that("sora_pool_dump snapshots registries, deques, and result slots", {
   t1 <- sora_submit(p[["ctrl"]], "queued")
   s1 <- sora_submit(p[["wk"]], "nested")
   d <- sora_pool_dump(p[["ctrl"]])
-  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\sora_" else "/sora_"
+  prefix <- if (.Platform[["OS.type"]] == "windows") {
+    "Local\\sora_"
+  } else {
+    "/sora_"
+  }
   expect_true(startsWith(d[["name"]], prefix))
   expect_false(d[["shutdown"]])
   expect_identical(d[["workers"]][["slot"]], 0:1)
   expect_identical(d[["workers"]][["status"]], c("live", "live"))
   expect_identical(d[["workers"]][["park_state"]], c("running", "running"))
   expect_identical(d[["workers"]][["parked"]], c(FALSE, FALSE))
-  expect_identical(d[["workers"]][["bottom"]] - d[["workers"]][["top"]], c(1, 0))
+  expect_identical(
+    d[["workers"]][["bottom"]] - d[["workers"]][["top"]],
+    c(1, 0)
+  )
   expect_identical(d[["workers"]][["in_flight"]], c(-1L, -1L))
   expect_identical(d[["submitters"]][["status"]], c("live", "live"))
   expect_identical(d[["submitters"]][["queued"]], c(1, 0))

@@ -254,6 +254,12 @@ sora_pool_attach <- function(name) {
 #' | cancelled, or pool stopped | raised on collect | `sora_error_cancelled` |
 #' | executing worker died | raised on collect | `sora_error_worker_died` |
 #'
+#' A re-signalled task error is a transport condition: it carries the
+#' original classes, `message`, `call`, and every named field the
+#' payload codec can carry within the result slot's inline budget, with
+#' anything untransportable dropped and named in a `dropped_fields`
+#' field. See the Task error transport section of [sora_error].
+#'
 #' A task expression sees the handle of its evaluating worker as `pool`
 #' (beneath the arguments in `...`), so a task can submit nested subtasks.
 #' `sora_submit(pool, ...)` inside a task pushes onto the work-stealing

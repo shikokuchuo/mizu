@@ -13,48 +13,57 @@ test_that("worker stats count tasks and publish at park cadence, not per task", 
   expect_identical(zero[["parks"]], 0)
 
   ts <- lapply(1:3, function(i) sora_submit(p[["ctrl"]], 1 + 1))
-  for (i in 1:3) expect_identical(pool_step(p), 1L)
+  for (i in 1:3) {
+    expect_identical(pool_step(p), 1L)
+  }
   # executed but not yet mirrored: publication waits for a park or tick
   expect_identical(sora_pool_stats(p[["ctrl"]])[["workers"]][["tasks"]], 0)
 
-  expect_identical(pool_step(p), 0L)        # no work: publishes on return
+  expect_identical(pool_step(p), 0L) # no work: publishes on return
   st <- sora_pool_stats(p[["ctrl"]])[["workers"]]
   expect_identical(st[["tasks"]], 3)
   expect_identical(st[["injections"]], 3)
   expect_identical(st[["steals"]], 0)
-  expect_identical(st[["parks"]], 0)             # timeout = 0 never parks
+  expect_identical(st[["parks"]], 0) # timeout = 0 never parks
 
   # a timed idle step parks and republishes on the way out; Windows tick
   # quantization can split one idle step into several short parks
   expect_identical(pool_step(p, timeout = 0.05), 0L)
   expect_gte(sora_pool_stats(p[["ctrl"]])[["workers"]][["parks"]], 1)
 
-  for (t in ts) expect_identical(sora_collect(t, 5), 2)
+  for (t in ts) {
+    expect_identical(sora_collect(t, 5), 2)
+  }
   pool_end(p)
 })
 
 test_that("steals and helps are counted against the claiming worker", {
   p <- pool_pair(workers = 2L)
   ts <- lapply(1:2, function(i) sora_submit(p[["ctrl"]], x, x = i))
-  expect_identical(pool_pull(p, 2L), 2L)    # onto worker 0's own deque
+  expect_identical(pool_pull(p, 2L), 2L) # onto worker 0's own deque
   expect_identical(pool_step(p, wk = p[["wks"]][[2]]), 1L)
   expect_identical(pool_step(p, wk = p[["wks"]][[2]]), 1L)
   expect_identical(pool_step(p, wk = p[["wks"]][[2]]), 0L)
-  expect_identical(pool_step(p), 0L)        # worker 0 publishes too
+  expect_identical(pool_step(p), 0L) # worker 0 publishes too
   st <- sora_pool_stats(p[["ctrl"]])[["workers"]]
   expect_identical(st[["tasks"]], c(0, 2))
   expect_identical(st[["steals"]], c(0, 2))
-  expect_identical(st[["injections"]], c(2, 0))  # the pull claimed the ring
-  for (t in ts) sora_collect(t, 5)
+  expect_identical(st[["injections"]], c(2, 0)) # the pull claimed the ring
+  for (t in ts) {
+    sora_collect(t, 5)
+  }
 
   # helps: a worker blocked in a nested collect executes its own subtask
-  t <- sora_submit(p[["ctrl"]], sora_collect(sora_submit(pool, 2 + 2), timeout = 5))
+  t <- sora_submit(
+    p[["ctrl"]],
+    sora_collect(sora_submit(pool, 2 + 2), timeout = 5)
+  )
   expect_identical(pool_step(p), 1L)
   expect_identical(sora_collect(t, 5), 4)
   expect_identical(pool_step(p), 0L)
   st <- sora_pool_stats(p[["ctrl"]])[["workers"]]
   expect_identical(st[["helps"]][1], 1)
-  expect_identical(st[["tasks"]][1], 2)          # outer + helped subtask
+  expect_identical(st[["tasks"]][1], 2) # outer + helped subtask
   pool_end(p)
 })
 
@@ -70,27 +79,41 @@ test_that("submitter counters are the ring positions: exact, no cadence", {
   st <- sora_pool_stats(p[["ctrl"]])[["submitters"]]
   expect_identical(st[["claimed"]][1], 2)
   expect_identical(st[["queued"]][1], 0)
-  for (t in ts) sora_collect(t, 5)
+  for (t in ts) {
+    sora_collect(t, 5)
+  }
   pool_end(p)
 })
 
 test_that("spills count SHM_RAW payloads against the task's submitter", {
-  p <- pool_pair()                       # 256 B slots
-  expect_identical(sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1], 0)
+  p <- pool_pair() # 512 B slots
+  expect_identical(
+    sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1],
+    0
+  )
 
   # inline traffic leaves the counter untouched
   t0 <- sora_submit(p[["ctrl"]], x + 1L, x = 1L)
   pool_step(p)
   sora_collect(t0, 5)
-  expect_identical(sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1], 0)
+  expect_identical(
+    sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1],
+    0
+  )
 
   # an oversized task payload spills at submit, exact and cadence-free
   v <- runif(100000)
   t1 <- sora_submit(p[["ctrl"]], sum(v), v = v)
-  expect_identical(sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1], 1)
+  expect_identical(
+    sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1],
+    1
+  )
   pool_step(p)
-  sora_collect(t1, 5)                     # scalar result: no second spill
-  expect_identical(sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1], 1)
+  sora_collect(t1, 5) # scalar result: no second spill
+  expect_identical(
+    sora_pool_stats(p[["ctrl"]])[["submitters"]][["spills"]][1],
+    1
+  )
 
   # an oversized result spills at publish, attributed to the submitter
   t2 <- sora_submit(p[["ctrl"]], seq_len(n) + 0, n = 100000L)
@@ -109,7 +132,7 @@ test_that("a departed worker's stats are exact; a rejoining one resets them", {
   t <- sora_submit(p[["ctrl"]], 1 + 1)
   expect_identical(pool_step(p), 1L)
   sora_collect(t, 5)
-  .Call(sora:::sora_pool_leave, p[["wk"]])         # publishes the final mirror
+  .Call(sora:::sora_pool_leave, p[["wk"]]) # publishes the final mirror
   expect_identical(sora_pool_stats(p[["ctrl"]])[["workers"]][["tasks"]], 1)
 
   suffix <- .Call(sora:::sora_pool_suffix, p[["ctrl"]])
@@ -161,15 +184,21 @@ test_that("nested submits trace under the worker's own submitter identity", {
   p <- pool_pair()
   log <- new.env()
   log[["ev"]] <- character()
-  sora_pool_trace(p[["wk"]], function(event, id)
-    log[["ev"]] <- c(log[["ev"]], paste(event, id)))
-  t <- sora_submit(p[["ctrl"]], sora_collect(sora_submit(pool, 2 + 2), timeout = 5))
+  sora_pool_trace(p[["wk"]], function(event, id) {
+    log[["ev"]] <- c(log[["ev"]], paste(event, id))
+  })
+  t <- sora_submit(
+    p[["ctrl"]],
+    sora_collect(sora_submit(pool, 2 + 2), timeout = 5)
+  )
   expect_identical(pool_step(p), 1L)
   expect_identical(sora_collect(t, 5), 4)
   # outer task from submitter 0; the nested one from the worker's lazily
   # claimed slot (1), executed by help mode inside the outer's collect
-  expect_identical(log[["ev"]], c("start 0:1", "submit 1:1", "start 1:1",
-                             "done 1:1", "done 0:1"))
+  expect_identical(
+    log[["ev"]],
+    c("start 0:1", "submit 1:1", "start 1:1", "done 1:1", "done 0:1")
+  )
   pool_end(p)
 })
 
@@ -187,7 +216,9 @@ test_that("an error from a worker-side hook is infrastructure failure", {
 
 test_that("sora_pool_trace validates its hook argument", {
   p <- pool_pair()
-  expect_error(sora_pool_trace(p[["ctrl"]], "not a function"),
-               "expected a function or NULL")
+  expect_error(
+    sora_pool_trace(p[["ctrl"]], "not a function"),
+    "expected a function or NULL"
+  )
   pool_end(p)
 })

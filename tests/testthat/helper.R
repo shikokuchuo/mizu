@@ -204,7 +204,7 @@ pool_pair <- function(
   injection_cap = 64L,
   per_worker_cap = 64L,
   result_slots = 64L,
-  slot_size = 256L
+  slot_size = 512L
 ) {
   ctrl <- .Call(
     sora:::sora_pool_create,

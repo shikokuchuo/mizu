@@ -4,8 +4,9 @@
 # exercised end-to-end over spawned workers.
 
 # collect under a file-wide 30s guard, as in test-map.R
-collect30 <- function(pool, st)
+collect30 <- function(pool, st) {
   sora:::map_collect(st, deadline = sora:::mono_time() + 30)
+}
 
 test_that("a prepared map re-runs on one region under a bumped generation", {
   p <- pool_pair()
@@ -37,7 +38,7 @@ test_that("a prepared map re-runs on one region under a bumped generation", {
 })
 
 test_that("a blob-sized prepared map resubmits its staged blob", {
-  p <- pool_pair(slot_size = 512L)   # the default 480-byte entry budget
+  p <- pool_pair()
   f <- function(i) i + 1L
   environment(f) <- globalenv()
   pm <- sora_map_prepare(p[["ctrl"]], 1:4, f)
@@ -45,7 +46,9 @@ test_that("a blob-sized prepared map resubmits its staged blob", {
   for (run in 1:2) {
     sora:::map_rearm(p[["ctrl"]], pm[["st"]], NULL)
     sora:::map_submit(p[["ctrl"]], pm[["st"]])
-    while (pool_step(p) == 1L) NULL
+    while (pool_step(p) == 1L) {
+      NULL
+    }
     expect_identical(collect30(p[["ctrl"]], pm[["st"]]), as.list(2:5))
   }
   pool_end(p)
@@ -80,8 +83,8 @@ test_that("prepared runs reuse the region and match sora_map exactly", {
   name1 <- pm[["st"]][["name"]]
   r1 <- sora_map_run(pm, .seed = 7L)
   r2 <- sora_map_run(pm, .seed = 7L)
-  expect_identical(r1, r2)                 # invariance across re-runs
-  expect_identical(pm[["st"]][["name"]], name1)      # one region throughout
+  expect_identical(r1, r2) # invariance across re-runs
+  expect_identical(pm[["st"]][["name"]], name1) # one region throughout
   expect_identical(r1, sora_map(p, x, f, .seed = 7L))
   expect_false(identical(sora_map_run(pm, .seed = 8L), r1))
   # the template path re-runs over the same output area, un-zeroed: a
@@ -102,13 +105,14 @@ test_that("an unclean run marks the handle stale; the next run restages", {
   name1 <- pm[["st"]][["name"]]
   r <- sora_map_run(pm, .timeout = 0.3)
   expect_s3_class(r, "sora_timeout")
-  expect_null(pm[["st"]])                       # stale: the next run restages
+  expect_null(pm[["st"]]) # stale: the next run restages
   r <- sora_map_run(pm, .timeout = 60)
   expect_identical(r, as.list(1:4 + 0))
   expect_false(identical(pm[["st"]][["name"]], name1))
   # an error in f is unclean too — and restaging reproduces it cleanly
-  pm3 <- sora_map_prepare(p, 1:3 + 0,
-                         function(i) if (i == 2) stop("bad") else i)
+  pm3 <- sora_map_prepare(p, 1:3 + 0, function(i) {
+    if (i == 2) stop("bad") else i
+  })
   expect_error(sora_map_run(pm3), "bad")
   expect_null(pm3[["st"]])
   expect_error(sora_map_run(pm3), "bad")
@@ -127,7 +131,9 @@ test_that("phase B: a same-shape x swaps in place; changes restage", {
   expect_identical(pm[["st"]][["name"]], name1)
   sora:::map_rearm(p[["ctrl"]], pm[["st"]], NULL)
   sora:::map_submit(p[["ctrl"]], pm[["st"]])
-  while (pool_step(p) == 1L) NULL
+  while (pool_step(p) == 1L) {
+    NULL
+  }
   expect_identical(collect30(p[["ctrl"]], pm[["st"]]), as.list(x2 * 10))
   # names never cross the wire: they ride the handle for assembly
   x3 <- setNames(x1, letters[1:6])
@@ -135,13 +141,19 @@ test_that("phase B: a same-shape x swaps in place; changes restage", {
   expect_identical(pm[["st"]][["name"]], name1)
   sora:::map_rearm(p[["ctrl"]], pm[["st"]], NULL)
   sora:::map_submit(p[["ctrl"]], pm[["st"]])
-  while (pool_step(p) == 1L) NULL
+  while (pool_step(p) == 1L) {
+    NULL
+  }
   expect_identical(collect30(p[["ctrl"]], pm[["st"]]), as.list(x3 * 10))
   # the C primitive rejects any shape or type mismatch outright
-  expect_error(.Call(sora:::sora_map_swap_x, pm[["st"]][["wrap"]], 1:6),
-               "must match the staged type and length")
-  expect_error(.Call(sora:::sora_map_swap_x, pm[["st"]][["wrap"]], c(x1, 7)),
-               "must match the staged type and length")
+  expect_error(
+    .Call(sora:::sora_map_swap_x, pm[["st"]][["wrap"]], 1:6),
+    "must match the staged type and length"
+  )
+  expect_error(
+    .Call(sora:::sora_map_swap_x, pm[["st"]][["wrap"]], c(x1, 7)),
+    "must match the staged type and length"
+  )
   # and the R surface turns those into a transparent restage
   sora:::map_swap_x(pm, 1:7)
   expect_null(pm[["st"]])
@@ -157,11 +169,17 @@ test_that("sora_map_run validates .seed and surfaces rearm slot exhaustion", {
   # both raised before the reset touched anything: the staged state is
   # intact for a retry
   expect_false(is.null(pm[["st"]]))
-  while (pool_step(p) == 1L) NULL
-  for (i in 1:8) expect_identical(sora_collect(held[[i]], timeout = 5), i)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  for (i in 1:8) {
+    expect_identical(sora_collect(held[[i]], timeout = 5), i)
+  }
   sora:::map_rearm(p[["ctrl"]], pm[["st"]], NULL)
   sora:::map_submit(p[["ctrl"]], pm[["st"]])
-  while (pool_step(p) == 1L) NULL
+  while (pool_step(p) == 1L) {
+    NULL
+  }
   expect_identical(collect30(p[["ctrl"]], pm[["st"]]), as.list(1:4))
   pool_end(p)
 })
@@ -175,7 +193,7 @@ test_that("phase B: sora_map_run(pm, x =) round-trips end to end", {
   expect_identical(sora_map_run(pm), as.list(x1 + 1))
   x2 <- runif(64)
   expect_identical(sora_map_run(pm, x = x2), as.list(x2 + 1))
-  expect_identical(pm[["st"]][["name"]], name1)          # swapped, not restaged
+  expect_identical(pm[["st"]][["name"]], name1) # swapped, not restaged
   # a shape change restages transparently and still answers
   x3 <- runif(32)
   expect_identical(sora_map_run(pm, x = x3), as.list(x3 + 1))
