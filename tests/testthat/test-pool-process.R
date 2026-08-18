@@ -26,6 +26,36 @@ test_that("a spawned worker round-trips every payload kind", {
   expect_error(sora_submit(p, 1), "pool handle is closed")
 })
 
+test_that("submit captures expr and args through forwarding wrappers", {
+  skip_if_no_child_sora()
+  p <- sora_pool()
+  g <- function(...) sora_submit(p, ...)
+  h <- function(...) g(...)
+  expect_identical(sora_collect(g(sum(x), x = 1:3), timeout = 30), 6L)
+  expect_identical(sora_collect(h(sum(x), x = 1:3), timeout = 30), 6L)
+  forced <- function(...) {
+    list(...) # forces the dots: capture still yields the expression
+    sora_submit(p, ...)
+  }
+  expect_identical(sora_collect(forced(1L + 1L, x = 1:3), timeout = 30), 2L)
+  expect_true(sora_pool_stop(p, timeout = 10))
+})
+
+test_that("submit capture matches substitute() non-chase and edge cases", {
+  skip_if_no_child_sora()
+  p <- sora_pool()
+  w <- function(e) sora_submit(p, e) # base substitute() does not chase
+  t <- w(1 + 2)
+  expect_error(sora_collect(t, timeout = 30), "object 'e' not found")
+  expect_error(
+    # a missing expr crosses; the worker's eval raises
+    sora_collect(sora_submit(p), timeout = 30),
+    "argument is missing"
+  )
+  expect_error(sora_submit(p, sum(x), 1:3), "must be named")
+  expect_true(sora_pool_stop(p, timeout = 10))
+})
+
 test_that("collect_all round-trips a heterogeneous set across processes", {
   skip_if_no_child_sora()
   p <- sora_pool(2L)

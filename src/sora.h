@@ -113,6 +113,9 @@ size_t sora_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
 size_t sora_codec_write(unsigned char *dst, size_t limit, SEXP object);
 /* Read a codec stream (magic included); raises on any malformation. */
 SEXP sora_codec_read(const unsigned char *buf, size_t len);
+int sora_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
+                         SEXP *args, int *nprotect);
+SEXP sora_empty_args(void);
 
 // Payload framing (payload.c) ----------------------------------------------------
 

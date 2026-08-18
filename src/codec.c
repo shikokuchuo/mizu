@@ -445,6 +445,41 @@ SEXP sora_codec_read(const unsigned char *buf, size_t len) {
   return out;
 }
 
+/* Task-frame read: a pool task payload is list(expr, args) — on this tier
+   a SC_VEC of length 2. Reading the frame directly skips materializing
+   the outer list, and an empty args reads as the shared empty vector (the
+   worker binds from it read-only), so a constant task allocates nothing
+   here at all. On success *expr and *args are left PROTECTed and
+   *nprotect is 2. A non-task-frame is a 0 return, never an error: the
+   caller falls back to the generic read, whose shape validation stays the
+   single authority. A truncated or trailing stream raises, exactly as the
+   generic read raises. */
+int sora_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
+                         SEXP *args, int *nprotect) {
+  if (len < 2 || buf[0] != SORA_CODEC_MAGIC) return 0;
+  sora_scr r = { buf + 1, buf + len };
+  uint32_t tag = scr_u8(&r);
+  if ((tag & 0x0f) != SC_VEC || (tag & (SC_HASATTR | SC_HASTAG))) return 0;
+  if (scr_u64(&r) != 2) return 0;
+  *expr = PROTECT(scr_node(&r, 1));
+  const unsigned char *save = r.p;
+  uint32_t atag = scr_u8(&r);
+  if ((atag & 0x0f) == SC_VEC && !(atag & (SC_HASATTR | SC_HASTAG)) &&
+      scr_u64(&r) == 0) {
+    *args = sora_empty_args();
+  } else {
+    r.p = save;
+    *args = scr_node(&r, 1);
+  }
+  PROTECT(*args);
+  if (r.p != r.end) {
+    UNPROTECT(2);
+    return 0;
+  }
+  *nprotect = 2;
+  return 1;
+}
+
 // .Call test surface -------------------------------------------------------------
 
 /* Codec-write object into a fresh raw vector (NULL when outside the

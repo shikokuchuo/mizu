@@ -235,3 +235,26 @@ the collect closure plus `ts[[i]]`). The worst-case wake/scan shape
 (announced on every pending slot, so K slow completions cost K wakes x
 O(N) scans) stays below the per-collect loop it replaces: scans are
 ~1 ns/load against a ~3 us park/wake pair.
+
+## 2026-08-18: zero-allocation task decode on the worker
+
+Same host, interleaved A/B against the previous build (3 cycles of
+install A / measure / install B / measure, min of 5 reps x 5e4 tasks;
+the ratios are the valid comparison, not the absolutes).
+
+An INLINE codec task frame now stream-decodes in place on the worker
+(`sora_codec_read_task`): the frame reads straight into expr + args
+without materializing the `list(expr, args)`, and an empty args reads
+as the shared, preserved, not-mutable `VECSXP(0)` — a constant task
+allocates nothing on the worker. The wire bytes are unchanged: the
+reader skips the allocation, the format is identical. The submit side
+is unchanged.
+
+Measured (ns/task): pool round trip `1L` 1040-1120 -> 980-1020; with
+four arguments 7120-7220 -> 7000-7320 (a wash — the eval dominates);
+pipelined burst 1150-1200 -> 1150-1200 (a wash).
+
+The remaining per-task cost is the R closure call itself (matchArgs +
+bcEval + frame/promise allocation ≈ 40% of the round trip in `sample`
+profiles) — irreducible per exported verb. The batch verbs are the
+answer for throughput-bound callers.

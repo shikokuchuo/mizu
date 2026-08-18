@@ -81,9 +81,25 @@ int sora_str1_stage(sora_slot_hdr *hdr, unsigned char *payload,
    ending in a region wrap the user still references. */
 static SEXP sora_spill_marker;
 
+/* The shared empty args list of a no-argument task: one preserved vector
+   serves both the submitter (sora_submit's capture) and the worker (the
+   task-frame read), so a constant task allocates no VECSXP(0) on either
+   side. Read-only everywhere it appears — marked not-mutable, so a stray
+   write fails loudly instead of corrupting every task. */
+static SEXP empty_args;
+
+SEXP sora_empty_args(void) {
+  return empty_args;
+}
+
 void sora_payload_init(void) {
   sora_spill_marker = R_MakeExternalPtr(NULL, R_NilValue, R_NilValue);
   R_PreserveObject(sora_spill_marker);
+  empty_args = Rf_allocVector(VECSXP, 0);
+  R_PreserveObject(empty_args);
+#if R_VERSION >= R_Version(4, 5, 0)
+  MARK_NOT_MUTABLE(empty_args);
+#endif
 }
 
 static int spill_keeper(SEXP k) {

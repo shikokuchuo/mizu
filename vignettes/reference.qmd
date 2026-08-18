@@ -212,11 +212,11 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 sora       307.25µs 380.73µs     2086.   546.5KB     32.5
-#> 2 mirai        7.32ms   7.85ms      125.    3.89MB     21.2
+#> 1 sora       303.97µs 389.25µs     2035.   546.5KB     32.7
+#> 2 mirai        7.59ms   7.87ms      125.    3.89MB     21.3
 ```
 
-End to end, sora is **21x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
+End to end, sora is **20x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
 
 **Two thousand small tasks.**
 Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece.
@@ -239,12 +239,12 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      19.69ms  19.69ms     50.8     30.8MB  1168.  
-#> 2 sora         5.22ms   5.75ms    140.      91.4KB     0   
-#> 3 mirai      213.02ms 213.02ms      4.69    19.1MB     9.39
+#> 1 serial      17.84ms   17.9ms     55.9     30.8MB   587.  
+#> 2 sora         5.37ms   5.84ms    144.      52.1KB     1.97
+#> 3 mirai      210.14ms 210.58ms      4.75    19.1MB     2.37
 ```
 
-sora turns the four workers into a **3.4x** gain over the serial loop, and runs **37x** ahead of mirai (medians).
+sora turns the four workers into a **3.1x** gain over the serial loop, and runs **36x** ahead of mirai (medians).
 
 ``` r
 daemons(0L)

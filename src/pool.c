@@ -496,17 +496,12 @@ static SEXP pool_eval_handler(SEXP cond, void *data) {
   return cond;
 }
 
-static SEXP pool_eval_task(sora_pool *p, SEXP xp, SEXP payload, int catching,
-                           int *ok) {
-  if (TYPEOF(payload) != VECSXP || Rf_xlength(payload) != 2 ||
-      TYPEOF(VECTOR_ELT(payload, 1)) != VECSXP)
-    Rf_error("sora: corrupt task payload");
-  SEXP args = VECTOR_ELT(payload, 1);
+static SEXP pool_eval_expr(sora_pool *p, SEXP xp, SEXP expr, SEXP args,
+                           int catching, int *ok) {
   SEXP names = Rf_getAttrib(args, R_NamesSymbol);
   R_xlen_t n = Rf_xlength(args);
   if (n > 0 && TYPEOF(names) != STRSXP)
     Rf_error("sora: corrupt task payload");
-  SEXP expr = VECTOR_ELT(payload, 0);
   /* eval is the identity on value types: a constant task (the canonical
      trivial task, and every constant result of a nested computation)
      binds no arguments and needs no fresh environment — the per-task
@@ -1469,9 +1464,9 @@ static SEXP pool_submit_nested(sora_pool *p, SEXP xp, SEXP payload,
    sora_error_submit_timeout, so the map submit loop needs no handler.
    Fatal outcomes (stopped, slots exhausted) raise in both modes. */
 static SEXP pool_submit(SEXP xp, SEXP payload, double timeout_s,
-                        SEXP flags_sexp, int tryflag) {
+                        int flags_i, int tryflag) {
   sora_pool *p = pool_get(xp);
-  uint16_t flags = (uint16_t) Rf_asInteger(flags_sexp);
+  uint16_t flags = (uint16_t) flags_i;
   if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
     sora_stop("sora_error_stopped", "sora: pool stopped");
   if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
@@ -1518,15 +1513,14 @@ static SEXP pool_submit(SEXP xp, SEXP payload, double timeout_s,
 }
 
 SEXP sora_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
-  return pool_submit(xp, payload, Rf_asReal(timeout), flags_sexp, 0);
+  return pool_submit(xp, payload, Rf_asReal(timeout), Rf_asInteger(flags_sexp),
+                     0);
 }
 
-/* sora_submit's entry: takes the quoted expression and the evaluated args
-   list separately and assembles the list(expr, args) wire payload here —
-   the R wrapper's per-call cost is then one substitute + one list(...) +
-   one .Call, with the names validation a C loop instead of R closures. */
-SEXP sora_pool_submit_expr(SEXP xp, SEXP expr, SEXP args, SEXP timeout,
-                           SEXP flags_sexp) {
+/* sora_submit's wire payload is list(expr, args), assembled here with the
+   names validation a C loop instead of R closures. */
+static SEXP pool_submit_expr(SEXP xp, SEXP expr, SEXP args, double timeout_s,
+                             int flags) {
   if (TYPEOF(args) != VECSXP)
     Rf_error("sora: expected a list of task arguments");
   R_xlen_t n = XLENGTH(args);
@@ -1543,9 +1537,19 @@ SEXP sora_pool_submit_expr(SEXP xp, SEXP expr, SEXP args, SEXP timeout,
   SEXP payload = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(payload, 0, expr);
   SET_VECTOR_ELT(payload, 1, args);
-  SEXP out = pool_submit(xp, payload, Rf_asReal(timeout), flags_sexp, 0);
+  SEXP out = pool_submit(xp, payload, timeout_s, flags, 0);
   UNPROTECT(1);
   return out;
+}
+
+/* sora_submit's entry: takes the quoted expression and the evaluated args
+   list separately and assembles the list(expr, args) wire payload here —
+   the R wrapper's per-call cost is then one substitute + one list(...) +
+   one .Call, with the names validation a C loop instead of R closures. */
+SEXP sora_pool_submit_expr(SEXP xp, SEXP expr, SEXP args, SEXP timeout,
+                           SEXP flags_sexp) {
+  return pool_submit_expr(xp, expr, args, Rf_asReal(timeout),
+                          Rf_asInteger(flags_sexp));
 }
 
 /* The map path's entries take the map's one deadline absolute (sora_now()
@@ -1556,7 +1560,7 @@ SEXP sora_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
                          SEXP flags_sexp) {
   double d = Rf_asReal(deadline);
   return pool_submit(xp, payload, R_FINITE(d) ? d - sora_now() : R_PosInf,
-                     flags_sexp, 1);
+                     Rf_asInteger(flags_sexp), 1);
 }
 
 // Worker step ----------------------------------------------------------------------------
@@ -2369,44 +2373,60 @@ static void pool_execute(sora_pool *p, SEXP xp, int catching) {
     return;
   }
 
-  /* A vanished out-of-line entry payload means the enqueuer died and its
-     region went along (Win32 mappings cannot outlive their creator): the
-     task can never run anywhere — it fails as DIED exactly like a claimed
-     task whose worker died, and the drain continues in this thief. */
-  int gone = 0;
-  SEXP pl = PROTECT(sora_payload_read(&eh->ph,
-                                     p->scratch + sizeof(sora_entry_hdr),
-                                     p->inline_entry, &gone, &p->oc,
-                                     &p->zoc));
-  if (gone) {
-    int32_t expected = SORA_RS_PENDING;
-    if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                SORA_RS_DIED,
+  /* An INLINE codec task frame stream-decodes in place — no list(expr,
+     args) materialization, so a constant task allocates nothing on the
+     worker. Anything else takes the generic read and its shape check. */
+  SEXP expr = R_NilValue, args = R_NilValue, pl = R_NilValue;
+  int gone = 0, nprot = 0;
+  if (eh->ph.kind == SORA_KIND_INLINE && eh->ph.len <= p->inline_entry &&
+      sora_codec_read_task(p->scratch + sizeof(sora_entry_hdr),
+                           (size_t) eh->ph.len, &expr, &args, &nprot)) {
+    /* decoded in place */
+  } else {
+    /* A vanished out-of-line entry payload means the enqueuer died and its
+       region went along (Win32 mappings cannot outlive their creator): the
+       task can never run anywhere — it fails as DIED exactly like a claimed
+       task whose worker died, and the drain continues in this thief. */
+    pl = PROTECT(sora_payload_read(&eh->ph,
+                                   p->scratch + sizeof(sora_entry_hdr),
+                                   p->inline_entry, &gone, &p->oc,
+                                   &p->zoc));
+    nprot = 1;
+    if (gone) {
+      int32_t expected = SORA_RS_PENDING;
+      if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                  SORA_RS_DIED,
+                                                  memory_order_seq_cst,
+                                                  memory_order_relaxed)) {
+        pool_unpark_result_waiter(p, rs);
+      } else if (expected == SORA_RS_CANCEL) {
+        atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                SORA_RS_FREE,
                                                 memory_order_seq_cst,
-                                                memory_order_relaxed)) {
-      pool_unpark_result_waiter(p, rs);
-    } else if (expected == SORA_RS_CANCEL) {
-      atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                              SORA_RS_FREE,
-                                              memory_order_seq_cst,
-                                              memory_order_relaxed);
-      if (sub_slot < p->hdr.max_submitters)
-        pool_probe_submitter(p, sub_slot);
+                                                memory_order_relaxed);
+        if (sub_slot < p->hdr.max_submitters)
+          pool_probe_submitter(p, sub_slot);
+      }
+      atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
+      UNPROTECT(1);
+      pool_trace_emit(xp, "drop", task_id);
+      return;
     }
-    atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
-    UNPROTECT(1);
-    pool_trace_emit(xp, "drop", task_id);
-    return;
+    if (TYPEOF(pl) != VECSXP || Rf_xlength(pl) != 2 ||
+        TYPEOF(VECTOR_ELT(pl, 1)) != VECSXP)
+      Rf_error("sora: corrupt task payload");
+    expr = VECTOR_ELT(pl, 0);
+    args = VECTOR_ELT(pl, 1);
   }
   pool_trace_emit(xp, "start", task_id);
   /* scratch (and eh with it) is dead from here: the eval below may claim
      into it */
   int ok = 1;
-  SEXP value = PROTECT(pool_eval_task(p, xp, pl, catching, &ok));
+  SEXP value = PROTECT(pool_eval_expr(p, xp, expr, args, catching, &ok));
   p->st_tasks++;
   int published = pool_publish_result(p, xp, rs_index, sub_slot, seq, ok,
                                       value);
-  UNPROTECT(2);
+  UNPROTECT(nprot + 1);
   pool_trace_emit(xp, published ? (ok ? "done" : "error") : "drop", task_id);
 }
 
