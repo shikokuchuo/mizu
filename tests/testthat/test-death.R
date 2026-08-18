@@ -11,6 +11,13 @@ test_that("watching an already-dead pid fires immediately", {
   expect_error(.Call(sora:::sora_death_fired_call, w), "stopped")
 })
 
+test_that("death-watch stop validates its handle", {
+  expect_error(.Call(sora:::sora_death_stop_call, 42), "not a death-watch")
+  expect_error(.Call(sora:::sora_death_stop_call, NULL), "not a death-watch")
+  xp <- .Call(sora:::sora_region_create, 4096)
+  expect_error(.Call(sora:::sora_death_stop_call, xp), "not a death-watch")
+})
+
 test_that("a live process's exit sets the fired flag", {
   skip_on_os("windows")
   pid <- as.integer(system("sleep 30 >/dev/null 2>&1 & echo $!", intern = TRUE))

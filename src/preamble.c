@@ -68,6 +68,9 @@ SEXP sora_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
   mori_shm *shm = sora_region(xp);
   if (shm->size < SORA_FIXED_LAYOUT_SIZE)
     Rf_error("sora: region too small for a channel preamble");
+  if (TYPEOF(drop) != REALSXP || XLENGTH(drop) < 2 ||
+      TYPEOF(livedir) != REALSXP || XLENGTH(livedir) < 2)
+    Rf_error("sora: drop and livedir must be numeric vectors of length 2");
 
   sora_preamble p = {
     .magic = SORA_MAGIC,

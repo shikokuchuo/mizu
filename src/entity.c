@@ -128,6 +128,7 @@ SEXP sora_death_fired_call(SEXP xp) {
 }
 
 SEXP sora_death_stop_call(SEXP xp) {
+  sora_death_handle_get(xp);   /* validates type, tag, and live address */
   sora_death_finalizer(xp);
   return R_NilValue;
 }

@@ -30,6 +30,22 @@ test_that("a written preamble validates and round-trips its fields", {
   expect_identical(p[["livedir_size"]], 50)
 })
 
+test_that("preamble write rejects malformed drop/livedir", {
+  xp <- .Call(sora:::sora_region_create, 4096)
+  expect_error(
+    .Call(sora:::sora_preamble_write_call, xp, 4L, 64L, 0, NULL, c(2148, 50)),
+    "numeric vectors of length 2"
+  )
+  expect_error(
+    .Call(sora:::sora_preamble_write_call, xp, 4L, 64L, 0, c(2048, 100), 1),
+    "numeric vectors of length 2"
+  )
+  expect_error(
+    .Call(sora:::sora_preamble_write_call, xp, 4L, 64L, 0, 2048, c(2148, 50)),
+    "numeric vectors of length 2"
+  )
+})
+
 test_that("a consumer validates the host-written preamble", {
   xp <- new_channel_region()
   ro <- .Call(
