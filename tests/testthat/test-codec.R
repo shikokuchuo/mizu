@@ -73,6 +73,41 @@ test_that("attributes round-trip: names, dim, class, object bit", {
   )
 })
 
+test_that("S4 objects round-trip with the bit, slots, and class intact", {
+  # a slots-only object: the data-less S4SXP form
+  methods::setClass(
+    "soraSlots",
+    representation(x = "numeric", id = "character")
+  )
+  on.exit(methods::removeClass("soraSlots"), add = TRUE)
+  a <- methods::new("soraSlots", x = c(1.5, 2.5), id = "a")
+  expect_identical(codec_rt(a), a)
+  expect_identical(codec_rt(list(a, 1L)), list(a, 1L))
+  # a non-slot attribute rides along
+  b <- a
+  attr(b, "note") <- "n"
+  expect_identical(codec_rt(b), b)
+  # a data-part class: the S4 flag on an atomic vector node
+  methods::setClass(
+    "soraVec",
+    contains = "numeric",
+    representation(tag = "character")
+  )
+  on.exit(methods::removeClass("soraVec"), add = TRUE)
+  v <- methods::new("soraVec", c(1, 2), tag = "t")
+  expect_identical(codec_rt(v), v)
+  # a matrix data part: the S4 flag alongside a dim attribute
+  methods::setClass("soraMat", contains = "matrix")
+  on.exit(methods::removeClass("soraMat"), add = TRUE)
+  m <- methods::new("soraMat", matrix(c(1, 2, 3, 4), 2))
+  expect_identical(codec_rt(m), m)
+  # a function data part: the S4 flag on a closure node
+  methods::setClass("soraFun", contains = "function")
+  on.exit(methods::removeClass("soraFun"), add = TRUE)
+  f <- methods::new("soraFun", eval(quote(function(x) x + 1), globalenv()))
+  expect_identical(codec_rt(f), f)
+})
+
 test_that("closures round-trip with by-reference environments", {
   # eval in globalenv(): the test file's own environment is a local one
   f <- eval(quote(function(x, y = 1, ...) x + y), globalenv())
@@ -163,6 +198,20 @@ test_that("the subset declines cleanly: NULL from the write surface", {
     sora:::sora_codec_write_call,
     structure(quote(f(x)), note = 1)
   ))
+  # an S4 object with an out-of-subset slot declines with it
+  methods::setClass("soraEnv", representation(e = "environment"))
+  on.exit(methods::removeClass("soraEnv"), add = TRUE)
+  expect_null(.Call(
+    sora:::sora_codec_write_call,
+    methods::new("soraEnv", e = new.env())
+  ))
+  # an S4 object with an ALTREP slot
+  methods::setClass("soraAlt", representation(x = "integer"))
+  on.exit(methods::removeClass("soraAlt"), add = TRUE)
+  expect_null(.Call(
+    sora:::sora_codec_write_call,
+    methods::new("soraAlt", x = 1:3)
+  ))
 })
 
 test_that("the reader rejects malformed streams", {
@@ -184,5 +233,9 @@ test_that("the reader rejects malformed streams", {
   )
   bad <- cf
   bad[3] <- as.raw(0xff)
+  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  # the S4 flag on a symbol, a type that never carries it
+  bad <- .Call(sora:::sora_codec_write_call, quote(x))
+  bad[2] <- as.raw(0x41)
   expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
 })

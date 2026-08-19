@@ -59,7 +59,7 @@ test_that("length-1 strings ride the STR1 fast path byte-identically", {
   channel_end(p)
 })
 
-test_that("attributes, S4, and ALTREP take the serialize path and survive", {
+test_that("attributed and ALTREP payloads survive the channel round trip", {
   p <- channel_pair()
   x <- c(a = 1, b = 2) # attributes -> INLINE
   sora_send(p[["host"]], x)

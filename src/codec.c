@@ -1,8 +1,8 @@
 /* The sora compact codec: a purpose-built binary framing for the payload
    subset that dominates the hot paths — NULL, symbols, atomic vectors
-   (attributes included), strings, list/vector trees, calls, and closures
-   — written and read straight off the slot bytes with no R serializer
-   involvement.
+   (attributes included), strings, list/vector trees, calls, closures,
+   and S4 objects — written and read straight off the slot bytes with no
+   R serializer involvement.
 
    Why it exists: R_Serialize pays a VECSXP(1099) ref-tracking hash table
    (and R_Unserialize a VECSXP(128) read table) on EVERY call — several
@@ -39,7 +39,15 @@
    function-factory case), a bytecode body, or a non-srcref attribute on
    a language node decline like any other non-subset node.
 
-   Fallback, not failure: anything outside the subset (environments, S4,
+   S4 objects cross as their data part plus the S4 object bit: a flag on
+   the vector and closure node tags, a dedicated node for the data-less
+   S4SXP form. Slots are attributes and ride the (name, value) pairs;
+   the bit is applied with Rf_asS4 only after the attributes land, so a
+   read never consults a class definition — R_Unserialize's discipline.
+   An S4 object over an ALTREP data part, or with an out-of-subset slot,
+   declines like any other non-subset node.
+
+   Fallback, not failure: anything outside the subset (environments,
    ALTREP, external pointers, promises, bytecode, primitives as values,
    language nodes carrying non-srcref attributes, over-deep nesting)
    declines to write and the caller re-frames through R_Serialize,
@@ -87,11 +95,13 @@ SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
 /* Node types (low nibble of the tag byte). */
 enum {
   SC_NIL = 0, SC_SYM, SC_LGL, SC_INT, SC_REAL, SC_CPLX, SC_RAW, SC_STR,
-  SC_VEC, SC_EXPR, SC_LIST, SC_LANG, SC_MISSING, SC_UNBOUND, SC_CLOS
+  SC_VEC, SC_EXPR, SC_LIST, SC_LANG, SC_MISSING, SC_UNBOUND, SC_CLOS,
+  SC_S4
 };
 /* Tag flags (high nibble). */
 #define SC_HASATTR 0x10
 #define SC_HASTAG  0x20
+#define SC_HASS4   0x40
 /* Closure environment reference kinds (the byte after an SC_CLOS tag):
    global / base / empty by kind, a package namespace by name — the
    by-reference discipline of R's own serializer, the only environments
@@ -189,7 +199,8 @@ static void scw_attrs(sora_scw *w, SEXP x, unsigned depth) {
    count first so the reader allocates before attributes apply. */
 static void scw_header(sora_scw *w, uint32_t type, SEXP x, unsigned depth) {
   int hasattr = ANY_ATTRIB(x) || Rf_isObject(x);
-  scw_u8(w, type | (hasattr ? SC_HASATTR : 0u));
+  scw_u8(w, type | (hasattr ? SC_HASATTR : 0u) |
+            (Rf_isS4(x) ? SC_HASS4 : 0u));
   scw_u64(w, (uint64_t) XLENGTH(x));
   if (hasattr) scw_attrs(w, x, depth);
 }
@@ -220,7 +231,8 @@ static void scw_closure(sora_scw *w, SEXP x, unsigned depth) {
     return;
   }
   int hasattr = ANY_ATTRIB(x) || Rf_isObject(x);
-  scw_u8(w, SC_CLOS | (hasattr ? SC_HASATTR : 0u));
+  scw_u8(w, SC_CLOS | (hasattr ? SC_HASATTR : 0u) |
+            (Rf_isS4(x) ? SC_HASS4 : 0u));
   scw_u8(w, envkind);
   if (envkind == SC_ENV_NS) scw_string(w, STRING_ELT(spec, 0));
   scw_node(w, R_ClosureFormals(x), depth + 1);
@@ -246,7 +258,7 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
     scw_string(w, PRINTNAME(x));
     return;
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP: {
-    if (ALTREP(x) || Rf_isS4(x)) { w->fail = 1; return; }
+    if (ALTREP(x)) { w->fail = 1; return; }
     int type = ty == LGLSXP ? SC_LGL : ty == INTSXP ? SC_INT :
       ty == REALSXP ? SC_REAL : ty == CPLXSXP ? SC_CPLX : SC_RAW;
     scw_header(w, (uint32_t) type, x, depth);
@@ -256,7 +268,7 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
     return;
   }
   case STRSXP: {
-    if (ALTREP(x) || Rf_isS4(x)) { w->fail = 1; return; }
+    if (ALTREP(x)) { w->fail = 1; return; }
     scw_header(w, SC_STR, x, depth);
     if (w->fail) return;
     R_xlen_t len = XLENGTH(x);
@@ -271,7 +283,7 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
     return;
   }
   case VECSXP: case EXPRSXP: {
-    if (ALTREP(x) || Rf_isS4(x)) { w->fail = 1; return; }
+    if (ALTREP(x)) { w->fail = 1; return; }
     scw_header(w, ty == VECSXP ? SC_VEC : SC_EXPR, x, depth);
     if (w->fail) return;
     R_xlen_t len = XLENGTH(x);
@@ -335,8 +347,15 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
     scw_closure(w, x, depth);
     return;
   }
+  case S4SXP: {
+    /* the data-less S4 object: attributes are the whole payload */
+    int hasattr = ANY_ATTRIB(x) || Rf_isObject(x);
+    scw_u8(w, SC_S4 | (hasattr ? SC_HASATTR : 0u));
+    if (hasattr) scw_attrs(w, x, depth);
+    return;
+  }
   default:
-    /* environments, S4, ALTREP, external pointers, promises, bytecode,
+    /* environments, ALTREP, external pointers, promises, bytecode,
        primitives as values, ...: the R_Serialize path */
     w->fail = 1;
     return;
@@ -439,6 +458,10 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
   /* flags the writer never produces on these types are corruption */
   if ((tag & SC_HASTAG) && ty != SC_LIST && ty != SC_LANG)
     Rf_error("sora: corrupt payload stream");
+  if ((tag & SC_HASS4) && ty != SC_LGL && ty != SC_INT && ty != SC_REAL &&
+      ty != SC_CPLX && ty != SC_RAW && ty != SC_STR && ty != SC_VEC &&
+      ty != SC_EXPR && ty != SC_CLOS)
+    Rf_error("sora: corrupt payload stream");
   if ((tag & SC_HASATTR) &&
       (ty == SC_NIL || ty == SC_MISSING || ty == SC_UNBOUND ||
        ty == SC_SYM || ty == SC_LIST || ty == SC_LANG))
@@ -466,6 +489,7 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
     scr_need(r, (size_t) len * elt);
     memcpy(sora_vec_ptr(s), r->p, (size_t) len * elt);
     r->p += (size_t) len * elt;
+    if (tag & SC_HASS4) s = Rf_asS4(s, TRUE, 0);
     UNPROTECT(1);
     return s;
   }
@@ -477,6 +501,7 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
     if (tag & SC_HASATTR) scr_attrs(r, s, depth);
     for (R_xlen_t i = 0; i < (R_xlen_t) len; i++)
       SET_STRING_ELT(s, i, scr_string(r));
+    if (tag & SC_HASS4) s = Rf_asS4(s, TRUE, 0);
     UNPROTECT(1);
     return s;
   }
@@ -489,6 +514,7 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
     if (tag & SC_HASATTR) scr_attrs(r, s, depth);
     for (R_xlen_t i = 0; i < (R_xlen_t) len; i++)
       SET_VECTOR_ELT(s, i, scr_node(r, depth + 1));
+    if (tag & SC_HASS4) s = Rf_asS4(s, TRUE, 0);
     UNPROTECT(1);
     return s;
   }
@@ -540,8 +566,16 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
     SEXP body = PROTECT(scr_node(r, depth + 1));
     SEXP cl = PROTECT(R_mkClosure(formals, body, env));
     if (tag & SC_HASATTR) scr_attrs(r, cl, depth);
+    if (tag & SC_HASS4) cl = Rf_asS4(cl, TRUE, 0);
     UNPROTECT(4);
     return cl;
+  }
+  case SC_S4: {
+    /* born with the bit; attributes are the whole payload */
+    SEXP s = PROTECT(Rf_allocS4Object());
+    if (tag & SC_HASATTR) scr_attrs(r, s, depth);
+    UNPROTECT(1);
+    return s;
   }
   }
   Rf_error("sora: corrupt payload stream");
@@ -579,13 +613,15 @@ int sora_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
   if (len < 2 || buf[0] != SORA_CODEC_MAGIC) return 0;
   sora_scr r = { buf + 1, buf + len };
   uint32_t tag = scr_u8(&r);
-  if ((tag & 0x0f) != SC_VEC || (tag & (SC_HASATTR | SC_HASTAG))) return 0;
+  if ((tag & 0x0f) != SC_VEC ||
+      (tag & (SC_HASATTR | SC_HASTAG | SC_HASS4)))
+    return 0;
   if (scr_u64(&r) != 2) return 0;
   *expr = PROTECT(scr_node(&r, 1));
   const unsigned char *save = r.p;
   uint32_t atag = scr_u8(&r);
-  if ((atag & 0x0f) == SC_VEC && !(atag & (SC_HASATTR | SC_HASTAG)) &&
-      scr_u64(&r) == 0) {
+  if ((atag & 0x0f) == SC_VEC &&
+      !(atag & (SC_HASATTR | SC_HASTAG | SC_HASS4)) && scr_u64(&r) == 0) {
     *args = sora_empty_args();
   } else {
     r.p = save;
