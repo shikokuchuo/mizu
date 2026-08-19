@@ -1,8 +1,8 @@
 /* The sora compact codec: a purpose-built binary framing for the payload
    subset that dominates the hot paths — NULL, symbols, atomic vectors
    (attributes included), strings, list/vector trees, calls, closures,
-   and S4 objects — written and read straight off the slot bytes with no
-   R serializer involvement.
+   S4 objects, and primitives as values — written and read straight off
+   the slot bytes with no R serializer involvement.
 
    Why it exists: R_Serialize pays a VECSXP(1099) ref-tracking hash table
    (and R_Unserialize a VECSXP(128) read table) on EVERY call — several
@@ -47,9 +47,16 @@
    An S4 object over an ALTREP data part, or with an out-of-subset slot,
    declines like any other non-subset node.
 
+   Primitives as values cross by name — the symbol framing with a
+   resolve flag, resolved against the base environment on read, the
+   interned-singleton discipline of R's own serializer. The name has no
+   public accessor from the object, so the writer reverse-looks it up
+   against base; anything unlisted declines like any other non-subset
+   node.
+
    Fallback, not failure: anything outside the subset (environments,
-   ALTREP, external pointers, promises, bytecode, primitives as values,
-   language nodes carrying non-srcref attributes, over-deep nesting)
+   ALTREP, external pointers, promises, bytecode, language nodes
+   carrying non-srcref attributes, over-deep nesting)
    declines to write and the caller re-frames through R_Serialize,
    exactly as before.
 
@@ -102,6 +109,7 @@ enum {
 #define SC_HASATTR 0x10
 #define SC_HASTAG  0x20
 #define SC_HASS4   0x40
+#define SC_PRIM    0x80
 /* Closure environment reference kinds (the byte after an SC_CLOS tag):
    global / base / empty by kind, a package namespace by name — the
    by-reference discipline of R's own serializer, the only environments
@@ -347,6 +355,28 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
     scw_closure(w, x, depth);
     return;
   }
+  case BUILTINSXP: case SPECIALSXP: {
+    /* A primitive crosses as its name: the symbol framing with the
+       resolve flag. The name has no public accessor from the object
+       (PRIMNAME stays internal), so it is reverse-looked up against
+       base — every reachable primitive is a base binding, and the scan
+       runs only when a primitive actually crosses. Anything unlisted
+       declines. Primitives can carry no attributes, so the framing is
+       complete. */
+    SEXP names = PROTECT(R_lsInternal3(R_BaseEnv, TRUE, FALSE));
+    w->fail = 1;
+    for (R_xlen_t i = 0; i < XLENGTH(names); i++) {
+      SEXP cs = STRING_ELT(names, i);
+      if (Rf_eval(Rf_installTrChar(cs), R_BaseEnv) == x) {
+        scw_u8(w, SC_SYM | SC_PRIM);
+        scw_string(w, cs);
+        w->fail = 0;
+        break;
+      }
+    }
+    UNPROTECT(1);
+    return;
+  }
   case S4SXP: {
     /* the data-less S4 object: attributes are the whole payload */
     int hasattr = ANY_ATTRIB(x) || Rf_isObject(x);
@@ -356,7 +386,7 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
   }
   default:
     /* environments, ALTREP, external pointers, promises, bytecode,
-       primitives as values, ...: the R_Serialize path */
+       ...: the R_Serialize path */
     w->fail = 1;
     return;
   }
@@ -462,6 +492,8 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
       ty != SC_CPLX && ty != SC_RAW && ty != SC_STR && ty != SC_VEC &&
       ty != SC_EXPR && ty != SC_CLOS)
     Rf_error("sora: corrupt payload stream");
+  if ((tag & SC_PRIM) && ty != SC_SYM)
+    Rf_error("sora: corrupt payload stream");
   if ((tag & SC_HASATTR) &&
       (ty == SC_NIL || ty == SC_MISSING || ty == SC_UNBOUND ||
        ty == SC_SYM || ty == SC_LIST || ty == SC_LANG))
@@ -473,6 +505,17 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
   case SC_SYM: {
     SEXP pn = PROTECT(scr_string(r));
     SEXP s = Rf_installTrChar(pn);
+    if (tag & SC_PRIM) {
+      if (!R_existsVarInFrame(R_BaseEnv, s)) {
+        UNPROTECT(1);
+        Rf_error("sora: corrupt payload stream");
+      }
+      s = Rf_eval(s, R_BaseEnv);
+      if (TYPEOF(s) != BUILTINSXP && TYPEOF(s) != SPECIALSXP) {
+        UNPROTECT(1);
+        Rf_error("sora: corrupt payload stream");
+      }
+    }
     UNPROTECT(1);
     return s;
   }

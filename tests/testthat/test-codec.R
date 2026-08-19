@@ -108,6 +108,17 @@ test_that("S4 objects round-trip with the bit, slots, and class intact", {
   expect_identical(codec_rt(f), f)
 })
 
+test_that("primitives as values round-trip by name", {
+  expect_identical(codec_rt(base::sum), base::sum)
+  expect_identical(codec_rt(`+`), `+`)
+  expect_identical(codec_rt(base::`if`), base::`if`)
+  expect_identical(codec_rt(.Primitive), .Primitive)
+  expect_identical(
+    codec_rt(list(f = base::sum, x = 1L)),
+    list(f = base::sum, x = 1L)
+  )
+})
+
 test_that("closures round-trip with by-reference environments", {
   # eval in globalenv(): the test file's own environment is a local one
   f <- eval(quote(function(x, y = 1, ...) x + y), globalenv())
@@ -174,7 +185,6 @@ test_that("keep.source language trees cross with srcrefs dropped", {
 test_that("the subset declines cleanly: NULL from the write surface", {
   expect_null(.Call(sora:::sora_codec_write_call, 1:5)) # ALTREP
   expect_null(.Call(sora:::sora_codec_write_call, globalenv())) # environment
-  expect_null(.Call(sora:::sora_codec_write_call, base::sum)) # builtin
   # a closure over a local environment (the function-factory case)
   loc <- local({
     y <- 1
@@ -237,5 +247,13 @@ test_that("the reader rejects malformed streams", {
   # the S4 flag on a symbol, a type that never carries it
   bad <- .Call(sora:::sora_codec_write_call, quote(x))
   bad[2] <- as.raw(0x41)
+  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  # the primitive flag on a non-symbol
+  bad <- .Call(sora:::sora_codec_write_call, 1L)
+  bad[2] <- as.raw(0x83)
+  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  # a primitive name that resolves to no primitive
+  bad <- .Call(sora:::sora_codec_write_call, quote(x))
+  bad[2] <- as.raw(0x81)
   expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
 })

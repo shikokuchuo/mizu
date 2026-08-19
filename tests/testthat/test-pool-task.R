@@ -42,6 +42,10 @@ test_that("codec streams carry task args and attributed results", {
   t <- sora_submit(p[["ctrl"]], factor(rep(x, 2L)), x = c("a", "b"))
   pool_step(p)
   expect_identical(sora_collect(t, timeout = 5), factor(rep(c("a", "b"), 2L)))
+  # a primitive arg crosses by name on the codec
+  t <- sora_submit(p[["ctrl"]], f(x), f = sum, x = c(1, 2, 3))
+  pool_step(p)
+  expect_identical(sora_collect(t, timeout = 5), 6)
   # a codec-ineligible arg (a closure) falls back to R_Serialize inline
   t <- sora_submit(p[["ctrl"]], f(3L), f = function(x) x * 2L)
   pool_step(p)
