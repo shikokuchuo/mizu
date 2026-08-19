@@ -133,6 +133,54 @@ test_that("submitters claim distinct slots and subranges", {
   pool_end(p)
 })
 
+test_that("batch submit flows tasks and returns handles in order", {
+  p <- pool_pair()
+  ts <- sora_submit_batch(p[["ctrl"]], list(quote(1L + 1L), quote(2L * 3L), 1L))
+  expect_length(ts, 3L)
+  expect_s3_class(ts[[1L]], "sora_task")
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(sora_collect_all(ts, timeout = 5), list(2L, 6L, 1L))
+  pool_end(p)
+})
+
+test_that("batch submit shares the ... bindings across tasks", {
+  p <- pool_pair()
+  ts <- sora_submit_batch(
+    p[["ctrl"]],
+    list(quote(x + 1L), quote(x * 2L)),
+    x = 10L
+  )
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(sora_collect_all(ts, timeout = 5), list(11L, 20L))
+  pool_end(p)
+})
+
+test_that("batch submit validates its inputs", {
+  p <- pool_pair()
+  expect_identical(sora_submit_batch(p[["ctrl"]], list()), list())
+  expect_error(sora_submit_batch(p[["ctrl"]], 1L), "list of expressions")
+  expect_error(
+    sora_submit_batch(p[["ctrl"]], list(quote(x)), 10L),
+    "must be named"
+  )
+  pool_end(p)
+})
+
+test_that("batch submit returns a short list when the ring fills", {
+  p <- pool_pair(injection_cap = 4L)
+  ts <- sora_submit_batch(p[["ctrl"]], rep(list(quote(1L)), 8L), .timeout = 0)
+  expect_length(ts, 4L)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(sora_collect_all(ts, timeout = 5), as.list(rep(1L, 4L)))
+  pool_end(p)
+})
+
 test_that("the submitter registry reports full", {
   p <- pool_pair(max_submitters = 1L, result_slots = 8L)
   suffix <- .Call(sora:::sora_pool_suffix, p[["ctrl"]])

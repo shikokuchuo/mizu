@@ -3,7 +3,9 @@
 # a summary table at the end; asserts nothing.
 #
 #   1. sequential round-trip  evaluate 1L, 1 worker: submit + collect loop
-#   2. pipelined throughput   evaluate 1L, 1 worker: fire n, collect n
+#   2. pipelined throughput   evaluate 1L, 1 worker: fire n, collect n;
+#                             channel and pool each carry a batched row —
+#                             one crossing per burst instead of per op
 #   3. payload round-trip     identity task on numeric vectors of 8 KB /
 #                             800 KB / 8 MB, 1 worker: data both ways.
 #                             sora slots are sized to the payload where
@@ -281,6 +283,51 @@ with_channel(echo_expr, function(ch) {
   )
 })
 
+# the channel's batch pair: the peer echoes whole batches, the host sends
+# and drains in 4096-chunks — one crossing per chunk each way. stream() is
+# per cycle (10 calls per rep), not per message, so the helper stays
+with_channel(
+  quote(
+    repeat {
+      xs <- sora_recv_batch(ch, n = 4096L, timeout = 30)
+      if (inherits(xs, "sora_sentinel")) {
+        break
+      }
+      sora_send_batch(ch, xs)
+    }
+  ),
+  function(ch) {
+    batch <- as.list(rep(1L, 4096L))
+    stream <- function(m) {
+      sent <- 0L
+      while (sent < m) {
+        want <- min(4096L, m - sent)
+        sent <- sent + sora_send_batch(ch, batch[seq_len(want)])
+      }
+      got <- 0L
+      while (got < m) {
+        xs <- sora_recv_batch(ch, 4096L, 30)
+        if (inherits(xs, "sora_sentinel")) {
+          stop("sora channel batch: peer stopped echoing")
+        }
+        got <- got + length(xs)
+      }
+    }
+    warmup(function() stream(100L))
+    note_rate(
+      "pipelined",
+      "sora channel batch",
+      k * n,
+      function() {
+        for (j in seq_len(k)) {
+          stream(n)
+        }
+      },
+      "rt/s"
+    )
+  }
+)
+
 # a submitter's outstanding tasks are bounded by its result-slot share, so
 # fire-n-then-collect needs result_slots / max_submitters >= n
 with_pool(
@@ -290,6 +337,25 @@ with_pool(
     reap <- function(t) sora_collect(t, timeout = 30)
     warmup(function() reap(fire()))
     note_rate("pipelined", "sora pool", n, function() pipeline(fire, reap, n))
+  },
+  list(result_slots = 20480L)
+)
+
+# the batch pair: one submit crossing + one collect crossing per burst.
+# exprs is built once outside the timed loop, as a real caller hoists it
+with_pool(
+  1L,
+  function(p) {
+    exprs <- as.list(rep(1L, n))
+    warmup(function() {
+      invisible(sora_collect_all(
+        sora_submit_batch(p, exprs[seq_len(100L)]),
+        timeout = 30
+      ))
+    })
+    note_rate("pipelined", "sora pool batch", n, function() {
+      invisible(sora_collect_all(sora_submit_batch(p, exprs), timeout = 30))
+    })
   },
   list(result_slots = 20480L)
 )

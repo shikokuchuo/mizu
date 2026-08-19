@@ -44,6 +44,21 @@ test_that("a task submits and collects a nested subtask in one step", {
   pool_end(p)
 })
 
+test_that("a task batch-submits nested subtasks in one step", {
+  p <- pool_pair()
+  t <- sora_submit(
+    p[["ctrl"]],
+    {
+      ts <- sora_submit_batch(pool, list(quote(x + 1L), quote(x * 2L)), x = x)
+      unlist(sora_collect_all(ts, timeout = 5))
+    },
+    x = 10L
+  )
+  expect_identical(pool_step(p), 1L)
+  expect_identical(sora_collect(t, timeout = 5), c(11L, 20L))
+  pool_end(p)
+})
+
 test_that("a full deque runs nested subtasks inline (work-first)", {
   p <- pool_pair(per_worker_cap = 2L, max_submitters = 2L, result_slots = 64L)
   t <- sora_submit(p[["ctrl"]], {

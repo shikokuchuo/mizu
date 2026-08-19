@@ -131,3 +131,23 @@ this host, so timed intervals are kept >> 1 ms by looping.
   context inflates the wake/claim path. One test-parker flake seen once
   in a container full-suite run (stray SIGCHLD mid-park); passes in
   isolation on both builds.
+
+## 2026-08-19: sora_submit_batch (pool TSO analog)
+
+- One .Call, one payload assembly loop, per-element tail publish, and a
+  wake cadence (every min(64, inj_cap) publishes) plus a protocol wake
+  pass per worker after the last publish. The single submit's
+  publish->wake pairing is load-bearing, not ceremony: a worker that
+  loses the park race mid-burst (pre-park re-check read a stale tail)
+  sleeps for the full 1 h run bound, and only a wake paired with the
+  final publish contains that race. An earlier version waking only at
+  element 0 deadlocked into collect timeouts that leaked handles into
+  sora_error_slots_exhausted a burst later.
+- Measured (scenario 2, evaluate 1L, 1 worker, submit_batch +
+  collect_all per burst): 5.0M tasks/s vs 0.67M looped single submits
+  (7.5x) — the R boundary was the remaining per-task cost. mirai
+  dispatcher 9.4k, direct 20.1k tasks/s on the same row.
+- sora_map deliberately does not use it: map submits O(workers) runner
+  tasks per call, so batching its submit loop is noise; the raw pool
+  API loop (fire n, collect n) is where the crossing count is
+  unbounded.

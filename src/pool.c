@@ -1463,6 +1463,39 @@ static SEXP pool_submit_nested(sora_pool *p, SEXP xp, SEXP payload,
   return txp;
 }
 
+/* Per-task core of the submitter path: result slot, staging, handle,
+   commit, entry fill — everything except the space wait, the tail
+   publish, and the wake, which the batch entry amortizes across a
+   burst. The submit trace emits at stage time. */
+static SEXP pool_submit1(sora_pool *p, SEXP xp, SEXP keepers,
+                         unsigned char *ring, SEXP payload, uint16_t flags) {
+  uint32_t local = pool_alloc_rs(p, keepers);
+  uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
+  sora_rs_hdr *rs = pool_rs(p, rs_index);
+
+  /* staging and handle allocation can longjmp: nothing observable yet */
+  unsigned char *e = ring_entry(p, ring, (uint64_t) p->inj_ltail);
+  sora_entry_hdr *eh = (sora_entry_hdr *) e;
+  SEXP keep = PROTECT(sora_payload_stage(&eh->ph, e + sizeof(sora_entry_hdr),
+                                        p->inline_entry, payload, &p->fl));
+  pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
+  SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
+  pool_commit_rs(p, keepers, local, keep, rs);
+  pool_fill_entry(p, eh, rs_index, flags);
+  p->inj_ltail++;
+  pool_trace_emit(xp, "submit", eh->task_id);
+  UNPROTECT(2);
+  return txp;
+}
+
+/* Injection publish: the tail store, then the ready bit, in that order. */
+static void pool_inj_publish(sora_pool *p, unsigned char *ring) {
+  atomic_store_explicit(ring_tail(ring), p->inj_ltail, memory_order_release);
+  uint64_t bit = 1ull << p->sub_slot;
+  if (!(atomic_load_explicit(p->inj_ready, memory_order_relaxed) & bit))
+    atomic_fetch_or_explicit(p->inj_ready, bit, memory_order_seq_cst);
+}
+
 /* tryflag: ring-full-past-timeout returns the sora_timeout sentinel
    (unambiguous — success returns an external pointer) instead of raising
    sora_error_submit_timeout, so the map submit loop needs no handler.
@@ -1490,29 +1523,9 @@ static SEXP pool_submit(SEXP xp, SEXP payload, double timeout_s,
              "sora: submission timed out (injection ring full)");
   }
 
-  uint32_t local = pool_alloc_rs(p, keepers);
-  uint32_t rs_index = p->sub[p->sub_slot].rs_start + local;
-  sora_rs_hdr *rs = pool_rs(p, rs_index);
-
-  /* staging and handle allocation can longjmp: nothing observable yet */
-  unsigned char *e = ring_entry(p, ring, (uint64_t) p->inj_ltail);
-  sora_entry_hdr *eh = (sora_entry_hdr *) e;
-  SEXP keep = PROTECT(sora_payload_stage(&eh->ph, e + sizeof(sora_entry_hdr),
-                                        p->inline_entry, payload, &p->fl));
-  pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
-  SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
-  pool_commit_rs(p, keepers, local, keep, rs);
-  pool_fill_entry(p, eh, rs_index, flags);
-  uint64_t tid = eh->task_id;
-  p->inj_ltail++;
-  atomic_store_explicit(ring_tail(ring), p->inj_ltail, memory_order_release);
-  uint64_t bit = 1ull << p->sub_slot;
-  if (!(atomic_load_explicit(p->inj_ready, memory_order_relaxed) & bit))
-    atomic_fetch_or_explicit(p->inj_ready, bit, memory_order_seq_cst);
+  SEXP txp = pool_submit1(p, xp, keepers, ring, payload, flags);
+  pool_inj_publish(p, ring);
   pool_wake_one_worker(p);
-  pool_trace_emit(xp, "submit", tid);
-
-  UNPROTECT(2);
   return txp;
 }
 
@@ -1521,10 +1534,7 @@ SEXP sora_pool_submit(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp) {
                      0);
 }
 
-/* sora_submit's wire payload is list(expr, args), assembled here with the
-   names validation a C loop instead of R closures. */
-static SEXP pool_submit_expr(SEXP xp, SEXP expr, SEXP args, double timeout_s,
-                             int flags) {
+static void pool_check_task_args(SEXP args) {
   if (TYPEOF(args) != VECSXP)
     Rf_error("sora: expected a list of task arguments");
   R_xlen_t n = XLENGTH(args);
@@ -1538,6 +1548,13 @@ static SEXP pool_submit_expr(SEXP xp, SEXP expr, SEXP args, double timeout_s,
     if (bad)
       Rf_error("sora: all task arguments must be named");
   }
+}
+
+/* sora_submit's wire payload is list(expr, args), assembled here with the
+   names validation a C loop instead of R closures. */
+static SEXP pool_submit_expr(SEXP xp, SEXP expr, SEXP args, double timeout_s,
+                             int flags) {
+  pool_check_task_args(args);
   SEXP payload = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(payload, 0, expr);
   SET_VECTOR_ELT(payload, 1, args);
@@ -1565,6 +1582,85 @@ SEXP sora_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
   double d = Rf_asReal(deadline);
   return pool_submit(xp, payload, R_FINITE(d) ? d - sora_now() : R_PosInf,
                      Rf_asInteger(flags_sexp), 1);
+}
+
+/* sora_submit_batch's entry: one crossing per burst. Each task's wire
+   payload is sora_submit's list(expr, args), assembled by swapping the
+   expression through one reusable pair; the tail store and ready bit
+   publish per element, so workers drain as the burst stages and a burst
+   larger than the ring cannot deadlock. Wakes keep the pusher half of
+   the parker handshake: a cadence of every 64 publishes (never wider
+   than the ring, so a parked worker is roused long before the ring can
+   fill and the space wait always has a popper to unpark it), then one
+   pass per worker after the last publish — a worker can still lose the
+   park race mid-burst (its pre-park re-check read a stale tail), and
+   only a wake paired with the final publish contains that race.
+   Ring-full past .timeout mid-burst returns the handles accepted so
+   far; fatal outcomes (stopped, slots exhausted) raise, with the tasks
+   already submitted staying valid and collectible. */
+SEXP sora_pool_submit_batch(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
+                            SEXP flags_sexp) {
+  if (TYPEOF(exprs) != VECSXP)
+    Rf_error("sora: exprs must be a list of expressions");
+  pool_check_task_args(args);
+  sora_pool *p = pool_get(xp);
+  uint16_t flags = (uint16_t) Rf_asInteger(flags_sexp);
+  if (atomic_load_explicit(p->shutdown, memory_order_acquire) != 0)
+    sora_stop("sora_error_stopped", "sora: pool stopped");
+  if (atomic_load_explicit(&p->owner_dead, memory_order_acquire) != 0) {
+    pool_orphan_teardown_try(p);
+    sora_stop("sora_error_stopped", "sora: pool stopped or owner dead");
+  }
+
+  R_xlen_t n = XLENGTH(exprs);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+  SEXP payload = PROTECT(Rf_allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(payload, 1, args);
+
+  if (p->role == SORA_ROLE_WORKER) {
+    for (R_xlen_t i = 0; i < n; i++) {
+      SET_VECTOR_ELT(payload, 0, VECTOR_ELT(exprs, i));
+      SET_VECTOR_ELT(out, i, pool_submit_nested(p, xp, payload, flags));
+    }
+    UNPROTECT(2);
+    return out;
+  }
+  if (p->sub_slot < 0)
+    Rf_error("sora: not a submitter handle");
+  SEXP keepers = VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
+  unsigned char *ring = pool_ring(p, (uint32_t) p->sub_slot);
+
+  double timeout_s = Rf_asReal(timeout);
+  double deadline = R_FINITE(timeout_s) ? sora_now() + timeout_s : -1;
+  /* wake cadence: a power of two no wider than the ring (both are), so
+     one wake lands within any ring-filling window */
+  int64_t cad = (int64_t) p->hdr.inj_cap < 64 ? (int64_t) p->hdr.inj_cap : 64;
+  R_xlen_t done = 0;
+  for (R_xlen_t i = 0; i < n; i++) {
+    double rem = deadline < 0 ? R_PosInf : deadline - sora_now();
+    if (!pool_ring_space_wait(p, ring_head(ring), rem)) break;
+    SET_VECTOR_ELT(payload, 0, VECTOR_ELT(exprs, i));
+    SET_VECTOR_ELT(out, i, pool_submit1(p, xp, keepers, ring, payload, flags));
+    done++;
+    pool_inj_publish(p, ring);
+    if ((i & (cad - 1)) == 0)
+      for (uint32_t k = 0; k < p->hdr.max_workers; k++)
+        pool_wake_one_worker(p);
+  }
+  /* the protocol wake: pair the burst's last publish with a parked-mask
+     check per worker, as the single submit pairs every publish */
+  for (R_xlen_t k = 0; k < done && k < (R_xlen_t) p->hdr.max_workers; k++)
+    pool_wake_one_worker(p);
+
+  if (done < n) {
+    SEXP part = PROTECT(Rf_allocVector(VECSXP, done));
+    for (R_xlen_t i = 0; i < done; i++)
+      SET_VECTOR_ELT(part, i, VECTOR_ELT(out, i));
+    UNPROTECT(3);
+    return part;
+  }
+  UNPROTECT(2);
+  return out;
 }
 
 // Worker step ----------------------------------------------------------------------------

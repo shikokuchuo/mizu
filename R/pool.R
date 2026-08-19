@@ -315,6 +315,47 @@ sora_collect <- function(task, timeout = Inf) {
   .Call(sora_pool_collect, task, timeout)
 }
 
+#' Submit a Batch of Tasks
+#'
+#' `sora_submit_batch()` submits one task per element of `exprs` in a
+#' single `.Call`: one R boundary crossing and one wake-up sweep per
+#' batch instead of per task. At target rates the call boundary is a
+#' first-order cost, so a burst submitted this way reaches the workers
+#' sooner than the same burst looped through [sora_submit()]. Pair with
+#' [sora_collect_all()] to batch the collection side too.
+#'
+#' Each task's wire payload is the same `list(expr, args)` as
+#' [sora_submit()]'s, with the `...` arguments shared by every task in
+#' the batch. Unlike `sora_submit()`, expressions are not captured:
+#' the elements of `exprs` are pre-quoted (or plain values, which
+#' evaluate to themselves).
+#'
+#' Submission semantics per task are [sora_submit()]'s, with one
+#' difference: if the injection ring fills past `.timeout` mid-batch,
+#' the call returns the handles accepted so far instead of raising
+#' `sora_error_submit_timeout`. Fatal outcomes (pool stopped, result
+#' slots exhausted) still raise; tasks already submitted stay valid and
+#' collectible.
+#'
+#' @inheritParams sora_submit
+#' @param exprs a list of expressions, one per task. Quote them
+#'   yourself: elements of a list cannot be captured unevaluated.
+#'
+#' @return A list of task handles (class `"sora_task"`), one per
+#'   accepted task — shorter than `exprs` when the ring filled past
+#'   `.timeout` mid-batch.
+#'
+#' @examples
+#' p <- sora_pool()
+#' ts <- sora_submit_batch(p, list(quote(1 + 1), quote(2 + 2)))
+#' sora_collect_all(ts, timeout = 30)
+#' sora_pool_stop(p)
+#'
+#' @export
+sora_submit_batch <- function(pool, exprs, ..., .timeout = Inf) {
+  .Call(sora_pool_submit_batch, pool, exprs, list(...), .timeout, 0L)
+}
+
 #' Collect the First Available Result From Several Tasks
 #'
 #' `sora_collect_any()` waits on several task handles at once and returns
