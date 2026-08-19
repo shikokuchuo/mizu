@@ -502,7 +502,7 @@ static SEXP pool_eval_handler(SEXP cond, void *data) {
 
 static SEXP pool_eval_expr(sora_pool *p, SEXP xp, SEXP expr, SEXP args,
                            int catching, int *ok) {
-  SEXP names = Rf_getAttrib(args, R_NamesSymbol);
+  SEXP names = PROTECT(Rf_getAttrib(args, R_NamesSymbol));
   R_xlen_t n = Rf_xlength(args);
   if (n > 0 && TYPEOF(names) != STRSXP)
     Rf_error("sora: corrupt task payload");
@@ -514,6 +514,7 @@ static SEXP pool_eval_expr(sora_pool *p, SEXP xp, SEXP expr, SEXP args,
   case NILSXP: case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP:
   case STRSXP: case RAWSXP: case VECSXP:
     *ok = 1;
+    UNPROTECT(1);                    /* names */
     return expr;
   }
   SEXP env = PROTECT(R_NewEnv(pool_eval_env(xp), 0, 0));
@@ -530,7 +531,7 @@ static SEXP pool_eval_expr(sora_pool *p, SEXP xp, SEXP expr, SEXP args,
     p->in_eval = 0;
   }
   *ok = c.ok;
-  UNPROTECT(1);
+  UNPROTECT(2);                    /* names, env */
   return value;
 }
 
@@ -2502,23 +2503,24 @@ static void pool_execute(sora_pool *p, SEXP xp, int catching) {
 
   /* An INLINE codec task frame stream-decodes in place — no list(expr,
      args) materialization, so a constant task allocates nothing on the
-     worker. Anything else takes the generic read and its shape check. */
-  SEXP expr = R_NilValue, args = R_NilValue, pl = R_NilValue;
-  int gone = 0, nprot = 0;
+     worker. Anything else takes the generic read and its shape check. Both
+     paths end with expr and args PROTECTed (2 total): the reads hand them
+     over unprotected and nothing allocates before the PROTECTs. */
+  SEXP expr = R_NilValue, args = R_NilValue;
+  int gone = 0;
   if (eh->ph.kind == SORA_KIND_INLINE && eh->ph.len <= p->inline_entry &&
       sora_codec_read_task(p->scratch + sizeof(sora_entry_hdr),
-                           (size_t) eh->ph.len, &expr, &args, &nprot)) {
-    /* decoded in place */
+                           (size_t) eh->ph.len, &expr, &args)) {
+    PROTECT(expr);
+    PROTECT(args);
   } else {
     /* A vanished out-of-line entry payload means the enqueuer died and its
        region went along (Win32 mappings cannot outlive their creator): the
        task can never run anywhere — it fails as DIED exactly like a claimed
        task whose worker died, and the drain continues in this thief. */
-    pl = PROTECT(sora_payload_read(&eh->ph,
-                                   p->scratch + sizeof(sora_entry_hdr),
-                                   p->inline_entry, &gone, &p->oc,
-                                   &p->zoc));
-    nprot = 1;
+    SEXP pl = sora_payload_read(&eh->ph,
+                                p->scratch + sizeof(sora_entry_hdr),
+                                p->inline_entry, &gone, &p->oc, &p->zoc);
     if (gone) {
       int32_t expected = SORA_RS_PENDING;
       if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
@@ -2535,15 +2537,14 @@ static void pool_execute(sora_pool *p, SEXP xp, int catching) {
           pool_probe_submitter(p, sub_slot);
       }
       atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
-      UNPROTECT(1);
       pool_trace_emit(xp, "drop", task_id);
       return;
     }
     if (TYPEOF(pl) != VECSXP || Rf_xlength(pl) != 2 ||
         TYPEOF(VECTOR_ELT(pl, 1)) != VECSXP)
       Rf_error("sora: corrupt task payload");
-    expr = VECTOR_ELT(pl, 0);
-    args = VECTOR_ELT(pl, 1);
+    expr = PROTECT(VECTOR_ELT(pl, 0));
+    args = PROTECT(VECTOR_ELT(pl, 1));
   }
   pool_trace_emit(xp, "start", task_id);
   /* scratch (and eh with it) is dead from here: the eval below may claim
@@ -2553,7 +2554,7 @@ static void pool_execute(sora_pool *p, SEXP xp, int catching) {
   p->st_tasks++;
   int published = pool_publish_result(p, xp, rs_index, sub_slot, seq, ok,
                                       value);
-  UNPROTECT(nprot + 1);
+  UNPROTECT(3);                    /* expr, args, value */
   pool_trace_emit(xp, published ? (ok ? "done" : "error") : "drop", task_id);
 }
 
@@ -3000,8 +3001,7 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
         UNPROTECT(1);
         return out;
       }
-      SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), v));
-      Rf_eval(call, R_BaseEnv);                  /* no return */
+      sora_cond_signal(v);                       /* no return */
     }
     UNPROTECT(1);
     return v;

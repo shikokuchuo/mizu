@@ -10,9 +10,9 @@
 #include <string.h>
 #include "sora.h"
 
-/* Returns the PROTECTed condition with nf field slots after message / call
-   left NULL for the caller to fill — the condition itself is their
-   protection. */
+/* Returns the condition with nf field slots after message / call left
+   NULL for the caller to fill, UNPROTECTED — the caller PROTECTs at the
+   call site (nothing allocates between). */
 static SEXP sora_cond(const char *subclass, const char **fnames, int nf,
                      const char *fmt, va_list ap) {
   char msg[1024];
@@ -31,11 +31,11 @@ static SEXP sora_cond(const char *subclass, const char **fnames, int nf,
   SET_STRING_ELT(klass, 2, Rf_mkChar("error"));
   SET_STRING_ELT(klass, 3, Rf_mkChar("condition"));
   Rf_setAttrib(cond, R_ClassSymbol, klass);
-  UNPROTECT(2);                    /* names, klass: reachable from cond */
+  UNPROTECT(3);                    /* cond, names, klass */
   return cond;
 }
 
-NORET static void sora_cond_signal(SEXP cond) {
+NORET void sora_cond_signal(SEXP cond) {
   SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), cond));
   Rf_eval(call, R_BaseEnv);        /* no return */
   Rf_error("sora: condition not signalled");
@@ -44,9 +44,10 @@ NORET static void sora_cond_signal(SEXP cond) {
 NORET void sora_stop(const char *subclass, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = sora_cond(subclass, NULL, 0, fmt, ap);
+  SEXP cond = PROTECT(sora_cond(subclass, NULL, 0, fmt, ap));
   va_end(ap);
   sora_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: sora_cond_signal is NORET */
 }
 
 /* Sentinel-mode wrap: the condition boxed in a length-1 list of class
@@ -65,7 +66,7 @@ SEXP sora_caught(SEXP cond) {
 SEXP sora_caught_cond(const char *subclass, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = sora_cond(subclass, NULL, 0, fmt, ap);
+  SEXP cond = PROTECT(sora_cond(subclass, NULL, 0, fmt, ap));
   va_end(ap);
   SEXP out = sora_caught(cond);
   UNPROTECT(1);
@@ -76,33 +77,37 @@ NORET void sora_stop_shm(double bytes, const char *fmt, ...) {
   static const char *fnames[] = { "bytes" };
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = sora_cond("sora_error_shm", fnames, 1, fmt, ap);
+  SEXP cond = PROTECT(sora_cond("sora_error_shm", fnames, 1, fmt, ap));
   va_end(ap);
   SET_VECTOR_ELT(cond, 2, Rf_ScalarReal(bytes));
   sora_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: sora_cond_signal is NORET */
 }
 
 static SEXP sora_cond_died(int slot, double pid, const char *fmt,
                           va_list ap) {
   static const char *fnames[] = { "slot", "pid" };
-  SEXP cond = sora_cond("sora_error_worker_died", fnames, 2, fmt, ap);
+  SEXP cond = PROTECT(sora_cond("sora_error_worker_died", fnames, 2, fmt,
+                                ap));
   SET_VECTOR_ELT(cond, 2, Rf_ScalarInteger(slot < 0 ? NA_INTEGER : slot));
   SET_VECTOR_ELT(cond, 3, Rf_ScalarReal(pid <= 0 ? NA_REAL : pid));
-  return cond;
+  UNPROTECT(1);
+  return cond;   /* UNPROTECTED: the caller PROTECTs at the call site */
 }
 
 NORET void sora_stop_died(int slot, double pid, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = sora_cond_died(slot, pid, fmt, ap);
+  SEXP cond = PROTECT(sora_cond_died(slot, pid, fmt, ap));
   va_end(ap);
   sora_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: sora_cond_signal is NORET */
 }
 
 SEXP sora_caught_died(int slot, double pid, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = sora_cond_died(slot, pid, fmt, ap);
+  SEXP cond = PROTECT(sora_cond_died(slot, pid, fmt, ap));
   va_end(ap);
   SEXP out = sora_caught(cond);
   UNPROTECT(1);
@@ -187,7 +192,8 @@ static SEXP sora_cond_message(SEXP cond, size_t share) {
 
 /* Assemble a transport condition: list(message, call?, kept fields...,
    dropped_fields?) with class carried verbatim. mark[i] == 2 selects a
-   kept field. Returns the PROTECTed condition. */
+   kept field. Returns the condition UNPROTECTED — the caller PROTECTs at
+   the call site (nothing allocates between). */
 static SEXP sora_cond_build(SEXP msg, SEXP cond, SEXP names,
                             const unsigned char *mark, R_xlen_t n,
                             R_xlen_t call_idx, SEXP dropped, R_xlen_t ndrop,
@@ -225,8 +231,8 @@ static SEXP sora_cond_build(SEXP msg, SEXP cond, SEXP names,
   }
   Rf_setAttrib(flat, R_NamesSymbol, fnames);
   Rf_classgets(flat, klass);
-  UNPROTECT(1);                    /* fnames: reachable from flat */
-  return flat;                     /* PROTECTed */
+  UNPROTECT(2);                    /* flat, fnames */
+  return flat;
 }
 
 /* Flatten a caught task condition for the ERR publish; budget is the
@@ -322,9 +328,9 @@ SEXP sora_condition_flatten(SEXP cond, size_t budget) {
     dfit++;
   }
 
-  SEXP flat = sora_cond_build(msg, cond, names, mk, n,
-                              have_call ? call_idx : (R_xlen_t) -1,
-                              dropped, dfit, klass);   /* PROTECTed */
+  SEXP flat = PROTECT(sora_cond_build(msg, cond, names, mk, n,
+                                      have_call ? call_idx : (R_xlen_t) -1,
+                                      dropped, dfit, klass));
 
   /* the verification pass: the exact whole-condition size against the
      budget. On overflow the terminal fallback — fallback message, no
@@ -346,8 +352,8 @@ SEXP sora_condition_flatten(SEXP cond, size_t budget) {
       fdcost += c;
       fdfit++;
     }
-    flat = sora_cond_build(fmsg, cond, names, mk, 0, -1, dropped, fdfit,
-                           klass);                   /* PROTECTed */
+    flat = PROTECT(sora_cond_build(fmsg, cond, names, mk, 0, -1, dropped,
+                                   fdfit, klass));
     UNPROTECT(6);                /* msg, klass, mark, dropped, fmsg, flat */
     return flat;
   }

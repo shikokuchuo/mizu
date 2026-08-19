@@ -114,7 +114,7 @@ size_t sora_codec_write(unsigned char *dst, size_t limit, SEXP object);
 /* Read a codec stream (magic included); raises on any malformation. */
 SEXP sora_codec_read(const unsigned char *buf, size_t len);
 int sora_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
-                         SEXP *args, int *nprotect);
+                         SEXP *args);
 SEXP sora_empty_args(void);
 
 // Payload framing (payload.c) ----------------------------------------------------
@@ -424,6 +424,9 @@ NORET void sora_stop_shm(double bytes, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
 NORET void sora_stop_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
+/* Signal an already-built condition via stop(cond): the raise longjmps
+   out of the Rf_eval. */
+NORET void sora_cond_signal(SEXP cond);
 /* Sentinel-mode variants: the same conditions returned boxed in a
    length-1 list of class "sora_caught" instead of signalled, for hot
    loops that branch on class rather than arm a tryCatch handler. Only C

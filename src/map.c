@@ -417,12 +417,17 @@ static void map_write_value(sora_map_h *mh, double e, SEXP value) {
   if (!widens || Rf_xlength(value) != (R_xlen_t) mh->h.out_m)
     Rf_error("sora: map values must be type '%s' and length %llu",
              map_type_name(ot), (unsigned long long) mh->h.out_m);
-  PROTECT(value);
-  if (vt != ot) value = PROTECT(Rf_coerceVector(value, (SEXPTYPE) ot));
-  memcpy((unsigned char *) mh->shm->addr + mh->h.out_off +
-         (size_t) (e - 1) * (mh->h.out_m * mh->h.out_elt_size),
-         sora_vec_ptr(value), (size_t) (mh->h.out_m * mh->h.out_elt_size));
-  UNPROTECT(vt != ot ? 2 : 1);
+  unsigned char *dst = (unsigned char *) mh->shm->addr + mh->h.out_off +
+    (size_t) (e - 1) * (mh->h.out_m * mh->h.out_elt_size);
+  size_t nbytes = (size_t) (mh->h.out_m * mh->h.out_elt_size);
+  if (vt != ot) {
+    PROTECT(value);
+    value = PROTECT(Rf_coerceVector(value, (SEXPTYPE) ot));
+    memcpy(dst, sora_vec_ptr(value), nbytes);
+    UNPROTECT(2);
+  } else {
+    memcpy(dst, sora_vec_ptr(value), nbytes);
+  }
 }
 
 SEXP sora_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
@@ -551,9 +556,10 @@ SEXP sora_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     default:      Rf_error("sora: unsupported map element type");
     }
     SETCAR(elt_cell, elt);
-    SEXP v = Rf_eval(call, rho);
+    SEXP v = PROTECT(Rf_eval(call, rho));
     if (tmpl) map_write_value(mh, e, v);
     else SET_VECTOR_ELT(out, i, v);
+    UNPROTECT(1);
   }
   UNPROTECT(np);
   return out;

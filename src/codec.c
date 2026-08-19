@@ -130,13 +130,14 @@ static void scw_attrs(sora_scw *w, SEXP x, unsigned depth) {
   SEXP attrs = R_getAttributes(x);
   PROTECT(attrs);
   if (TYPEOF(attrs) == VECSXP) {
-    SEXP names = Rf_getAttrib(attrs, R_NamesSymbol);
+    SEXP names = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
     R_xlen_t n = XLENGTH(attrs);
     scw_u32(w, (uint32_t) n);
     for (R_xlen_t i = 0; i < n; i++) {
       scw_string(w, STRING_ELT(names, i));
       scw_node(w, VECTOR_ELT(attrs, i), depth + 1);
     }
+    UNPROTECT(1);                /* names */
   } else {
     R_xlen_t n = 0;
     for (SEXP a = attrs; a != R_NilValue; a = CDR(a)) n++;
@@ -399,29 +400,24 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
   case SC_LIST: case SC_LANG: {
     /* R's ReadItem_Iterative discipline: one PROTECT on the head, each
        fresh node linked into the list before any allocating read */
-    SEXP first = R_NilValue, last = R_NilValue;
-    int nprot = 0;
+    SEXP first = PROTECT(ty == SC_LIST ? Rf_cons(R_NilValue, R_NilValue)
+                                       : Rf_lcons(R_NilValue, R_NilValue));
+    SEXP last = first;
     for (;;) {
-      SEXP node = ty == SC_LIST ? Rf_cons(R_NilValue, R_NilValue)
-                                : Rf_lcons(R_NilValue, R_NilValue);
-      if (last == R_NilValue) {
-        PROTECT(node);
-        nprot++;
-        first = node;
-      } else {
-        SETCDR(last, node);
-      }
-      last = node;
-      if (tag & SC_HASTAG) SET_TAG(node, scr_node(r, depth + 1));
-      SETCAR(node, scr_node(r, depth + 1));
+      if (tag & SC_HASTAG) SET_TAG(last, scr_node(r, depth + 1));
+      SETCAR(last, scr_node(r, depth + 1));
       tag = scr_u8(r);
       uint32_t ty = tag & 0x0f;
       if (ty != SC_LIST && ty != SC_LANG) {
         SETCDR(last, scr_body(r, tag, depth + 1));
         break;
       }
+      SEXP node = ty == SC_LIST ? Rf_cons(R_NilValue, R_NilValue)
+                                : Rf_lcons(R_NilValue, R_NilValue);
+      SETCDR(last, node);
+      last = node;
     }
-    UNPROTECT(nprot);
+    UNPROTECT(1);
     return first;
   }
   }
@@ -449,13 +445,14 @@ SEXP sora_codec_read(const unsigned char *buf, size_t len) {
    a SC_VEC of length 2. Reading the frame directly skips materializing
    the outer list, and an empty args reads as the shared empty vector (the
    worker binds from it read-only), so a constant task allocates nothing
-   here at all. On success *expr and *args are left PROTECTed and
-   *nprotect is 2. A non-task-frame is a 0 return, never an error: the
-   caller falls back to the generic read, whose shape validation stays the
-   single authority. A truncated or trailing stream raises, exactly as the
-   generic read raises. */
+   here at all. On success *expr and *args cross UNPROTECTED — the caller
+   PROTECTs before any allocation (nothing allocates between). A
+   non-task-frame is a 0 return, never an error: the caller falls back to
+   the generic read, whose shape validation stays the single authority. A
+   truncated or trailing stream raises, exactly as the generic read
+   raises. */
 int sora_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
-                         SEXP *args, int *nprotect) {
+                         SEXP *args) {
   if (len < 2 || buf[0] != SORA_CODEC_MAGIC) return 0;
   sora_scr r = { buf + 1, buf + len };
   uint32_t tag = scr_u8(&r);
@@ -476,7 +473,7 @@ int sora_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
     UNPROTECT(2);
     return 0;
   }
-  *nprotect = 2;
+  UNPROTECT(2);
   return 1;
 }
 

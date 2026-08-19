@@ -247,7 +247,7 @@ int sora_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
 SEXP sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
                   size_t total, sora_spill_fl *fl) {
   mori_shm *shm = NULL;
-  SEXP wrap = sora_spill_region_get(fl, total, &shm);   /* PROTECTed */
+  SEXP wrap = PROTECT(sora_spill_region_get(fl, total, &shm));
   mori_layout_write((unsigned char *) shm->addr, x);
   atomic_store_explicit(zc_rc(shm->addr), 1, memory_order_relaxed);
   atomic_store_explicit(zc_flags(shm->addr), 0, memory_order_relaxed);
@@ -273,16 +273,16 @@ SEXP sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
 /* Open the named region's split mapping (cache first) and build the view
    chain anchor: rel_xp (the release record, unarmed) pinned through
    name_xp (the vendored chain-terminus tag) pinned on the mapping wrap.
-   Returns the PROTECT count pushed, or -1 with *gone set when the region
-   vanished and the caller absorbs that (NULL gone raises instead). */
-static int sora_zc_prep(const char *name, uint32_t name_len, int *gone,
-                       sora_open_cache *oc, mori_shm **shm_out,
-                       SEXP *rel_xp_out, SEXP *name_xp_out) {
+   Returns name_xp UNPROTECTED — the caller PROTECTs before any allocation
+   (nothing allocates between); rel_xp and the mapping wrap ride its prot
+   chain. R_NilValue with *gone set when the region vanished and the
+   caller absorbs that (NULL gone raises instead). */
+static SEXP sora_zc_prep(const char *name, uint32_t name_len, int *gone,
+                         sora_open_cache *oc, mori_shm **shm_out) {
   SEXP map_wrap = oc != NULL ?
     sora_oc_lookup_wrap(oc, (const unsigned char *) name, name_len) :
     R_NilValue;
   mori_shm *shm = map_wrap == R_NilValue ? NULL : sora_shm_unwrap(map_wrap);
-  int nprotect = 0;
   if (shm == NULL) {
     char namebuf[MORI_NAME_MAX];
     memcpy(namebuf, name, name_len);
@@ -291,18 +291,18 @@ static int sora_zc_prep(const char *name, uint32_t name_len, int *gone,
     if (shm == NULL) {
       if (gone != NULL) {
         *gone = 1;
-        return -1;
+        return R_NilValue;
       }
       sora_stop_shm(NA_REAL, "sora: cannot open payload region '%s'", namebuf);
     }
-    map_wrap = PROTECT(sora_shm_wrap_consumer(shm));
-    nprotect++;
+    map_wrap = sora_shm_wrap_consumer(shm);
     if (oc != NULL)
       sora_oc_store(oc, (const unsigned char *) name, name_len, map_wrap);
   }
+  PROTECT(map_wrap);             /* cached or fresh: one constant pin */
   sora_zc_rel *rel = malloc(sizeof(sora_zc_rel));
   if (rel == NULL) {
-    UNPROTECT(nprotect);
+    UNPROTECT(1);
     Rf_error("sora: allocation failure");
   }
   rel->base = (unsigned char *) shm->addr;
@@ -315,9 +315,8 @@ static int sora_zc_prep(const char *name, uint32_t name_len, int *gone,
      shm-tag hop reading it as a mori_shm — name_xp borrows the mapping's */
   SEXP name_xp = PROTECT(R_MakeExternalPtr(shm, sora_shm_tag_sym, rel_xp));
   *shm_out = shm;
-  *rel_xp_out = rel_xp;
-  *name_xp_out = name_xp;
-  return nprotect + 2;
+  UNPROTECT(3);
+  return name_xp;
 }
 
 /* Validate the layout at the region base and wrap it as a view, the
@@ -402,15 +401,16 @@ SEXP sora_zc_read(const sora_slot_hdr *hdr, const unsigned char *payload,
                  int *gone, sora_open_cache *oc) {
   if (hdr->len == 0 || hdr->len >= MORI_NAME_MAX)
     Rf_error("sora: corrupt payload slot");
-  mori_shm *shm;
-  SEXP rel_xp, name_xp;
-  int np = sora_zc_prep((const char *) payload, hdr->len, gone, oc,
-                       &shm, &rel_xp, &name_xp);
-  if (np < 0) return R_NilValue;
+  mori_shm *shm = NULL;
+  SEXP name_xp = sora_zc_prep((const char *) payload, hdr->len, gone, oc,
+                              &shm);
+  if (name_xp == R_NilValue) return R_NilValue;
+  PROTECT(name_xp);
+  SEXP rel_xp = PROTECT(R_ExternalPtrProtected(name_xp));
   SEXP view = PROTECT(sora_zc_wrap0(shm, name_xp, rel_xp, hdr->aux));
   atomic_fetch_add_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
   ((sora_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
-  UNPROTECT(np + 1);
+  UNPROTECT(3);
   return view;
 }
 
@@ -486,11 +486,12 @@ SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
   int path_len = 0;
   if (mori_parse_id(buf, name, sizeof(name), path, &path_len) < 0)
     Rf_error("sora: corrupt payload slot");
-  mori_shm *shm;
-  SEXP rel_xp, name_xp;
-  int np = sora_zc_prep(name, (uint32_t) strlen(name), gone, oc,
-                       &shm, &rel_xp, &name_xp);
-  if (np < 0) return R_NilValue;
+  mori_shm *shm = NULL;
+  SEXP name_xp = sora_zc_prep(name, (uint32_t) strlen(name), gone, oc,
+                              &shm);
+  if (name_xp == R_NilValue) return R_NilValue;
+  PROTECT(name_xp);
+  SEXP rel_xp = PROTECT(R_ExternalPtrProtected(name_xp));
   SEXP view;
   if (path_len == 0) {
     view = PROTECT(sora_zc_wrap0(shm, name_xp, rel_xp, 0));
@@ -512,7 +513,7 @@ SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
       }
     }
   }
-  UNPROTECT(np + 1);
+  UNPROTECT(3);
   return view;
 }
 
