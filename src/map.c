@@ -18,7 +18,7 @@
 
 static SEXP sora_map_tag;
 static SEXP sora_rs_sym;
-static SEXP sora_srcref_sym;
+SEXP sora_srcref_sym;
 static SEXP sora_srcfile_sym;
 static SEXP sora_wholesrcref_sym;
 static SEXP sora_function_sym;
@@ -1094,5 +1094,16 @@ SEXP sora_strip_srcref(SEXP f) {
   DUPLICATE_ATTRIB(out, f);
   Rf_setAttrib(out, sora_srcref_sym, R_NilValue);
   UNPROTECT(3);
+  return out;
+}
+
+/* removeSource for a language tree (a task expression): deep-duplicate —
+   pairlist/language duplicates are deep — and strip the private copy in
+   place. LANGSXP/LISTSXP only: an EXPRSXP duplicate is shallow and the
+   walk would strip shared elements in place. */
+SEXP sora_strip_lang(SEXP x) {
+  SEXP out = PROTECT(Rf_duplicate(x));
+  sora_strip_walk(out);
+  UNPROTECT(1);
   return out;
 }

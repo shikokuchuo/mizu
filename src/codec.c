@@ -1,7 +1,8 @@
 /* The sora compact codec: a purpose-built binary framing for the payload
    subset that dominates the hot paths — NULL, symbols, atomic vectors
-   (attributes included), strings, list/vector trees, and calls — written
-   and read straight off the slot bytes with no R serializer involvement.
+   (attributes included), strings, list/vector trees, calls, and closures
+   — written and read straight off the slot bytes with no R serializer
+   involvement.
 
    Why it exists: R_Serialize pays a VECSXP(1099) ref-tracking hash table
    (and R_Unserialize a VECSXP(128) read table) on EVERY call — several
@@ -27,17 +28,30 @@
    stream can carry no mori identifier and the sender pins NO keeper —
    the same discipline as the RAWVEC/STR1 immediates.
 
-   Fallback, not failure: anything outside the subset (closures,
-   environments, S4, ALTREP, external pointers, promises, bytecode,
-   primitives as values, attributed pairlist/language nodes, over-deep
-   nesting) declines to write and the caller re-frames through
-   R_Serialize, exactly as before.
+   Closures cross with the environment by reference — global / base /
+   empty by kind byte, a package namespace by name (R_FindNamespace on
+   read, R_Unserialize's own discipline) — since formals and bodies are
+   the pairlist / call trees already in the subset. A keep.source parse
+   hangs srcref attributes on the closure and its body language nodes;
+   the srcfile they name cannot cross processes, so the write crosses a
+   stripped copy (the map staging discipline, identical()'s
+   ignore.srcref). A closure over a local environment (the
+   function-factory case), a bytecode body, or a non-srcref attribute on
+   a language node decline like any other non-subset node.
+
+   Fallback, not failure: anything outside the subset (environments, S4,
+   ALTREP, external pointers, promises, bytecode, primitives as values,
+   language nodes carrying non-srcref attributes, over-deep nesting)
+   declines to write and the caller re-frames through R_Serialize,
+   exactly as before.
 
    Faithfulness: values, types, attributes (order included), and the
    object bit (via the class attribute, as R's own setAttrib maintains
    it) round-trip identically. The gp/LEVELS word is NOT carried — it is
    metadata identical() never compares (string sortedness hints and the
-   like), re-derived on demand. Attributes travel as (name, value) pairs
+   like), re-derived on demand. Source references are the one attribute
+   exception: dropped with the strip below (closures and language trees
+   alike), never carried. Attributes travel as (name, value) pairs
    read out through R_getAttributes and applied with Rf_setAttrib (class
    last, through Rf_classgets) — the post-4.5 C API discipline the
    vendored core already follows. */
@@ -60,14 +74,29 @@
 #define R_getAttributes(x) ATTRIB(x)
 #endif
 
+/* R_ClosureFormals() and siblings plus R_mkClosure() joined the C API in
+   R 4.5.0 (the closure slot setters left the public headers then); the
+   slot macros for earlier R, and the constructor from map.c's backport. */
+#if R_VERSION < R_Version(4, 5, 0)
+#define R_ClosureFormals(x) FORMALS(x)
+#define R_ClosureBody(x)    BODY(x)
+#define R_ClosureEnv(x)     CLOENV(x)
+SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
+#endif
+
 /* Node types (low nibble of the tag byte). */
 enum {
   SC_NIL = 0, SC_SYM, SC_LGL, SC_INT, SC_REAL, SC_CPLX, SC_RAW, SC_STR,
-  SC_VEC, SC_EXPR, SC_LIST, SC_LANG, SC_MISSING, SC_UNBOUND
+  SC_VEC, SC_EXPR, SC_LIST, SC_LANG, SC_MISSING, SC_UNBOUND, SC_CLOS
 };
 /* Tag flags (high nibble). */
 #define SC_HASATTR 0x10
 #define SC_HASTAG  0x20
+/* Closure environment reference kinds (the byte after an SC_CLOS tag):
+   global / base / empty by kind, a package namespace by name — the
+   by-reference discipline of R's own serializer, the only environments
+   a closure faithfully crosses with. */
+enum { SC_ENV_GLOBAL = 0, SC_ENV_BASE, SC_ENV_EMPTY, SC_ENV_NS };
 
 /* Recursion bound on both writer and reader: CAR / attribute / element
    nesting only (CDR chains iterate). Past it the writer falls back (a
@@ -165,6 +194,42 @@ static void scw_header(sora_scw *w, uint32_t type, SEXP x, unsigned depth) {
   if (hasattr) scw_attrs(w, x, depth);
 }
 
+/* A closure node: tag byte, environment reference, formals, body, then
+   attributes — last, so the reader constructs with R_mkClosure before
+   they apply (the closure slots have no public setters). Formals are a
+   tagged pairlist and the body a call tree, both already in the subset;
+   the environment is the one piece that cannot cross by value, so it
+   crosses by reference: global / base / empty by kind byte, a namespace
+   by name. A local environment declines here; a bytecode body or an
+   attributed language node declines in the recursive writes. */
+static void scw_closure(sora_scw *w, SEXP x, unsigned depth) {
+  SEXP env = R_ClosureEnv(x);
+  uint32_t envkind;
+  SEXP spec = R_NilValue;
+  if (env == R_GlobalEnv) {
+    envkind = SC_ENV_GLOBAL;
+  } else if (env == R_BaseEnv) {
+    envkind = SC_ENV_BASE;
+  } else if (env == R_EmptyEnv) {
+    envkind = SC_ENV_EMPTY;
+  } else if (R_IsNamespaceEnv(env)) {
+    envkind = SC_ENV_NS;
+    spec = R_NamespaceEnvSpec(env);
+  } else {
+    w->fail = 1;
+    return;
+  }
+  int hasattr = ANY_ATTRIB(x) || Rf_isObject(x);
+  scw_u8(w, SC_CLOS | (hasattr ? SC_HASATTR : 0u));
+  scw_u8(w, envkind);
+  if (envkind == SC_ENV_NS) scw_string(w, STRING_ELT(spec, 0));
+  scw_node(w, R_ClosureFormals(x), depth + 1);
+  if (w->fail) return;
+  scw_node(w, R_ClosureBody(x), depth + 1);
+  if (w->fail) return;
+  if (hasattr) scw_attrs(w, x, depth);
+}
+
 static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
   if (w->fail) return;
   if (depth > SORA_CODEC_MAXDEPTH) { w->fail = 1; return; }
@@ -218,6 +283,19 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
   }
   case LISTSXP: case LANGSXP: {
     if (Rf_isS4(x)) { w->fail = 1; return; }
+    /* A keep.source parse hangs srcref attributes on the chain heads of
+       a task expression (`{` blocks and the like); the srcfile they name
+       cannot cross processes, so the write crosses a stripped copy — the
+       closure discipline above. The probe is the head node: the parser
+       sets its srcref whenever it sets the subtree's, and nested blocks
+       re-enter this case on CAR recursion. Other attributes still
+       decline below. */
+    if (ANY_ATTRIB(x) && Rf_getAttrib(x, sora_srcref_sym) != R_NilValue) {
+      SEXP stripped = PROTECT(sora_strip_lang(x));
+      scw_node(w, stripped, depth);
+      UNPROTECT(1);
+      return;
+    }
     /* iterate the CDR chain (R's WriteItem tailcall discipline): each
        node carries its own type nibble, so mixed LISTSXP/LANGSXP chains
        round-trip; recursion stays on CAR / TAG. Attributed pairlist
@@ -240,9 +318,26 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
       }
     }
   }
+  case CLOSXP: {
+    /* The pool task / map descriptor payload carries a function more
+       often than not. A keep.source parse hangs srcref attributes on
+       the closure and its body language nodes; the srcfile they name
+       cannot cross processes, so the write crosses a stripped copy (one
+       deep duplicate of formals and body). The closure-level attribute
+       is the probe: the parser sets it whenever it sets the body's. A
+       hand-built srcref-bearing body without it still declines. */
+    if (Rf_getAttrib(x, sora_srcref_sym) != R_NilValue) {
+      SEXP stripped = PROTECT(sora_strip_srcref(x));
+      scw_closure(w, stripped, depth);
+      UNPROTECT(1);
+      return;
+    }
+    scw_closure(w, x, depth);
+    return;
+  }
   default:
-    /* closures, environments, S4, ALTREP, external pointers, promises,
-       bytecode, primitives as values, ...: the R_Serialize path */
+    /* environments, S4, ALTREP, external pointers, promises, bytecode,
+       primitives as values, ...: the R_Serialize path */
     w->fail = 1;
     return;
   }
@@ -419,6 +514,34 @@ static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
     }
     UNPROTECT(1);
     return first;
+  }
+  case SC_CLOS: {
+    SEXP env = R_NilValue;
+    switch (scr_u8(r)) {
+    case SC_ENV_GLOBAL: env = R_GlobalEnv; break;
+    case SC_ENV_BASE:   env = R_BaseEnv; break;
+    case SC_ENV_EMPTY:  env = R_EmptyEnv; break;
+    case SC_ENV_NS: {
+      SEXP nm = PROTECT(scr_string(r));
+      if (nm == NA_STRING) {
+        UNPROTECT(1);
+        Rf_error("sora: corrupt payload stream");
+      }
+      SEXP spec = PROTECT(Rf_ScalarString(nm));
+      env = R_FindNamespace(spec); /* loads the namespace, as R_Unserialize */
+      UNPROTECT(2);
+      break;
+    }
+    default:
+      Rf_error("sora: corrupt payload stream");
+    }
+    PROTECT(env);
+    SEXP formals = PROTECT(scr_node(r, depth + 1));
+    SEXP body = PROTECT(scr_node(r, depth + 1));
+    SEXP cl = PROTECT(R_mkClosure(formals, body, env));
+    if (tag & SC_HASATTR) scr_attrs(r, cl, depth);
+    UNPROTECT(4);
+    return cl;
   }
   }
   Rf_error("sora: corrupt payload stream");

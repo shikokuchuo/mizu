@@ -73,19 +73,95 @@ test_that("attributes round-trip: names, dim, class, object bit", {
   )
 })
 
+test_that("closures round-trip with by-reference environments", {
+  # eval in globalenv(): the test file's own environment is a local one
+  f <- eval(quote(function(x, y = 1, ...) x + y), globalenv())
+  expect_identical(codec_rt(f), f)
+  expect_identical(codec_rt(list(f = f, x = 1L)), list(f = f, x = 1L))
+  g <- structure(eval(quote(function(x) f(x)), globalenv()), note = "n")
+  expect_identical(codec_rt(g), g)
+  b <- eval(quote(function(x) x), globalenv())
+  environment(b) <- baseenv()
+  expect_identical(codec_rt(b), b)
+  ns <- eval(quote(function(x) x), globalenv())
+  environment(ns) <- asNamespace("stats")
+  expect_identical(codec_rt(ns), ns)
+  e <- eval(quote(function(x) x), globalenv())
+  environment(e) <- emptyenv()
+  expect_identical(codec_rt(e), e)
+})
+
+test_that("keep.source closures cross with srcrefs dropped", {
+  # the test harness parses with keep.source: the closure and its {
+  # body carry srcrefs; under plain parsing the strip is a no-op
+  f <- eval(
+    quote(function(x) {
+      x + 1
+    }),
+    globalenv()
+  )
+  rt <- codec_rt(f)
+  expect_null(attr(rt, "srcref"))
+  expect_null(attr(body(rt), "srcref"))
+  expect_identical(rt, f)
+  # a nested function literal (the parser's fourth-element srcref)
+  n <- eval(
+    quote(function(x) {
+      g <- function(y) y + 1
+      g(x)
+    }),
+    globalenv()
+  )
+  expect_identical(codec_rt(n), n)
+})
+
+test_that("keep.source language trees cross with srcrefs dropped", {
+  # quote({ ... }) under the harness's keep.source parsing carries a
+  # srcref on the block node; under plain parsing the strip is a no-op
+  blk <- quote({
+    a <- 1
+    a + 2
+  })
+  rt <- codec_rt(blk)
+  expect_null(attr(rt, "srcref"))
+  expect_identical(rt, blk)
+  # a nested block strips on CAR recursion, the outer call rides along
+  expect_identical(
+    codec_rt(quote(f({
+      x
+    }))),
+    quote(f({
+      x
+    }))
+  )
+})
+
 test_that("the subset declines cleanly: NULL from the write surface", {
   expect_null(.Call(sora:::sora_codec_write_call, 1:5)) # ALTREP
-  expect_null(.Call(sora:::sora_codec_write_call, function(x) x)) # closure
   expect_null(.Call(sora:::sora_codec_write_call, globalenv())) # environment
   expect_null(.Call(sora:::sora_codec_write_call, base::sum)) # builtin
-  # a data.frame's row.names are an ALTREP compact sequence
-  expect_null(.Call(sora:::sora_codec_write_call, data.frame(x = 1:3)))
-  # an attributed pairlist node (a sourced `{` block's srcref)
+  # a closure over a local environment (the function-factory case)
+  loc <- local({
+    y <- 1
+    eval(quote(function(x) x + y))
+  })
+  expect_null(.Call(sora:::sora_codec_write_call, loc))
+  # a byte-compiled closure body
   expect_null(.Call(
     sora:::sora_codec_write_call,
-    quote({
-      1
-    })
+    compiler::cmpfun(eval(quote(function(x) x + 1)))
+  ))
+  # an attributed language node in the body (a non-srcref attribute
+  # survives the strip, and attributed pairlist nodes decline)
+  src <- eval(quote(function(x) f(x)), globalenv())
+  body(src) <- structure(body(src), note = 1)
+  expect_null(.Call(sora:::sora_codec_write_call, src))
+  # a data.frame's row.names are an ALTREP compact sequence
+  expect_null(.Call(sora:::sora_codec_write_call, data.frame(x = 1:3)))
+  # a language node with a non-srcref attribute still declines
+  expect_null(.Call(
+    sora:::sora_codec_write_call,
+    structure(quote(f(x)), note = 1)
   ))
 })
 
@@ -100,5 +176,13 @@ test_that("the reader rejects malformed streams", {
   expect_error(.Call(sora:::sora_codec_read_call, c(b, raw(1))), "corrupt")
   bad <- b
   bad[2] <- as.raw(0x7f)
+  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  # a corrupt closure environment kind byte
+  cf <- .Call(
+    sora:::sora_codec_write_call,
+    eval(quote(function(x) x), globalenv())
+  )
+  bad <- cf
+  bad[3] <- as.raw(0xff)
   expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
 })

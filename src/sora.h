@@ -855,6 +855,12 @@ void sora_entity_init(void);
 void sora_channel_init(void);
 void sora_pool_init(void);
 void sora_map_init(void);
+
+/* map.c's srcref strip, shared with the codec's closure and task
+   expression writes. */
+extern SEXP sora_srcref_sym;
+SEXP sora_strip_srcref(SEXP f);
+SEXP sora_strip_lang(SEXP x);
 void sora_tune_malloc(void);
 /* Unload counterparts (R_unload_sora): release the objects the inits
    preserve — only payload, channel, pool and zc hold any. */

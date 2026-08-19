@@ -151,3 +151,30 @@ this host, so timed intervals are kept >> 1 ms by looping.
   tasks per call, so batching its submit loop is noise; the raw pool
   API loop (fire n, collect n) is where the crossing count is
   unbounded.
+
+## 2026-08-19: codec CLOSXP framing (closures by reference environment)
+
+- The compact codec now writes closures: formals / body ride the existing
+  pairlist / call framings, the environment crosses by reference — global
+  / base / empty by kind byte, a package namespace by name
+  (R_FindNamespace on read, R_Unserialize's discipline). Local
+  environments, bytecode bodies, and non-srcref-attributed language nodes
+  decline to R_Serialize as before. Attributes trail formals/body in the
+  stream so the reader constructs with R_mkClosure before they apply (the
+  closure slot setters left the public C API in R 4.5.0).
+- keep.source parsing hangs srcrefs on the closure and its body language
+  nodes, and on the chain heads of a top-level task expression (`{`
+  blocks); the srcfile they name cannot cross processes, so the write
+  crosses a stripped copy — map.c's sora_strip_srcref for closures
+  (probed by the closure-level attribute), sora_strip_lang for language
+  trees (probed on the chain head; nested blocks strip on CAR recursion).
+  identical()'s ignore.srcref discipline. One deep duplicate per
+  srcref-bearing subtree write; non-srcref attributes still decline.
+- Measured (arm64 macOS, R 4.6.1, dev/bench/closure-codec.R): the
+  list(f = <closure>, x = 1L) payload round-trips in ~900 ns via the
+  codec vs 2500-2900 ns via R_Serialize (~3x); keep.source closure
+  payload ~2300 ns (strip included) vs ~12500 ns, keep.source `{` block
+  ~2000 ns vs 12300-18200 ns (~6x — the fallback drags the srcfile
+  environment along). Serial submit-collect with the closure as a task
+  argument: 3.20 -> 1.80-2.20 us plain (keep.source 2.60-3.00 us), plain
+  task 1.40-1.60 us.
