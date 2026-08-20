@@ -1,8 +1,8 @@
 /* L'Ecuyer-CMRG RNG stream advancement for sora_map(.seed = ) ----------------
  *
- * Pure-C implementation of MRG32k3a stream jumping, vendored from nanonext's
- * src/dispatcher.c. Moduli and jump matrix constants below are from the
- * RngStreams package by Pierre L'Ecuyer, University of Montreal
+ * Pure-C implementation of MRG32k3a stream jumping. Moduli and jump matrix
+ * constants below are from the RngStreams package by Pierre L'Ecuyer,
+ * University of Montreal
  * (https://github.com/umontreal-simul/RngStreams), licensed under the Apache
  * License, Version 2.0. The original copyright notice requests citation of:
  *
@@ -12,7 +12,7 @@
  *     Oriented Random-Number Package with Many Long Streams and Substreams",
  *     Operations Research, 50, 6 (2002), 1073-1075.
  *
- * sora's additions around the vendored kernel: the scalar-to-base-state
+ * Beyond the plain jump: the scalar-to-base-state
  * derivation mirroring R's own RNG_Init scrambling for L'Ecuyer-CMRG (so
  * .seed = s derives exactly the state set.seed(s, "L'Ecuyer-CMRG") would,
  * without touching the caller's .Random.seed), the O(log k) matrix-power
