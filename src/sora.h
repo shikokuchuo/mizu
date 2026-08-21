@@ -665,18 +665,45 @@ void sora_unpark(sora_parker *pk);
 // Binding hooks (the language seam) --------------------------------------------
 
 /* The language-binding callback set every handle carries, registered at
-   create/attach/join: the wait/work loops invoke these where the R API
-   calls sat before the seam carve. check polls for interruption at
+   create/attach/join: the transport invokes these where the R API calls
+   sat before the seam carve. check polls for interruption at
    abandon-safe points only (no shared-state mutation in progress, no
    cleanup pending); a nonzero return means abandon — R's hook never
    returns nonzero because R_CheckUserInterrupt longjmps first. park
    brackets each bounded park's sleep (entering nonzero before, zero
    after), around the sleep only, for runtimes with a global lock to
-   drop; NULL for R. ctx is opaque to the core. Both fire only on the
+   drop; NULL for R. ctx is opaque to the core. All fire only on the
    verb-calling thread. */
+typedef int (*sora_check_fn)(void *ctx);
+typedef void (*sora_park_fn)(void *ctx, int entering);
+/* stage frames obj as (hdr, payload) — payload capacity inline_max —
+   filling out with the retain entry the core commits on success
+   (stager-initialized: SORA_KEEP_FREE / no pin / key -1, then what the
+   tier retains; the core mutates no shared state before stage returns,
+   so a mid-stage raise abandons cleanly). The staging services it rides:
+   sora_stage_arena_alloc (channel arena chunks), sora_chan_reap (the
+   pre-spill keeper reap), sora_spill_region_get (the region checkout,
+   via the zc/payload spill helpers). Returns 0 on success; the R stager
+   raises on failure, never returns nonzero. */
+typedef int (*sora_stage_fn)(void *obj, sora_slot_hdr *hdr,
+                             unsigned char *payload, uint32_t inline_max,
+                             void *handle, sora_keeper *out);
+/* read materializes a received frame. payload is always a
+   dereferenceable byte range: the core resolves its arena-referencing
+   kinds (ARENA, channel RAWSPILL) against the arena base before the
+   call, so the callback never learns arena mechanics. limit is the
+   validated byte capacity of the range — inline_max for slot-resident
+   frames, the arena-validated length for resolved ones. gone as in
+   sora_payload_read. */
+typedef SEXP (*sora_read_fn)(const sora_slot_hdr *hdr,
+                             const unsigned char *payload, size_t limit,
+                             int *gone, void *handle);
+
 typedef struct sora_binding_s {
-  int (*check)(void *ctx);
-  void (*park)(void *ctx, int entering);
+  sora_check_fn check;
+  sora_park_fn park;
+  sora_stage_fn stage;
+  sora_read_fn read;
   void *ctx;
 } sora_binding;
 
@@ -718,6 +745,103 @@ void sora_death_watch_stop(sora_death_watch *w);
 /* Package-unload teardown; joins the Linux epoll thread (no-op elsewhere:
    macOS dispatch sources and Windows thread-pool waits are per-watch). */
 void sora_death_listener_teardown(void);
+
+// Channel handle (channel.c; the R binding's stage/read live in stage_r.c) ------
+
+/* One direction's ring. Shared pointers alias the mapped region; everything
+   below them is process-local — producer-local cursors on the side that
+   produces, consumer-local on the side that consumes; neither is ever
+   mirrored into shared memory. */
+typedef struct sora_chan_ring_s {
+  _Atomic int64_t *tail;         /* shared: producer-published */
+  _Atomic int64_t *head;         /* shared: consumer-published */
+  unsigned char *slots;
+  unsigned char *arena;          /* NULL when arena_size == 0 */
+  uint64_t arena_size;
+  uint64_t mask;
+  uint32_t cap;
+  uint32_t slot;
+  /* producer-local */
+  int64_t ltail;                 /* next slot to write */
+  int64_t ptail;                 /* last published tail */
+  int64_t cached_head;
+  int64_t reaped_head;
+  uint64_t aalloc, afree;        /* monotonic arena byte cursors */
+  uint64_t *aend;                /* per-slot aalloc after that send */
+  /* consumer-local */
+  int64_t lhead;                 /* next slot to read */
+  int64_t phead;                 /* last published head */
+  int64_t cached_tail;
+  uint32_t unpublished;
+} sora_chan_ring;
+
+typedef struct sora_chan_s {
+  mori_shm shm;                  /* our mapping; unmapped only in release */
+  sora_preamble pre;
+  unsigned char *base;
+  int side;                      /* SORA_ENTITY_HOST or SORA_ENTITY_PEER */
+  int spin;
+  sora_binding binding;          /* the language binding's hooks */
+  int released;                  /* full teardown ran; handle is dead */
+  int verdict_dead;              /* sticky flock-confirmed peer death */
+  int names_unlinked;            /* survivor cleanup already ran */
+  int pk_ok;
+  long self_pid;                 /* fork guard */
+  uint32_t inline_max;
+  /* process-local adaptive recv-wait spin budget (ns): halved when an
+     episode's spin comes up empty, reset to SORA_SPIN_BUDGET_NS on any
+     message acquired; never shared */
+  uint64_t wait_budget_ns;
+  /* tx keepers pinned and not yet reaped: the gate that lets keeperless
+     traffic (the immediate kinds, codec streams) skip the reap's shared
+     head load entirely */
+  int64_t keep_out;
+
+  _Atomic uint32_t *ready;
+  _Atomic uint32_t *closedw;     /* bit 1 = host closed, bit 2 = peer closed */
+  _Atomic uint64_t *peer_pid;
+  _Atomic uint32_t *self_parked, *peer_parked;
+  _Atomic uint32_t *self_reg, *peer_reg;
+
+  sora_parker self_pk;            /* we park here; the peer unparks it */
+  sora_parker peer_pk;            /* we unpark this */
+  intptr_t live_self, live_peer; /* kept liveness fds/handles; 0 = not open */
+  char live_self_path[1024];
+  char live_peer_path[1024];
+  _Atomic int peer_dead;         /* death-listener flag: wake trigger only */
+  sora_death_watch *watch;
+
+  /* Payload lifetime: the per-slot retain table (malloc'd, cap entries)
+     with its GC-visible pin store (pins, pinned by the extptr's prot);
+     the producer spill free list + lent-region ledger and the consumer
+     SHM_RAW mapping cache are owned outright (spill.c); the prot also
+     pins the zc view cache's wraps (split-mapped, lazy — unlike the
+     SHM_RAW cache) */
+  SEXP pins;
+  sora_keeper *keepers;
+  sora_spill_fl fl;
+  sora_open_cache oc;
+  sora_zc_cache zoc;
+
+  sora_chan_ring tx, rx;
+} sora_chan;
+
+/* The channel's staging services for the binding's stage_fn (stage_r.c):
+   reserve n bytes in the tx spill arena, returning the chunk (NULL when
+   full or disabled) with *off set for the frame's aux — the arena base
+   stays core-private; and the pre-spill keeper reap, so a region checkout
+   sees the freshest consumer-done surrenders. */
+unsigned char *sora_stage_arena_alloc(sora_chan *c, uint64_t n, uint64_t *off);
+void sora_chan_reap(sora_chan *c, int force);
+
+/* The R binding's channel stage/read (stage_r.c), registered on every
+   channel handle at create/attach. */
+int sora_r_stage_channel(void *obj, sora_slot_hdr *hdr,
+                         unsigned char *payload, uint32_t inline_max,
+                         void *handle, sora_keeper *out);
+SEXP sora_r_read_channel(const sora_slot_hdr *hdr,
+                         const unsigned char *payload, size_t limit,
+                         int *gone, void *handle);
 
 // Liveness lock -----------------------------------------------------------------
 

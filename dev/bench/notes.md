@@ -212,3 +212,30 @@ this host, so timed intervals are kept >> 1 ms by looping.
   sora_map 32 MiB template 0.316s (view collect + reduce 0.312s).
   Consistent with the retain-table record earlier today — no hot-path
   cost from the indirection.
+
+## 2026-08-21: channel stage_r.c split (Phase 1 step 1, commit 3 of 4)
+
+- chan_send1's tier dispatch and chan_materialize moved to new
+  src/stage_r.c as the R binding's stage_fn/read_fn
+  (sora_r_stage_channel / sora_r_read_channel), registered in the
+  handle's sora_binding at create/attach alongside check — the binding
+  struct gained the stage/read fields (typedefs sora_stage_fn /
+  sora_read_fn), and the channel handle structs moved from channel.c to
+  sora.h so the stager reaches the free list and the open/zc caches. The
+  transport keeps the ring, arena, wakes, and the retain-table commit,
+  and supplies the staging services: sora_stage_arena_alloc (returns the
+  chunk pointer — the arena base stays transport-private) and the
+  exported sora_chan_reap (the pre-spill reap). On receive the transport
+  resolves arena-referencing frames (ARENA, channel RAWSPILL) to their
+  byte range before invoking read_fn — the callback never learns arena
+  mechanics. The retain entry is stager-initialized (the
+  sora_payload_stage discipline); a mid-stage raise still abandons
+  cleanly. Behavior-preserving; the suite is green (1993 pass, 2 macOS
+  skips).
+- Measured (arm64 macOS, R 4.6.1, test-benchmark.R, report-only):
+  channel round trip 1.50 us; one-way 25.0M msg/s; pool round trip 1.0
+  us/task; pool pipelined 1.0M tasks/s, collect_all 2.0M; channel
+  1/8/32 MiB round trip 0.06/0.50/1.50 ms; pool 1/8/64 MiB result
+  0.22/1.25/12.00 ms/task; sora_map 32 MiB template 0.336s (view
+  collect + reduce 0.331s). Consistent with the check/park record — no
+  hot-path cost from the stage/read indirection.
