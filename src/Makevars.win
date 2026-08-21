@@ -9,7 +9,7 @@ all: $(SHLIB)
 
 # R's makefiles track no header dependencies: without this, editing a header
 # recompiles nothing and one sora.so links objects built from two headers.
-$(OBJECTS): sora.h vendor/mori.h
+$(OBJECTS): sora.h vendor/mori.h vendor/mori_region.h
 
 clean:
 	@rm -f $(OBJECTS) $(SHLIB)

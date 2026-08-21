@@ -14,13 +14,11 @@
 
 set -euo pipefail
 
-PIN="0d3cca1b851c0c7fd1130b9f3a86f88dc6ad39b1"  # mori: embedder API +
-                                               # write-pass sizing dedup
-                                               # (counted-write serialize)
+PIN="709c7b415754867fc0f4bec5db06b7880b0d07f4"  # mori: Carve out mori_region.h
 REF="${1:-$PIN}"
 REPO="${MORI_REPO:-https://github.com/shikokuchuo/mori}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor"
-FILES="mori.h shm.c serialize.c altrep.c"
+FILES="mori.h mori_region.h shm.c serialize.c altrep.c"
 
 workdir=""
 cleanup() { if [ -n "$workdir" ]; then rm -rf "$workdir"; fi; }
@@ -65,14 +63,17 @@ done
 # 2. Region magics: sora regions are refcounted and recycled, never
 #    mori-owned and immortal — distinct magics keep the namespaces from
 #    aliasing under a hand-crafted identifier.
-# 3. Extptr tag strings: installed symbols are process-global, so the
-#    vendored view chain must not share tag names with a loaded mori.
 sed -i.bak \
   -e 's|"/mori_"|"/sora_"|' \
   -e 's|"Local\\\\mori_"|"Local\\\\sora_"|' \
   -e 's|0x4D4F5248u|0x534F5248u|' \
   -e 's|0x4D4F5253u|0x534F5253u|' \
   -e 's|0x4D4F524Cu|0x534F524Cu|' \
+  "$DEST/mori_region.h"
+
+# 3. Extptr tag strings: installed symbols are process-global, so the
+#    vendored view chain must not share tag names with a loaded mori.
+sed -i.bak \
   -e 's|"mori_shm"|"sora_mori_shm"|' \
   -e 's|"mori_host"|"sora_mori_host"|' \
   -e 's|"mori_owned"|"sora_mori_owned"|' \
