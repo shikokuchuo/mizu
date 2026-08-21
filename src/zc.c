@@ -38,7 +38,6 @@
 #include <unistd.h>
 #endif
 
-static SEXP sora_zc_marker;    /* SHM_VEC keeper identity (keeper slot 2) */
 static SEXP sora_rel_tag;      /* the release-record extptr */
 static SEXP sora_shm_tag_sym;  /* installed MORI_TAG_SHM: the chain terminus */
 
@@ -46,25 +45,9 @@ static void sora_zc_ref_mark(SEXP x);
 static void sora_zc_wire_resolve(SEXP view, mori_shm *shm);
 
 void sora_zc_init(void) {
-  sora_zc_marker = R_MakeExternalPtr(NULL, R_NilValue, R_NilValue);
-  R_PreserveObject(sora_zc_marker);
   sora_rel_tag = Rf_install("sora_view_release");
   sora_shm_tag_sym = Rf_install(MORI_TAG_SHM);
   mori_set_wire_hooks(sora_zc_ref_mark, sora_zc_wire_resolve);
-}
-
-void sora_zc_fini(void) {
-  R_ReleaseObject(sora_zc_marker);
-}
-
-// Refcount / flags words --------------------------------------------------------
-
-static inline _Atomic uint32_t *zc_rc(void *base) {
-  return (_Atomic uint32_t *) ((unsigned char *) base + SORA_ZC_REFCOUNT_OFF);
-}
-
-static inline _Atomic uint32_t *zc_flags(void *base) {
-  return (_Atomic uint32_t *) ((unsigned char *) base + SORA_ZC_FLAGS_OFF);
 }
 
 // View release ------------------------------------------------------------------
@@ -88,7 +71,7 @@ static void sora_rel_finalizer(SEXP ptr) {
   sora_zc_rel *rel = (sora_zc_rel *) R_ExternalPtrAddr(ptr);
   if (rel != NULL) {
     if (rel->armed && rel->pid == sora_self_pid())
-      atomic_fetch_sub_explicit(zc_rc(rel->base), 1, memory_order_acq_rel);
+      atomic_fetch_sub_explicit(sora_zc_rc(rel->base), 1, memory_order_acq_rel);
     if (rel->owned != NULL) {
       mori_shm_close(rel->owned, 0);
       free(rel->owned);
@@ -243,32 +226,64 @@ int sora_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
    or fresh create — the irreducible producer-writes-once floor), refcount
    store 1 (the producer's loan — both the field's only initialization and
    its own reference; a recycled region carries a stale count), and the
-   name as the payload. Returns the keeper list(x, wrap, marker, key). */
-SEXP sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                  size_t total, sora_spill_fl *fl) {
-  mori_shm *shm = NULL;
-  SEXP wrap = PROTECT(sora_spill_region_get(fl, total, &shm));
+   name as the payload. Fills the retain entry: the region, the pin of x,
+   and the consumer key cell (-1) the release point may re-stamp. */
+void sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                  size_t total, sora_spill_fl *fl, sora_keeper *out) {
+  mori_shm *shm = sora_spill_region_get(fl, total);
   mori_layout_write((unsigned char *) shm->addr, x);
-  atomic_store_explicit(zc_rc(shm->addr), 1, memory_order_relaxed);
-  atomic_store_explicit(zc_flags(shm->addr), 0, memory_order_relaxed);
+  atomic_store_explicit(sora_zc_rc(shm->addr), 1, memory_order_relaxed);
+  atomic_store_explicit(sora_zc_flags(shm->addr), 0, memory_order_relaxed);
   int type = TYPEOF(x);
   hdr->kind = SORA_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) (type == LISTSXP ? VECSXP : type) |
     ((uint64_t) total << 8);
   memcpy(payload, shm->name, shm->name_len);
-  SEXP keep = PROTECT(Rf_allocVector(VECSXP, 4));
-  SET_VECTOR_ELT(keep, 0, x);
-  SET_VECTOR_ELT(keep, 1, wrap);
-  SET_VECTOR_ELT(keep, 2, sora_zc_marker);
-  SEXP key = Rf_allocVector(INTSXP, 1);
-  INTEGER(key)[0] = -1;
-  SET_VECTOR_ELT(keep, 3, key);
-  UNPROTECT(2);
-  return keep;
+  out->region = shm;
+  out->pin = x;
+  out->key = -1;
+  out->kind = SORA_KEEP_ZC;
 }
 
 // Receive ---------------------------------------------------------------------------
+
+// The view cache (name -> split mapping, wrap-pinned) -------------------------
+
+/* The name-keyed lookup: the wrap SEXP on a hit (stamp bumped), R_NilValue
+   on a miss or a finalized entry (the caller re-opens and re-stores).
+   Eviction only ever drops the reference — a live view keeps its mapping
+   through its own chain. */
+SEXP sora_zc_lookup_wrap(sora_zc_cache *oc, const unsigned char *name,
+                        uint32_t len) {
+  for (int i = 0; i < SORA_OPEN_CACHE_MAX; i++)
+    if (oc->name_len[i] == len &&
+        memcmp(oc->names[i], name, len) == 0) {
+      SEXP wrap = VECTOR_ELT(oc->wraps, i);
+      if (sora_shm_unwrap(wrap) == NULL) return R_NilValue;  /* finalized */
+      oc->stamp[i] = ++oc->tick;
+      oc->hits++;
+      return wrap;
+    }
+  return R_NilValue;
+}
+
+void sora_zc_cache_store(sora_zc_cache *oc, const unsigned char *name,
+                        uint32_t len, SEXP wrap) {
+  int slot = 0;
+  for (int i = 0; i < SORA_OPEN_CACHE_MAX; i++) {
+    if (oc->name_len[i] == 0) {
+      slot = i;
+      break;
+    }
+    if (oc->stamp[i] < oc->stamp[slot]) slot = i;
+  }
+  SET_VECTOR_ELT(oc->wraps, slot, wrap);   /* evicted LRU drops to GC */
+  memcpy(oc->names[slot], name, len);
+  oc->name_len[slot] = (uint8_t) len;
+  oc->stamp[slot] = ++oc->tick;
+  oc->misses++;
+}
 
 /* Open the named region's split mapping (cache first) and build the view
    chain anchor: rel_xp (the release record, unarmed) pinned through
@@ -278,9 +293,9 @@ SEXP sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
    chain. R_NilValue with *gone set when the region vanished and the
    caller absorbs that (NULL gone raises instead). */
 static SEXP sora_zc_prep(const char *name, uint32_t name_len, int *gone,
-                         sora_open_cache *oc, mori_shm **shm_out) {
+                         sora_zc_cache *oc, mori_shm **shm_out) {
   SEXP map_wrap = oc != NULL ?
-    sora_oc_lookup_wrap(oc, (const unsigned char *) name, name_len) :
+    sora_zc_lookup_wrap(oc, (const unsigned char *) name, name_len) :
     R_NilValue;
   mori_shm *shm = map_wrap == R_NilValue ? NULL : sora_shm_unwrap(map_wrap);
   if (shm == NULL) {
@@ -297,7 +312,7 @@ static SEXP sora_zc_prep(const char *name, uint32_t name_len, int *gone,
     }
     map_wrap = sora_shm_wrap_consumer(shm);
     if (oc != NULL)
-      sora_oc_store(oc, (const unsigned char *) name, name_len, map_wrap);
+      sora_zc_cache_store(oc, (const unsigned char *) name, name_len, map_wrap);
   }
   PROTECT(map_wrap);             /* cached or fresh: one constant pin */
   sora_zc_rel *rel = malloc(sizeof(sora_zc_rel));
@@ -398,7 +413,7 @@ static SEXP sora_zc_wrap0(mori_shm *shm, SEXP name_xp, SEXP rel_xp,
 }
 
 SEXP sora_zc_read(const sora_slot_hdr *hdr, const unsigned char *payload,
-                 int *gone, sora_open_cache *oc) {
+                 int *gone, sora_zc_cache *oc) {
   if (hdr->len == 0 || hdr->len >= MORI_NAME_MAX)
     Rf_error("sora: corrupt payload slot");
   mori_shm *shm = NULL;
@@ -408,7 +423,7 @@ SEXP sora_zc_read(const sora_slot_hdr *hdr, const unsigned char *payload,
   PROTECT(name_xp);
   SEXP rel_xp = PROTECT(R_ExternalPtrProtected(name_xp));
   SEXP view = PROTECT(sora_zc_wrap0(shm, name_xp, rel_xp, hdr->aux));
-  atomic_fetch_add_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
+  atomic_fetch_add_explicit(sora_zc_rc(shm->addr), 1, memory_order_acq_rel);
   ((sora_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
   UNPROTECT(3);
   return view;
@@ -440,12 +455,12 @@ static void sora_zc_ref_mark(SEXP x) {
   if (shm == NULL || shm->addr == NULL) return;
   SEXP prot = R_ExternalPtrProtected(terminus);
   if (TYPEOF(prot) == EXTPTRSXP && R_ExternalPtrTag(prot) == sora_rel_tag) {
-    atomic_fetch_or_explicit(zc_flags(shm->addr), SORA_ZC_FLAG_REFHELD,
+    atomic_fetch_or_explicit(sora_zc_flags(shm->addr), SORA_ZC_FLAG_REFHELD,
                              memory_order_acq_rel);
   } else {
     mori_shm tmp;
     if (sora_shm_open_rw(&tmp, shm->name, 0) == 0) {
-      atomic_fetch_or_explicit(zc_flags(tmp.addr), SORA_ZC_FLAG_REFHELD,
+      atomic_fetch_or_explicit(sora_zc_flags(tmp.addr), SORA_ZC_FLAG_REFHELD,
                                memory_order_acq_rel);
       mori_shm_close(&tmp, 0);
     }
@@ -475,7 +490,7 @@ int sora_zc_ref_stage(sora_slot_hdr *hdr, unsigned char *payload,
 }
 
 SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
-                     int *gone, sora_open_cache *oc) {
+                     int *gone, sora_zc_cache *oc) {
   if (hdr->len == 0 || hdr->len >= MORI_IDENTIFIER_MAX)
     Rf_error("sora: corrupt payload slot");
   char buf[MORI_IDENTIFIER_MAX];
@@ -495,7 +510,7 @@ SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
   SEXP view;
   if (path_len == 0) {
     view = PROTECT(sora_zc_wrap0(shm, name_xp, rel_xp, 0));
-    atomic_fetch_add_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
+    atomic_fetch_add_explicit(sora_zc_rc(shm->addr), 1, memory_order_acq_rel);
     ((sora_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
   } else {
     view = PROTECT(mori_walk_path((unsigned char *) shm->addr,
@@ -508,7 +523,7 @@ SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
       if (o != NULL && o->release == NULL) {
         o->release = sora_zc_rel_fire;
         o->release_arg = (void *) rel_xp;
-        atomic_fetch_add_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
+        atomic_fetch_add_explicit(sora_zc_rc(shm->addr), 1, memory_order_acq_rel);
         ((sora_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
       }
     }
@@ -524,7 +539,7 @@ SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
 static void sora_zc_wire_rel(void *arg) {
   sora_zc_rel *rel = (sora_zc_rel *) arg;
   if (rel->armed && rel->pid == sora_self_pid())
-    atomic_fetch_sub_explicit(zc_rc(rel->base), 1, memory_order_acq_rel);
+    atomic_fetch_sub_explicit(sora_zc_rc(rel->base), 1, memory_order_acq_rel);
   mori_shm_close(rel->owned, 0);
   free(rel->owned);
   free(rel);
@@ -554,100 +569,8 @@ static void sora_zc_wire_resolve(SEXP view, mori_shm *shm) {
   rel->armed = 0;
   o->release = sora_zc_wire_rel;
   o->release_arg = rel;
-  atomic_fetch_add_explicit(zc_rc(rw->addr), 1, memory_order_acq_rel);
+  atomic_fetch_add_explicit(sora_zc_rc(rw->addr), 1, memory_order_acq_rel);
   rel->armed = 1;
-}
-
-// Producer-side release: keeper predicate, ledger --------------------------------
-
-int sora_zc_keeper(SEXP k) {
-  return TYPEOF(k) == VECSXP && Rf_xlength(k) == 4 &&
-    VECTOR_ELT(k, 2) == sora_zc_marker;
-}
-
-void sora_zc_keeper_key(SEXP keeper, int32_t key) {
-  if (sora_zc_keeper(keeper))
-    INTEGER(VECTOR_ELT(keeper, 3))[0] = key;
-}
-
-/* The producer-loan drop, from sora_spill_fl_offer at the consumer-done
-   release points: refcount sub, then the free list on 0 (no live views)
-   or the lent-region ledger otherwise. A full ledger drops the wrap to GC
-   — the name unlinks, live views keep their own mappings, and only
-   recycling is forfeited. */
-void sora_zc_release(sora_spill_fl *fl, SEXP keeper) {
-  SEXP wrap = VECTOR_ELT(keeper, 1);
-  mori_shm *shm = sora_shm_unwrap(wrap);
-  if (shm == NULL || shm->addr == NULL) return;
-  uint32_t prev =
-    atomic_fetch_sub_explicit(zc_rc(shm->addr), 1, memory_order_acq_rel);
-  if (prev <= 1) {
-    sora_spill_fl_insert(fl, wrap, shm);
-    return;
-  }
-  if (fl->led_wraps == NULL || fl->led_n >= SORA_LEDGER_MAX) return;
-  SET_VECTOR_ELT(fl->led_wraps, fl->led_n, wrap);
-  fl->led_key[fl->led_n] = INTEGER(VECTOR_ELT(keeper, 3))[0];
-  fl->led_n++;
-}
-
-static void sora_ledger_drop(sora_spill_fl *fl, uint32_t i) {
-  fl->led_n--;
-  SET_VECTOR_ELT(fl->led_wraps, i, VECTOR_ELT(fl->led_wraps, fl->led_n));
-  SET_VECTOR_ELT(fl->led_wraps, fl->led_n, R_NilValue);
-  fl->led_key[i] = fl->led_key[fl->led_n];
-}
-
-void sora_ledger_sweep(sora_spill_fl *fl, uint32_t quota) {
-  if (fl->led_wraps == NULL) return;
-  uint32_t i = 0, visited = 0;
-  while (i < fl->led_n && visited < quota) {
-    SEXP wrap = VECTOR_ELT(fl->led_wraps, i);
-    mori_shm *shm = sora_shm_unwrap(wrap);
-    visited++;
-    uint32_t count = 0;
-    if (shm != NULL && shm->addr != NULL)
-      count = atomic_load_explicit(zc_rc(shm->addr), memory_order_acquire);
-    if (count == 0) {
-      if (shm != NULL && shm->addr != NULL)
-        sora_spill_fl_insert(fl, wrap, shm);
-      sora_ledger_drop(fl, i);
-      fl->churn = 0;   /* releases are landing: zero-copy reuse is viable */
-    } else {
-      i++;
-    }
-  }
-}
-
-/* The death backstop, after the liveness verdict: a dead consumer's
-   finalizers never ran, so its counts leaked. Unflagged entries rejoin
-   the free list (the stage-time store of 1 re-initializes) — sound only
-   while the dead peer is the sole possible view-holder. REFHELD entries
-   have a wider holder set: leak the count and kill the name (live views
-   keep their own mappings), never force-reclaim. */
-void sora_ledger_force(sora_spill_fl *fl, int32_t key) {
-  if (fl->led_wraps == NULL) return;
-  uint32_t i = 0;
-  while (i < fl->led_n) {
-    if (key >= 0 && fl->led_key[i] != key) {
-      i++;
-      continue;
-    }
-    SEXP wrap = VECTOR_ELT(fl->led_wraps, i);
-    mori_shm *shm = sora_shm_unwrap(wrap);
-    if (shm != NULL && shm->addr != NULL) {
-      uint32_t flags =
-        atomic_load_explicit(zc_flags(shm->addr), memory_order_acquire);
-      if (flags & SORA_ZC_FLAG_REFHELD) {
-        SEXP host = R_ExternalPtrProtected(wrap);
-        if (TYPEOF(host) == EXTPTRSXP) mori_host_finalizer(host);
-      } else {
-        sora_spill_fl_insert(fl, wrap, shm);
-        fl->churn = 0;
-      }
-    }
-    sora_ledger_drop(fl, i);
-  }
 }
 
 // Test / debug surface --------------------------------------------------------------
@@ -669,9 +592,9 @@ SEXP sora_zc_refcount_call(SEXP x) {
   if (shm == NULL || shm->addr == NULL) return Rf_allocVector(INTSXP, 0);
   SEXP out = Rf_allocVector(INTSXP, 2);
   INTEGER(out)[0] =
-    (int) atomic_load_explicit(zc_rc(shm->addr), memory_order_acquire);
+    (int) atomic_load_explicit(sora_zc_rc(shm->addr), memory_order_acquire);
   INTEGER(out)[1] =
-    (int) atomic_load_explicit(zc_flags(shm->addr), memory_order_acquire);
+    (int) atomic_load_explicit(sora_zc_flags(shm->addr), memory_order_acquire);
   return out;
 }
 

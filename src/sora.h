@@ -87,6 +87,11 @@ mori_shm *sora_shm_open_ro_heap(const char *name);
    vendored mori_shm_create — written in full at stage time. */
 int sora_shm_create_populate(mori_shm *shm, size_t size);
 
+/* The survivor-unlink half of a control region's teardown (spill.c):
+   releases the name / creator handle, keeping the mapping (the death watch
+   and parkers reference it until the handle's release). */
+void sora_region_unlink(mori_shm *shm);
+
 // Bounded single-pass serialize -------------------------------------------------
 
 /* Serializes object, writing bytes into dst while they fit within limit and
@@ -177,15 +182,14 @@ typedef char sora_slot_hdr_assert[(sizeof(sora_slot_hdr) == 16) ? 1 : -1];
 
 /* Producer spill-region free list: retired SHM_RAW regions recycled by the
    handle that spilled them, so steady-state spill traffic is region-churn-
-   free (no create / open / unlink / zero-fill per payload). The wraps
-   vector is an R list living in a prot slot on the owning handle, so GC,
-   session-exit, and unlink semantics are inherited unchanged — eviction is
-   just dropping the reference. Reuse is safe only because a region is
-   offered exclusively at the protocol's consumer-done release points
-   (collect, result-slot reuse, the worker keeper sweep). Regions are
-   created at power-of-two sizes (floor 4 KiB) so nearby payload sizes hit;
-   caps are per size class and total bytes, the latter sized to admit one
-   8 MiB entry. */
+   free (no create / open / unlink / zero-fill per payload). Regions are
+   owned by the handle outright — explicit lifetime, not GC-inherited:
+   eviction and handle teardown close + unlink them in place. Reuse is safe
+   only because a region is offered exclusively at the protocol's
+   consumer-done release points (collect, result-slot reuse, the worker
+   keeper sweep). Regions are created at power-of-two sizes (floor 4 KiB) so
+   nearby payload sizes hit; caps are per size class and total bytes, the
+   latter sized to admit one 8 MiB entry. */
 #define SORA_SPILL_FL_MAX    16
 #define SORA_SPILL_FL_CLASS  2
 #define SORA_SPILL_FL_BYTES  ((size_t) 32 << 20)
@@ -238,7 +242,7 @@ typedef char sora_zc_off_assert[
 #define SORA_LEDGER_MAX 64
 
 typedef struct sora_spill_fl_s {
-  SEXP wraps;                       /* VECSXP(SORA_SPILL_FL_MAX), handle-pinned */
+  mori_shm *regions[SORA_SPILL_FL_MAX]; /* owned; evict/teardown = close+unlink */
   size_t size[SORA_SPILL_FL_MAX];    /* region size; 0 = empty entry */
   uint64_t stamp[SORA_SPILL_FL_MAX]; /* push order: largest-oldest eviction */
   uint64_t tick;
@@ -246,9 +250,14 @@ typedef struct sora_spill_fl_s {
   uint32_t n;
   int last_reused;                  /* whether the last spill popped an entry */
   uint64_t hits;                    /* process-local reuse count (dump-only) */
-  SEXP led_wraps;                   /* VECSXP(SORA_LEDGER_MAX), handle-pinned */
+  mori_shm *led_regions[SORA_LEDGER_MAX]; /* lent: views outstanding */
   int32_t led_key[SORA_LEDGER_MAX];
   uint32_t led_n;
+  /* the one uncommitted staging checkout: set by sora_spill_region_get,
+     committed to the retain table (or discarded) at publish, rolled back
+     to the free list at the next staging verb or handle teardown — a
+     mid-stage raise never leaks a region */
+  mori_shm *staging;
   /* set when a spill pop misses with lent regions outstanding (the sweep
      just proved consumer-side views outlive their traffic): the signal
      for the copy-tier fallback in sora_payload_stage and chan_send1;
@@ -259,36 +268,79 @@ typedef struct sora_spill_fl_s {
   int churn;
 } sora_spill_fl;
 
-/* Surrender a dropped keeper's region to the free list: a no-op unless
-   keeper is a spill keeper (identified by pointer identity of a private
-   marker, so no user value staged as its own keeper can alias one). Call
-   only at consumer-done release points, before dropping the keeper. */
-void sora_spill_fl_offer(sora_spill_fl *fl, SEXP keeper);
-/* Offer keepers[at], then nil the slot — the shape of every release point
-   that drops a keeper table entry: offered exactly once, immediately
-   before its sole reference goes. */
-void sora_spill_fl_surrender(sora_spill_fl *fl, SEXP keepers, R_xlen_t at);
+/* Per-slot retain table — the explicit successor of the keeper VECSXP.
+   Staging always copies, so the only retained objects are the regions a
+   staged payload references plus, for the serialize tiers, the staged
+   object itself: a serialized stream may carry hook-emitted mori
+   identifiers whose views the pin keeps alive until consumer-done. The
+   table holds the region half (handle-owned); the pin half rides a
+   parallel VECSXP in the handle's prot chain (GC-visible, nil'd at the
+   release points) — the two are always the same length and index. kind:
+   SPILL — the region surrenders to the free list at release; ZC — the
+   producer-loan refcount sub, then free list or lent ledger by key;
+   PIN — no region, the pin alone. */
+enum { SORA_KEEP_FREE = 0, SORA_KEEP_SPILL, SORA_KEEP_ZC, SORA_KEEP_PIN };
+
+typedef struct sora_keeper_s {
+  mori_shm *region;  /* SPILL/ZC: the staged region, owned until release */
+  SEXP pin;          /* the staged object to pin (serialize tiers) */
+  int32_t key;       /* ZC: the consumer's identity for the lent ledger */
+  uint8_t kind;
+} sora_keeper;
+
+/* Release one committed entry at a consumer-done point: surrender the
+   region per its kind, drop the pin, mark the slot FREE. */
+void sora_keeper_release(sora_spill_fl *fl, sora_keeper *tab, SEXP pins,
+                         R_xlen_t at);
+/* Commit a staged entry to a (FREE) slot: store the region half and the
+   pin, clearing the uncommitted checkout. */
+void sora_keeper_commit(sora_spill_fl *fl, sora_keeper *tab, SEXP pins,
+                        R_xlen_t at, const sora_keeper *k);
+/* Discard a staged entry that was never committed (a cancelled publish):
+   surrender the region, clear the checkout; the pin was never stored. */
+void sora_keeper_discard(sora_spill_fl *fl, sora_keeper *k);
+/* Roll back an abandoned staging checkout (a mid-stage raise): the region
+   rejoins the free list. */
+void sora_stage_rollback(sora_spill_fl *fl);
+/* Handle teardown: close + unlink every retained region, drop every pin. */
+void sora_keepers_teardown(sora_keeper *tab, SEXP pins, uint32_t n);
+void sora_spill_fl_teardown(sora_spill_fl *fl);
 
 /* Consumer-side mapping cache, the read counterpart of the free list: once
-   producers repeat region names, a name -> consumer-wrap table skips the
-   open / fstat / mmap (and the munmap at GC) per SHM_RAW payload. Wraps
-   live in a prot slot on the owning handle for inherited lifetime. Names
-   never alias (mori's counter never regenerates one) and a region's size
-   is fixed for its lifetime, so entries cannot go stale — one whose region
-   was evicted producer-side just never matches again and ages out (LRU).
-   Producer death leaves hits readable (the mapping — and on Windows the
-   cached handle — outlives the name); the gone path only ever ran on
-   misses and is unchanged. Counters are process-local, sora_pool_dump-only. */
+   producers repeat region names, a name -> mapping table skips the
+   open / fstat / mmap per SHM_RAW payload. Mappings are owned by the
+   handle — eviction and teardown close them in place; the SHM_RAW tiers
+   copy out before consumer-done, so no view outlives a mapping here (the
+   zc view cache below is the GC-pinned exception). Names never alias
+   (mori's counter never regenerates one) and a region's size is fixed for
+   its lifetime, so entries cannot go stale — one whose region was evicted
+   producer-side just never matches again and ages out (LRU). Producer
+   death leaves hits readable (the mapping — and on Windows the cached
+   handle — outlives the name); the gone path only ever ran on misses and
+   is unchanged. Counters are process-local, sora_pool_dump-only. */
 #define SORA_OPEN_CACHE_MAX 16
 
 typedef struct sora_open_cache_s {
-  SEXP wraps;                       /* VECSXP(SORA_OPEN_CACHE_MAX), handle-pinned */
+  mori_shm *maps[SORA_OPEN_CACHE_MAX];  /* owned; evict/teardown = close */
   char names[SORA_OPEN_CACHE_MAX][MORI_NAME_MAX];
   uint8_t name_len[SORA_OPEN_CACHE_MAX];   /* 0 = empty entry */
   uint64_t stamp[SORA_OPEN_CACHE_MAX];
   uint64_t tick;
   uint64_t hits, misses;
 } sora_open_cache;
+
+/* The zc view cache: name -> split-mapped (page 0 RW) consumer mapping,
+   wrap-pinned. Unlike the SHM_RAW cache, eviction only drops the reference
+   — a live view keeps its mapping through its own chain, so a cache
+   eviction must never unmap. Stays R-side (keyed on SEXP views). */
+typedef struct sora_zc_cache_s {
+  SEXP wraps;                       /* VECSXP(SORA_OPEN_CACHE_MAX), handle-pinned */
+  char names[SORA_OPEN_CACHE_MAX][MORI_NAME_MAX];
+  uint8_t name_len[SORA_OPEN_CACHE_MAX];
+  uint64_t stamp[SORA_OPEN_CACHE_MAX];
+  uint64_t tick;
+  uint64_t hits, misses;
+} sora_zc_cache;
 
 void *sora_vec_ptr(SEXP x);
 int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
@@ -304,61 +356,78 @@ int sora_str1_stage(sora_slot_hdr *hdr, unsigned char *payload,
                    uint32_t inline_max, SEXP x);
 /* Pop the smallest fitting free-list region (a full ledger sweep first on
    a miss) or create one fresh — at the pow2 size class when a free list is
-   in play, exact otherwise. Returns the PROTECTed producer wrap and sets
-   *out. */
-SEXP sora_spill_region_get(sora_spill_fl *fl, size_t n, mori_shm **out);
-/* Insert a producer wrap into the free list under the size-class and byte
-   caps (evicting largest-oldest), or drop it to GC when it doesn't fit. */
-void sora_spill_fl_insert(sora_spill_fl *fl, SEXP wrap, mori_shm *shm);
+   in play, exact otherwise. The checkout is recorded in fl->staging until
+   the caller commits or discards it (sora_keeper_commit / _discard, or
+   sora_stage_rollback on a mid-stage raise). Raises sora_error_shm on
+   create failure. */
+mori_shm *sora_spill_region_get(sora_spill_fl *fl, size_t n);
+/* Insert a producer region into the free list under the size-class and
+   byte caps (evicting largest-oldest), or close + unlink it in place when
+   it doesn't fit. */
+void sora_spill_fl_insert(sora_spill_fl *fl, mori_shm *shm);
 /* Serialize x into a sora region — popped from fl when an entry fits,
-   created fresh otherwise (fl may be NULL: always fresh, exactly n bytes)
-   — and frame it as SHM_RAW. Returns the keeper — list(x, producer
-   wrapper, marker) — freshly allocated: the caller must protect it. */
-SEXP sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                           size_t n, sora_spill_fl *fl);
+   created fresh otherwise — and frame it as SHM_RAW, filling the retain
+   entry: the region plus the pin of x (a stream may carry hook-emitted
+   mori identifiers). */
+void sora_payload_spill_shm(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                           size_t n, sora_spill_fl *fl, sora_keeper *out);
 /* The raw-bytes counterpart for RAWSPILL: copies x's bytes into a spill
-   region instead of serializing. Same keeper shape and consumer-done
-   release discipline as SHM_RAW, minus x itself (bare bytes can carry no
-   hook-emitted identifiers, so only the region wrap needs the pin). */
-SEXP sora_payload_spill_raw(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                           size_t n, sora_spill_fl *fl);
+   region instead of serializing. The entry pins the region only (bare
+   bytes can carry no hook-emitted identifiers). */
+void sora_payload_spill_raw(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                           size_t n, sora_spill_fl *fl, sora_keeper *out);
 /* The SHM_RAW spill of a codec stream (n from the counting first pass):
-   the same keeper shape minus x, on the same self-containment argument. */
-SEXP sora_payload_spill_codec(sora_slot_hdr *hdr, unsigned char *payload,
-                             SEXP x, size_t n, sora_spill_fl *fl);
+   the region alone is pinned — the writer rejected ALTREP, so no
+   hook-emitted identifier can ride along. */
+void sora_payload_spill_codec(sora_slot_hdr *hdr, unsigned char *payload,
+                             SEXP x, size_t n, sora_spill_fl *fl,
+                             sora_keeper *out);
 /* Stage x as REF (a sora view), RAWVEC, INLINE, SHM_VEC (a mori-layout-
    eligible object past the inline budget and the zc floor), or SHM_RAW —
-   the pool framing, with no arena tier. Returns the keeper to pin (the
-   caller must protect it): the fresh spill list, x itself for the
-   serialize tiers (a stream may carry hook-emitted mori identifiers), or
-   R_NilValue for the self-contained kinds (NIL, RAWVEC, STR1) — pin
-   nothing. */
-SEXP sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
-                       uint32_t inline_max, SEXP x, sora_spill_fl *fl);
+   the pool framing, with no arena tier — filling the retain entry: the
+   self-contained kinds (NIL, RAWVEC, STR1, codec streams) retain nothing,
+   the serialize tiers pin x, the spill tiers pin the region. */
+void sora_payload_stage(sora_slot_hdr *hdr, unsigned char *payload,
+                       uint32_t inline_max, SEXP x, sora_spill_fl *fl,
+                       sora_keeper *out);
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload (errors on ARENA — the
    channel resolves its own arena chunks), or wrap a SHM_VEC / REF payload
-   as an ALTREP view. oc may be NULL: open per payload, mapping dropped at
-   GC, as before the cache. zoc (also NULL-able) is the consumer cache for
-   the view tiers — split-mapped (page 0 RW for the refcount word) and
-   lazy, unlike the SHM_RAW cache. */
+   as an ALTREP view. oc is the handle's SHM_RAW mapping cache; zoc is the
+   consumer cache for the view tiers — split-mapped (page 0 RW for the
+   refcount word) and lazy, unlike the SHM_RAW cache. */
 /* gone: NULL raises on a vanished out-of-line region; else set to 1 with a
    NULL-value return, for callers that can turn it into a task verdict */
 SEXP sora_payload_read(const sora_slot_hdr *hdr, const unsigned char *payload,
                       uint32_t inline_max, int *gone, sora_open_cache *oc,
-                      sora_open_cache *zoc);
+                      sora_zc_cache *zoc);
 
-/* Open-cache primitives, shared by the SHM_RAW and zc read paths: the
-   name-keyed wrap lookup (R_NilValue on a miss or a finalized entry) and
-   the LRU store (evicted entries drop to GC). */
-SEXP sora_oc_lookup_wrap(sora_open_cache *oc, const unsigned char *name,
+/* The SHM_RAW open-cache primitives: the name-keyed mapping lookup (NULL
+   on a miss) and the LRU store (takes ownership; an evicted entry is
+   closed). */
+mori_shm *sora_oc_lookup(sora_open_cache *oc, const unsigned char *name,
                         uint32_t len);
-void sora_oc_store(sora_open_cache *oc, const unsigned char *name, uint32_t len,
-                  SEXP wrap);
+void sora_oc_store(sora_open_cache *oc, mori_shm *shm);
+void sora_oc_teardown(sora_open_cache *oc);
+/* The zc view cache counterparts (wrap-pinned mappings): the wrap SEXP on
+   a hit (stamp bumped), R_NilValue on a miss or a finalized entry. */
+SEXP sora_zc_lookup_wrap(sora_zc_cache *oc, const unsigned char *name,
+                        uint32_t len);
+void sora_zc_cache_store(sora_zc_cache *oc, const unsigned char *name,
+                        uint32_t len, SEXP wrap);
 
 // Zero-copy payload tiers (zc.c) ---------------------------------------------
 
+/* The refcount / flags words of a SHM_VEC region header (the sora-owned
+   bytes [24-31] of the reserved band, above). Shared by the core release
+   machinery (spill.c) and the R-side stage/read (zc.c). */
+static inline _Atomic uint32_t *sora_zc_rc(void *base) {
+  return (_Atomic uint32_t *) ((unsigned char *) base + SORA_ZC_REFCOUNT_OFF);
+}
+static inline _Atomic uint32_t *sora_zc_flags(void *base) {
+  return (_Atomic uint32_t *) ((unsigned char *) base + SORA_ZC_FLAGS_OFF);
+}
+
 void sora_zc_init(void);
-void sora_zc_fini(void);
 /* SHM_VEC eligibility: a mori-layout-eligible object (non-ALTREP, non-S4
    atomic vector; string vector; list tree) whose layout bytes exceed both
    the inline budget and SORA_ZC_FLOOR — cheap lower-bound probes keep the
@@ -367,11 +436,11 @@ void sora_zc_fini(void);
    path). *out_total receives the exact layout size (header + data +
    attrs). */
 int sora_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total);
-/* Stage x as SHM_VEC into a spill region and return the keeper —
-   list(x, wrap, marker, key) with key an INTSXP(1) cell (-1) the release
-   point may re-stamp with the consumer's identity (pool keying). */
-SEXP sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                  size_t total, sora_spill_fl *fl);
+/* Stage x as SHM_VEC into a spill region, filling the retain entry: the
+   region, the pin of x, and the consumer key cell (-1) the release point
+   may re-stamp with the consumer's identity (pool keying). */
+void sora_zc_stage(sora_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                  size_t total, sora_spill_fl *fl, sora_keeper *out);
 /* Stage a sora-native view as REF (its identifier as the payload), marking
    the region REFHELD. Returns 1 on success, 0 to fall through to the copy
    tiers (not a view, materialized view, or an identifier past the budget). */
@@ -381,16 +450,12 @@ int sora_zc_ref_stage(sora_slot_hdr *hdr, unsigned char *payload,
    as an ALTREP view over the shared pages, refcounted per the zc protocol
    (zc.c). gone as in sora_payload_read. */
 SEXP sora_zc_read(const sora_slot_hdr *hdr, const unsigned char *payload,
-                 int *gone, sora_open_cache *oc);
+                 int *gone, sora_zc_cache *oc);
 SEXP sora_zc_ref_read(const sora_slot_hdr *hdr, const unsigned char *payload,
-                     int *gone, sora_open_cache *oc);
-/* The zc keeper predicate (pointer identity of a private marker). */
-int sora_zc_keeper(SEXP k);
-/* Re-stamp a zc keeper's consumer key (no-op for other keepers). */
-void sora_zc_keeper_key(SEXP keeper, int32_t key);
-/* The producer-loan release for a zc keeper: refcount sub, then free list
-   on 0 or the lent-region ledger otherwise. */
-void sora_zc_release(sora_spill_fl *fl, SEXP keeper);
+                     int *gone, sora_zc_cache *oc);
+/* The producer-loan release for a ZC retain entry: refcount sub, then free
+   list on 0 or the lent-region ledger otherwise. */
+void sora_zc_release(sora_spill_fl *fl, mori_shm *shm, int32_t key);
 /* Move zero-count ledger entries to the free list, up to quota
    (SORA_LEDGER_MAX = full sweep). */
 void sora_ledger_sweep(sora_spill_fl *fl, uint32_t quota);

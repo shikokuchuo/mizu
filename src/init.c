@@ -261,7 +261,6 @@ void R_init_sora(DllInfo *dll) {
    init order. The ALTREP class registrations stay — R has no unregister. */
 void R_unload_sora(DllInfo *dll) {
   sora_death_listener_teardown();
-  sora_zc_fini();
   sora_pool_fini();
   sora_channel_fini();
   sora_payload_fini();

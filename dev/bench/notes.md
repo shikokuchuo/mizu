@@ -178,3 +178,19 @@ this host, so timed intervals are kept >> 1 ms by looping.
   environment along). Serial submit-collect with the closure as a task
   argument: 3.20 -> 1.80-2.20 us plain (keep.source 2.60-3.00 us), plain
   task 1.40-1.60 us.
+
+## 2026-08-21: retain-table seam carve (Phase 1 step 1, commit 82d8c67)
+
+- The keeper VECSXPs became the explicit per-slot retain table (spill.c):
+  regions owned by the handle (free list / lent ledger / mapping cache hold
+  mori_shm pointers, closed + unlinked at eviction and teardown), the
+  serialize-tier pin rides a parallel VECSXP in the prot chain. The
+  ledger-overflow drop keeps the name (a REF in flight resolves by name)
+  where the wrap GC finalizer unlinked it — the deferred unlink without
+  the GC. Behavior-preserving; the suite is green (1993 pass).
+- Measured (arm64 macOS, R 4.6.1, test-benchmark.R, report-only): channel
+  round trip 1.50 us; one-way 25.0M msg/s; pool round trip 1.0 us/task;
+  pool pipelined 1.0M tasks/s, collect_all 2.0M; channel 1/8/32 MiB round
+  trip 0.09/0.50/2.00 ms (~21-32 GiB/s); pool 1/8/64 MiB result
+  0.25/1.50/13.00 ms/task; sora_map 32 MiB template 0.356s. Consistent
+  with the 2026-08-20 records — no hot-path regression from the carve.

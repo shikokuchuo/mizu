@@ -97,13 +97,17 @@ typedef struct sora_chan_s {
   _Atomic int peer_dead;         /* death-listener flag: wake trigger only */
   sora_death_watch *watch;
 
-  /* SHM_RAW arena-overflow fallback reuse, as on pool handles: producer
-     spill free list and consumer mapping cache, wraps pinned by prot[2] /
-     prot[3]; prot[4] pins the lent-region ledger (zc.c) and prot[5] the
-     zc view cache (split-mapped, lazy — unlike the SHM_RAW cache) */
+  /* Payload lifetime: the per-slot retain table (malloc'd, cap entries)
+     with its GC-visible pin store (pins, pinned by the extptr's prot);
+     the producer spill free list + lent-region ledger and the consumer
+     SHM_RAW mapping cache are owned outright (spill.c); the prot also
+     pins the zc view cache's wraps (split-mapped, lazy — unlike the
+     SHM_RAW cache) */
+  SEXP pins;
+  sora_keeper *keepers;
   sora_spill_fl fl;
   sora_open_cache oc;
-  sora_open_cache zoc;
+  sora_zc_cache zoc;
 
   sora_chan_ring tx, rx;
 } sora_chan;
@@ -250,10 +254,6 @@ static sora_chan *chan_get(SEXP xp) {
   return c;
 }
 
-static SEXP chan_keepers(SEXP xp) {
-  return VECTOR_ELT(R_ExternalPtrProtected(xp), 0);
-}
-
 // Wiring --------------------------------------------------------------------------
 
 /* Build all region pointers from a validated preamble. Local cursors are
@@ -326,12 +326,11 @@ static int chan_live_paths(sora_chan *c, const char *livedir) {
 /* The listener's flag is only ever a wake trigger; this fd-scoped probe is
    the verdict, and acquiring the dead side's lock serializes survivor
    cleanup. The verdict is sticky: once confirmed, no re-probe. */
-static void chan_survivor_unlink(sora_chan *c, SEXP prot) {
+static void chan_survivor_unlink(sora_chan *c) {
   if (c->names_unlinked) return;
   c->names_unlinked = 1;
   if (c->side == SORA_ENTITY_HOST) {
-    SEXP host_ptr = VECTOR_ELT(prot, 1);
-    if (host_ptr != R_NilValue) mori_host_finalizer(host_ptr);
+    sora_region_unlink(&c->shm);
   } else {
     sora_unlink_region_name(c->shm.name);
   }
@@ -339,12 +338,12 @@ static void chan_survivor_unlink(sora_chan *c, SEXP prot) {
   if (c->live_peer_path[0] != '\0') remove(c->live_peer_path);
 }
 
-static int chan_probe_dead(sora_chan *c, SEXP prot) {
+static int chan_probe_dead(sora_chan *c) {
   if (c->verdict_dead) return 1;
   if (c->live_peer == 0) return 0;
   if (sora_live_try(c->live_peer) != SORA_LIVE_ACQUIRED) return 0;
   c->verdict_dead = 1;
-  chan_survivor_unlink(c, prot);
+  chan_survivor_unlink(c);
   /* the dead peer's view finalizers never ran: force-reclaim the lent
      regions (REFHELD ones leak + unlink — the holder set is wider) */
   sora_ledger_force(&c->fl, -1);
@@ -355,8 +354,10 @@ static int chan_probe_dead(sora_chan *c, SEXP prot) {
 
 /* Full teardown, idempotent. The order is load-bearing: the death watch and
    parkers reference the mapping (the watch's unpark target is the epoch word
-   inside it), so both stop before the munmap. */
-static void chan_release(sora_chan *c, SEXP prot, int unlink_names) {
+   inside it), so both stop before the munmap. The retain table, free list,
+   ledger, and mapping cache release their regions first — they are
+   independent regions, but the teardown is the handle's. */
+static void chan_release(sora_chan *c, int unlink_names) {
   if (c->released) return;
   c->released = 1;
   if (c->watch != NULL) {
@@ -368,7 +369,16 @@ static void chan_release(sora_chan *c, SEXP prot, int unlink_names) {
     sora_parker_detach(&c->peer_pk);
     c->pk_ok = 0;
   }
-  if (unlink_names) chan_survivor_unlink(c, prot);
+  if (unlink_names) chan_survivor_unlink(c);
+  /* the region name is always released by the host at teardown — the
+     survivor unlink above, or here (the host extptr GC finalizer's role) */
+  if (c->side == SORA_ENTITY_HOST && !c->names_unlinked) {
+    c->names_unlinked = 1;
+    sora_region_unlink(&c->shm);
+  }
+  sora_keepers_teardown(c->keepers, c->pins, (uint32_t) c->pre.cap);
+  sora_spill_fl_teardown(&c->fl);
+  sora_oc_teardown(&c->oc);
   if (c->shm.addr != NULL) mori_shm_close(&c->shm, 0);
   c->base = NULL;
   if (c->live_self != 0) {
@@ -384,7 +394,6 @@ static void chan_release(sora_chan *c, SEXP prot, int unlink_names) {
 static void sora_chan_finalizer(SEXP xp) {
   sora_chan *c = (sora_chan *) R_ExternalPtrAddr(xp);
   if (c == NULL) return;
-  SEXP prot = R_ExternalPtrProtected(xp);
   if (!c->released) {
     /* the close protocol's rendezvous re-check: unlink only once the peer
        has set its bit or its death is confirmed — a live peer's in-flight
@@ -396,9 +405,10 @@ static void sora_chan_finalizer(SEXP xp) {
       unlink_names = (cw & other) != 0 || c->verdict_dead ||
         (c->live_peer != 0 && sora_live_try(c->live_peer) == SORA_LIVE_ACQUIRED);
     }
-    chan_release(c, prot, unlink_names);
+    chan_release(c, unlink_names);
   }
   free(c->tx.aend);
+  free(c->keepers);
   free(c);
   R_ClearExternalPtr(xp);
 }
@@ -419,7 +429,7 @@ static void sora_chan_finalizer(SEXP xp) {
    that pins nothing (the immediate kinds, self-contained codec streams),
    holds no arena bytes, and has no lent regions outstanding skips the
    cross-core head load entirely. */
-static void chan_reap(sora_chan *c, SEXP keepers, int force) {
+static void chan_reap(sora_chan *c, int force) {
   sora_chan_ring *r = &c->tx;
   if (!force && c->keep_out == 0 && r->aalloc == r->afree &&
       c->fl.led_n == 0)
@@ -429,12 +439,14 @@ static void chan_reap(sora_chan *c, SEXP keepers, int force) {
   if (head <= r->reaped_head) return;
   for (int64_t i = r->reaped_head; i < head; i++) {
     R_xlen_t at = (R_xlen_t) ((uint64_t) i & r->mask);
-    if (VECTOR_ELT(keepers, at) != R_NilValue) c->keep_out--;
-    sora_spill_fl_surrender(&c->fl, keepers, at);
+    if (c->keepers[at].kind != SORA_KEEP_FREE) {
+      sora_keeper_release(&c->fl, c->keepers, c->pins, at);
+      c->keep_out--;
+    }
   }
   r->afree = r->aend[(uint64_t) (head - 1) & r->mask];
   r->reaped_head = head;
-  /* quota-bounded ledger sweep on the busy path (zc.c): an O(outstanding)
+  /* quota-bounded ledger sweep on the busy path (spill.c): an O(outstanding)
      scan here would tax the hot loop under held-view workloads */
   sora_ledger_sweep(&c->fl, 4);
 }
@@ -445,8 +457,7 @@ static void chan_reap(sora_chan *c, SEXP keepers, int force) {
    order by the reap, contiguous always (a chunk that would straddle the end
    pads to the start; the pad is accounted to the monotonic cursor and freed
    with the chunk). The consumer writes no arena state. */
-static int chan_arena_alloc(sora_chan *c, SEXP keepers, uint64_t n,
-                            uint64_t *out) {
+static int chan_arena_alloc(sora_chan *c, uint64_t n, uint64_t *out) {
   sora_chan_ring *r = &c->tx;
   if (r->arena == NULL || n == 0 || n > r->arena_size) return 0;
   for (int attempt = 0; ; attempt++) {
@@ -459,62 +470,60 @@ static int chan_arena_alloc(sora_chan *c, SEXP keepers, uint64_t n,
       return 1;
     }
     if (attempt > 0) return 0;
-    chan_reap(c, keepers, 1);    /* full -> reap -> retry, then give up */
+    chan_reap(c, 1);    /* full -> reap -> retry, then give up */
   }
 }
 
 // Send ----------------------------------------------------------------------------
 
-static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
-  SEXP keepers = VECTOR_ELT(prot, 0);
+static int chan_send1(sora_chan *c, SEXP x) {
   sora_chan_ring *r = &c->tx;
+  sora_stage_rollback(&c->fl);   /* reclaim a previous stage's abandoned
+                                    checkout before staging anew */
 
   if (atomic_load_explicit(c->closedw, memory_order_acquire) != 0)
     return SORA_ST_CLOSED;
   if (c->verdict_dead) return SORA_ST_GONE;
 
   if (r->ltail - r->cached_head >= (int64_t) r->cap) {
-    chan_reap(c, keepers, 1);
+    chan_reap(c, 1);
     if (r->ltail - r->cached_head >= (int64_t) r->cap)
       /* full is off the hot path and exactly where "peer stopped draining"
          needs disambiguating */
-      return chan_probe_dead(c, prot) ? SORA_ST_GONE : SORA_ST_FULL;
+      return chan_probe_dead(c) ? SORA_ST_GONE : SORA_ST_FULL;
   }
 
   uint64_t idx = (uint64_t) r->ltail & r->mask;
   unsigned char *sl = r->slots + idx * r->slot;
   sora_slot_hdr *hdr = (sora_slot_hdr *) sl;
   unsigned char *payload = sl + sizeof(sora_slot_hdr);
-  SEXP keep = x;
-  int nprotect = 0;
+  sora_keeper entry = { NULL, R_NilValue, -1, SORA_KEEP_FREE };
 
   size_t rawlen, total;
   uint64_t off;
-  int pinned = 1;
   /* NULL is the immediate kind — no serialize pass, no receive alloc */
   if (x == R_NilValue) {
     hdr->kind = SORA_KIND_NIL;
     hdr->len = 0;
     hdr->aux = 0;
-    pinned = 0;
   } else if (sora_zc_ref_stage(hdr, payload, c->inline_max, x)) {
     /* a sora-native view crosses by reference (REF) at any size — required
        once SHM_VEC views exist: the serialize-hook fallback resolves
        uncounted, and the producer could recycle under the far side's view;
-       keeper is x itself */
+       the pin is the view itself */
+    entry.pin = x;
+    entry.kind = SORA_KEEP_PIN;
   } else if (sora_raw_eligible(x, c->inline_max, &rawlen)) {
     memcpy(payload, sora_vec_ptr(x), rawlen);
     hdr->kind = SORA_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
-    pinned = 0;
   } else if (sora_str1_stage(hdr, payload, c->inline_max, x)) {
     /* a length-1 string's bytes are self-contained: pin nothing */
-    pinned = 0;
   } else if (sora_raw_type(x, &rawlen) && rawlen > c->inline_max &&
              rawlen <= UINT32_MAX &&
              (rawlen <= SORA_ZC_FLOOR_RAW || c->fl.churn) &&
-             chan_arena_alloc(c, keepers, MORI_ALIGN64(rawlen), &off)) {
+             chan_arena_alloc(c, MORI_ALIGN64(rawlen), &off)) {
     /* Raw-bytes arena spill: the vectors RAWVEC takes inline, past the
        inline budget. Bare bytes skip the serialize pass here and the
        parse at the far end; the chunk's lifetime tracks ring advance like
@@ -527,22 +536,20 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
     memcpy(payload, &off, sizeof(off));
-    pinned = 0;
   } else if (!c->fl.churn && sora_zc_eligible(x, c->inline_max, &total)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
        never hold a view (chunk lifetime tracks ring advance). The churn
-       gate (Linux-only, payload.c): while lent regions prove consumer
+       gate (Linux-only, spill.c): while lent regions prove consumer
        views outlive their traffic, the copy tiers below are cheaper —
        the arena and SHM_RAW surrender deterministically, where a fresh
        SHM_VEC region per message would pile up in the ledger */
-    chan_reap(c, keepers, 1);
-    keep = PROTECT(sora_zc_stage(hdr, payload, x, total, &c->fl));
-    nprotect++;
+    chan_reap(c, 1);
+    sora_zc_stage(hdr, payload, x, total, &c->fl, &entry);
   } else {
     /* the compact codec ahead of R_Serialize (payload.c): a codec stream
        is self-contained — the writer rejects ALTREP, so no hook-emitted
-       mori identifier can ride along — and pins no keeper */
+       mori identifier can ride along — and pins nothing */
     size_t n = sora_codec_write(payload, c->inline_max, x);
     int self_contained = n != 0;
     if (!self_contained)
@@ -551,9 +558,12 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
       hdr->kind = SORA_KIND_INLINE;
       hdr->len = (uint32_t) n;
       hdr->aux = 0;
-      pinned = self_contained ? 0 : 1;
+      if (!self_contained) {
+        entry.pin = x;
+        entry.kind = SORA_KEEP_PIN;
+      }
     } else {
-      if (chan_arena_alloc(c, keepers, MORI_ALIGN64(n), &off)) {
+      if (chan_arena_alloc(c, MORI_ALIGN64(n), &off)) {
         if (self_contained) {
           if (sora_codec_write(r->arena + off, n, x) != n)
             Rf_error("sora: codec write mismatch");
@@ -565,31 +575,33 @@ static int chan_send1(sora_chan *c, SEXP prot, SEXP x) {
         hdr->aux = off;
         uint64_t n64 = (uint64_t) n;
         memcpy(payload, &n64, sizeof(n64));
-        pinned = self_contained ? 0 : 1;
+        if (!self_contained) {
+          entry.pin = x;
+          entry.kind = SORA_KEEP_PIN;
+        }
       } else {
         /* reap before staging: the consumer's latest head publish may
            have released a fitting region for this very spill to pop */
-        chan_reap(c, keepers, 1);
-        keep = PROTECT(self_contained ?
-          sora_payload_spill_codec(hdr, payload, x, n, &c->fl) :
-          sora_payload_spill_shm(hdr, payload, x, n, &c->fl));
-        nprotect++;
+        chan_reap(c, 1);
+        if (self_contained)
+          sora_payload_spill_codec(hdr, payload, x, n, &c->fl, &entry);
+        else
+          sora_payload_spill_shm(hdr, payload, x, n, &c->fl, &entry);
       }
     }
   }
 
-  /* Pin the serialize and spill kinds — whether a stream carries
-     hook-emitted mori identifiers is not knowable without inspecting it.
-     The self-contained kinds (NIL, RAWVEC, codec streams) skip the store:
-     the full-check invariant guarantees the slot's previous keeper was
-     already reaped, so the entry is R_NilValue without writing it. */
-  if (pinned) {
-    SET_VECTOR_ELT(keepers, (R_xlen_t) idx, keep);
+  /* Commit the retain entry — the spill and serialize kinds pin a region
+     and/or the object; the self-contained kinds (NIL, RAWVEC, STR1, codec
+     streams) retain nothing. The full-check invariant guarantees the
+     slot's previous entry was already reaped, so a self-contained stage
+     writes nothing. */
+  if (entry.kind != SORA_KEEP_FREE) {
+    sora_keeper_commit(&c->fl, c->keepers, c->pins, (R_xlen_t) idx, &entry);
     c->keep_out++;
   }
   r->aend[idx] = r->aalloc;
   r->ltail++;
-  UNPROTECT(nprotect);
   return SORA_ST_OK;
 }
 
@@ -626,14 +638,14 @@ static int chan_rx_avail(sora_chan *c) {
 
 /* Publication is what signals the sender "keepers may drop"; the tx-keeper
    reap piggybacks on the same cadence — one extra shared load per batch. */
-static void chan_publish_head(sora_chan *c, SEXP keepers) {
+static void chan_publish_head(sora_chan *c) {
   sora_chan_ring *r = &c->rx;
   if (r->phead != r->lhead) {
     atomic_store_explicit(r->head, r->lhead, memory_order_release);
     r->phead = r->lhead;
   }
   r->unpublished = 0;
-  chan_reap(c, keepers, 0);
+  chan_reap(c, 0);
 }
 
 static SEXP chan_materialize(sora_chan *c, const unsigned char *sl) {
@@ -682,11 +694,10 @@ static void chan_wait_learn(sora_chan *c, double t_wait) {
    Drain-before-verdict: closed and peer-death are reported only through an
    empty ring, with one final tail refresh after the flag read so a
    publish-then-signal sequence is never inverted. */
-static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
-  SEXP keepers = VECTOR_ELT(prot, 0);
+static int chan_wait_msg(sora_chan *c, double timeout_s) {
   double deadline = -1;
   double t_wait = -1;
-  chan_reap(c, keepers, 0);      /* recv is a reap trigger: the quiet-sender
+  chan_reap(c, 0);               /* recv is a reap trigger: the quiet-sender
                                     case pins at most cap payloads otherwise */
   for (;;) {
     if (chan_rx_avail(c)) {
@@ -709,11 +720,11 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
     if (c->verdict_dead)
       return chan_rx_avail(c) ? SORA_ST_OK : SORA_ST_GONE;
     if (atomic_load_explicit(&c->peer_dead, memory_order_acquire) &&
-        chan_probe_dead(c, prot))
+        chan_probe_dead(c))
       return chan_rx_avail(c) ? SORA_ST_OK : SORA_ST_GONE;
 
     if (timeout_s <= 0) {
-      chan_publish_head(c, keepers);
+      chan_publish_head(c);
       return SORA_ST_TIMEOUT;
     }
     /* one clock read serves the deadline compute and the spin bound */
@@ -739,7 +750,7 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
       /* pure-spin mode: the producer skips wakes, so never park */
       R_CheckUserInterrupt();
       if (deadline >= 0 && sora_now() >= deadline) {
-        chan_publish_head(c, keepers);
+        chan_publish_head(c);
         return SORA_ST_TIMEOUT;
       }
       continue;
@@ -762,7 +773,7 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
       atomic_store_explicit(c->self_parked, 0u, memory_order_relaxed);
       continue;
     }
-    chan_publish_head(c, keepers);     /* always publish before parking */
+    chan_publish_head(c);     /* always publish before parking */
     long ms = SORA_INTERRUPT_BOUND_MS;
     if (deadline >= 0) {
       double rem = deadline - sora_now();
@@ -788,14 +799,14 @@ static int chan_wait_msg(sora_chan *c, SEXP prot, double timeout_s) {
    is the whole correctness story for large-message transport: publication
    is what lets the sender's reap drop the keeper pinning every region this
    message references. */
-static SEXP chan_consume1(sora_chan *c, SEXP keepers) {
+static SEXP chan_consume1(sora_chan *c) {
   sora_chan_ring *r = &c->rx;
   SEXP y = chan_materialize(c, r->slots + ((uint64_t) r->lhead & r->mask) *
                             r->slot);
   r->lhead++;
   r->unpublished++;
   if (r->unpublished >= SORA_HEAD_PUBLISH_K || !chan_rx_avail(c))
-    chan_publish_head(c, keepers);
+    chan_publish_head(c);
   return y;
 }
 
@@ -853,19 +864,12 @@ SEXP sora_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
 
   /* From here cleanup is the finalizer's: build the handle before anything
      that can longjmp. */
-  SEXP host_ptr = PROTECT(sora_shm_wrap_host(&c->shm));
-  SEXP keepers = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) cap));
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
-  SET_VECTOR_ELT(prot, 0, keepers);
-  SET_VECTOR_ELT(prot, 1, host_ptr);
-  SET_VECTOR_ELT(prot, 2, Rf_allocVector(VECSXP, SORA_SPILL_FL_MAX));
-  c->fl.wraps = VECTOR_ELT(prot, 2);
-  SET_VECTOR_ELT(prot, 3, Rf_allocVector(VECSXP, SORA_OPEN_CACHE_MAX));
-  c->oc.wraps = VECTOR_ELT(prot, 3);
-  SET_VECTOR_ELT(prot, 4, Rf_allocVector(VECSXP, SORA_LEDGER_MAX));
-  c->fl.led_wraps = VECTOR_ELT(prot, 4);
-  SET_VECTOR_ELT(prot, 5, Rf_allocVector(VECSXP, SORA_OPEN_CACHE_MAX));
-  c->zoc.wraps = VECTOR_ELT(prot, 5);
+  SEXP pins = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) cap));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(prot, 0, pins);
+  SET_VECTOR_ELT(prot, 1, Rf_allocVector(VECSXP, SORA_OPEN_CACHE_MAX));
+  c->zoc.wraps = VECTOR_ELT(prot, 1);
+  c->pins = pins;
   SEXP xp = PROTECT(R_MakeExternalPtr(c, sora_chan_tag, prot));
   R_RegisterCFinalizerEx(xp, sora_chan_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, sora_class_channel);
@@ -890,7 +894,9 @@ SEXP sora_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
   memcpy(b + livedir_off, livedir, livedir_len);
   chan_wire(c, &p);
   c->tx.aend = calloc((size_t) cap, sizeof(uint64_t));
-  if (c->tx.aend == NULL) Rf_error("sora: allocation failure");
+  c->keepers = calloc((size_t) cap, sizeof(sora_keeper));
+  if (c->tx.aend == NULL || c->keepers == NULL)
+    Rf_error("sora: allocation failure");
 
   if (chan_live_paths(c, livedir) != 0)
     Rf_error("sora: liveness file path too long");
@@ -910,7 +916,7 @@ SEXP sora_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
     Rf_error("sora: cannot attach channel parkers");
   c->pk_ok = 1;
 
-  UNPROTECT(4);
+  UNPROTECT(3);
   return xp;
 }
 
@@ -947,11 +953,10 @@ SEXP sora_channel_ready_wait(SEXP xp, SEXP timeout) {
    parking against a host that gave up, then unlink everything. */
 SEXP sora_channel_destroy(SEXP xp) {
   sora_chan *c = chan_get(xp);
-  SEXP prot = R_ExternalPtrProtected(xp);
   atomic_fetch_or_explicit(c->closedw, sora_closed_bit(c),
                            memory_order_seq_cst);
   sora_unpark(&c->peer_pk);
-  chan_release(c, prot, 1);
+  chan_release(c, 1);
   return R_NilValue;
 }
 
@@ -990,25 +995,21 @@ SEXP sora_channel_attach(SEXP suffix_sexp) {
     Rf_error("sora: invalid channel region: %s", err);
   }
 
-  SEXP keepers = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) p.cap));
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
-  SET_VECTOR_ELT(prot, 0, keepers);
-  SET_VECTOR_ELT(prot, 1, R_NilValue);   /* no host extptr on the peer side */
-  SET_VECTOR_ELT(prot, 2, Rf_allocVector(VECSXP, SORA_SPILL_FL_MAX));
-  c->fl.wraps = VECTOR_ELT(prot, 2);
-  SET_VECTOR_ELT(prot, 3, Rf_allocVector(VECSXP, SORA_OPEN_CACHE_MAX));
-  c->oc.wraps = VECTOR_ELT(prot, 3);
-  SET_VECTOR_ELT(prot, 4, Rf_allocVector(VECSXP, SORA_LEDGER_MAX));
-  c->fl.led_wraps = VECTOR_ELT(prot, 4);
-  SET_VECTOR_ELT(prot, 5, Rf_allocVector(VECSXP, SORA_OPEN_CACHE_MAX));
-  c->zoc.wraps = VECTOR_ELT(prot, 5);
+  SEXP pins = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) p.cap));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(prot, 0, pins);
+  SET_VECTOR_ELT(prot, 1, Rf_allocVector(VECSXP, SORA_OPEN_CACHE_MAX));
+  c->zoc.wraps = VECTOR_ELT(prot, 1);
+  c->pins = pins;
   SEXP xp = PROTECT(R_MakeExternalPtr(c, sora_chan_tag, prot));
   R_RegisterCFinalizerEx(xp, sora_chan_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, sora_class_channel);
 
   chan_wire(c, &p);
   c->tx.aend = calloc(p.cap, sizeof(uint64_t));
-  if (c->tx.aend == NULL) Rf_error("sora: allocation failure");
+  c->keepers = calloc(p.cap, sizeof(sora_keeper));
+  if (c->tx.aend == NULL || c->keepers == NULL)
+    Rf_error("sora: allocation failure");
 
   char livedir[1024];
   memcpy(livedir, c->base + p.livedir_offset, (size_t) p.livedir_size);
@@ -1022,7 +1023,7 @@ SEXP sora_channel_attach(SEXP suffix_sexp) {
     Rf_error("sora: cannot open host liveness file '%s'", c->live_peer_path);
   if (sora_live_try(c->live_peer) == SORA_LIVE_ACQUIRED) {
     c->verdict_dead = 1;
-    chan_survivor_unlink(c, prot);
+    chan_survivor_unlink(c);
     Rf_error("sora: host died before the channel was established");
   }
 
@@ -1068,9 +1069,9 @@ SEXP sora_channel_ready_set(SEXP xp) {
 
 SEXP sora_channel_send(SEXP xp, SEXP x) {
   sora_chan *c = chan_get(xp);
-  int st = chan_send1(c, R_ExternalPtrProtected(xp), x);
+  int st = chan_send1(c, x);
   chan_flush(c);
-  chan_reap(c, chan_keepers(xp), 0);
+  chan_reap(c, 0);
   return st == SORA_ST_OK ? Rf_ScalarLogical(TRUE) : sora_status_sentinel(st);
 }
 
@@ -1078,23 +1079,21 @@ SEXP sora_channel_send(SEXP xp, SEXP x) {
    the ring refuses and returns the count accepted (probe why with sora_send). */
 SEXP sora_channel_send_batch(SEXP xp, SEXP xs) {
   sora_chan *c = chan_get(xp);
-  SEXP prot = R_ExternalPtrProtected(xp);
   if (TYPEOF(xs) != VECSXP)
     Rf_error("sora: expected a list of payloads");
   R_xlen_t n = XLENGTH(xs), i;
   for (i = 0; i < n; i++)
-    if (chan_send1(c, prot, VECTOR_ELT(xs, i)) != SORA_ST_OK) break;
+    if (chan_send1(c, VECTOR_ELT(xs, i)) != SORA_ST_OK) break;
   chan_flush(c);
-  chan_reap(c, chan_keepers(xp), 0);
+  chan_reap(c, 0);
   return Rf_ScalarInteger((int) i);
 }
 
 SEXP sora_channel_recv(SEXP xp, SEXP timeout) {
   sora_chan *c = chan_get(xp);
-  SEXP prot = R_ExternalPtrProtected(xp);
-  int st = chan_wait_msg(c, prot, Rf_asReal(timeout));
+  int st = chan_wait_msg(c, Rf_asReal(timeout));
   if (st != SORA_ST_OK) return sora_status_sentinel(st);
-  return chan_consume1(c, VECTOR_ELT(prot, 0));
+  return chan_consume1(c);
 }
 
 /* Up to n messages under a single park cycle and a single batched head
@@ -1102,18 +1101,16 @@ SEXP sora_channel_recv(SEXP xp, SEXP timeout) {
    been published comes along, and the sentinel discipline matches recv. */
 SEXP sora_channel_recv_batch(SEXP xp, SEXP n_sexp, SEXP timeout) {
   sora_chan *c = chan_get(xp);
-  SEXP prot = R_ExternalPtrProtected(xp);
-  SEXP keepers = VECTOR_ELT(prot, 0);
   int n = Rf_asInteger(n_sexp);
   if (n < 1) Rf_error("sora: n must be at least 1");
-  int st = chan_wait_msg(c, prot, Rf_asReal(timeout));
+  int st = chan_wait_msg(c, Rf_asReal(timeout));
   if (st != SORA_ST_OK) return sora_status_sentinel(st);
 
   int64_t avail = c->rx.cached_tail - c->rx.lhead;
   int count = avail < n ? (int) avail : n;
   SEXP out = PROTECT(Rf_allocVector(VECSXP, count));
   for (int i = 0; i < count; i++)
-    SET_VECTOR_ELT(out, i, chan_consume1(c, keepers));
+    SET_VECTOR_ELT(out, i, chan_consume1(c));
   UNPROTECT(1);
   return out;
 }
@@ -1136,8 +1133,6 @@ SEXP sora_channel_close_signal(SEXP xp) {
 SEXP sora_channel_close(SEXP xp, SEXP timeout) {
   sora_chan *c = chan_peek(xp);
   if (c == NULL) return Rf_ScalarLogical(TRUE);   /* close is idempotent */
-  SEXP prot = R_ExternalPtrProtected(xp);
-  SEXP keepers = VECTOR_ELT(prot, 0);
   uint32_t own = sora_closed_bit(c), other = 3u ^ own;
 
   /* 1. flush — close never silently discards sent messages */
@@ -1152,7 +1147,7 @@ SEXP sora_channel_close(SEXP xp, SEXP timeout) {
   for (;;) {
     uint32_t e = sora_parker_snapshot(&c->self_pk);
     if ((atomic_load_explicit(c->closedw, memory_order_acquire) & other) !=
-        0 || c->verdict_dead || chan_probe_dead(c, prot)) {
+        0 || c->verdict_dead || chan_probe_dead(c)) {
       ok = 1;
       break;
     }
@@ -1163,12 +1158,10 @@ SEXP sora_channel_close(SEXP xp, SEXP timeout) {
     sora_park(&c->self_pk, e, ms);
     R_CheckUserInterrupt();
   }
-  /* 4. release on rendezvous; on timeout keepers are retained and the
+  /* 4. release on rendezvous; on timeout the table is retained and the
      handle finalizer re-runs this check */
   if (!ok) return Rf_ScalarLogical(FALSE);
-  for (R_xlen_t i = 0; i < XLENGTH(keepers); i++)
-    SET_VECTOR_ELT(keepers, i, R_NilValue);
-  chan_release(c, prot, 1);
+  chan_release(c, 1);
   return Rf_ScalarLogical(TRUE);
 }
 
@@ -1179,7 +1172,7 @@ SEXP sora_channel_close(SEXP xp, SEXP timeout) {
 SEXP sora_channel_alive(SEXP xp) {
   sora_chan *c = chan_peek(xp);
   if (c == NULL || c->verdict_dead) return Rf_ScalarLogical(FALSE);
-  return Rf_ScalarLogical(!chan_probe_dead(c, R_ExternalPtrProtected(xp)));
+  return Rf_ScalarLogical(!chan_probe_dead(c));
 }
 
 SEXP sora_channel_stat(SEXP xp) {
