@@ -13,116 +13,19 @@
    released at collect or slot reuse; worker result keepers released when
    the slot leaves OK/ERR). The region layout is the SHM-layout table in
    ipc-plan.md; the registry and slot structs in sora.h are its wire
-   format. */
+   format.
+
+   The worker loop is the transport: claim/steal mechanics, the parker
+   protocol, and the result-slot CAS/wake live here. The task frame
+   decode, the eval, and the error flattening are the language binding's
+   (stage_r.c), invoked through binding.exec and publishing through the
+   result sink (sora_result_publish*); the trace hook is a per-handle
+   core registration (sora_pool_set_trace) the core emit sites call. */
 
 #include <stdlib.h>
 #include <stdio.h>
 #include "sora.h"
 #include <R_ext/Utils.h>
-
-enum { SORA_ROLE_CONTROLLER = 0, SORA_ROLE_WORKER, SORA_ROLE_SUBMITTER };
-
-struct sora_reap_ctx_s { void *pool; uint32_t slot; };
-
-typedef struct sora_pool_s {
-  mori_shm shm;                  /* our mapping; unmapped only in release */
-  sora_pool_hdr hdr;
-  unsigned char *base;
-  int role;
-  int released;
-  long self_pid;                 /* fork guard */
-  int wk_slot;                   /* our worker slot (-1 unless worker) */
-  int sub_slot;                  /* our submitter slot (-1 unless we submit) */
-  uint32_t inline_entry;         /* slot - sizeof(sora_entry_hdr) */
-  uint32_t inline_rs;            /* slot - sizeof(sora_rs_hdr) */
-  sora_binding binding;          /* the language binding's check/park hooks */
-
-  sora_wk_slot *wk;
-  sora_sub_slot *sub;
-  _Atomic uint64_t *inj_ready;
-  _Atomic uint64_t *full_waiters;
-  _Atomic uint32_t *shutdown;
-  _Atomic uint64_t *parked_workers;
-  _Atomic uint32_t *help_wanted;
-  unsigned char *rings;
-  unsigned char *results;
-
-  sora_parker *pks;               /* every entity: workers, then submitters */
-  int pk_ok;
-
-  intptr_t live_self;            /* our held lock (worker / submitter slot) */
-  intptr_t live_sub;             /* a worker's nested-submitter slot lock */
-  intptr_t live_owner;           /* kept fd on the owner file; 0 = not open */
-  intptr_t *live_all;            /* controller: kept probe fds, wk then sub */
-  char livedir[1024];
-
-  /* controller-only: per-worker death watches whose C callbacks run the
-     reap off the R main thread */
-  sora_death_watch **wk_watch;
-  _Atomic int *wk_dead;
-  struct sora_reap_ctx_s *reap_ctx;
-
-  /* submitter-local */
-  uint32_t rs_cursor;
-  uint64_t task_counter;
-  int64_t inj_ltail;             /* producer-local tail */
-  int64_t inj_cached_head;       /* head is monotonic: stale only
-                                    under-reports space; refreshed on
-                                    apparent-full */
-
-  /* Payload lifetime: the retain tables with their GC-visible pin stores
-     (pinned by the extptr's prot). keepers/pins is the submitter's task
-     table (rs_count entries) or the worker's result table (result_slots);
-     sub_keepers/sub_pins the worker's nested-submit task table (rs_count,
-     allocated on first nested submit). The producer spill free list +
-     lent-region ledger and the consumer mapping cache are owned outright
-     (spill.c); the prot also pins the eval env, the trace hook, the
-     map-context cache, and the zc view cache's wraps */
-  SEXP pins;
-  sora_keeper *keepers;
-  uint32_t keepers_n;
-  SEXP sub_pins;
-  sora_keeper *sub_keepers;
-  uint32_t sub_keepers_n;
-  sora_spill_fl fl;
-  sora_open_cache oc;
-  sora_zc_cache zoc;
-
-  /* worker-local */
-  unsigned char *scratch;        /* slot-sized claim copy buffer */
-  uint32_t scan_start;           /* rotating ring-scan start */
-  uint64_t claims;               /* fairness-tick counter (% 61) */
-  uint64_t rng;                  /* xorshift state for victim selection */
-  int announced;                 /* park announce (mask bit + park_state)
-                                    not yet restored: gates the entry heal */
-  int help_depth;                /* nested-collect help recursion depth */
-  /* identity of the outermost (unwind-path) task eval, for
-     sora_pool_run_outcome: written only by catching = 0 executes — inner
-     help / inline recursion clears the shm announce, so it cannot serve
-     the unwind path */
-  int in_eval;
-  uint32_t cur_rs_index;
-  uint64_t cur_seq, cur_task_id;
-  uint16_t cur_sub_slot;
-  uint32_t probe_streak;         /* thief-probe backstop state */
-  uint32_t probe_victim;
-  struct sora_rk_s { uint32_t idx; uint64_t seq; } *rk;
-  uint32_t *rk_pos;              /* per result slot: rk position + 1, 0 = none */
-  uint32_t rk_n, rk_cap, rk_cursor;
-  /* cumulative stat counters, mirrored into the slot's stat_* fields by
-     pool_stats_publish at park/fairness-tick cadence */
-  uint64_t st_tasks, st_steals, st_inj, st_parks, st_helps;
-  /* process-local adaptive spin budgets (ns; see sora_spin_learn) and
-     collect park count: st_collect_parks is the collect-side mirror of
-     st_parks. None are mirrored to shm; the dump surfaces them under
-     "local" */
-  uint64_t scan_budget_ns;
-  uint64_t collect_budget_ns;
-  uint64_t st_collect_parks;
-
-  _Atomic int owner_dead;        /* death-listener flag: wake trigger only */
-  sora_death_watch *watch;
-} sora_pool;
 
 static SEXP sora_pool_tag;
 static SEXP sora_task_tag;
@@ -478,105 +381,44 @@ SEXP sora_pool_set_eval(SEXP xp) {
   SEXP base = PROTECT(R_NewEnv(R_GlobalEnv, 0, 0));
   Rf_defineVar(Rf_install("pool"), xp, base);
   SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 1, base);
+  /* the evaluator is the binding's exec hook: registered only once the
+     env it closes over exists, so exec != NULL implies an armed handle */
+  p->binding.exec = sora_r_exec_pool;
   UNPROTECT(1);
   return R_NilValue;
 }
 
-static SEXP pool_eval_env(SEXP xp) {
-  SEXP env = VECTOR_ELT(R_ExternalPtrProtected(xp), 1);
-  if (TYPEOF(env) != ENVSXP)
-    Rf_error("sora: no evaluator registered on this worker handle");
-  return env;
-}
-
-/* The task evaluator: one wire payload — list(expr, named args) — with the
-   arguments bound into a fresh unhashed frame under the base environment.
-   Two error disciplines, chosen by the caller. The worker loop's hot path
-   (catching = 0) arms no handler at all: a user error longjmps out of
-   sora_pool_step and worker_main publishes the caught condition as this
-   task's ERR result through sora_pool_run_outcome — the in_eval flag is
-   what separates those errors from infrastructure failure, which stays
-   fatal. Help mode and nested submit's inline execute (catching = 1) run
-   inside a task's own evaluation, where an escaping error would land in
-   the wrong task's frames: they contain it with R_tryCatchError and pay
-   its R-closure trampoline — several µs, still cheaper than the park that
-   helping replaced. */
-struct sora_eval_ctx { SEXP expr; SEXP env; int ok; };
-
-static SEXP pool_eval_body(void *data) {
-  struct sora_eval_ctx *c = (struct sora_eval_ctx *) data;
-  return Rf_eval(c->expr, c->env);
-}
-
-static SEXP pool_eval_handler(SEXP cond, void *data) {
-  ((struct sora_eval_ctx *) data)->ok = 0;
-  return cond;
-}
-
-static SEXP pool_eval_expr(sora_pool *p, SEXP xp, SEXP expr, SEXP args,
-                           int catching, int *ok) {
-  SEXP names = PROTECT(Rf_getAttrib(args, R_NamesSymbol));
-  R_xlen_t n = Rf_xlength(args);
-  if (n > 0 && TYPEOF(names) != STRSXP)
-    Rf_error("sora: corrupt task payload");
-  /* eval is the identity on value types: a constant task (the canonical
-     trivial task, and every constant result of a nested computation)
-     binds no arguments and needs no fresh environment — the per-task
-     R_NewEnv is the whole cost here */
-  switch (TYPEOF(expr)) {
-  case NILSXP: case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP:
-  case STRSXP: case RAWSXP: case VECSXP:
-    *ok = 1;
-    UNPROTECT(1);                    /* names */
-    return expr;
-  }
-  SEXP env = PROTECT(R_NewEnv(pool_eval_env(xp), 0, 0));
-  for (R_xlen_t i = 0; i < n; i++)
-    Rf_defineVar(Rf_installTrChar(STRING_ELT(names, i)),
-                 VECTOR_ELT(args, i), env);
-  struct sora_eval_ctx c = { expr, env, 1 };
-  SEXP value;
-  if (catching) {
-    value = R_tryCatchError(pool_eval_body, &c, pool_eval_handler, &c);
-  } else {
-    p->in_eval = 1;
-    value = Rf_eval(c.expr, c.env);
-    p->in_eval = 0;
-  }
-  *ok = c.ok;
-  UNPROTECT(2);                    /* names, env */
-  return value;
-}
-
 /* Per-handle, per-process trace hook: fn(event, id), with id the entry
    header's task_id (reserved for exactly this) as "<submitter>:<counter>".
-   Emitting sites exist only on the pool's per-task paths — submit,
-   pool_execute, and the help beat's runner re-home — never in the channel,
-   whose per-message budget has no room even for a clock read. Disabled
-   cost is one pointer check per site. */
+   The events fire inside core paths — submit, pool_execute, and the help
+   beat's runner re-home — so the hook is a core registration on the
+   handle (the R closure pinned at prot[2], reached through stage_r.c's
+   thunk), never in the channel, whose per-message budget has no room
+   even for a clock read. Disabled cost is one pointer check per site. */
 SEXP sora_pool_set_trace(SEXP xp, SEXP fn) {
-  (void) pool_get(xp);
+  sora_pool *p = pool_get(xp);
   if (fn != R_NilValue && TYPEOF(fn) != CLOSXP)
     Rf_error("sora: expected a function or NULL");
-  SET_VECTOR_ELT(R_ExternalPtrProtected(xp), 2, fn);
+  SEXP prot = R_ExternalPtrProtected(xp);
+  SET_VECTOR_ELT(prot, 2, fn);
+  if (fn == R_NilValue) {
+    p->trace = NULL;
+    p->trace_ctx = NULL;
+  } else {
+    p->trace = sora_r_trace;
+    p->trace_ctx = (void *) prot;
+  }
   return R_NilValue;
 }
 
 /* An error raised by the hook longjmps like any infrastructure error at
    its site: at submit the task stays committed (the dropped handle's
-   finalizer then cancels it); in pool_execute it takes the worker down —
-   its stranded in-flight task fails through the ordinary death path. */
-static void pool_trace_emit(SEXP xp, const char *event, uint64_t id) {
-  SEXP fn = VECTOR_ELT(R_ExternalPtrProtected(xp), 2);
-  if (TYPEOF(fn) != CLOSXP) return;
-  char buf[32];
-  snprintf(buf, sizeof(buf), "%u:%llu", (unsigned) (id >> 48),
-           (unsigned long long) (id & ((1ull << 48) - 1)));
-  SEXP ev = PROTECT(Rf_mkString(event));
-  SEXP tid = PROTECT(Rf_mkString(buf));
-  SEXP call = PROTECT(Rf_lang3(fn, ev, tid));
-  Rf_eval(call, R_GlobalEnv);
-  UNPROTECT(3);
+   finalizer then cancels it); in the worker loop it takes the worker
+   down — its stranded in-flight task fails through the ordinary death
+   path. */
+static void pool_trace_emit(sora_pool *p, sora_trace_event event,
+                            uint64_t id) {
+  if (p->trace != NULL) p->trace(event, id, p->trace_ctx);
 }
 
 // Create (controller) -----------------------------------------------------------------
@@ -652,6 +494,7 @@ SEXP sora_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
   p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
   p->binding.check = sora_r_check;
+  p->binding.stage = sora_r_stage_pool;
   p->hdr = h;
   memcpy(p->livedir, livedir, livedir_len + 1);
 
@@ -659,6 +502,7 @@ SEXP sora_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
      that can longjmp. */
   SEXP pins = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) (rslots / maxs)));
   SEXP xp = PROTECT(pool_make_handle(p, pins));
+  p->binding.ctx = (void *) R_ExternalPtrProtected(xp);
   p->keepers = calloc((size_t) (rslots / maxs), sizeof(sora_keeper));
   if (p->keepers == NULL) Rf_error("sora: allocation failure");
   p->keepers_n = (uint32_t) (rslots / maxs);
@@ -864,6 +708,7 @@ static sora_pool *pool_open_common(const char *suffix, SEXP *xp_out,
   p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
   p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
   p->binding.check = sora_r_check;
+  p->binding.stage = sora_r_stage_pool;
 
   /* validate before touching any other field */
   const char *err = pool_hdr_validate(p->shm.addr, p->shm.size, &p->hdr);
@@ -878,6 +723,7 @@ static sora_pool *pool_open_common(const char *suffix, SEXP *xp_out,
     (R_xlen_t) (p->hdr.result_slots / p->hdr.max_submitters);
   SEXP pins = PROTECT(Rf_allocVector(VECSXP, klen));
   SEXP xp = PROTECT(pool_make_handle(p, pins));
+  p->binding.ctx = (void *) R_ExternalPtrProtected(xp);
   p->keepers = calloc((size_t) klen, sizeof(sora_keeper));
   if (p->keepers == NULL) Rf_error("sora: allocation failure");
   p->keepers_n = (uint32_t) klen;
@@ -1436,7 +1282,7 @@ static void pool_fill_entry(sora_pool *p, sora_entry_hdr *eh,
   eh->flags = flags;   /* assign, never OR: ring and deque slots are reused */
 }
 
-static void pool_execute(sora_pool *p, SEXP xp, int catching);
+static void pool_execute(sora_pool *p, int catching);
 static void pool_announce(sora_pool *p);
 
 /* Worker-side nested submit: the local-deque push. The worker becomes a
@@ -1477,10 +1323,11 @@ static SEXP pool_submit_nested(sora_pool *p, SEXP xp, SEXP payload,
   /* everything that can longjmp — staging, handle allocation, the
      evaluator lookup the inline path needs — runs before any observable
      mutation: an error leaves the entry unpublished and the slot FREE */
-  if (inline_exec) (void) pool_eval_env(xp);
+  if (inline_exec && p->binding.exec == NULL)
+    Rf_error("sora: no evaluator registered on this worker handle");
   sora_keeper keep = { NULL, R_NilValue, -1, SORA_KEEP_FREE };
-  sora_payload_stage(&eh->ph, e + sizeof(sora_entry_hdr), p->inline_entry,
-                     payload, &p->fl, &keep);
+  p->binding.stage((void *) payload, &eh->ph, e + sizeof(sora_entry_hdr),
+                   p->inline_entry, p, &keep);
   pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, pins, local, &keep, rs);
@@ -1489,11 +1336,11 @@ static SEXP pool_submit_nested(sora_pool *p, SEXP xp, SEXP payload,
   if (!inline_exec) {
     atomic_store_explicit(&w->deque_bottom, b + 1, memory_order_release);
     if (b <= t) pool_unpark_one_worker(p);   /* empty -> non-empty */
-    pool_trace_emit(xp, "submit", tid);
+    pool_trace_emit(p, SORA_TRACE_SUBMIT, tid);
   } else {
-    pool_trace_emit(xp, "submit", tid);
+    pool_trace_emit(p, SORA_TRACE_SUBMIT, tid);
     pool_announce(p);
-    pool_execute(p, xp, 1);
+    pool_execute(p, 1);
   }
   UNPROTECT(1);
   return txp;
@@ -1515,14 +1362,14 @@ static SEXP pool_submit1(sora_pool *p, SEXP xp, sora_keeper *keepers,
   unsigned char *e = ring_entry(p, ring, (uint64_t) p->inj_ltail);
   sora_entry_hdr *eh = (sora_entry_hdr *) e;
   sora_keeper keep = { NULL, R_NilValue, -1, SORA_KEEP_FREE };
-  sora_payload_stage(&eh->ph, e + sizeof(sora_entry_hdr), p->inline_entry,
-                     payload, &p->fl, &keep);
+  p->binding.stage((void *) payload, &eh->ph, e + sizeof(sora_entry_hdr),
+                   p->inline_entry, p, &keep);
   pool_count_spill(p, (uint32_t) p->sub_slot, &eh->ph);
   SEXP txp = PROTECT(pool_make_task(p, xp, rs_index));
   pool_commit_rs(p, keepers, pins, local, &keep, rs);
   pool_fill_entry(p, eh, rs_index, flags);
   p->inj_ltail++;
-  pool_trace_emit(xp, "submit", eh->task_id);
+  pool_trace_emit(p, SORA_TRACE_SUBMIT, eh->task_id);
   UNPROTECT(1);
   return txp;
 }
@@ -2416,53 +2263,44 @@ static void pool_orphan_teardown_try(sora_pool *p) {
   free(list);
 }
 
-/* The publish tail shared by pool_execute and the unwind path
-   (sora_pool_run_outcome): stage the outcome into the result slot, CAS it
-   OK/ERR, pin the keeper, wake the waiter — or consume a concurrent CANCEL
-   and probe the (possibly dead) submitter. Retires the in-flight announce.
-   Payload writes are plain stores into a slot no allocator can touch
-   (status stays PENDING/CANCEL until the FREE transition); the publish CAS
-   is the release barrier a collector's acquire load pairs with. An ERR
-   outcome never stages the caught condition itself: it is flattened to a
-   transport condition (condition.c) framed INLINE, so the publish cannot
-   raise — fail the task, never the worker. */
-static int pool_publish_result(sora_pool *p, SEXP xp, uint32_t rs_index,
-                               uint16_t sub_slot, uint64_t seq, int ok,
-                               SEXP value) {
+/* The sink the worker loop hands to the binding's exec: the core fills
+   it from the claimed entry (and the unwind path from the saved cur_*
+   identity), the binding passes it back to one of the publish verbs
+   below. */
+static sora_result_sink pool_make_sink(sora_pool *p, uint32_t rs_index,
+                                       uint16_t sub_slot, uint64_t seq,
+                                       uint64_t task_id) {
   sora_rs_hdr *rs = pool_rs(p, rs_index);
-  unsigned char *payload = (unsigned char *) rs + sizeof(sora_rs_hdr);
-  sora_stage_rollback(&p->fl);
-  pool_rk_reserve(p);
-  sora_keeper keep = { NULL, R_NilValue, -1, SORA_KEEP_FREE };
-  SEXP staged = value;
-  int nprot = 0, framed = 0;
-  if (!ok) {
-    staged = PROTECT(sora_condition_flatten(value, (size_t) p->inline_rs));
-    nprot = 1;
-    size_t n = sora_codec_write(payload, (size_t) p->inline_rs, staged);
-    if (n != 0 && n <= (size_t) p->inline_rs) {
-      rs->ph.kind = SORA_KIND_INLINE;
-      rs->ph.len = (uint32_t) n;
-      rs->ph.aux = 0;
-      framed = 1;
-      /* a self-contained codec stream pins nothing — the keeperless
-         kinds' discipline, which pool_rs_claim's keeperless gate already
-         reads off the magic byte. Framed INLINE directly rather than
-         through the tiered stage: flatten's verification pass already
-         guarantees the fit, so the tier probes would only repeat the
-         codec write to arrive at the same frame. Below flatten's
-         guarantee (a 128-byte slot holds no classed condition inline)
-         the tiered stage carries the terminal fallback out of line —
-         the pre-flattening behavior for that configuration. */
-    }
-  }
-  if (!framed)
-    sora_payload_stage(&rs->ph, payload, p->inline_rs, staged, &p->fl,
-                       &keep);
+  sora_result_sink sink = {
+    .p = p,
+    .rs = rs,
+    .payload = (unsigned char *) rs + sizeof(sora_rs_hdr),
+    .rs_index = rs_index,
+    .inline_max = p->inline_rs,
+    .sub_slot = sub_slot,
+    .seq = seq,
+    .task_id = task_id
+  };
+  return sink;
+}
+
+/* The publish tail shared by the sink verbs: count the spill, CAS the
+   status OK/ERR, swap the slot's keeper record, wake the waiter — or
+   consume a concurrent CANCEL and probe the (possibly dead) submitter.
+   Retires the in-flight announce and emits the task's terminal trace
+   event. Payload writes are plain stores into a slot no allocator can
+   touch (status stays PENDING/CANCEL until the FREE transition); the
+   publish CAS is the release barrier a collector's acquire load pairs
+   with. */
+static int pool_publish_tail(sora_result_sink *sink, int ok,
+                             sora_keeper *keep) {
+  sora_pool *p = sink->p;
+  sora_rs_hdr *rs = sink->rs;
   /* a spilled result region's consumer is the task's submitter — key the
      zc entry so the submitter-death backstop can force-reclaim it */
-  if (keep.kind == SORA_KEEP_ZC) keep.key = (int32_t) sub_slot;
-  pool_count_spill(p, sub_slot, &rs->ph);
+  if (keep->kind == SORA_KEEP_ZC) keep->key = (int32_t) sink->sub_slot;
+  pool_count_spill(p, (uint32_t) sink->sub_slot, &rs->ph);
+  p->st_tasks++;
   int32_t expected = SORA_RS_PENDING;
   int published =
     atomic_compare_exchange_strong_explicit(&rs->status, &expected,
@@ -2473,17 +2311,19 @@ static int pool_publish_result(sora_pool *p, SEXP xp, uint32_t rs_index,
     /* a same-slot republish can overwrite the previous incarnation's
        keeper before any reap visit ran; the slot was freed and recommitted
        in between, so that region surrenders rather than falling to GC */
-    sora_keeper_release(&p->fl, p->keepers, p->pins, (R_xlen_t) rs_index);
-    sora_keeper_commit(&p->fl, p->keepers, p->pins, (R_xlen_t) rs_index,
-                       &keep);
+    sora_keeper_release(&p->fl, p->keepers, p->pins,
+                        (R_xlen_t) sink->rs_index);
+    sora_keeper_commit(&p->fl, p->keepers, p->pins,
+                       (R_xlen_t) sink->rs_index, keep);
     /* a keeperless result (the self-contained kinds) pins nothing: no
        record */
-    if (keep.kind != SORA_KEEP_FREE) pool_rk_add(p, rs_index, seq);
+    if (keep->kind != SORA_KEEP_FREE)
+      pool_rk_add(p, sink->rs_index, sink->seq);
     pool_unpark_result_waiter(p, rs);
   } else {
     /* cancelled while we ran: drop the result, return the slot — a spilled
        result region was never published, so it recycles immediately */
-    sora_keeper_discard(&p->fl, &keep);
+    sora_keeper_discard(&p->fl, keep);
     expected = SORA_RS_CANCEL;
     atomic_compare_exchange_strong_explicit(&rs->status, &expected,
                                             SORA_RS_FREE,
@@ -2492,22 +2332,91 @@ static int pool_publish_result(sora_pool *p, SEXP xp, uint32_t rs_index,
     /* consuming a CANCEL — here or at the pre-eval skip — is submitter
        death's one hot-path trigger: a live submitter means a genuine
        cancellation, a dead one is reaped in-line */
-    if (sub_slot < p->hdr.max_submitters)
-      pool_probe_submitter(p, sub_slot);
+    if (sink->sub_slot < p->hdr.max_submitters)
+      pool_probe_submitter(p, sink->sub_slot);
   }
   atomic_store_explicit(&p->wk[p->wk_slot].in_flight_rs, -1,
                         memory_order_relaxed);
-  UNPROTECT(nprot);
+  pool_trace_emit(p,
+                  published ? (ok ? SORA_TRACE_DONE : SORA_TRACE_ERROR)
+                            : SORA_TRACE_DROP,
+                  sink->task_id);
   return published;
+}
+
+/* The sink verbs, invoked by the binding's exec (and the unwind path's
+   err publish). Each rolls back any uncommitted spill checkout and
+   reserves a keeper-drop record ahead of staging, so nothing past the
+   CAS can fail. */
+int sora_result_publish(sora_result_sink *sink, void *value) {
+  sora_pool *p = sink->p;
+  sora_stage_rollback(&p->fl);
+  pool_rk_reserve(p);
+  sora_keeper keep = { NULL, R_NilValue, -1, SORA_KEEP_FREE };
+  p->binding.stage(value, &sink->rs->ph, sink->payload, sink->inline_max,
+                   p, &keep);
+  return pool_publish_tail(sink, 1, &keep);
+}
+
+int sora_result_publish_err(sora_result_sink *sink, void *flattened,
+                            uint32_t inline_n) {
+  sora_pool *p = sink->p;
+  sora_stage_rollback(&p->fl);
+  pool_rk_reserve(p);
+  sora_keeper keep = { NULL, R_NilValue, -1, SORA_KEEP_FREE };
+  if (inline_n != 0) {
+    /* the binding framed the flattened envelope INLINE: a self-contained
+       codec stream pins nothing — the keeperless kinds' discipline, which
+       pool_rs_claim's keeperless gate already reads off the magic byte */
+    sink->rs->ph.kind = SORA_KIND_INLINE;
+    sink->rs->ph.len = inline_n;
+    sink->rs->ph.aux = 0;
+  } else {
+    /* below flatten's inline guarantee (a 128-byte slot holds no classed
+       condition) the tiered stage carries the envelope out of line */
+    p->binding.stage(flattened, &sink->rs->ph, sink->payload,
+                     sink->inline_max, p, &keep);
+  }
+  return pool_publish_tail(sink, 0, &keep);
+}
+
+/* The status-only terminal for a task whose out-of-line payload vanished
+   with its dead enqueuer (Win32 mappings cannot outlive their creator):
+   the task can never run anywhere — it fails as DIED exactly like a
+   claimed task whose worker died, and the drain continues in this
+   thief. */
+void sora_result_publish_died(sora_result_sink *sink) {
+  sora_pool *p = sink->p;
+  sora_rs_hdr *rs = sink->rs;
+  int32_t expected = SORA_RS_PENDING;
+  if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                              SORA_RS_DIED,
+                                              memory_order_seq_cst,
+                                              memory_order_relaxed)) {
+    pool_unpark_result_waiter(p, rs);
+  } else if (expected == SORA_RS_CANCEL) {
+    atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                            SORA_RS_FREE,
+                                            memory_order_seq_cst,
+                                            memory_order_relaxed);
+    if (sink->sub_slot < p->hdr.max_submitters)
+      pool_probe_submitter(p, sink->sub_slot);
+  }
+  atomic_store_explicit(&p->wk[p->wk_slot].in_flight_rs, -1,
+                        memory_order_relaxed);
+  pool_trace_emit(p, SORA_TRACE_DROP, sink->task_id);
 }
 
 /* Executes the claimed, announced entry in scratch and publishes into its
    result slot. Reentrant: help-mode and nested-submit execution recurse
    through here from inside Rf_eval, and every claim path reuses scratch —
    so everything needed from the entry and the announce is copied out
-   before the eval. */
-static void pool_execute(sora_pool *p, SEXP xp, int catching) {
-  (void) pool_eval_env(xp);
+   before the exec. The claim bookkeeping and the cancel skip are the
+   transport's; the frame decode, the eval, and the error flattening are
+   the binding's (binding.exec), publishing through the sink. */
+static void pool_execute(sora_pool *p, int catching) {
+  if (p->binding.exec == NULL)
+    Rf_error("sora: no evaluator registered on this worker handle");
   sora_wk_slot *me = &p->wk[p->wk_slot];
   sora_entry_hdr *eh = (sora_entry_hdr *) p->scratch;
   uint32_t rs_index = eh->rs_index;
@@ -2525,9 +2434,9 @@ static void pool_execute(sora_pool *p, SEXP xp, int catching) {
   }
 
   /* skip dead work: the check races the finalizer's CANCEL, and correctness
-     rests on the publish CAS below either way. The probe rides here as at
-     the failed publish — a submitter that died before its queued work was
-     claimed would otherwise pin its slot until the stop sweep */
+     rests on the publish CAS in the tail either way. The probe rides here
+     as at the failed publish — a submitter that died before its queued
+     work was claimed would otherwise pin its slot until the stop sweep */
   if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
       SORA_RS_CANCEL) {
     int32_t expected = SORA_RS_CANCEL;
@@ -2538,65 +2447,18 @@ static void pool_execute(sora_pool *p, SEXP xp, int catching) {
     if (sub_slot < p->hdr.max_submitters)
       pool_probe_submitter(p, sub_slot);
     atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
-    pool_trace_emit(xp, "drop", task_id);
+    pool_trace_emit(p, SORA_TRACE_DROP, task_id);
     return;
   }
 
-  /* An INLINE codec task frame stream-decodes in place — no list(expr,
-     args) materialization, so a constant task allocates nothing on the
-     worker. Anything else takes the generic read and its shape check. Both
-     paths end with expr and args PROTECTed (2 total): the reads hand them
-     over unprotected and nothing allocates before the PROTECTs. */
-  SEXP expr = R_NilValue, args = R_NilValue;
-  int gone = 0;
-  if (eh->ph.kind == SORA_KIND_INLINE && eh->ph.len <= p->inline_entry &&
-      sora_codec_read_task(p->scratch + sizeof(sora_entry_hdr),
-                           (size_t) eh->ph.len, &expr, &args)) {
-    PROTECT(expr);
-    PROTECT(args);
-  } else {
-    /* A vanished out-of-line entry payload means the enqueuer died and its
-       region went along (Win32 mappings cannot outlive their creator): the
-       task can never run anywhere — it fails as DIED exactly like a claimed
-       task whose worker died, and the drain continues in this thief. */
-    SEXP pl = sora_payload_read(&eh->ph,
-                                p->scratch + sizeof(sora_entry_hdr),
-                                p->inline_entry, &gone, &p->oc, &p->zoc);
-    if (gone) {
-      int32_t expected = SORA_RS_PENDING;
-      if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                  SORA_RS_DIED,
-                                                  memory_order_seq_cst,
-                                                  memory_order_relaxed)) {
-        pool_unpark_result_waiter(p, rs);
-      } else if (expected == SORA_RS_CANCEL) {
-        atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                                SORA_RS_FREE,
-                                                memory_order_seq_cst,
-                                                memory_order_relaxed);
-        if (sub_slot < p->hdr.max_submitters)
-          pool_probe_submitter(p, sub_slot);
-      }
-      atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
-      pool_trace_emit(xp, "drop", task_id);
-      return;
-    }
-    if (TYPEOF(pl) != VECSXP || Rf_xlength(pl) != 2 ||
-        TYPEOF(VECTOR_ELT(pl, 1)) != VECSXP)
-      Rf_error("sora: corrupt task payload");
-    expr = PROTECT(VECTOR_ELT(pl, 0));
-    args = PROTECT(VECTOR_ELT(pl, 1));
-  }
-  pool_trace_emit(xp, "start", task_id);
-  /* scratch (and eh with it) is dead from here: the eval below may claim
-     into it */
-  int ok = 1;
-  SEXP value = PROTECT(pool_eval_expr(p, xp, expr, args, catching, &ok));
-  p->st_tasks++;
-  int published = pool_publish_result(p, xp, rs_index, sub_slot, seq, ok,
-                                      value);
-  UNPROTECT(3);                    /* expr, args, value */
-  pool_trace_emit(xp, published ? (ok ? "done" : "error") : "drop", task_id);
+  sora_result_sink sink = pool_make_sink(p, rs_index, sub_slot, seq,
+                                         task_id);
+  pool_trace_emit(p, SORA_TRACE_START, task_id);
+  /* scratch (and eh with it) is dead once the task runs: the eval may
+     claim into it — the binding decodes the frame before then */
+  p->binding.exec(&eh->ph, p->scratch + sizeof(sora_entry_hdr),
+                  (size_t) p->inline_entry, &sink, catching,
+                  p->binding.ctx);
 }
 
 /* worker_main's dispatcher for whatever sora_pool_run produced, and the
@@ -2617,10 +2479,10 @@ SEXP sora_pool_run_outcome(SEXP xp, SEXP cond) {
   if (!p->in_eval)
     return Rf_ScalarInteger(1);
   p->in_eval = 0;
-  p->st_tasks++;
-  int published = pool_publish_result(p, xp, p->cur_rs_index,
-                                      p->cur_sub_slot, p->cur_seq, 0, cond);
-  pool_trace_emit(xp, published ? "error" : "drop", p->cur_task_id);
+  sora_result_sink sink = pool_make_sink(p, p->cur_rs_index,
+                                         p->cur_sub_slot, p->cur_seq,
+                                         p->cur_task_id);
+  sora_r_publish_err(&sink, cond);
   return Rf_ScalarInteger(0);
 }
 
@@ -2641,7 +2503,10 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
   sora_pool *p = pool_get(xp);
   if (p->role != SORA_ROLE_WORKER || p->wk_slot < 0)
     Rf_error("sora: not a worker handle");
-  (void) pool_eval_env(xp);
+  /* the evaluator is the binding's exec hook (sora_pool_set_eval),
+     checked up front so a claim can never outrun a missing evaluator */
+  if (p->binding.exec == NULL)
+    Rf_error("sora: no evaluator registered on this worker handle");
   sora_wk_slot *me = &p->wk[p->wk_slot];
   uint64_t my_bit = 1ull << p->wk_slot;
   double timeout_s = Rf_asReal(timeout);
@@ -2684,7 +2549,7 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
          without this, work caught after a park wake strands it at the
          floor under trickle traffic */
       p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
-      pool_execute(p, xp, 0);
+      pool_execute(p, 0);
       if (single) return Rf_ScalarInteger(1);
       sora_check_interrupt(&p->binding);
       continue;
@@ -2874,7 +2739,7 @@ static SEXP pool_rs_claim(sora_pool *p, SEXP pool_xp, sora_rs_hdr *rs,
   /* The keeper-drop wake exists for the worker's keeper reap: a FREE slot
      gives it a record to consume. The keeperless kinds (the immediates and
      self-contained codec streams inline — the ones sora_payload_stage pins
-     nothing for) create no record (pool_publish_result skips it), so the
+     nothing for) create no record (the publish tail skips it), so the
      FREE is invisible to the reap and the fence + parked-mask load +
      syscall are pure cost — under a fire-then-collect burst with a parked
      worker, one wake per collect. The lame-duck retiree is unaffected: it
@@ -2959,7 +2824,7 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
       if (got) {
         p->st_helps++;
         p->help_depth++;
-        pool_execute(p, pool_xp, 1);
+        pool_execute(p, 1);
         p->help_depth--;
         continue;
       }
@@ -3159,7 +3024,7 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
       if (got) {
         p->st_helps++;
         p->help_depth++;
-        pool_execute(p, pool_xp, 1);
+        pool_execute(p, 1);
         p->help_depth--;
         continue;
       }
@@ -3354,7 +3219,7 @@ SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
       if (got) {
         p->st_helps++;
         p->help_depth++;
-        pool_execute(p, pool_xp, 1);
+        pool_execute(p, 1);
         p->help_depth--;
         continue;
       }
@@ -3683,11 +3548,11 @@ SEXP sora_pool_help_once(SEXP xp) {
         pool_announce_clear(p);
         pool_deque_push(p, p->scratch);
         if (b <= t) pool_unpark_one_worker(p);   /* empty -> non-empty */
-        pool_trace_emit(xp, "rehome", tid);
+        pool_trace_emit(p, SORA_TRACE_REHOME, tid);
       } else {
         p->st_helps++;                 /* helps = executed foreign work */
         p->help_depth++;
-        pool_execute(p, xp, 1);
+        pool_execute(p, 1);
         p->help_depth--;
       }
     }

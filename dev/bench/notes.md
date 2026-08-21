@@ -239,3 +239,38 @@ this host, so timed intervals are kept >> 1 ms by looping.
   0.22/1.25/12.00 ms/task; sora_map 32 MiB template 0.336s (view
   collect + reduce 0.331s). Consistent with the check/park record — no
   hot-path cost from the stage/read indirection.
+
+## 2026-08-21: pool exec_fn split (Phase 1 step 1, commit 4 of 4)
+
+- The pool's SEXP half moved behind the binding seam: the task frame
+  decode, pool_eval_expr, and the sora_condition_flatten ERR framing
+  moved to stage_r.c as the R binding's exec_fn (sora_r_exec_pool),
+  registered at sora_pool_set_eval alongside the binding ctx (the
+  handle's prot chain, registered at create/join/attach); the pool
+  handle struct moved from pool.c to sora.h (as the channel's did at
+  commit 3). The result publish split into the core's mechanics and the
+  binding's staging through the sink (sora_result_sink): the core's
+  sora_result_publish stages OK results via the handle's binding.stage
+  (sora_r_stage_pool, the payload.c tier dispatch — submit staging now
+  rides the same hook), sora_result_publish_err publishes the binding's
+  INLINE-framed flattened envelope (tiered fallback below the codec's
+  inline guarantee), sora_result_publish_died is the status-only
+  terminal for a vanished task payload, and the shared tail keeps the
+  status CAS, keeper swap, waiter wake, cancel race, and the terminal
+  trace event. The trace hook is a per-handle core registration
+  (sora_pool_set_trace sets fn ptr + ctx; the R closure rides prot[2]
+  through stage_r.c's thunk) with the emit sites in core paths. One
+  trace-semantics change: "start" now fires at claim (before the
+  binding's decode), so a task whose payload vanished with a dead
+  enqueuer traces start+drop where it traced drop alone — untested
+  death path, no live-pool sequence changes (the suite's lifecycle
+  expectations pin those). st_tasks accounting moved into the publish
+  tail (one increment per publish, as before). Behavior-preserving; the
+  suite is green (1993 pass, 2 macOS skips).
+- Measured (arm64 macOS, R 4.6.1, test-benchmark.R, report-only):
+  channel round trip 1.50 us; one-way 18.2M msg/s; pool round trip 1.0
+  us/task; pool pipelined 1.0M tasks/s, collect_all 2.0M; channel
+  1/8/32 MiB round trip 0.06/0.50/1.50 ms; pool 1/8/64 MiB result
+  0.22/1.50/11.00 ms/task; sora_map 32 MiB template 0.338s (view
+  collect + reduce 0.334s). Consistent with the channel-split record —
+  no hot-path cost from the exec/sink indirection.

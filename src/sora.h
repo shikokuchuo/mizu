@@ -672,8 +672,9 @@ void sora_unpark(sora_parker *pk);
    returns nonzero because R_CheckUserInterrupt longjmps first. park
    brackets each bounded park's sleep (entering nonzero before, zero
    after), around the sleep only, for runtimes with a global lock to
-   drop; NULL for R. ctx is opaque to the core. All fire only on the
-   verb-calling thread. */
+   drop; NULL for R. exec runs one claimed pool task (pool workers only;
+   NULL elsewhere). ctx is opaque to the core (R: the handle's prot
+   chain). All fire only on the verb-calling thread. */
 typedef int (*sora_check_fn)(void *ctx);
 typedef void (*sora_park_fn)(void *ctx, int entering);
 /* stage frames obj as (hdr, payload) — payload capacity inline_max —
@@ -699,11 +700,59 @@ typedef SEXP (*sora_read_fn)(const sora_slot_hdr *hdr,
                              const unsigned char *payload, size_t limit,
                              int *gone, void *handle);
 
+typedef struct sora_pool_s sora_pool;
+typedef struct sora_rs_hdr_s sora_rs_hdr;
+
+/* The result-slot publish context the pool's worker loop hands to
+   exec_fn, filled by the core from the claimed entry; valid during exec
+   (and the binding's unwind-path err publish) only. payload/inline_max
+   expose the slot's frame buffer so the binding can frame the ERR
+   envelope inline; task_id feeds the publish tail's terminal trace
+   event. */
+typedef struct sora_result_sink_s {
+  sora_pool *p;
+  sora_rs_hdr *rs;
+  unsigned char *payload;    /* rs + sizeof(sora_rs_hdr): the frame buffer */
+  uint32_t rs_index;
+  uint32_t inline_max;       /* the slot's payload capacity */
+  uint16_t sub_slot;         /* the task's submitter (zc keying, probes) */
+  uint64_t seq;              /* rs.sequence at claim (keeper-drop records) */
+  uint64_t task_id;
+} sora_result_sink;
+
+/* exec runs one claimed pool task: decode the frame (hdr, payload — the
+   entry slot's frame, riding the claim scratch, so the task object is
+   fully materialized before the task runs: a nested claim reuses the
+   scratch), evaluate it, and publish through sink. catching marks a
+   reentrant invocation (nested-collect help, nested submit's inline
+   execute): the binding contains task conditions instead of letting
+   them unwind through the worker loop. Returns 0 on success; a nonzero
+   return is infrastructure failure and takes the worker down. The R
+   binding raises on infrastructure failure and never returns nonzero; a
+   task's own error is flattened and published ERR through the sink. */
+typedef int (*sora_exec_fn)(const sora_slot_hdr *hdr,
+                            const unsigned char *payload, size_t limit,
+                            sora_result_sink *sink, int catching, void *ctx);
+
+/* Task-lifecycle trace hook (the sora_pool_trace surface): per-handle,
+   per-process, registered with sora_pool_set_trace, removable with NULL.
+   Worker-side events fire on the worker thread, SORA_TRACE_SUBMIT on the
+   calling thread. A hook error is infrastructure failure at its site (in
+   the worker loop, it takes the worker down) — unlike a task's own
+   error, which is that task's ERR result. */
+typedef enum sora_trace_event_e {
+  SORA_TRACE_SUBMIT = 0, SORA_TRACE_START, SORA_TRACE_DONE,
+  SORA_TRACE_ERROR, SORA_TRACE_DROP, SORA_TRACE_REHOME
+} sora_trace_event;
+typedef void (*sora_trace_fn)(sora_trace_event event, uint64_t task_id,
+                              void *ctx);
+
 typedef struct sora_binding_s {
   sora_check_fn check;
   sora_park_fn park;
   sora_stage_fn stage;
   sora_read_fn read;
+  sora_exec_fn exec;
   void *ctx;
 } sora_binding;
 
@@ -1054,6 +1103,144 @@ typedef struct sora_pool_sig_s {
 /* The struct behind a sora_pool_signals extptr, or an error for anything
    else — pool.c owns the tag; sora_map_next is the consumer. */
 sora_pool_sig *sora_pool_sig_get(SEXP xp);
+
+// Pool handle (pool.c; the R binding's stage/exec live in stage_r.c) ------------
+
+enum { SORA_ROLE_CONTROLLER = 0, SORA_ROLE_WORKER, SORA_ROLE_SUBMITTER };
+
+struct sora_reap_ctx_s { void *pool; uint32_t slot; };
+
+typedef struct sora_pool_s {
+  mori_shm shm;                  /* our mapping; unmapped only in release */
+  sora_pool_hdr hdr;
+  unsigned char *base;
+  int role;
+  int released;
+  long self_pid;                 /* fork guard */
+  int wk_slot;                   /* our worker slot (-1 unless worker) */
+  int sub_slot;                  /* our submitter slot (-1 unless we submit) */
+  uint32_t inline_entry;         /* slot - sizeof(sora_entry_hdr) */
+  uint32_t inline_rs;            /* slot - sizeof(sora_rs_hdr) */
+  sora_binding binding;          /* the language binding's hooks */
+  sora_trace_fn trace;           /* task-lifecycle hook (NULL = disabled) */
+  void *trace_ctx;               /* its binding context (the prot chain) */
+
+  sora_wk_slot *wk;
+  sora_sub_slot *sub;
+  _Atomic uint64_t *inj_ready;
+  _Atomic uint64_t *full_waiters;
+  _Atomic uint32_t *shutdown;
+  _Atomic uint64_t *parked_workers;
+  _Atomic uint32_t *help_wanted;
+  unsigned char *rings;
+  unsigned char *results;
+
+  sora_parker *pks;               /* every entity: workers, then submitters */
+  int pk_ok;
+
+  intptr_t live_self;            /* our held lock (worker / submitter slot) */
+  intptr_t live_sub;             /* a worker's nested-submitter slot lock */
+  intptr_t live_owner;           /* kept fd on the owner file; 0 = not open */
+  intptr_t *live_all;            /* controller: kept probe fds, wk then sub */
+  char livedir[1024];
+
+  /* controller-only: per-worker death watches whose C callbacks run the
+     reap off the R main thread */
+  sora_death_watch **wk_watch;
+  _Atomic int *wk_dead;
+  struct sora_reap_ctx_s *reap_ctx;
+
+  /* submitter-local */
+  uint32_t rs_cursor;
+  uint64_t task_counter;
+  int64_t inj_ltail;             /* producer-local tail */
+  int64_t inj_cached_head;       /* head is monotonic: stale only
+                                    under-reports space; refreshed on
+                                    apparent-full */
+
+  /* Payload lifetime: the retain tables with their GC-visible pin stores
+     (pinned by the extptr's prot). keepers/pins is the submitter's task
+     table (rs_count entries) or the worker's result table (result_slots);
+     sub_keepers/sub_pins the worker's nested-submit task table (rs_count,
+     allocated on first nested submit). The producer spill free list +
+     lent-region ledger and the consumer mapping cache are owned outright
+     (spill.c); the prot also pins the eval env, the trace hook, the
+     map-context cache, and the zc view cache's wraps */
+  SEXP pins;
+  sora_keeper *keepers;
+  uint32_t keepers_n;
+  SEXP sub_pins;
+  sora_keeper *sub_keepers;
+  uint32_t sub_keepers_n;
+  sora_spill_fl fl;
+  sora_open_cache oc;
+  sora_zc_cache zoc;
+
+  /* worker-local */
+  unsigned char *scratch;        /* slot-sized claim copy buffer */
+  uint32_t scan_start;           /* rotating ring-scan start */
+  uint64_t claims;               /* fairness-tick counter (% 61) */
+  uint64_t rng;                  /* xorshift state for victim selection */
+  int announced;                 /* park announce (mask bit + park_state)
+                                    not yet restored: gates the entry heal */
+  int help_depth;                /* nested-collect help recursion depth */
+  /* identity of the outermost (unwind-path) task eval, for
+     sora_pool_run_outcome: written only by catching = 0 executes — inner
+     help / inline recursion clears the shm announce, so it cannot serve
+     the unwind path */
+  int in_eval;
+  uint32_t cur_rs_index;
+  uint64_t cur_seq, cur_task_id;
+  uint16_t cur_sub_slot;
+  uint32_t probe_streak;         /* thief-probe backstop state */
+  uint32_t probe_victim;
+  struct sora_rk_s { uint32_t idx; uint64_t seq; } *rk;
+  uint32_t *rk_pos;              /* per result slot: rk position + 1, 0 = none */
+  uint32_t rk_n, rk_cap, rk_cursor;
+  /* cumulative stat counters, mirrored into the slot's stat_* fields by
+     pool_stats_publish at park/fairness-tick cadence */
+  uint64_t st_tasks, st_steals, st_inj, st_parks, st_helps;
+  /* process-local adaptive spin budgets (ns; see sora_spin_learn) and
+     collect park count: st_collect_parks is the collect-side mirror of
+     st_parks. None are mirrored to shm; the dump surfaces them under
+     "local" */
+  uint64_t scan_budget_ns;
+  uint64_t collect_budget_ns;
+  uint64_t st_collect_parks;
+
+  _Atomic int owner_dead;        /* death-listener flag: wake trigger only */
+  sora_death_watch *watch;
+} sora_pool;
+
+/* The result-slot publish API the worker loop hands to exec_fn (pool.c).
+   sora_result_publish stages value via the handle's binding.stage (the
+   send tier dispatch) and publishes SORA_RS_OK. sora_result_publish_err
+   publishes SORA_RS_ERR: when inline_n != 0 the binding has already
+   framed the flattened envelope INLINE in sink->payload (a
+   self-contained codec stream pins nothing); otherwise the flattened
+   object rides the tiered stage (the tiny-slot fallback).
+   sora_result_publish_died is the status-only terminal for a task whose
+   out-of-line payload vanished with its dead enqueuer. All three run the
+   shared tail — spill accounting, the status CAS, the keeper swap, the
+   waiter wake, the cancel race, the terminal trace event — and the
+   publish pair return nonzero when the CAS won. */
+int sora_result_publish(sora_result_sink *sink, void *value);
+int sora_result_publish_err(sora_result_sink *sink, void *flattened,
+                            uint32_t inline_n);
+void sora_result_publish_died(sora_result_sink *sink);
+
+/* The R binding's pool stage/exec/err-publish/trace thunk (stage_r.c).
+   stage and the binding ctx (the handle's prot chain) are registered on
+   every pool handle at create/join/attach, exec at sora_pool_set_eval,
+   the trace thunk at sora_pool_set_trace. */
+int sora_r_stage_pool(void *obj, sora_slot_hdr *hdr,
+                      unsigned char *payload, uint32_t inline_max,
+                      void *handle, sora_keeper *out);
+int sora_r_exec_pool(const sora_slot_hdr *hdr,
+                     const unsigned char *payload, size_t limit,
+                     sora_result_sink *sink, int catching, void *ctx);
+void sora_r_publish_err(sora_result_sink *sink, SEXP cond);
+void sora_r_trace(sora_trace_event event, uint64_t task_id, void *ctx);
 
 // GC extptr wrappers (wrap.c) ------------------------------------------------------
 

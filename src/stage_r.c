@@ -1,13 +1,18 @@
-/* The R binding's channel staging half of the language seam (sora.h's
-   sora_binding): the SEXP <-> framed-bytes tier dispatch for sends
+/* The R binding's half of the language seam (sora.h's sora_binding). For
+   the channel: the SEXP <-> framed-bytes tier dispatch for sends
    (sora_r_stage_channel) and the materialize for receives
    (sora_r_read_channel), registered on every channel handle at
    create/attach and invoked by the transport (channel.c) through
-   binding.stage / binding.read. The transport owns the ring, the arena,
-   the wakes, and the retain-table commit; this file owns the payload
-   framing policy — which tier an object takes. The pool stages through
-   sora_payload_stage (payload.c) until its own seam lands. */
+   binding.stage / binding.read. For the pool: the stage_fn every handle
+   registers (sora_r_stage_pool), the exec_fn a worker handle registers
+   at sora_pool_set_eval (sora_r_exec_pool — task frame decode, the eval,
+   and the result publish through the sink), the ERR envelope framing
+   shared by exec and the unwind path (sora_r_publish_err), and the
+   trace thunk (sora_r_trace). The transports own the ring/deque
+   mechanics, the wakes, and the retain-table commits; this file owns
+   the payload framing policy and the task evaluation. */
 
+#include <stdio.h>
 #include "sora.h"
 
 // Stage ---------------------------------------------------------------------------
@@ -156,4 +161,172 @@ SEXP sora_r_read_channel(const sora_slot_hdr *hdr,
   }
   return sora_payload_read(hdr, payload, (uint32_t) limit, gone, &c->oc,
                            &c->zoc);
+}
+
+// Pool stage --------------------------------------------------------------------
+
+/* The pool's stage_fn: the payload.c tier dispatch on the handle's free
+   list, registered at create/join/attach. Serves task payloads at submit
+   and result payloads at publish — a pool has no arena, so out-of-line
+   frames are always named regions. Raises on failure, never returns
+   nonzero. */
+int sora_r_stage_pool(void *obj, sora_slot_hdr *hdr,
+                      unsigned char *payload, uint32_t inline_max,
+                      void *handle, sora_keeper *out) {
+  sora_pool *p = (sora_pool *) handle;
+  sora_payload_stage(hdr, payload, (size_t) inline_max, (SEXP) obj,
+                     &p->fl, out);
+  return 0;
+}
+
+// Pool exec ---------------------------------------------------------------------
+
+/* The task evaluator: one wire payload — list(expr, named args) — with
+   the arguments bound into a fresh unhashed frame under the base
+   environment (prot[1], set by sora_pool_set_eval). Two error
+   disciplines, chosen by the caller. The worker loop's hot path
+   (catching = 0) arms no handler at all: a user error longjmps out of
+   sora_pool_step and worker_main publishes the caught condition as this
+   task's ERR result through sora_pool_run_outcome — the in_eval flag is
+   what separates those errors from infrastructure failure, which stays
+   fatal. Help mode and nested submit's inline execute (catching = 1)
+   run inside a task's own evaluation, where an escaping error would
+   land in the wrong task's frames: they contain it with R_tryCatchError
+   and pay its R-closure trampoline — several µs, still cheaper than the
+   park that helping replaced. */
+struct sora_eval_ctx { SEXP expr; SEXP env; int ok; };
+
+static SEXP pool_eval_body(void *data) {
+  struct sora_eval_ctx *c = (struct sora_eval_ctx *) data;
+  return Rf_eval(c->expr, c->env);
+}
+
+static SEXP pool_eval_handler(SEXP cond, void *data) {
+  ((struct sora_eval_ctx *) data)->ok = 0;
+  return cond;
+}
+
+static SEXP pool_eval_expr(sora_pool *p, SEXP prot, SEXP expr, SEXP args,
+                           int catching, int *ok) {
+  SEXP names = PROTECT(Rf_getAttrib(args, R_NamesSymbol));
+  R_xlen_t n = Rf_xlength(args);
+  if (n > 0 && TYPEOF(names) != STRSXP)
+    Rf_error("sora: corrupt task payload");
+  /* eval is the identity on value types: a constant task (the canonical
+     trivial task, and every constant result of a nested computation)
+     binds no arguments and needs no fresh environment — the per-task
+     R_NewEnv is the whole cost here */
+  switch (TYPEOF(expr)) {
+  case NILSXP: case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP:
+  case STRSXP: case RAWSXP: case VECSXP:
+    *ok = 1;
+    UNPROTECT(1);                    /* names */
+    return expr;
+  }
+  SEXP base = VECTOR_ELT(prot, 1);
+  if (TYPEOF(base) != ENVSXP)
+    Rf_error("sora: no evaluator registered on this worker handle");
+  SEXP env = PROTECT(R_NewEnv(base, 0, 0));
+  for (R_xlen_t i = 0; i < n; i++)
+    Rf_defineVar(Rf_installTrChar(STRING_ELT(names, i)),
+                 VECTOR_ELT(args, i), env);
+  struct sora_eval_ctx c = { expr, env, 1 };
+  SEXP value;
+  if (catching) {
+    value = R_tryCatchError(pool_eval_body, &c, pool_eval_handler, &c);
+  } else {
+    p->in_eval = 1;
+    value = Rf_eval(c.expr, c.env);
+    p->in_eval = 0;
+  }
+  *ok = c.ok;
+  UNPROTECT(2);                    /* names, env */
+  return value;
+}
+
+/* The ERR envelope: the caught condition never crosses as itself — it is
+   flattened to a transport condition (condition.c) and framed INLINE
+   where it fits, so the publish cannot raise: fail the task, never the
+   worker. Framed INLINE directly rather than through the tiered stage:
+   flatten's verification pass already guarantees the fit, so the tier
+   probes would only repeat the codec write to arrive at the same frame.
+   Below flatten's guarantee (a 128-byte slot holds no classed condition
+   inline) the tiered stage carries the terminal fallback out of line —
+   the pre-flattening behavior for that configuration. Shared by exec's
+   catching paths and the unwind path (sora_pool_run_outcome). */
+void sora_r_publish_err(sora_result_sink *sink, SEXP cond) {
+  SEXP flat =
+    PROTECT(sora_condition_flatten(cond, (size_t) sink->inline_max));
+  size_t n =
+    sora_codec_write(sink->payload, (size_t) sink->inline_max, flat);
+  sora_result_publish_err(sink, (void *) flat,
+                          n != 0 && n <= (size_t) sink->inline_max ?
+                          (uint32_t) n : 0);
+  UNPROTECT(1);
+}
+
+/* The worker's task: decode the frame, evaluate, publish through the
+   sink. An INLINE codec task frame stream-decodes in place — no
+   list(expr, args) materialization, so a constant task allocates nothing
+   on the worker. Anything else takes the generic read and its shape
+   check. Both paths end with expr and args PROTECTed (2 total): the
+   reads hand them over unprotected and nothing allocates before the
+   PROTECTs. The frame rides the pool's claim scratch — decode completes
+   before the task runs; a nested claim reuses the scratch. */
+int sora_r_exec_pool(const sora_slot_hdr *hdr,
+                     const unsigned char *payload, size_t limit,
+                     sora_result_sink *sink, int catching, void *ctx) {
+  sora_pool *p = sink->p;
+  SEXP expr = R_NilValue, args = R_NilValue;
+  int gone = 0;
+  if (hdr->kind == SORA_KIND_INLINE && hdr->len <= limit &&
+      sora_codec_read_task(payload, (size_t) hdr->len, &expr, &args)) {
+    PROTECT(expr);
+    PROTECT(args);
+  } else {
+    SEXP pl = sora_payload_read(hdr, payload, (uint32_t) limit, &gone,
+                                &p->oc, &p->zoc);
+    if (gone) {
+      /* the enqueuer died and its region went along: the task can never
+         run anywhere — it fails as DIED, and the drain continues */
+      sora_result_publish_died(sink);
+      return 0;
+    }
+    if (TYPEOF(pl) != VECSXP || Rf_xlength(pl) != 2 ||
+        TYPEOF(VECTOR_ELT(pl, 1)) != VECSXP)
+      Rf_error("sora: corrupt task payload");
+    expr = PROTECT(VECTOR_ELT(pl, 0));
+    args = PROTECT(VECTOR_ELT(pl, 1));
+  }
+  int ok = 1;
+  SEXP value =
+    PROTECT(pool_eval_expr(p, (SEXP) ctx, expr, args, catching, &ok));
+  if (ok) {
+    sora_result_publish(sink, (void *) value);
+  } else {
+    sora_r_publish_err(sink, value);
+  }
+  UNPROTECT(3);                    /* expr, args, value */
+  return 0;
+}
+
+// Pool trace --------------------------------------------------------------------
+
+/* The trace thunk: the core's emit sites call through the handle's
+   registration; the R closure rides prot[2]. An error raised here
+   longjmps like any infrastructure error at the emit site. */
+void sora_r_trace(sora_trace_event event, uint64_t task_id, void *ctx) {
+  static const char *const events[] = {
+    "submit", "start", "done", "error", "drop", "rehome"
+  };
+  SEXP fn = VECTOR_ELT((SEXP) ctx, 2);
+  if (TYPEOF(fn) != CLOSXP) return;
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%u:%llu", (unsigned) (task_id >> 48),
+           (unsigned long long) (task_id & ((1ull << 48) - 1)));
+  SEXP ev = PROTECT(Rf_mkString(events[event]));
+  SEXP tid = PROTECT(Rf_mkString(buf));
+  SEXP call = PROTECT(Rf_lang3(fn, ev, tid));
+  Rf_eval(call, R_GlobalEnv);
+  UNPROTECT(3);
 }
