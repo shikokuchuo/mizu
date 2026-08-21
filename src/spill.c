@@ -267,6 +267,13 @@ void sora_spill_fl_teardown(sora_spill_fl *fl) {
     fl->led_regions[i] = NULL;
   }
   fl->led_n = 0;
+  for (uint32_t i = 0; i < fl->dropped_n; i++) {
+    sora_region_destroy(fl->dropped[i]);
+  }
+  free(fl->dropped);
+  fl->dropped = NULL;
+  fl->dropped_n = 0;
+  fl->dropped_cap = 0;
 }
 
 // Consumer mapping cache ---------------------------------------------------------
@@ -322,18 +329,28 @@ void sora_oc_teardown(sora_open_cache *oc) {
 
 /* A ledger-overflow drop: the region's lent views may still be re-sent by
    reference (a REF in flight resolves by name), so the name must outlive
-   any possible resolve. Close this mapping but leave the name to the
-   reaper / process death — the keeper-wrap GC finalizer's deferred unlink,
-   without the GC. Live views keep their own mappings; only recycling is
-   forfeited. */
-static void sora_region_leak(mori_shm *shm) {
-  mori_shm_close(shm, 0);
-  free(shm);
+   any possible resolve. The mapping closes here; the unlink is deferred
+   to handle teardown — the same point a tracked ledger region's name
+   dies. Live views keep their own mappings; only recycling is forfeited.
+   An alloc failure forfeits the REF window, never the region. */
+static void sora_overflow_drop(sora_spill_fl *fl, mori_shm *shm) {
+  if (fl->dropped_n == fl->dropped_cap) {
+    uint32_t cap = fl->dropped_cap == 0 ? 8 : 2 * fl->dropped_cap;
+    mori_shm **next = realloc(fl->dropped, cap * sizeof(*next));
+    if (next == NULL) {
+      sora_region_destroy(shm);
+      return;
+    }
+    fl->dropped = next;
+    fl->dropped_cap = cap;
+  }
+  mori_shm_close(shm, 0);   /* keep name + pid; drop only the mapping */
+  fl->dropped[fl->dropped_n++] = shm;
 }
 
 /* The producer-loan drop at a consumer-done release point: refcount sub,
    then the free list on 0 (no live views) or the lent-region ledger
-   otherwise. A full ledger drops the region to a name-preserving leak. */
+   otherwise. A full ledger drops the region to sora_overflow_drop. */
 void sora_zc_release(sora_spill_fl *fl, mori_shm *shm, int32_t key) {
   uint32_t prev =
     atomic_fetch_sub_explicit(sora_zc_rc(shm->addr), 1, memory_order_acq_rel);
@@ -342,7 +359,7 @@ void sora_zc_release(sora_spill_fl *fl, mori_shm *shm, int32_t key) {
     return;
   }
   if (fl->led_n >= SORA_LEDGER_MAX) {
-    sora_region_leak(shm);
+    sora_overflow_drop(fl, shm);
     return;
   }
   fl->led_regions[fl->led_n] = shm;

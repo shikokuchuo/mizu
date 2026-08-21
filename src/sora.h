@@ -233,9 +233,10 @@ typedef char sora_zc_off_assert[
 /* Lent-region ledger: producer wraps of SHM_VEC regions with views
    outstanding, pinned until the refcount hits 0 (then free-listed) or the
    consumer's death is confirmed (then force-reclaimed; REFHELD entries
-   leak + unlink instead). Full at SORA_LEDGER_MAX the wrap simply drops to
-   GC — the name unlinks, live views keep their own mappings, and only
-   recycling is forfeited. key names the consumer: pool result regions the
+   leak + unlink instead). Full at SORA_LEDGER_MAX the region leaves the
+   recycling structures: the mapping closes, the name is kept so a REF in
+   flight can still resolve, and the unlink lands at handle teardown.
+   key names the consumer: pool result regions the
    submitter slot, pool task-arg regions the consuming worker slot (set at
    the release point), channel regions unused (-1: the peer is the only
    possible holder); -1 entries are never force-reclaimed. */
@@ -253,6 +254,11 @@ typedef struct sora_spill_fl_s {
   mori_shm *led_regions[SORA_LEDGER_MAX]; /* lent: views outstanding */
   int32_t led_key[SORA_LEDGER_MAX];
   uint32_t led_n;
+  /* ledger-overflow drops: the mapping closes at the drop; the name is
+     kept so a REF in flight can still resolve, and unlinks at teardown */
+  mori_shm **dropped;
+  uint32_t dropped_n;
+  uint32_t dropped_cap;
   /* the one uncommitted staging checkout: set by sora_spill_region_get,
      committed to the retain table (or discarded) at publish, rolled back
      to the free list at the next staging verb or handle teardown — a
