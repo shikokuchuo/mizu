@@ -662,6 +662,35 @@ static inline uint32_t sora_parker_snapshot(const sora_parker *pk) {
 int sora_park(sora_parker *pk, uint32_t snapshot, long timeout_ms);
 void sora_unpark(sora_parker *pk);
 
+// Binding hooks (the language seam) --------------------------------------------
+
+/* The language-binding callback set every handle carries, registered at
+   create/attach/join: the wait/work loops invoke these where the R API
+   calls sat before the seam carve. check polls for interruption at
+   abandon-safe points only (no shared-state mutation in progress, no
+   cleanup pending); a nonzero return means abandon — R's hook never
+   returns nonzero because R_CheckUserInterrupt longjmps first. park
+   brackets each bounded park's sleep (entering nonzero before, zero
+   after), around the sleep only, for runtimes with a global lock to
+   drop; NULL for R. ctx is opaque to the core. Both fire only on the
+   verb-calling thread. */
+typedef struct sora_binding_s {
+  int (*check)(void *ctx);
+  void (*park)(void *ctx, int entering);
+  void *ctx;
+} sora_binding;
+
+/* The R binding's check hook (spill.c). */
+int sora_r_check(void *ctx);
+
+static inline int sora_check_interrupt(const sora_binding *b) {
+  return b->check != NULL ? b->check(b->ctx) : 0;
+}
+
+static inline void sora_park_bracket(const sora_binding *b, int entering) {
+  if (b->park != NULL) b->park(b->ctx, entering);
+}
+
 // Per-process death listener -----------------------------------------------------
 
 /* Translates a watched pid's exit into *flag = 1 plus a directed unpark of

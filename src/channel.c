@@ -68,6 +68,7 @@ typedef struct sora_chan_s {
   unsigned char *base;
   int side;                      /* SORA_ENTITY_HOST or SORA_ENTITY_PEER */
   int spin;
+  sora_binding binding;          /* the language binding's check/park hooks */
   int released;                  /* full teardown ran; handle is dead */
   int verdict_dead;              /* sticky flock-confirmed peer death */
   int names_unlinked;            /* survivor cleanup already ran */
@@ -748,7 +749,7 @@ static int chan_wait_msg(sora_chan *c, double timeout_s) {
 
     if (c->spin) {
       /* pure-spin mode: the producer skips wakes, so never park */
-      R_CheckUserInterrupt();
+      sora_check_interrupt(&c->binding);
       if (deadline >= 0 && sora_now() >= deadline) {
         chan_publish_head(c);
         return SORA_ST_TIMEOUT;
@@ -784,9 +785,11 @@ static int chan_wait_msg(sora_chan *c, double timeout_s) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
+    sora_park_bracket(&c->binding, 1);
     sora_park(&c->self_pk, e, ms);
+    sora_park_bracket(&c->binding, 0);
     atomic_store_explicit(c->self_parked, 0u, memory_order_relaxed);
-    R_CheckUserInterrupt();
+    sora_check_interrupt(&c->binding);
     /* availability first: a wake that delivered a message returns OK at
        the loop top regardless of the clock, so skip the read for it */
     if (deadline >= 0 && !chan_rx_avail(c) && sora_now() >= deadline)
@@ -861,6 +864,7 @@ SEXP sora_channel_create(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
   c->side = SORA_ENTITY_HOST;
   c->self_pid = sora_self_pid();
   c->wait_budget_ns = SORA_SPIN_BUDGET_NS;
+  c->binding.check = sora_r_check;
 
   /* From here cleanup is the finalizer's: build the handle before anything
      that can longjmp. */
@@ -939,8 +943,10 @@ SEXP sora_channel_ready_wait(SEXP xp, SEXP timeout) {
     if (rem <= 0) return Rf_ScalarLogical(FALSE);
     long ms = (long) (rem * 1000) + 1;
     if (ms > SORA_INTERRUPT_BOUND_MS) ms = SORA_INTERRUPT_BOUND_MS;
+    sora_park_bracket(&c->binding, 1);
     sora_park(&c->self_pk, e, ms);
-    R_CheckUserInterrupt();
+    sora_park_bracket(&c->binding, 0);
+    sora_check_interrupt(&c->binding);
   }
   uint64_t pid = atomic_load_explicit(c->peer_pid, memory_order_acquire);
   c->watch = sora_death_watch_start((long) pid, &c->peer_dead, &c->self_pk);
@@ -983,6 +989,7 @@ SEXP sora_channel_attach(SEXP suffix_sexp) {
   c->side = SORA_ENTITY_PEER;
   c->self_pid = sora_self_pid();
   c->wait_budget_ns = SORA_SPIN_BUDGET_NS;
+  c->binding.check = sora_r_check;
 
   /* validate before touching any other field */
   sora_preamble p;
@@ -1155,8 +1162,10 @@ SEXP sora_channel_close(SEXP xp, SEXP timeout) {
     if (rem <= 0) break;
     long ms = (long) (rem * 1000) + 1;
     if (ms > SORA_INTERRUPT_BOUND_MS) ms = SORA_INTERRUPT_BOUND_MS;
+    sora_park_bracket(&c->binding, 1);
     sora_park(&c->self_pk, e, ms);
-    R_CheckUserInterrupt();
+    sora_park_bracket(&c->binding, 0);
+    sora_check_interrupt(&c->binding);
   }
   /* 4. release on rendezvous; on timeout the table is retained and the
      handle finalizer re-runs this check */

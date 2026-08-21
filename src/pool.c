@@ -35,6 +35,7 @@ typedef struct sora_pool_s {
   int sub_slot;                  /* our submitter slot (-1 unless we submit) */
   uint32_t inline_entry;         /* slot - sizeof(sora_entry_hdr) */
   uint32_t inline_rs;            /* slot - sizeof(sora_rs_hdr) */
+  sora_binding binding;          /* the language binding's check/park hooks */
 
   sora_wk_slot *wk;
   sora_sub_slot *sub;
@@ -650,6 +651,7 @@ SEXP sora_pool_create(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   p->sub_slot = 0;
   p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
   p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
+  p->binding.check = sora_r_check;
   p->hdr = h;
   memcpy(p->livedir, livedir, livedir_len + 1);
 
@@ -797,8 +799,10 @@ SEXP sora_pool_ready_wait(SEXP xp, SEXP slots_sexp, SEXP timeout) {
     if (rem <= 0) break;
     long ms = (long) (rem * 1000) + 1;
     if (ms > SORA_INTERRUPT_BOUND_MS) ms = SORA_INTERRUPT_BOUND_MS;
+    sora_park_bracket(&p->binding, 1);
     sora_park(pool_sub_pk(p, 0), e, ms);
-    R_CheckUserInterrupt();
+    sora_park_bracket(&p->binding, 0);
+    sora_check_interrupt(&p->binding);
   }
   pool_watch_workers(p, slots, n);
   return Rf_ScalarLogical(ok);
@@ -859,6 +863,7 @@ static sora_pool *pool_open_common(const char *suffix, SEXP *xp_out,
   p->sub_slot = -1;
   p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
   p->collect_budget_ns = SORA_COLLECT_SPIN_BUDGET_NS;
+  p->binding.check = sora_r_check;
 
   /* validate before touching any other field */
   const char *err = pool_hdr_validate(p->shm.addr, p->shm.size, &p->hdr);
@@ -1235,9 +1240,11 @@ static int pool_ring_space_wait(sora_pool *p, _Atomic int64_t *head,
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
+    sora_park_bracket(&p->binding, 1);
     sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    sora_park_bracket(&p->binding, 0);
     atomic_fetch_and_explicit(p->full_waiters, ~bit, memory_order_seq_cst);
-    R_CheckUserInterrupt();
+    sora_check_interrupt(&p->binding);
   }
 }
 
@@ -2679,7 +2686,7 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
       p->scan_budget_ns = SORA_SPIN_BUDGET_NS;
       pool_execute(p, xp, 0);
       if (single) return Rf_ScalarInteger(1);
-      R_CheckUserInterrupt();
+      sora_check_interrupt(&p->binding);
       continue;
     }
 
@@ -2751,7 +2758,9 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
         double rem = deadline - sora_now();
         ms = rem <= 0 ? 0 : (long) (rem * 1000) + 1;
       }
+      sora_park_bracket(&p->binding, 1);
       sora_park(pool_wk_pk(p, (uint32_t) p->wk_slot), e, ms);
+      sora_park_bracket(&p->binding, 0);
       p->st_parks++;
     }
     atomic_fetch_and_explicit(p->parked_workers, ~my_bit,
@@ -2760,7 +2769,7 @@ static SEXP pool_step_impl(SEXP xp, SEXP timeout, int single) {
                           memory_order_relaxed);
     p->announced = 0;
     pool_stats_publish(p);
-    R_CheckUserInterrupt();
+    sora_check_interrupt(&p->binding);
     if (deadline >= 0 && sora_now() >= deadline) {
       pool_idle_sweep(p, xp);
       if (single) return Rf_ScalarInteger(0);
@@ -3004,9 +3013,11 @@ static SEXP pool_collect(SEXP xp, double timeout_s, int tryflag) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
+    sora_park_bracket(&p->binding, 1);
     sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    sora_park_bracket(&p->binding, 0);
     p->st_collect_parks++;
-    R_CheckUserInterrupt();
+    sora_check_interrupt(&p->binding);
     st = atomic_load_explicit(&rs->status, memory_order_acquire);
     if (st != SORA_RS_PENDING) {
       pool_collect_learn(p, t_wait, budget);
@@ -3202,9 +3213,11 @@ SEXP sora_pool_collect_any(SEXP tasks, SEXP timeout) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
+    sora_park_bracket(&p->binding, 1);
     sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    sora_park_bracket(&p->binding, 0);
     p->st_collect_parks++;
-    R_CheckUserInterrupt();
+    sora_check_interrupt(&p->binding);
     if (pool_any_terminal(rss, n, &found, &st)) {
       pool_collect_learn(p, t_wait, budget);
       break;
@@ -3396,9 +3409,11 @@ SEXP sora_pool_collect_all(SEXP tasks, SEXP timeout) {
       long rem_ms = (long) (rem * 1000) + 1;
       if (rem_ms < ms) ms = rem_ms;
     }
+    sora_park_bracket(&p->binding, 1);
     sora_park(pool_sub_pk(p, (uint32_t) p->sub_slot), e, ms);
+    sora_park_bracket(&p->binding, 0);
     p->st_collect_parks++;
-    R_CheckUserInterrupt();
+    sora_check_interrupt(&p->binding);
     if (pool_all_terminal(rss, n)) {
       pool_collect_learn(p, t_wait, budget);
       break;
@@ -3737,8 +3752,10 @@ SEXP sora_pool_stop_call(SEXP xp, SEXP timeout) {
     for (uint32_t i = 0; i < p->hdr.max_workers; i++)
       sora_unpark(pool_wk_pk(p, i));
     uint32_t e = sora_parker_snapshot(pool_sub_pk(p, 0));
+    sora_park_bracket(&p->binding, 1);
     sora_park(pool_sub_pk(p, 0), e, 50);
-    R_CheckUserInterrupt();
+    sora_park_bracket(&p->binding, 0);
+    sora_check_interrupt(&p->binding);
   }
 
   /* teardown sweep: probe + reap whatever did not exit cleanly — dead

@@ -11,9 +11,21 @@
 
 #include <stdlib.h>
 #include "sora.h"
+#include <R_ext/Utils.h>
 #ifdef __linux__
 #include <sys/mman.h>
 #endif
+
+// Binding hooks ----------------------------------------------------------------
+
+/* The R binding's interrupt poll: R_CheckUserInterrupt longjmps on a
+   pending interrupt, so the abandon return is never taken — the nonzero
+   contract exists for bindings without a longjmp behind them. */
+int sora_r_check(void *ctx) {
+  (void) ctx;
+  R_CheckUserInterrupt();
+  return 0;
+}
 
 // Region teardown ------------------------------------------------------------
 

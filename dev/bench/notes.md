@@ -194,3 +194,21 @@ this host, so timed intervals are kept >> 1 ms by looping.
   trip 0.09/0.50/2.00 ms (~21-32 GiB/s); pool 1/8/64 MiB result
   0.25/1.50/13.00 ms/task; sora_map 32 MiB template 0.356s. Consistent
   with the 2026-08-20 records — no hot-path regression from the carve.
+
+## 2026-08-21: check/park binding hooks (Phase 1 step 1, commit 2 of 4)
+
+- The 12 in-loop R_CheckUserInterrupt() sites in channel.c/pool.c became
+  indirect sora_check_interrupt() calls through the handle's new
+  sora_binding (check = sora_r_check, registered at create/attach/join),
+  and every bounded sora_park in those loops gained the around-park
+  sora_park_bracket() (park = NULL for R — one load + predicted branch
+  per sleep). map.c's site is untouched. Behavior-preserving: the R hook
+  longjmps at the same points; the abandon-return contract is for the
+  core verbs of step 2. Suite green (1993 pass, 2 macOS skips).
+- Measured (arm64 macOS, R 4.6.1, test-benchmark.R, report-only): channel
+  round trip 1.50 us; one-way 28.6M msg/s; pool round trip 1.0 us/task;
+  pool pipelined 1.0M tasks/s, collect_all 2.0M; channel 1/8/32 MiB round
+  trip 0.06/0.25/1.50 ms; pool 1/8/64 MiB result 0.22/1.25/11.00 ms/task;
+  sora_map 32 MiB template 0.316s (view collect + reduce 0.312s).
+  Consistent with the retain-table record earlier today — no hot-path
+  cost from the indirection.
