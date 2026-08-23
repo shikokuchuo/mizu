@@ -298,3 +298,47 @@ from the extraction — the callback seam costs nothing measurable.
 - ALTREP 1:2^27 round trip reads 4.00 us on two runs (~3 us on
   2026-08-12): 1000 iterations against the ~1 ms proc.time tick — the
   difference is one tick, inside the quantization band.
+
+## 2026-08-23: throughput-regression fix 1 (cold error recorders)
+
+The uniform throughput regression vs sora traced to librei's
+record-and-return-status idiom: `rei_err_record` / `rei_err_record_tls`
+are returning, variadic functions called on every hot verb's failure
+branches with no cold annotation, so the compiler treated those branches
+as live (register pressure, worse layout, blown inline budgets — helpers
+sora's build inlined to nothing were real calls in rei.so). Upstream
+librei 1b66319 marks them (and `rei_err_describe`) `REI_COLD`.
+dev/bench/rei-mirai.R after re-vendor + install (M4 Pro, R 4.6.1):
+sequential rt channel 0.9 us, pool 1.0 us/task; pipelined channel
+1.18M rt/s, channel batch 20.0M rt/s, pool 833k tasks/s; streaming
+45.5M msg/s; payload / fan-out / map rows at parity. Matches or beats
+the sora reference column on every row.
+
+## 2026-08-23: throughput-regression fixes 2-5 + the batch-row repair
+
+Follow-up to the fix-1 entry above (same day, same machine). Landed:
+the supply-callback submit_batch (upstream 81f7cca; the binding stages
+through one reusable wire pair — no per-task VECSXP allocation), the
+per-handle read-ctx template (upstream bb0b8a6), the 8-byte packed
+rei_task with the handle carried in the extptr address (upstream
+524165a; no malloc/free per task), and the Linux THP MADV_COLLAPSE at
+spill free-list insert (upstream 78a3a35; compiles out on macOS).
+dev/bench/rei-mirai.R: sequential rt channel 0.9 us, pool 0.5 us/task;
+pipelined channel 1.19M rt/s, channel batch 20.0M rt/s, pool 833k
+tasks/s, pool batch 2.86M tasks/s; streaming 41.7M msg/s; payload /
+fan-out / map rows unchanged. Interleaved same-script A/B on the
+sustained pool burst (50 x 10k): rei 2.23-2.29M tasks/s vs sora
+2.14-2.20M. test-benchmark.R: channel round trip 1.50 us; one-way
+25.0M msg/s; pool round trip 1.0 us/task; pool pipelined 1.0M,
+collect_all 2.0M; channel 1/8/32 MiB round trip 0.09/0.25/1.50 ms;
+pool 1/8/64 MiB result 0.19/1.50/11.00 ms/task; rei_map 32 MiB
+template 0.344s (view collect + reduce 0.339s); rei_map trivial f
+0.10 us/element; held 8 x 16 MiB reads 8 spills / 0 reused / 8 fresh —
+all at the 2026-08-23 records. Fix 6 (collect_any/collect_all double
+marshaling) not done: collect_all already beats sora post-fix-1, and
+nothing since put it back in profile range.
+
+Bench hygiene: the pool-batch row in dev/bench/rei-mirai.R (and the
+mirrored sora-mirai.R) now runs k=10 bursts per rep — one 10k burst
+lands inside mclock's 1 ms tick and quantized to 10M/5M/3.3M tasks/s,
+which is how the regression stayed hidden from that row.

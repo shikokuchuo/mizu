@@ -550,6 +550,7 @@ rei_status rei_pool_create(rei_pool **out, const rei_pool_opts *opts,
   }
   p->h.htype = REI_HTYPE_POOL;
   p->h.binding = *b;
+  rei_read_tmpl_init(&p->h);
   p->role = REI_ROLE_CONTROLLER;
   p->self_pid = rei_self_pid();
   p->wk_slot = -1;
@@ -805,6 +806,7 @@ static rei_pool *pool_open_common(const char *token, const rei_binding *b,
   }
   p->h.htype = REI_HTYPE_POOL;
   p->h.binding = *b;
+  rei_read_tmpl_init(&p->h);
   p->self_pid = rei_self_pid();
   p->wk_slot = -1;
   p->sub_slot = -1;
@@ -1250,9 +1252,10 @@ static rei_status pool_ring_space_wait(rei_pool *p, _Atomic int64_t *head,
   }
 }
 
-/* Handle-vs-slot sequence check. */
+/* Handle-vs-slot sequence check (the handle carries the low 40 bits). */
 static int pool_seq_match(rei_rs_hdr *rs, uint64_t seq) {
-  return atomic_load_explicit(&rs->sequence, memory_order_relaxed) == seq;
+  return (atomic_load_explicit(&rs->sequence, memory_order_relaxed) &
+          REI_TASK_SEQ_MAX) == seq;
 }
 
 static void pool_unpark_result_waiter(rei_pool *p, rei_rs_hdr *rs) {
@@ -1330,10 +1333,9 @@ static rei_status pool_alloc_rs(rei_pool *p, rei_keeper *keepers,
 /* The handle carries the sequence about to be installed at commit, so
    until the bump it is simply stale. */
 static void pool_mint_task(rei_pool *p, uint32_t rs_index, rei_task *out) {
-  out->seq = atomic_load_explicit(&pool_rs(p, rs_index)->sequence,
-                                  memory_order_relaxed) + 1;
-  out->rs_index = rs_index;
-  out->reserved = 0;
+  uint64_t seq = atomic_load_explicit(&pool_rs(p, rs_index)->sequence,
+                                      memory_order_relaxed) + 1;
+  *out = rei_task_make(seq, rs_index);
 }
 
 /* Commit point: commit the staged keeper, install the sequence, and open
@@ -1499,12 +1501,13 @@ rei_status rei_pool_submit(rei_pool *p, void *task_obj, rei_task *out,
    deadline mid-burst ends the batch early (REI_OK, *n_out < n); fatal
    outcomes raise, with the tasks already submitted staying valid and
    collectible. */
-rei_status rei_pool_submit_batch(rei_pool *p, void **objs, size_t n,
-                                 rei_task *out, size_t *n_out,
-                                 double timeout_ms) {
+rei_status rei_pool_submit_batch_fn(rei_pool *p, rei_obj_supply supply,
+                                    void *ctx, size_t n,
+                                    rei_task *out, size_t *n_out,
+                                    double timeout_ms) {
   *n_out = 0;
   if (pool_get(p) == NULL) return REI_ERR;
-  if (n > 0 && (objs == NULL || out == NULL)) {
+  if (n > 0 && (supply == NULL || out == NULL)) {
     rei_err_record(&p->h, REI_ERRCAT_OTHER,
                    "expected task objects and handle out-params");
     return REI_ERR;
@@ -1521,7 +1524,7 @@ rei_status rei_pool_submit_batch(rei_pool *p, void **objs, size_t n,
 
   if (p->role == REI_ROLE_WORKER) {
     for (size_t i = 0; i < n; i++) {
-      if (pool_submit_nested(p, objs[i], 0, &out[i]) != 0)
+      if (pool_submit_nested(p, supply(ctx, i), 0, &out[i]) != 0)
         return REI_ERR;
       *n_out = i + 1;
     }
@@ -1547,7 +1550,7 @@ rei_status rei_pool_submit_batch(rei_pool *p, void **objs, size_t n,
       *n_out = done;
       return st;
     }
-    st = pool_submit1(p, p->keepers, ring, objs[i], 0, &out[i]);
+    st = pool_submit1(p, p->keepers, ring, supply(ctx, i), 0, &out[i]);
     if (st != REI_OK) {
       *n_out = done;
       return st;
@@ -1565,6 +1568,18 @@ rei_status rei_pool_submit_batch(rei_pool *p, void **objs, size_t n,
 
   *n_out = done;
   return REI_OK;
+}
+
+/* The array form over the supply core. */
+static void *pool_batch_array_supply(void *ctx, size_t i) {
+  return ((void **) ctx)[i];
+}
+
+rei_status rei_pool_submit_batch(rei_pool *p, void **objs, size_t n,
+                                 rei_task *out, size_t *n_out,
+                                 double timeout_ms) {
+  return rei_pool_submit_batch_fn(p, pool_batch_array_supply, objs, n, out,
+                                  n_out, timeout_ms);
 }
 
 // Worker step ----------------------------------------------------------------------------
@@ -2804,14 +2819,10 @@ static void pool_collect_learn(rei_pool *p, double t_wait,
    handle's error slot filled on failure. */
 static void *pool_read_outcome(rei_pool *p, rei_rs_hdr *rs, int32_t st,
                                int32_t died_slot, int64_t died_pid) {
-  rei_read_ctx ctx;
-  memset(&ctx, 0, sizeof(ctx));
-  ctx.size = (uint32_t) sizeof(ctx);
+  rei_read_ctx ctx = p->h.read_tmpl;
   ctx.outcome = st;
   ctx.died_slot = died_slot;
   ctx.died_pid = died_pid;
-  ctx.handle = &p->h;
-  ctx.binding_ctx = p->h.binding.ctx;
   rei_slot_hdr nil_hdr = { REI_KIND_NIL, 0, 0 };
   const rei_slot_hdr *hdr = st == REI_RS_OK || st == REI_RS_ERR ?
     &rs->ph : &nil_hdr;
@@ -2898,7 +2909,7 @@ rei_status rei_pool_collect(rei_pool *p, const rei_task *t,
                             void **value_out, double timeout_ms) {
   if (value_out != NULL) *value_out = NULL;
   if (pool_get(p) == NULL) return REI_ERR;
-  if (t == NULL || t->rs_index >= p->hdr.result_slots) {
+  if (t == NULL || rei_task_rs_index(t) >= p->hdr.result_slots) {
     rei_err_record(&p->h, REI_ERRCAT_OTHER, "invalid task handle");
     return REI_ERR;
   }
@@ -2906,13 +2917,13 @@ rei_status rei_pool_collect(rei_pool *p, const rei_task *t,
     rei_err_record(&p->h, REI_ERRCAT_OTHER, "not a submitter's task handle");
     return REI_ERR;
   }
-  rei_rs_hdr *rs = pool_rs(p, t->rs_index);
+  rei_rs_hdr *rs = pool_rs(p, rei_task_rs_index(t));
   double deadline = -1;
   double t_wait = -1;
 
   int32_t st;
   for (;;) {
-    if (!pool_seq_match(rs, t->seq)) {
+    if (!pool_seq_match(rs, rei_task_seq(t))) {
       rei_err_record(&p->h, REI_ERRCAT_OTHER,
                      "task handle already collected or invalidated");
       return REI_ERR;
@@ -3019,7 +3030,7 @@ rei_status rei_pool_collect(rei_pool *p, const rei_task *t,
     }
   }
 
-  void *v = pool_rs_claim(p, rs, t->rs_index, st);
+  void *v = pool_rs_claim(p, rs, rei_task_rs_index(t), st);
   if (v == NULL) return REI_ERR;
   if (value_out != NULL) *value_out = v;
   return REI_OK;
@@ -3081,13 +3092,13 @@ static rei_status pool_collect_resolve(rei_pool *p, const rei_task *tasks,
     return REI_ERR;
   }
   for (size_t i = 0; i < n; i++) {
-    if (tasks[i].rs_index >= p->hdr.result_slots) {
+    if (rei_task_rs_index(&tasks[i]) >= p->hdr.result_slots) {
       rei_err_record(&p->h, REI_ERRCAT_OTHER, "invalid task handle");
       free(rss);
       return REI_ERR;
     }
-    rei_rs_hdr *rs = pool_rs(p, tasks[i].rs_index);
-    if (!pool_seq_match(rs, tasks[i].seq)) {
+    rei_rs_hdr *rs = pool_rs(p, rei_task_rs_index(&tasks[i]));
+    if (!pool_seq_match(rs, rei_task_seq(&tasks[i]))) {
       rei_err_record(&p->h, REI_ERRCAT_OTHER,
                      "task handle already collected or invalidated");
       free(rss);
@@ -3231,7 +3242,7 @@ rei_status rei_pool_collect_any(rei_pool *p, const rei_task *tasks,
 
   pool_any_unannounce(rss, n);
   *index_out = found;
-  void *v = pool_rs_claim(p, rss[found], tasks[found].rs_index, st);
+  void *v = pool_rs_claim(p, rss[found], rei_task_rs_index(&tasks[found]), st);
   free(rss);
   if (v == NULL) return REI_ERR;   /* the index still reports */
   if (value_out != NULL) *value_out = v;
@@ -3372,7 +3383,7 @@ rei_status rei_pool_collect_all(rei_pool *p, const rei_task *tasks,
   rei_status rc = REI_OK;
   for (size_t i = 0; i < n; i++) {
     int32_t st = atomic_load_explicit(&rss[i]->status, memory_order_acquire);
-    void *v = pool_rs_claim(p, rss[i], tasks[i].rs_index, st);
+    void *v = pool_rs_claim(p, rss[i], rei_task_rs_index(&tasks[i]), st);
     if (v == NULL) {
       err = i;   /* the read failure (slot i unconsumed when retryable) */
       rc = REI_ERR;
@@ -3399,9 +3410,9 @@ int rei_pool_cancel(rei_pool *p, const rei_task *t) {
   if (p == NULL || p->released || t == NULL || p->base == NULL ||
       p->self_pid != rei_self_pid())
     return 0;
-  if (t->rs_index >= p->hdr.result_slots) return 0;
-  rei_rs_hdr *rs = pool_rs(p, t->rs_index);
-  if (!pool_seq_match(rs, t->seq)) return 0;
+  if (rei_task_rs_index(t) >= p->hdr.result_slots) return 0;
+  rei_rs_hdr *rs = pool_rs(p, rei_task_rs_index(t));
+  if (!pool_seq_match(rs, rei_task_seq(t))) return 0;
   int32_t expected = REI_RS_PENDING;
   if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
                                               REI_RS_CANCEL,
@@ -3422,9 +3433,9 @@ int rei_pool_task_release(rei_pool *p, const rei_task *t) {
   if (p == NULL || p->released || t == NULL || p->base == NULL ||
       p->self_pid != rei_self_pid())
     return 0;
-  if (t->rs_index >= p->hdr.result_slots) return 0;
-  rei_rs_hdr *rs = pool_rs(p, t->rs_index);
-  if (!pool_seq_match(rs, t->seq)) return 0;
+  if (rei_task_rs_index(t) >= p->hdr.result_slots) return 0;
+  rei_rs_hdr *rs = pool_rs(p, rei_task_rs_index(t));
+  if (!pool_seq_match(rs, rei_task_seq(t))) return 0;
   for (;;) {
     int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
     if (st == REI_RS_PENDING) {
@@ -3461,9 +3472,9 @@ int rei_pool_task_state(rei_pool *p, const rei_task *t) {
   if (p == NULL || p->released || t == NULL || p->base == NULL ||
       p->self_pid != rei_self_pid())
     return REI_RS_FREE;
-  if (t->rs_index >= p->hdr.result_slots) return REI_RS_FREE;
-  rei_rs_hdr *rs = pool_rs(p, t->rs_index);
-  if (!pool_seq_match(rs, t->seq)) return REI_RS_FREE;
+  if (rei_task_rs_index(t) >= p->hdr.result_slots) return REI_RS_FREE;
+  rei_rs_hdr *rs = pool_rs(p, rei_task_rs_index(t));
+  if (!pool_seq_match(rs, rei_task_seq(t))) return REI_RS_FREE;
   return atomic_load_explicit(&rs->status, memory_order_acquire);
 }
 

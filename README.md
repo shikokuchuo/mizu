@@ -10,8 +10,8 @@
 
       ________
      /\       \
-    /  \  rei \
-    \  /       /
+    /  \  rei  \
+    \  /  れい  /
      \/_______/
 
 Parallel computation and data exchange between R processes on the same machine.

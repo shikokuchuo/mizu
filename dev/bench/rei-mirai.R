@@ -342,7 +342,9 @@ with_pool(
 )
 
 # the batch pair: one submit crossing + one collect crossing per burst.
-# exprs is built once outside the timed loop, as a real caller hoists it
+# exprs is built once outside the timed loop, as a real caller hoists it.
+# k bursts per rep: one 10k burst lands inside mclock's 1 ms tick and
+# quantizes to 10M/5M/3.3M tasks/s
 with_pool(
   1L,
   function(p) {
@@ -353,8 +355,10 @@ with_pool(
         timeout = 30
       ))
     })
-    note_rate("pipelined", "rei pool batch", n, function() {
-      invisible(rei_collect_all(rei_submit_batch(p, exprs), timeout = 30))
+    note_rate("pipelined", "rei pool batch", k * n, function() {
+      for (j in seq_len(k)) {
+        invisible(rei_collect_all(rei_submit_batch(p, exprs), timeout = 30))
+      }
     })
   },
   list(result_slots = 20480L)

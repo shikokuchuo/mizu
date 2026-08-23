@@ -1,8 +1,9 @@
 /* The pool's .Call veneer (Part II): thin R entry points over the vendored
    core's rei_pool_* verbs (vendor/librei). Arg validation, the extptr handles
-   (a rei_r_handle wrapping the opaque core handle; a malloc'd rei_task per
-   task), the submit failure taxonomy, the collect outcome boxing, and the
-   rei_status -> sentinel / classed-error mapping live here; the transport
+   (a rei_r_handle wrapping the opaque core handle; a task handle packs the
+   core's 8-byte rei_task into its extptr address), the submit failure
+   taxonomy, the collect outcome boxing, and the rei_status -> sentinel /
+   classed-error mapping live here; the transport
    (registries, rings, deques, result slots, claim/steal, the reaper, the help
    doorbell, the worker loop) is all core-side. */
 
@@ -109,14 +110,12 @@ static void rei_pool_finalizer(SEXP xp) {
 
 // Task handles --------------------------------------------------------------------
 
-/* A task handle: a malloc'd rei_task (the by-value 16-byte slot+sequence
-   identity the core fills at submit), the pool extptr as its prot. The
-   finalizer doubles as the release for an uncollected task. */
+/* A task handle: the core's 8-byte rei_task packed into the extptr
+   address itself (zero heap traffic per task), the pool extptr as its
+   prot. The finalizer doubles as the release for an uncollected task. */
 static SEXP rei_task_wrap(SEXP pool_xp, const rei_task *t) {
-  rei_task *pt = malloc(sizeof(rei_task));
-  if (pt == NULL) Rf_error("rei: allocation failure");
-  *pt = *t;
-  SEXP txp = PROTECT(R_MakeExternalPtr(pt, rei_task_tag, pool_xp));
+  SEXP txp = PROTECT(R_MakeExternalPtr((void *) (uintptr_t) t->word,
+                                       rei_task_tag, pool_xp));
   R_RegisterCFinalizerEx(txp, rei_task_finalizer, TRUE);
   Rf_setAttrib(txp, R_ClassSymbol, rei_class_task);
   UNPROTECT(1);
@@ -124,30 +123,32 @@ static SEXP rei_task_wrap(SEXP pool_xp, const rei_task *t) {
 }
 
 static void rei_task_finalizer(SEXP xp) {
-  rei_task *pt = (rei_task *) R_ExternalPtrAddr(xp);
-  if (pt == NULL) return;
+  uintptr_t word = (uintptr_t) R_ExternalPtrAddr(xp);
+  if (word == 0) return;
   SEXP pool_xp = R_ExternalPtrProtected(xp);
   rei_r_handle *h = TYPEOF(pool_xp) == EXTPTRSXP ?
     (rei_r_handle *) R_ExternalPtrAddr(pool_xp) : NULL;
   /* the finalizer release: cancels a pending task, frees a terminal one —
      advisory and total (every edge folds to 0), so safe for a stale
      handle, a released pool, or a forked child (guarded) alike */
-  if (h != NULL && h->core != NULL && h->self_pid == rei_self_pid())
-    rei_pool_task_release((rei_pool *) h->core, pt);
-  free(pt);
+  if (h != NULL && h->core != NULL && h->self_pid == rei_self_pid()) {
+    rei_task t = { (uint64_t) word };
+    rei_pool_task_release((rei_pool *) h->core, &t);
+  }
   R_ClearExternalPtr(xp);
 }
 
 /* Unpack a task handle and its pool. Errors on a foreign or finalized
    handle; the core detects a stale (collected/invalidated) sequence. */
-static rei_task *task_get(SEXP xp, rei_r_handle **h_out) {
+static rei_task task_get(SEXP xp, rei_r_handle **h_out) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != rei_task_tag)
     Rf_error("rei: not a task handle");
-  rei_task *pt = (rei_task *) R_ExternalPtrAddr(xp);
-  if (pt == NULL) Rf_error("rei: task handle is closed");
+  uintptr_t word = (uintptr_t) R_ExternalPtrAddr(xp);
+  if (word == 0) Rf_error("rei: task handle is closed");
   rei_r_handle *h = pool_get(R_ExternalPtrProtected(xp));
   *h_out = h;
-  return pt;
+  rei_task t = { (uint64_t) word };
+  return t;
 }
 
 // Small helpers -------------------------------------------------------------------
@@ -449,12 +450,22 @@ SEXP rei_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
 }
 
 /* rei_submit_batch's entry: one crossing per burst. Each task's wire
-   payload is rei_submit's list(expr, args), assembled per element (the
-   core owns the batch loop, so the reusable-pair trick of the in-repo
-   version does not apply — the args list is shared, only the pair is
-   per-task). Ring-full past timeout returns the handles accepted so far;
-   fatal outcomes raise, the tasks already submitted staying valid and
-   collectible. */
+   payload is rei_submit's list(expr, args), staged through ONE reusable
+   pair — the supply callback swaps the expr in as the core's batch loop
+   asks for element i, so a burst allocates nothing per task. Ring-full
+   past timeout returns the handles accepted so far; fatal outcomes
+   raise, the tasks already submitted staying valid and collectible. */
+typedef struct rei_batch_supply_s {
+  SEXP exprs;
+  SEXP pair;
+} rei_batch_supply;
+
+static void *rei_batch_supply_next(void *ctx, size_t i) {
+  rei_batch_supply *s = (rei_batch_supply *) ctx;
+  SET_VECTOR_ELT(s->pair, 0, VECTOR_ELT(s->exprs, (R_xlen_t) i));
+  return s->pair;
+}
+
 SEXP rei_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
                             SEXP flags_sexp) {
   if (TYPEOF(exprs) != VECSXP)
@@ -462,19 +473,15 @@ SEXP rei_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   pool_check_task_args(args);
   rei_pool *p = pool_core(xp);
   R_xlen_t n = XLENGTH(exprs);
-  SEXP held = PROTECT(Rf_allocVector(VECSXP, n));
-  void **objs = (void **) R_alloc(n, sizeof(void *));
-  for (R_xlen_t i = 0; i < n; i++) {
-    SEXP payload = Rf_allocVector(VECSXP, 2);
-    SET_VECTOR_ELT(payload, 0, VECTOR_ELT(exprs, i));
-    SET_VECTOR_ELT(payload, 1, args);
-    SET_VECTOR_ELT(held, i, payload);
-    objs[i] = (void *) payload;
-  }
+  rei_batch_supply supply;
+  supply.exprs = exprs;
+  supply.pair = PROTECT(Rf_allocVector(VECSXP, 2));
+  SET_VECTOR_ELT(supply.pair, 1, args);
   rei_task *ts = (rei_task *) R_alloc(n, sizeof(rei_task));
   size_t done = 0;
-  rei_status st = rei_pool_submit_batch(p, objs, (size_t) n, ts, &done,
-                                       timeout_ms_of(timeout));
+  rei_status st = rei_pool_submit_batch_fn(p, rei_batch_supply_next, &supply,
+                                           (size_t) n, ts, &done,
+                                           timeout_ms_of(timeout));
   UNPROTECT(1);
   if (st == REI_ERR) pool_raise(p);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) done));
@@ -554,10 +561,10 @@ SEXP rei_pool_deque_pull_call(SEXP xp, SEXP n_sexp) {
    on class. */
 static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   rei_r_handle *h;
-  rei_task *pt = task_get(xp, &h);
+  rei_task t = task_get(xp, &h);
   void *v = NULL;
   rei_status st =
-    rei_pool_collect((rei_pool *) h->core, pt, &v, timeout_ms_of(timeout));
+    rei_pool_collect((rei_pool *) h->core, &t, &v, timeout_ms_of(timeout));
   if (st == REI_TIMEOUT) return rei_sent_timeout;
   if (st == REI_ERR) pool_raise((rei_pool *) h->core);
   SEXP val = (SEXP) v;
@@ -588,11 +595,10 @@ static rei_pool *tasks_get(SEXP tasks, rei_task **ts_out, R_xlen_t *n_out) {
   rei_r_handle *h = NULL;
   for (R_xlen_t i = 0; i < n; i++) {
     rei_r_handle *hi;
-    rei_task *pt = task_get(VECTOR_ELT(tasks, i), &hi);
+    ts[i] = task_get(VECTOR_ELT(tasks, i), &hi);
     if (h == NULL) h = hi;
     else if (hi != h)
       Rf_error("rei: task handles must belong to the same pool handle");
-    ts[i] = *pt;
   }
   *ts_out = ts;
   *n_out = n;
@@ -665,13 +671,14 @@ SEXP rei_pool_collect_all_call(SEXP tasks, SEXP timeout) {
 SEXP rei_pool_cancel_call(SEXP xp) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != rei_task_tag)
     Rf_error("rei: not a task handle");
-  rei_task *pt = (rei_task *) R_ExternalPtrAddr(xp);
-  if (pt == NULL) return Rf_ScalarLogical(FALSE);
+  uintptr_t word = (uintptr_t) R_ExternalPtrAddr(xp);
+  if (word == 0) return Rf_ScalarLogical(FALSE);
   SEXP pool_xp = R_ExternalPtrProtected(xp);
   rei_r_handle *h = (rei_r_handle *) R_ExternalPtrAddr(pool_xp);
   if (h == NULL || h->core == NULL || h->self_pid != rei_self_pid())
     return Rf_ScalarLogical(FALSE);
-  return Rf_ScalarLogical(rei_pool_cancel((rei_pool *) h->core, pt));
+  rei_task t = { (uint64_t) word };
+  return Rf_ScalarLogical(rei_pool_cancel((rei_pool *) h->core, &t));
 }
 
 /* Non-consuming state probe for the print method. Total for every real
@@ -679,12 +686,13 @@ SEXP rei_pool_cancel_call(SEXP xp) {
 SEXP rei_pool_task_state_call(SEXP xp) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != rei_task_tag)
     Rf_error("rei: not a task handle");
-  rei_task *pt = (rei_task *) R_ExternalPtrAddr(xp);
+  uintptr_t word = (uintptr_t) R_ExternalPtrAddr(xp);
   rei_r_handle *h = (rei_r_handle *) R_ExternalPtrAddr(R_ExternalPtrProtected(xp));
-  if (pt == NULL || h == NULL || h->core == NULL ||
+  if (word == 0 || h == NULL || h->core == NULL ||
       h->self_pid != rei_self_pid())
     return Rf_mkString("dropped");
-  switch (rei_pool_task_state((rei_pool *) h->core, pt)) {
+  rei_task t = { (uint64_t) word };
+  switch (rei_pool_task_state((rei_pool *) h->core, &t)) {
   case REI_RS_PENDING: return Rf_mkString("pending");
   case REI_RS_OK:      return Rf_mkString("ok");
   case REI_RS_ERR:     return Rf_mkString("err");
