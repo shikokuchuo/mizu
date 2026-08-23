@@ -15,6 +15,15 @@
 #include "vendor/mori.h"
 #include <stdatomic.h>
 
+/* Cold-call annotation for raise-only helpers: keeps their call sites from
+   perturbing the hot verbs' code layout (the 2026-08-23 cold-recorder
+   record in dev/bench/notes.md). */
+#if defined(__GNUC__) || defined(__clang__)
+#define REI_COLD __attribute__((cold))
+#else
+#define REI_COLD
+#endif
+
 // The R binding's per-handle context ----------------------------------------------
 
 /* The zc view cache: name -> split-mapped (page 0 RW) consumer mapping,
@@ -40,12 +49,18 @@ typedef struct rei_r_handle_s {
   SEXP prot;                /* the extptr's prot chain */
   long self_pid;            /* fork guard */
   int role;                 /* pool: REI_ROLE_*; channel: -1 */
+  int saw_foreign;          /* channel: a read flagged a foreign payload */
   rei_zc_cache zoc;        /* the R-side zc view cache */
 } rei_r_handle;
 
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */
 extern SEXP rei_sent_full, rei_sent_timeout, rei_sent_closed, rei_sent_gone;
+/* The channel's interned foreign-payload marker: the read hook returns it
+   for a Python stream and sets the handle's saw_foreign, so the ring slot
+   is consumed and the recv veneers raise rei_stop_python_payload() on the
+   flag — one predicted branch per verb, no scan. Never escapes to R. */
+extern SEXP rei_mark_foreign;
 
 // Bounded single-pass serialize (bounded.c) ---------------------------------------
 
@@ -93,9 +108,23 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload, or wrap a SHM_VEC / REF
    payload as an ALTREP view. ctx carries the handle's open cache (via
    rei_read_region) and the R-side view cache; a vanished out-of-line region
-   sets ctx->gone and the read returns NULL. */
+   sets ctx->gone and the read returns NULL. A foreign (Python) stream on a
+   serialize tier returns `foreign` when non-NULL — the channel's marker, so
+   the slot is consumed before the veneer raises — and raises otherwise (the
+   pool's discipline). */
 SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
-                       uint32_t inline_max, rei_read_ctx *ctx);
+                       uint32_t inline_max, rei_read_ctx *ctx, SEXP foreign);
+/* Foreign-stream detection on the serialize tiers: a pyrei compact-codec
+   stream opens with 'P' (DESIGN.md's codec registry allocates 'R' to rei
+   and 'P' to pyrei), and anything past its subset rides pickle (0x80 then a
+   protocol byte >= 2). No R stream opens with either ('B'/'X'/'A' are
+   ASCII, REI_CODEC_MAGIC is 'R'). Inline: it sits on the serialize-tier
+   read dispatch of both read hooks. */
+#define REI_PYREI_CODEC_MAGIC 0x50u   /* 'P' */
+static inline int rei_is_python_payload(const unsigned char *p, size_t n) {
+  return n >= 1 &&
+    (p[0] == REI_PYREI_CODEC_MAGIC || (n >= 2 && p[0] == 0x80 && p[1] >= 2));
+}
 
 // Zero-copy payload tiers (zc.c) ---------------------------------------------------
 
@@ -131,6 +160,7 @@ NORET void rei_stop_shm(double bytes, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
 NORET void rei_stop_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
+NORET void rei_stop_python_payload(void) REI_COLD;
 NORET void rei_cond_signal(SEXP cond);
 SEXP rei_cond_set_index(SEXP cond, int index);
 SEXP rei_caught(SEXP cond);

@@ -20,6 +20,26 @@ test_that("a spawned echo peer round-trips every payload kind", {
   expect_true(rei_close(ch, timeout = 10))
 })
 
+test_that("a source-string drop is parsed and evaluated by the peer", {
+  skip_if_no_child_rei()
+  ch <- rei_channel(
+    'rei_send(ch, paste0("source:", 1 + 2))',
+    launcher = rei_launcher()
+  )
+  expect_identical(rei_recv(ch, 30), "source:3")
+  expect_true(rei_close(ch, timeout = 10))
+})
+
+test_that("a malformed source drop errors in the peer, closing orderly", {
+  skip_if_no_child_rei()
+  ch <- rei_channel(
+    "this is not R code !!!",
+    launcher = rei_launcher(stderr = FALSE)
+  )
+  expect_s3_class(rei_recv(ch, 30), "rei_closed")
+  expect_true(rei_close(ch, timeout = 10))
+})
+
 test_that("the peer evaluates its expression with only ch bound", {
   skip_if_no_child_rei()
   ch <- rei_channel(quote(

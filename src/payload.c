@@ -245,7 +245,7 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
    read_fn then propagates by returning NULL); the view tiers open their own
    split mappings through the R-side cache zoc (ctx->binding_ctx). */
 SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
-                       uint32_t inline_max, rei_read_ctx *ctx) {
+                       uint32_t inline_max, rei_read_ctx *ctx, SEXP foreign) {
   rei_zc_cache *zoc = &((rei_r_handle *) ctx->binding_ctx)->zoc;
   switch (hdr->kind) {
   case REI_KIND_NIL:
@@ -269,9 +269,16 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
   case REI_KIND_INLINE:
     if (hdr->len > inline_max || hdr->len == 0)
       Rf_error("rei: corrupt payload slot");
-    return payload[0] == REI_CODEC_MAGIC ?
-      rei_codec_read(payload, hdr->len) :
-      mori_unserialize_from((unsigned char *) payload, hdr->len);
+    if (payload[0] == REI_CODEC_MAGIC)
+      return rei_codec_read(payload, hdr->len);
+    if (rei_is_python_payload(payload, hdr->len)) {
+      if (foreign != NULL) {
+        ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
+        return foreign;
+      }
+      rei_stop_python_payload();
+    }
+    return mori_unserialize_from((unsigned char *) payload, hdr->len);
   case REI_KIND_RAWVEC: {
     int type = (int) hdr->aux;
     size_t elt = mori_sizeof_elt(type);
@@ -316,8 +323,16 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     size_t len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
       (size_t) hdr->aux : shm->size;
     unsigned char *stream = (unsigned char *) shm->addr;
-    return stream[0] == REI_CODEC_MAGIC ?
-      rei_codec_read(stream, len) : mori_unserialize_from(stream, len);
+    if (stream[0] == REI_CODEC_MAGIC)
+      return rei_codec_read(stream, len);
+    if (rei_is_python_payload(stream, len)) {
+      if (foreign != NULL) {
+        ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
+        return foreign;
+      }
+      rei_stop_python_payload();
+    }
+    return mori_unserialize_from(stream, len);
   }
   }
   Rf_error("rei: corrupt payload slot");

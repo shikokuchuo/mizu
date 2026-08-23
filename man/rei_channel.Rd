@@ -16,7 +16,10 @@ rei_channel(
 }
 \arguments{
 \item{expr}{a quoted expression (for example \code{quote({ ... })}), evaluated
-in the peer process with \code{ch} bound to the peer-side channel handle.}
+in the peer process with \code{ch} bound to the peer-side channel handle.
+A single character string is instead UTF-8 source text in the peer's
+language, for a non-R peer spawned by a custom \code{launcher} (an R peer
+parses and evaluates it as R source).}
 
 \item{capacity}{slots per ring. A power of two between 2 and 2^24.}
 
@@ -34,11 +37,16 @@ and producers skip the wake check on publish. Use this only when the
 consumer never yields. If a spin-mode consumer parks, the producer
 never wakes it.}
 
-\item{launcher}{a \verb{function(token)} that arranges for an R process to
-call \code{rei:::peer_main(token)}. The default \code{\link[=rei_launcher]{rei_launcher()}} spawns
-\code{Rscript} and propagates the \code{.libPaths()} of the host. Its \code{stdout}
-and \code{stderr} arguments direct the peer output, including the error
-epilogue. A custom launcher must arrange the library paths itself.}
+\item{launcher}{a \verb{function(token)} that spawns the peer process. For an
+R peer, it arranges for a process to call \code{rei:::peer_main(token)}. The
+default \code{\link[=rei_launcher]{rei_launcher()}} spawns \code{Rscript} and propagates the
+\code{.libPaths()} of the host. Its \code{stdout} and \code{stderr} arguments direct
+the peer output, including the error epilogue. A custom launcher must
+arrange the library paths itself. For a peer in another language (a
+source-string \code{expr}), it spawns a program that attaches with \code{token}
+and speaks the wire protocol, such as \verb{python3 -m pyrei.child} for a
+Python peer — \code{\link[=rei_py_launcher]{rei_py_launcher()}} is the ready-made launcher for
+that case.}
 
 \item{startup_timeout}{seconds to wait for the peer to attach and signal
 ready. On expiry, rei releases the channel and raises

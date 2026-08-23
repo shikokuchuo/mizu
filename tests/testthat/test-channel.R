@@ -5,7 +5,9 @@
 
 test_that("rei_channel validates expr is a language object", {
   expect_error(rei_channel(42), "must be a quoted expression")
-  expect_error(rei_channel("rei_recv(ch)"), "must be a quoted expression")
+  # a character scalar is now a source-string drop, not an error
+  expect_error(rei_channel(c("a", "b")), "must be a quoted expression")
+  expect_error(rei_channel(NA_character_), "must be a quoted expression")
   expect_error(rei_channel(NULL), "must be a quoted expression")
 })
 

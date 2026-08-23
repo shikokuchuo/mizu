@@ -126,3 +126,105 @@ rei_launcher <- function(stdout = "", stderr = "") {
     }
   }
 }
+
+# Feature probe for the Python peer entry: an importable pyrei whose child
+# module provides the source-drop path. Successful probes are cached per
+# interpreter.
+has_pyrei_child <- local({
+  cache <- new.env(parent = emptyenv())
+  function(python) {
+    if (exists(python, envir = cache)) {
+      return(TRUE)
+    }
+    ok <- tryCatch(
+      system2(
+        python,
+        c("-c", shQuote("import pyrei.child")),
+        stdout = FALSE,
+        stderr = FALSE,
+        timeout = 60
+      ) ==
+        0L,
+      condition = function(c) FALSE
+    )
+    if (ok) {
+      cache[[python]] <- TRUE
+    }
+    ok
+  }
+})
+
+#' Python Channel Peer Launcher
+#'
+#' Returns a launcher for [rei_channel()] that spawns the peer as a
+#' Python process running `python -m pyrei.child`, the peer entry of
+#' [pyrei](https://github.com/shikokuchuo/pyrei), the Python binding of
+#' the same shared-memory core. The mirror of pyrei's `r_launcher()`,
+#' which spawns an R peer from a Python host.
+#'
+#' The interpreter is probed for pyrei when the launcher is created, so a
+#' missing interpreter or package raises here, before the channel exists.
+#' The payload rules for a non-R peer apply: only vectors and strings
+#' cross (see [rei_send()]).
+#'
+#' @param python path to the Python interpreter. The default looks up
+#'   `python3` on the `PATH`.
+#' @param stdout,stderr forwarded to [system2()] for the peer process, as
+#'   in [rei_launcher()].
+#'
+#' @return A `function(token)` that spawns the peer process, for the
+#'   `launcher` argument of [rei_channel()].
+#'
+#' @examples
+#' \dontrun{
+#' ch <- rei_channel(
+#'   "
+#' import pyrei
+#' while True:
+#'     x = ch.recv(30)
+#'     if pyrei.is_sentinel(x):
+#'         break
+#'     ch.send(x * 2)
+#' ",
+#'   launcher = rei_py_launcher()
+#' )
+#' rei_send(ch, c(1.5, 2.5, 3.5))
+#' rei_recv(ch, timeout = 5)
+#' rei_close(ch)
+#' }
+#'
+#' @export
+rei_py_launcher <- function(python = NULL, stdout = "", stderr = "") {
+  if (is.null(python)) {
+    python <- unname(Sys.which("python3"))
+    if (!nzchar(python)) {
+      stop(
+        "rei: rei_py_launcher() needs python3 on the PATH (or pass python)",
+        call. = FALSE
+      )
+    }
+  }
+  if (!has_pyrei_child(python)) {
+    stop(
+      sprintf(
+        paste0(
+          "rei: rei_py_launcher() needs the Python package 'pyrei' ",
+          "installed for %s"
+        ),
+        python
+      ),
+      call. = FALSE
+    )
+  }
+  force(stdout)
+  force(stderr)
+  function(token) {
+    system2(
+      python,
+      c("-m", "pyrei.child", token),
+      wait = FALSE,
+      stdout = stdout,
+      stderr = stderr
+    )
+  }
+}

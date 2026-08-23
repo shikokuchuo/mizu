@@ -141,15 +141,22 @@ void rei_vec_sink(void *ctx, size_t i, void *obj) {
    resolved bytes — the arena base never leaves the transport. Everything
    else defers to the shared payload reader (ctx carries the handle's open
    cache and the R-side view cache). Returns the object, or NULL with
-   ctx->gone set on a vanished out-of-line region. */
+   ctx->gone set on a vanished out-of-line region. A foreign (Python) stream
+   comes back as rei_mark_foreign with the handle's saw_foreign set, so the
+   core consumes the slot before the recv veneer raises on the flag — a
+   raise here would leave the slot in place and wedge the ring behind it. */
 void *rei_r_read_channel(const rei_slot_hdr *hdr,
                           const unsigned char *payload, size_t limit,
                           rei_read_ctx *ctx) {
   if (hdr->kind == REI_KIND_ARENA) {
     /* resolved stream bytes; limit is the arena-validated length */
-    return payload[0] == REI_CODEC_MAGIC ?
-      (void *) rei_codec_read(payload, limit) :
-      (void *) mori_unserialize_from((unsigned char *) payload, limit);
+    if (payload[0] == REI_CODEC_MAGIC)
+      return (void *) rei_codec_read(payload, limit);
+    if (rei_is_python_payload(payload, limit)) {
+      ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
+      return (void *) rei_mark_foreign;
+    }
+    return (void *) mori_unserialize_from((unsigned char *) payload, limit);
   }
   if (hdr->kind == REI_KIND_RAWSPILL) {
     /* resolved RAWVEC bytes (the pool's region framing of this kind is
@@ -162,7 +169,8 @@ void *rei_r_read_channel(const rei_slot_hdr *hdr,
     memcpy(rei_vec_ptr(y), payload, hdr->len);
     return (void *) y;
   }
-  return rei_payload_read(hdr, payload, (uint32_t) limit, ctx);
+  return rei_payload_read(hdr, payload, (uint32_t) limit, ctx,
+                          rei_mark_foreign);
 }
 
 // Pool stage --------------------------------------------------------------------
@@ -191,9 +199,11 @@ void *rei_r_read_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
                        size_t limit, rei_read_ctx *ctx) {
   switch (ctx->outcome) {
   case REI_RS_OK:
-    return rei_payload_read(hdr, payload, (uint32_t) limit, ctx);
+    /* NULL foreign: a pool is R-only, so a foreign stream is corruption —
+       raise in place rather than consume */
+    return rei_payload_read(hdr, payload, (uint32_t) limit, ctx, NULL);
   case REI_RS_ERR: {
-    SEXP cond = rei_payload_read(hdr, payload, (uint32_t) limit, ctx);
+    SEXP cond = rei_payload_read(hdr, payload, (uint32_t) limit, ctx, NULL);
     if (cond == NULL) return NULL;              /* ctx->gone set */
     return rei_caught(cond);
   }
@@ -312,7 +322,7 @@ int rei_r_exec_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
     rctx.died_slot = -1;
     rctx.handle = (rei_handle *) p;
     rctx.binding_ctx = ctx;
-    SEXP pl = rei_payload_read(hdr, payload, (uint32_t) limit, &rctx);
+    SEXP pl = rei_payload_read(hdr, payload, (uint32_t) limit, &rctx, NULL);
     if (rctx.gone) {
       /* the enqueuer died and its region went along: the task can never
          run anywhere — it fails as DIED, and the drain continues */

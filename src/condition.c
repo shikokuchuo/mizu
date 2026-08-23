@@ -137,6 +137,14 @@ NORET void rei_stop_died(int slot, double pid, const char *fmt, ...) {
   UNPROTECT(1);                  /* unreachable: rei_cond_signal is NORET */
 }
 
+/* A plain error, not a classed one: a foreign payload is misuse of the
+   channel, not a transport state. */
+NORET void rei_stop_python_payload(void) {
+  Rf_error(
+    "rei: Python payload (no codec interop) - send R values from an rei peer"
+  );
+}
+
 SEXP rei_caught_died(int slot, double pid, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);

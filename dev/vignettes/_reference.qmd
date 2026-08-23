@@ -161,6 +161,38 @@ When you are done, `rei_pool_stop()` cancels the pending tasks, waits for the wo
 rei_pool_stop(p)
 ```
 
+## Python interop
+
+The channel speaks a language-agnostic wire protocol, so the peer at the other end does not have to be R.
+[pyrei](https://github.com/shikokuchuo/pyrei) is the Python binding of the same shared-memory core, and a channel connects the two directly.
+Pass the peer program as a source string (instead of a quoted expression) and set the launcher to `rei_py_launcher()`, which spawns `python3 -m pyrei.child` — probing for the interpreter and pyrei before the channel is created.
+Here a Python echo loop, mirroring the R one above (runs when a `python3` with pyrei and NumPy installed is on the `PATH`):
+
+```{r python-interop}
+#| eval: !expr nzchar(Sys.which("python3")) && system2("python3", c("-c", shQuote("import pyrei, numpy")), stdout = FALSE, stderr = FALSE) == 0L
+ch <- rei_channel(
+  "
+import pyrei
+while True:
+    x = ch.recv(30)
+    if pyrei.is_sentinel(x):
+        break
+    ch.send(x * 2)
+",
+  launcher = rei_py_launcher()
+)
+
+rei_send(ch, c(1.5, 2.5, 3.5))
+rei_recv(ch, timeout = 5)
+rei_close(ch)
+```
+
+Atomic vectors cross without serialization: an R `numeric`, `integer`, or `raw` vector arrives in Python as a NumPy `float64`, `int32`, or `uint8` array, and the same dtypes travel back the other way.
+A large vector arrives as a zero-copy read-only view over the shared pages — the same ALTREP mechanism as between R processes, surfaced on the Python side as a NumPy array that maps the region.
+Strings cross as strings in both directions; `NA_character_` reads as `None` in Python, and `None` comes back as `NULL`.
+Anything else Python sends — scalars and containers ride its compact codec, other objects pickle — is declined with a "Python payload" error.
+The declined message is consumed, so the channel keeps flowing; keep the conversation to vectors and strings.
+
 ## Benchmarks
 
 Two head-to-head measurements against mirai, timed with [bench](https://bench.r-lib.org).

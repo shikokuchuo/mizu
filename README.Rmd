@@ -107,20 +107,42 @@ Headline numbers against mirai (M4 Pro, from `dev/bench/rei-mirai-bench.R`):
 
 | Benchmark | rei | mirai | Speedup |
 |---|---|---|---|
-| Trivial task round trip | 0.5 µs | 105.0 µs | 210x |
+| Trivial task round trip | 0.7 µs | 105.0 µs | 150x |
 | Pipelined throughput, 1 worker | 833,000 tasks/s | 9,700 tasks/s | 86x |
 | 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
 | Parallel map of 2,000 ~10 µs tasks, 4 workers | 5.0 ms | 218 ms | 44x |
 
-## Linux memory allocator
+## Python interop
 
-On glibc Linux, the channel peers and pool workers that rei starts tune the C memory allocator for large payloads.
-Your own R process is unchanged.
-See the reference vignette for the details and the opt-in for your own process.
+A channel peer can be a Python process that runs [pyrei](https://github.com/shikokuchuo/pyrei), the Python binding of the same core.
+Pass the peer program as a source string (instead of a quoted expression) and set the launcher to `rei_py_launcher()`:
+
+```{r python-interop}
+#| eval: !expr nzchar(Sys.which("python3")) && system2("python3", c("-c", shQuote("import pyrei, numpy")), stdout = FALSE, stderr = FALSE) == 0L
+ch <- rei_channel(
+  "
+import pyrei
+while True:
+    x = ch.recv(30)
+    if pyrei.is_sentinel(x):
+        break
+    ch.send(x * 2)
+",
+  launcher = rei_py_launcher()
+)
+
+rei_send(ch, c(1.5, 2.5, 3.5)) # arrives in Python as a float64 NumPy array
+rei_recv(ch, timeout = 5) # echoes back as a numeric vector
+rei_close(ch)
+```
+
+`rei_py_launcher()` needs a `python3` with pyrei installed.
+A launcher is one function that takes the join token and spawns the peer process; for a different spawn method, write your own.
+The pyrei README shows the reverse direction: a Python host that spawns an R peer with `pyrei.r_launcher()`.
 
 ## Reference vignette
 
-`vignette("reference", package = "rei")` covers the full surface: batch operations and sentinel values, nested tasks and `rei_map()`, growing, attaching to, and observing a running pool, benchmarks against mirai, sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics.
+`vignette("reference", package = "rei")` covers the full surface: batch operations and sentinel values, nested tasks and `rei_map()`, growing, attaching to, and observing a running pool, Python interop, benchmarks against mirai, sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics.
 
 ---
 

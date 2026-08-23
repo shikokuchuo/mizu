@@ -12,6 +12,7 @@
 static SEXP rei_chan_tag;
 static SEXP rei_class_channel;
 SEXP rei_sent_full, rei_sent_timeout, rei_sent_closed, rei_sent_gone;
+SEXP rei_mark_foreign;
 
 static SEXP rei_make_sentinel(const char *value, const char *cls) {
   SEXP s = PROTECT(Rf_mkString(value));
@@ -26,6 +27,18 @@ static SEXP rei_make_sentinel(const char *value, const char *cls) {
 
 static void rei_chan_finalizer(SEXP xp);
 
+/* The foreign-payload marker: interned like the sentinels but not one of
+   them (no "rei_sentinel" class) — it is an in-band signal from the read
+   hook to the recv veneer, never a terminal state and never user-visible. */
+static SEXP rei_make_foreign_mark(void) {
+  SEXP s = PROTECT(Rf_mkString("python_payload"));
+  SEXP klass = PROTECT(Rf_mkString("rei_foreign_payload"));
+  Rf_setAttrib(s, R_ClassSymbol, klass);
+  R_PreserveObject(s);
+  UNPROTECT(2);
+  return s;
+}
+
 void rei_channel_init(void) {
   rei_chan_tag = Rf_install("rei_channel");
   rei_class_channel = Rf_mkString("rei_channel");
@@ -34,9 +47,11 @@ void rei_channel_init(void) {
   rei_sent_timeout = rei_make_sentinel("timeout", "rei_timeout");
   rei_sent_closed = rei_make_sentinel("closed", "rei_closed");
   rei_sent_gone = rei_make_sentinel("peer_gone", "rei_peer_gone");
+  rei_mark_foreign = rei_make_foreign_mark();
 }
 
 void rei_channel_fini(void) {
+  R_ReleaseObject(rei_mark_foreign);
   R_ReleaseObject(rei_sent_gone);
   R_ReleaseObject(rei_sent_closed);
   R_ReleaseObject(rei_sent_timeout);
@@ -182,13 +197,29 @@ SEXP rei_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
       (uint64_t) arena_in % 64 != 0)
     Rf_error("rei: arena_size must be a non-negative multiple of 64");
 
-  /* the drop: the peer's bootstrap expression as an REI_DROP_R-tagged
-     serialize stream (the core copies it into the region at create) */
-  size_t expr_size = mori_serialize_count(expr);
-  unsigned char *drop = malloc(expr_size + 1);
-  if (drop == NULL) Rf_error("rei: allocation failure");
-  drop[0] = REI_DROP_R;
-  mori_serialize_into(drop + 1, expr);
+  /* the drop: the peer's bootstrap, copied into the region at create. A
+     quoted expression rides as an REI_DROP_R-tagged serialize stream; a
+     character scalar is UTF-8 source text in the peer's language, tagged
+     REI_DROP_SOURCE (the cross-language lingua franca). */
+  int source = TYPEOF(expr) == STRSXP;
+  size_t expr_size;
+  unsigned char *drop;
+  if (source) {
+    if (XLENGTH(expr) != 1 || STRING_ELT(expr, 0) == NA_STRING)
+      Rf_error("rei: a source drop must be a single non-NA string");
+    const char *src = Rf_translateCharUTF8(STRING_ELT(expr, 0));
+    expr_size = strlen(src);
+    drop = malloc(expr_size + 1);
+    if (drop == NULL) Rf_error("rei: allocation failure");
+    drop[0] = REI_DROP_SOURCE;
+    memcpy(drop + 1, src, expr_size);
+  } else {
+    expr_size = mori_serialize_count(expr);
+    drop = malloc(expr_size + 1);
+    if (drop == NULL) Rf_error("rei: allocation failure");
+    drop[0] = REI_DROP_R;
+    mori_serialize_into(drop + 1, expr);
+  }
 
   rei_r_handle *h = calloc(1, sizeof(*h));
   if (h == NULL) { free(drop); Rf_error("rei: allocation failure"); }
@@ -264,14 +295,20 @@ SEXP rei_channel_attach_call(SEXP suffix_sexp) {
 
   /* materialize-before-ready: the host's frame keeps the expression — and
      through mori's keeper chains every region its identifiers name — alive
-     exactly until ready is observed. The drop is REI_DROP_R-tagged. */
+     exactly until ready is observed. An REI_DROP_R drop unserializes to
+     the expression; an REI_DROP_SOURCE drop is UTF-8 source text, returned
+     as a string for the caller to parse (kept opaque here so the tag
+     dispatch is explicit at both ends). */
   const uint8_t *bytes;
   uint64_t n;
   rei_channel_drop(c, &bytes, &n);
-  if (n == 0 || bytes[0] != REI_DROP_R)
+  if (n == 0 || (bytes[0] != REI_DROP_R && bytes[0] != REI_DROP_SOURCE))
     Rf_error("rei: foreign channel drop (not an R bootstrap)");
-  SEXP drop =
-    PROTECT(mori_unserialize_from((unsigned char *) (bytes + 1), (size_t) n - 1));
+  SEXP drop = bytes[0] == REI_DROP_R ?
+    PROTECT(mori_unserialize_from((unsigned char *) (bytes + 1),
+                                  (size_t) n - 1)) :
+    PROTECT(Rf_ScalarString(Rf_mkCharLenCE((const char *) (bytes + 1),
+                                           (int) (n - 1), CE_UTF8)));
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(out, 0, xp);
   SET_VECTOR_ELT(out, 1, drop);
@@ -311,11 +348,17 @@ SEXP rei_channel_send_batch_call(SEXP xp, SEXP xs) {
 }
 
 SEXP rei_channel_recv_call(SEXP xp, SEXP timeout) {
-  rei_channel *c = chan_core(xp);
+  rei_r_handle *h = chan_get(xp);
+  rei_channel *c = (rei_channel *) h->core;
+  h->saw_foreign = 0;
   void *obj = NULL;
   rei_status st = rei_channel_recv(c, &obj, timeout_ms_of(timeout));
   if (st == REI_ERR) chan_raise(c);
   if (st != REI_OK) return status_sentinel(st);
+  /* the read hook flags a foreign payload on the handle: the slot is
+     already consumed, so the informative error costs the message, not the
+     channel */
+  if (h->saw_foreign) rei_stop_python_payload();
   return (SEXP) obj;
 }
 
@@ -324,11 +367,13 @@ SEXP rei_channel_recv_call(SEXP xp, SEXP timeout) {
    sink form anchors each message in out as it is read — the array form
    would hold n unprotected SEXPs across the remaining reads. */
 SEXP rei_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
-  rei_channel *c = chan_core(xp);
+  rei_r_handle *h = chan_get(xp);
+  rei_channel *c = (rei_channel *) h->core;
   int n = Rf_asInteger(n_sexp);
   if (n < 1) Rf_error("rei: n must be at least 1");
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
   size_t count = 0;
+  h->saw_foreign = 0;
   rei_status st = rei_channel_recv_batch_fn(c, (size_t) n, &count,
                                             rei_vec_sink, out,
                                             timeout_ms_of(timeout));
@@ -336,6 +381,13 @@ SEXP rei_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   if (st != REI_OK) {
     UNPROTECT(1);
     return status_sentinel(st);
+  }
+  /* a foreign payload in the batch: the read hook flags the handle and
+     every drained message is consumed, so the informative error costs the
+     messages, not the channel */
+  if (h->saw_foreign) {
+    UNPROTECT(1);
+    rei_stop_python_payload();
   }
   if (count < (size_t) n) {
     SEXP res = PROTECT(Rf_lengthgets(out, (R_xlen_t) count));

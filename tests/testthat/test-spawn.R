@@ -5,13 +5,17 @@ test_that("rei_spawn propagates the host library paths via argv", {
   f <- tfile()
   old <- Sys.getenv("R_LIBS", unset = NA)
 
-  rei:::rei_spawn(sprintf('
+  rei:::rei_spawn(sprintf(
+    '
     tmp <- paste0(%s, ".tmp")
     writeLines(.libPaths(), tmp)
     file.rename(tmp, %s)
-  ', deparse(f), deparse(f)))
+  ',
+    deparse(f),
+    deparse(f)
+  ))
 
-  expect_identical(Sys.getenv("R_LIBS", unset = NA), old)   # never touched
+  expect_identical(Sys.getenv("R_LIBS", unset = NA), old) # never touched
   expect_true(wait_for_file(f))
   child_libs <- normalizePath(readLines(f), mustWork = FALSE)
   host_libs <- normalizePath(.libPaths(), mustWork = FALSE)
@@ -44,8 +48,8 @@ test_that("rei_spawn validates its input", {
 
 test_that("spawn_peer admits only prefix-stripped region-name suffixes", {
   expect_error(rei:::spawn_peer("evil'; echo pwned"))
-  expect_error(rei:::spawn_peer("/rei_1a2b_3c4d"))       # full name, not suffix
-  expect_error(rei:::spawn_peer("1A2B_3C4D"))            # uppercase hex
+  expect_error(rei:::spawn_peer("/rei_1a2b_3c4d")) # full name, not suffix
+  expect_error(rei:::spawn_peer("1A2B_3C4D")) # uppercase hex
 })
 
 test_that("the child runner resolves to inst/ in a source layout", {
@@ -62,4 +66,19 @@ test_that("the child runner resolves to inst/ in a source layout", {
     rei:::rei_child_script(root),
     file.path(root, "scripts", "rei-child.R")
   )
+})
+
+test_that("rei_py_launcher probes the interpreter for pyrei", {
+  expect_snapshot(
+    rei_py_launcher(python = "/nonexistent/python3"),
+    error = TRUE
+  )
+})
+
+test_that("rei_py_launcher needs a python3 on the PATH by default", {
+  old <- Sys.getenv("PATH")
+  Sys.setenv(PATH = tempdir())
+  out <- tryCatch(rei_py_launcher(), error = conditionMessage)
+  Sys.setenv(PATH = old)
+  expect_snapshot(out)
 })

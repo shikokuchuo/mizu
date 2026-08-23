@@ -58,6 +58,11 @@ Other plain values — attributed vectors, strings, lists, calls — cross
 as a compact binary stream written and read without R's serializer.
 Anything else is R-serialized. Mori-shared objects reduce to identifier
 wire forms through the mori hooks.
+
+From a non-R peer, only vectors and strings are legal payloads. Anything
+else (a pyrei codec stream or a pickle) is declined: the receive raises
+a "Python payload" error. The declined message is consumed, so the
+channel keeps flowing.
 }
 \examples{
 ch <- rei_channel(quote(rei_send(ch, rei_recv(ch))))

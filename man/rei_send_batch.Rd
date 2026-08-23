@@ -28,7 +28,8 @@ midway. Send the next element with \code{\link[=rei_send]{rei_send()}} to learn 
 \code{rei_recv_batch()} waits for the first message like \code{\link[=rei_recv]{rei_recv()}} and
 returns its sentinels on timeout, close, or peer death. It then
 returns a list of 1 to \code{n} already-published messages without waiting
-further.
+further. On a foreign (Python) payload it raises like \code{\link[=rei_recv]{rei_recv()}};
+the messages drained alongside it in the same batch are consumed.
 }
 \description{
 At target rates the R call boundary is a first-order cost.

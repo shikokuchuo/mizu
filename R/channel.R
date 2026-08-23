@@ -29,6 +29,9 @@
 #'
 #' @param expr a quoted expression (for example `quote({ ... })`), evaluated
 #'   in the peer process with `ch` bound to the peer-side channel handle.
+#'   A single character string is instead UTF-8 source text in the peer's
+#'   language, for a non-R peer spawned by a custom `launcher` (an R peer
+#'   parses and evaluates it as R source).
 #' @param capacity slots per ring. A power of two between 2 and 2^24.
 #' @param slot_size bytes per slot. A power of two between 64 and 2^20. The
 #'   inline payload budget is `slot_size - 16`. Payloads that serialize
@@ -41,11 +44,16 @@
 #'   and producers skip the wake check on publish. Use this only when the
 #'   consumer never yields. If a spin-mode consumer parks, the producer
 #'   never wakes it.
-#' @param launcher a `function(token)` that arranges for an R process to
-#'   call `rei:::peer_main(token)`. The default [rei_launcher()] spawns
-#'   `Rscript` and propagates the `.libPaths()` of the host. Its `stdout`
-#'   and `stderr` arguments direct the peer output, including the error
-#'   epilogue. A custom launcher must arrange the library paths itself.
+#' @param launcher a `function(token)` that spawns the peer process. For an
+#'   R peer, it arranges for a process to call `rei:::peer_main(token)`. The
+#'   default [rei_launcher()] spawns `Rscript` and propagates the
+#'   `.libPaths()` of the host. Its `stdout` and `stderr` arguments direct
+#'   the peer output, including the error epilogue. A custom launcher must
+#'   arrange the library paths itself. For a peer in another language (a
+#'   source-string `expr`), it spawns a program that attaches with `token`
+#'   and speaks the wire protocol, such as `python3 -m pyrei.child` for a
+#'   Python peer — [rei_py_launcher()] is the ready-made launcher for
+#'   that case.
 #' @param startup_timeout seconds to wait for the peer to attach and signal
 #'   ready. On expiry, rei releases the channel and raises
 #'   `rei_error_startup` (see [rei_error]).
@@ -75,9 +83,13 @@ rei_channel <- function(
   launcher = rei_launcher(),
   startup_timeout = 30
 ) {
-  if (!is.language(expr)) {
+  if (
+    !is.language(expr) &&
+      !(is.character(expr) && length(expr) == 1L && !is.na(expr))
+  ) {
     stop(
-      "rei: expr must be a quoted expression (wrap it in quote())",
+      "rei: expr must be a quoted expression (wrap it in quote()) or a ",
+      "single source string (for a peer in another language)",
       call. = FALSE
     )
   }
@@ -132,6 +144,11 @@ rei_channel <- function(
 #' Anything else is R-serialized. Mori-shared objects reduce to identifier
 #' wire forms through the mori hooks.
 #'
+#' From a non-R peer, only vectors and strings are legal payloads. Anything
+#' else (a pyrei codec stream or a pickle) is declined: the receive raises
+#' a "Python payload" error. The declined message is consumed, so the
+#' channel keeps flowing.
+#'
 #' @param ch a channel handle from [rei_channel()] (or the `ch` binding
 #'   inside a peer expression).
 #' @param x the payload: any R object.
@@ -174,7 +191,8 @@ rei_recv <- function(ch, timeout = Inf) .Call(rei_channel_recv, ch, timeout)
 #'   `rei_recv_batch()` waits for the first message like [rei_recv()] and
 #'   returns its sentinels on timeout, close, or peer death. It then
 #'   returns a list of 1 to `n` already-published messages without waiting
-#'   further.
+#'   further. On a foreign (Python) payload it raises like [rei_recv()];
+#'   the messages drained alongside it in the same batch are consumed.
 #'
 #' @examples
 #' ch <- rei_channel(quote(rei_send_batch(ch, rei_recv_batch(ch, 3L))))
@@ -271,7 +289,9 @@ peer_main <- function(token) {
   env[["ch"]] <- ch
   status <- 0L
   tryCatch(
-    eval(expr, envir = env),
+    # a character drop is UTF-8 source text (REI_DROP_SOURCE); parse errors
+    # are peer errors, an orderly close like an eval error
+    eval(if (is.character(expr)) parse(text = expr) else expr, envir = env),
     error = function(e) {
       cat(
         "rei peer error: ",
