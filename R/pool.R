@@ -211,7 +211,7 @@ sora_pool_attach <- function(name) {
   if (!is.character(name) || length(name) != 1L || is.na(name)) {
     stop("sora: name must be a character string", call. = FALSE)
   }
-  .Call(sora_pool_attach_call, sub("^.*sora_", "", name))
+  .Call(sora_pool_attach_call, sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", name))
 }
 
 #' Submit a Task and Collect Its Result

@@ -1,15 +1,12 @@
-/* macOS kernel-wait primitive and death listener. The parker sleeps on the
-   epoch word with __ulock_wait's UL_COMPARE_AND_WAIT_SHARED opcode (the plain
-   compare-and-wait is process-local). __ulock_wait is undocumented but stable
-   since 10.12, the _SHARED opcodes since 10.15; it underlies libc++
-   std::atomic::wait, Rust parking_lot / crossbeam, and abseil — isolated in
-   this file so a swap to mach ports would be local. The EINTR behavior under
-   R's terminal SIGINT handler was verified empirically by a standalone
-   spike (spike-ulock-eintr, preserved in git history). The death listener
-   is a dispatch source on a per-watch serial queue — no thread of sora's
-   own. */
+/* macOS kernel-wait primitive and death listener. The parker sleeps on
+   the epoch word with __ulock_wait's UL_COMPARE_AND_WAIT_SHARED opcode
+   (the plain compare-and-wait is process-local). __ulock_wait is
+   undocumented but stable since 10.12 (_SHARED since 10.15) and underlies
+   libc++ atomic::wait and Rust's parking_lot; isolated here so a swap to
+   mach ports stays local. The death listener is a dispatch source on a
+   per-watch serial queue — no thread of rei's own. */
 
-#include "sora.h"
+#include "internal.h"
 
 #ifdef __APPLE__
 
@@ -27,38 +24,38 @@ extern int __ulock_wake(uint32_t operation, void *addr, uint64_t wake_value);
 
 // Parker -----------------------------------------------------------------------
 
-int sora_parker_attach(sora_parker *pk, _Atomic uint32_t *epoch,
+int rei_parker_attach(rei_parker *pk, _Atomic uint32_t *epoch,
                       const char *region_name, int entity, int create) {
   (void) region_name; (void) entity; (void) create;
   pk->epoch = epoch;
   return 0;
 }
 
-void sora_parker_detach(sora_parker *pk) {
+void rei_parker_detach(rei_parker *pk) {
   pk->epoch = NULL;
 }
 
-int sora_park(sora_parker *pk, uint32_t snapshot, long timeout_ms) {
+int rei_park(rei_parker *pk, uint32_t snapshot, long timeout_ms) {
   if (atomic_load_explicit(pk->epoch, memory_order_acquire) != snapshot)
-    return SORA_PARK_WOKEN;
-  if (timeout_ms == 0) return SORA_PARK_TIMEOUT;
+    return REI_PARK_WOKEN;
+  if (timeout_ms == 0) return REI_PARK_TIMEOUT;
 
-  /* Always timed (a 0 timeout means forever): SORA_PARK_NOMINAL_MS fits the
-     uint32 microsecond argument, so the clamp below never produces 0. */
-  long ms = timeout_ms < 0 ? SORA_PARK_NOMINAL_MS : timeout_ms;
+  /* Always timed: REI_PARK_NOMINAL_MS fits the uint32 microsecond
+     argument, so the clamp never produces 0 (which would mean forever). */
+  long ms = timeout_ms < 0 ? REI_PARK_NOMINAL_MS : timeout_ms;
   uint64_t us64 = (uint64_t) ms * 1000;
   uint32_t us = us64 > UINT32_MAX ? UINT32_MAX : (uint32_t) us64;
   int r = __ulock_wait(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO,
                        (void *) pk->epoch, snapshot, us);
-  if (r >= 0) return SORA_PARK_WOKEN;
+  if (r >= 0) return REI_PARK_WOKEN;
   switch (-r) {
-  case ETIMEDOUT: return SORA_PARK_TIMEOUT;
-  case EINTR:     return SORA_PARK_INTR;
-  default:        return SORA_PARK_WOKEN;
+  case ETIMEDOUT: return REI_PARK_TIMEOUT;
+  case EINTR:     return REI_PARK_INTR;
+  default:        return REI_PARK_WOKEN;
   }
 }
 
-void sora_unpark(sora_parker *pk) {
+void rei_unpark(rei_parker *pk) {
   atomic_fetch_add_explicit(pk->epoch, 1, memory_order_release);
   /* -ENOENT (no waiter) is the common no-op case */
   __ulock_wake(UL_COMPARE_AND_WAIT_SHARED | ULF_NO_ERRNO,
@@ -67,37 +64,37 @@ void sora_unpark(sora_parker *pk) {
 
 // Death listener -----------------------------------------------------------------
 
-struct sora_death_watch_s {
+struct rei_death_watch_s {
   dispatch_queue_t queue;            /* per-watch serial queue: the stop sync */
   dispatch_source_t source;
   _Atomic int *flag;
-  sora_parker pk;
+  rei_parker pk;
   int has_pk;
   void (*cb)(void *);                /* pure-C death callback (may be NULL) */
   void *cb_arg;
 };
 
-static void sora_dw_fire(void *ctx) {
-  struct sora_death_watch_s *w = ctx;
+static void rei_dw_fire(void *ctx) {
+  struct rei_death_watch_s *w = ctx;
   atomic_store_explicit(w->flag, 1, memory_order_release);
-  if (w->has_pk) sora_unpark(&w->pk);
+  if (w->has_pk) rei_unpark(&w->pk);
   if (w->cb != NULL) w->cb(w->cb_arg);
 }
 
-static void sora_dw_event(void *ctx) {
-  struct sora_death_watch_s *w = ctx;
-  sora_dw_fire(w);
+static void rei_dw_event(void *ctx) {
+  struct rei_death_watch_s *w = ctx;
+  rei_dw_fire(w);
   dispatch_source_cancel(w->source);
 }
 
-static void sora_dw_noop(void *ctx) {
+static void rei_dw_noop(void *ctx) {
   (void) ctx;
 }
 
-sora_death_watch *sora_death_watch_start2(long pid, _Atomic int *flag,
-                                        const sora_parker *pk,
+rei_death_watch *rei_death_watch_start2(long pid, _Atomic int *flag,
+                                        const rei_parker *pk,
                                         void (*cb)(void *), void *cb_arg) {
-  struct sora_death_watch_s *w = calloc(1, sizeof(*w));
+  struct rei_death_watch_s *w = calloc(1, sizeof(*w));
   if (w == NULL) return NULL;
   w->flag = flag;
   if (pk != NULL) {
@@ -107,7 +104,7 @@ sora_death_watch *sora_death_watch_start2(long pid, _Atomic int *flag,
   w->cb = cb;
   w->cb_arg = cb_arg;
 
-  w->queue = dispatch_queue_create("sora.death", DISPATCH_QUEUE_SERIAL);
+  w->queue = dispatch_queue_create("rei.death", DISPATCH_QUEUE_SERIAL);
   if (w->queue == NULL) {
     free(w);
     return NULL;
@@ -121,29 +118,29 @@ sora_death_watch *sora_death_watch_start2(long pid, _Atomic int *flag,
     return NULL;
   }
   dispatch_set_context(w->source, w);
-  dispatch_source_set_event_handler_f(w->source, sora_dw_event);
+  dispatch_source_set_event_handler_f(w->source, rei_dw_event);
   dispatch_resume(w->source);
 
   /* Close the create/exit race: a source armed for an already-dead pid never
      fires. Firing here can race the source's own event — both paths are
      idempotent (flag store; one spurious unpark, absorbed by re-check). */
-  if (kill((pid_t) pid, 0) != 0 && errno == ESRCH) sora_dw_fire(w);
+  if (kill((pid_t) pid, 0) != 0 && errno == ESRCH) rei_dw_fire(w);
 
   return w;
 }
 
-void sora_death_watch_stop(sora_death_watch *w) {
+void rei_death_watch_stop(rei_death_watch *w) {
   dispatch_source_cancel(w->source);
-  /* Drain the serial queue: any in-flight event handler has completed once
-     this returns, and a cancelled source submits no more, so freeing w (and
-     the caller's flag/parker targets) is safe after this. */
-  dispatch_sync_f(w->queue, NULL, sora_dw_noop);
+  /* Drain the serial queue: once this returns, any in-flight handler has
+     completed and a cancelled source submits no more, so freeing w (and
+     the caller's flag/parker targets) is safe. */
+  dispatch_sync_f(w->queue, NULL, rei_dw_noop);
   dispatch_release(w->source);
   dispatch_release(w->queue);
   free(w);
 }
 
-void sora_death_listener_teardown(void) {
+void rei_death_listener_teardown(void) {
 }
 
 #endif /* __APPLE__ */

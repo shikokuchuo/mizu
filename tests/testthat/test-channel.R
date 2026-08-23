@@ -10,21 +10,24 @@ test_that("sora_channel validates expr is a language object", {
 })
 
 test_that("sora_channel_create validates its parameters", {
-  expect_error(.Call(sora:::sora_channel_create, quote(NULL), 3L, 256L, 0,
-                     FALSE),
-               "capacity must be a power of two")
-  expect_error(.Call(sora:::sora_channel_create, quote(NULL), 64L, 32L, 0,
-                     FALSE),
-               "slot_size must be a power of two")
-  expect_error(.Call(sora:::sora_channel_create, quote(NULL), 64L, 256L, 100,
-                     FALSE),
-               "arena_size must be a non-negative multiple of 64")
+  expect_error(
+    .Call(sora:::sora_channel_create, quote(NULL), 3L, 256L, 0, FALSE),
+    "capacity must be a power of two"
+  )
+  expect_error(
+    .Call(sora:::sora_channel_create, quote(NULL), 64L, 32L, 0, FALSE),
+    "slot_size must be a power of two"
+  )
+  expect_error(
+    .Call(sora:::sora_channel_create, quote(NULL), 64L, 256L, 100, FALSE),
+    "arena_size must be a non-negative multiple of 64"
+  )
 })
 
 test_that("a fresh channel reports its layout and state", {
   p <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
   st <- .Call(sora:::sora_channel_stat, p[["host"]])
-  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\sora_" else "/sora_"
+  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\rei_" else "/rei_"
   expect_true(startsWith(st[["name"]], prefix))
   expect_identical(st[["side"]], "host")
   expect_identical(st[["capacity"]], 128)
@@ -35,24 +38,33 @@ test_that("a fresh channel reports its layout and state", {
   expect_true(st[["ready"]])
   expect_identical(st[["closed"]], 0L)
   expect_identical(st[["peer_pid"]], as.double(Sys.getpid()))
-  expect_identical(.Call(sora:::sora_channel_stat, p[["peer"]])[["side"]], "peer")
+  expect_identical(
+    .Call(sora:::sora_channel_stat, p[["peer"]])[["side"]],
+    "peer"
+  )
   expect_s3_class(p[["host"]], "sora_channel")
 })
 
 test_that("attach validates the region: absent, malformed, or not a channel", {
   expect_error(.Call(sora:::sora_channel_attach, "0_0"), "cannot open")
-  expect_error(.Call(sora:::sora_channel_attach, "evil'; echo pwned"),
-               "malformed region-name suffix")
-  expect_error(.Call(sora:::sora_channel_attach, strrep("a", 40)),
-               "malformed region-name suffix")
+  expect_error(
+    .Call(sora:::sora_channel_attach, "evil'; echo pwned"),
+    "malformed region-name suffix"
+  )
+  expect_error(
+    .Call(sora:::sora_channel_attach, strrep("a", 40)),
+    "malformed region-name suffix"
+  )
 
   # a raw sora region is not a channel: zeroed bytes fail the magic check
   xp <- .Call(sora:::sora_region_create, 4096)
   nm <- .Call(sora:::sora_region_name, xp)
-  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\sora_" else "/sora_"
+  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\rei_" else "/rei_"
   suffix <- substr(nm, nchar(prefix) + 1L, nchar(nm))
-  expect_error(.Call(sora:::sora_channel_attach, suffix),
-               "invalid channel region")
+  expect_error(
+    .Call(sora:::sora_channel_attach, suffix),
+    "invalid channel region"
+  )
 })
 
 test_that("the close protocol rendezvouses and releases both ends", {
@@ -80,12 +92,12 @@ test_that("close times out with a warning when the peer never answers", {
   expect_false(ok)
   # the handle survives a timed-out close; the peer sees the closed word
   expect_s3_class(sora_recv(p[["peer"]], 0.2), "sora_closed")
-  expect_true(sora_close(p[["peer"]], timeout = 5))    # host bit already set
-  expect_true(sora_close(p[["host"]], timeout = 5))    # now rendezvous succeeds
+  expect_true(sora_close(p[["peer"]], timeout = 5)) # host bit already set
+  expect_true(sora_close(p[["host"]], timeout = 5)) # now rendezvous succeeds
 })
 
 test_that("close releases the region name on rendezvous", {
-  skip_on_os("windows")   # kernel objects have no unlink step to observe
+  skip_on_os("windows") # kernel objects have no unlink step to observe
   p <- channel_pair()
   nm <- .Call(sora:::sora_channel_stat, p[["host"]])[["name"]]
   expect_no_error(.Call(sora:::sora_region_open, nm, FALSE))
@@ -137,16 +149,16 @@ test_that("a finite-timeout empty recv expires both parked and mid-spin", {
 })
 
 test_that("an overlong liveness directory is rejected before create", {
-  old <- Sys.getenv("SORA_LIVENESS_DIR", unset = NA)
+  old <- Sys.getenv("REI_LIVENESS_DIR", unset = NA)
   on.exit(
     if (is.na(old)) {
-      Sys.unsetenv("SORA_LIVENESS_DIR")
+      Sys.unsetenv("REI_LIVENESS_DIR")
     } else {
-      Sys.setenv(SORA_LIVENESS_DIR = old)
+      Sys.setenv(REI_LIVENESS_DIR = old)
     },
     add = TRUE
   )
-  Sys.setenv(SORA_LIVENESS_DIR = strrep("x", 1000))
+  Sys.setenv(REI_LIVENESS_DIR = strrep("x", 1000))
   expect_error(
     .Call(sora:::sora_channel_create, quote(NULL), 64L, 256L, 4096, FALSE),
     "liveness directory path too long"

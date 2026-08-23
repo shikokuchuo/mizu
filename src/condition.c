@@ -146,7 +146,7 @@ SEXP sora_caught_died(int slot, double pid, const char *fmt, ...) {
      dropped_fields retained) is a handful of bytes and fits wherever a
      classed condition fits at all. */
 
-#define SORA_COND_FALLBACK "sora: task error (untransportable condition)"
+#define REI_COND_FALLBACK "sora: task error (untransportable condition)"
 
 /* The message element: the condition's own message field when it is a
    length-1 string (translated to UTF-8 and truncated at a character
@@ -171,7 +171,7 @@ static SEXP sora_cond_message(SEXP cond, size_t share) {
       }
     }
   }
-  if (msg == R_NilValue) return Rf_mkChar(SORA_COND_FALLBACK);
+  if (msg == R_NilValue) return Rf_mkChar(REI_COND_FALLBACK);
   cetype_t ce = Rf_getCharCE(msg);
   if (ce != CE_BYTES) {
     /* translate to UTF-8 so the boundary truncation below is valid; the
@@ -339,7 +339,7 @@ SEXP sora_condition_flatten(SEXP cond, size_t budget) {
   size_t total = sora_codec_write(NULL, 0, flat);
   if (total == 0 || total > budget) {
     UNPROTECT(1);                /* flat */
-    SEXP fmsg = PROTECT(Rf_mkChar(SORA_COND_FALLBACK));
+    SEXP fmsg = PROTECT(Rf_mkChar(REI_COND_FALLBACK));
     size_t fspent = 14 + 22 + 22;
     for (R_xlen_t i = 0; i < XLENGTH(klass); i++)
       fspent += 8 + (size_t) LENGTH(STRING_ELT(klass, i));

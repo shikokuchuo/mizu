@@ -10,8 +10,8 @@ static R_altrep_class_t mori_logical_class;
 static R_altrep_class_t mori_raw_class;
 static R_altrep_class_t mori_complex_class;
 static R_altrep_class_t mori_string_class;
-static SEXP mori_shm_tag;    /* tag on SHM mapping extptrs (addr is mori_shm *) */
-static SEXP mori_host_tag;   /* tag on host-only unlink extptrs (addr is mori_shm *) */
+static SEXP mori_shm_tag;    /* tag on SHM mapping extptrs (addr is rei_shm *) */
+static SEXP mori_host_tag;   /* tag on host-only unlink extptrs (addr is rei_shm *) */
 static SEXP mori_owned_tag;  /* tag on every mori ALTREP data1 extptr; addr type dispatched via TYPEOF(x) */
 
 /* Embedder wire hooks (mori.h): set once at embedder load, read on the
@@ -178,7 +178,7 @@ static int mori_format_chain(SEXP keeper_extptr, int32_t leaf_index,
 
   if (TYPEOF(hop) != EXTPTRSXP || R_ExternalPtrTag(hop) != mori_shm_tag)
     return -2;
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(hop);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(hop);
   if (shm == NULL) return -2;
 
   return mori_format_path(buf, buflen, shm->name, shm->name_len,
@@ -188,7 +188,7 @@ static int mori_format_chain(SEXP keeper_extptr, int32_t leaf_index,
 /* Parse "<prefix>" or "<prefix>[i1,i2,...]" with 1-based positive indices.
    Returns 1 (full match with path), 0 (prefix only), or -1 (malformed).
    On rc 0 or 1, name_out is NUL-terminated with the prefix (variable
-   length, bounded by name_out_size - 1; pass MORI_NAME_MAX). On rc 1,
+   length, bounded by name_out_size - 1; pass REI_NAME_MAX). On rc 1,
    path_out (capacity MORI_MAX_PATH) is filled with 0-based indices and
    *path_len is set to the count (>= 1). On rc -1, all outputs are
    indeterminate. */
@@ -200,14 +200,14 @@ int mori_parse_id(const char *s, char *name_out, size_t name_out_size,
   if (eos == NULL) return -1;
 
   /* Step 2: literal-prefix match */
-  const size_t lit_len = sizeof(MORI_PREFIX_LITERAL) - 1;
+  const size_t lit_len = sizeof(REI_PREFIX_LITERAL) - 1;
   if ((size_t)(eos - s) < lit_len) return -1;
-  if (memcmp(s, MORI_PREFIX_LITERAL, lit_len) != 0) return -1;
+  if (memcmp(s, REI_PREFIX_LITERAL, lit_len) != 0) return -1;
   const char *p = s + lit_len;
 
   /* Step 3: variable-width random-part scan: hex+ '_' hex+. Each *p deref
      is guarded by p < eos; each iteration advances p by 1; total work is
-     bounded by MORI_NAME_MAX via the (p - s) < name_out_size cap. */
+     bounded by REI_NAME_MAX via the (p - s) < name_out_size cap. */
   const char *r = p;
   while (p < eos && (size_t)(p - s) < name_out_size &&
          ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f')))
@@ -501,7 +501,7 @@ SEXP mori_str_wrap(const unsigned char *region_base, R_xlen_t n,
 static SEXP mori_unwrap_element(unsigned char *base, int64_t region_size,
                                 int32_t index, SEXP keeper) {
 
-  unsigned char *dir = base + MORI_HEADER_SIZE + 32 * (size_t) index;
+  unsigned char *dir = base + REI_HEADER_SIZE + 32 * (size_t) index;
   mori_elem entry;
   memcpy(&entry, dir, sizeof(mori_elem));
   int64_t data_offset = entry.data_offset, data_size = entry.data_size;
@@ -562,7 +562,7 @@ static SEXP mori_unwrap_element(unsigned char *base, int64_t region_size,
  *           or NIL element — re-extracted on cache miss either way)
  *
  * MORL region layout (same whether root SHM or nested inside a parent):
- *   Bytes 0-3:   uint32_t magic (MORI_MAGIC_LIST, "MORL")
+ *   Bytes 0-3:   uint32_t magic (REI_MAGIC_LIST, "MORL")
  *   Bytes 4-7:   int32_t  n_elements
  *   Bytes 8-15:  int64_t  attrs_offset
  *   Bytes 16-23: int64_t  attrs_size
@@ -583,12 +583,12 @@ static SEXP mori_make_view_extptr(unsigned char *base, int64_t region_size,
                                   int64_t *out_attrs_offset,
                                   int64_t *out_attrs_size) {
 
-  if (region_size < MORI_HEADER_SIZE)
+  if (region_size < REI_HEADER_SIZE)
     Rf_error("sora: invalid nested list region");
 
   uint32_t magic;
   memcpy(&magic, base, 4);
-  if (magic != MORI_MAGIC_LIST)
+  if (magic != REI_MAGIC_LIST)
     Rf_error("sora: invalid nested list region");
 
   int32_t n;
@@ -597,7 +597,7 @@ static SEXP mori_make_view_extptr(unsigned char *base, int64_t region_size,
   memcpy(&attrs_offset, base + 8, 8);
   memcpy(&attrs_size, base + 16, 8);
 
-  if (n < 0 || n > (region_size - MORI_HEADER_SIZE) / 32 ||
+  if (n < 0 || n > (region_size - REI_HEADER_SIZE) / 32 ||
       mori_oob(attrs_offset, attrs_size, region_size))
     Rf_error("sora: invalid nested list region");
 
@@ -718,9 +718,9 @@ static SEXP mori_dispatch_by_magic(SEXP shm_ptr, const char *err_name);
    by mori_host_finalizer on the chained host_tag extptr — so a consumer
    keeps reading after the host is GC'd. */
 void mori_shm_finalizer(SEXP ptr) {
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(ptr);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(ptr);
   if (shm != NULL) {
-    mori_shm_close(shm, 0);
+    rei_shm_close_stack(shm, 0);
     free(shm);
     R_ClearExternalPtr(ptr);
   }
@@ -728,19 +728,19 @@ void mori_shm_finalizer(SEXP ptr) {
 
 /* Host-side finalizer: releases the SHM name/handle. */
 void mori_host_finalizer(SEXP ptr) {
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(ptr);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(ptr);
   if (shm != NULL) {
-    mori_shm_host_release(shm);
+    rei_shm_host_release(shm);
     free(shm);
     R_ClearExternalPtr(ptr);
   }
 }
 
-// SHM keeper wrappers: transfer heap mori_shm ownership to R -----------------
+// SHM keeper wrappers: transfer heap rei_shm ownership to R -----------------
 
 /* Consumer-side: single shm_tag extptr with munmap-only finalizer. Takes
    ownership of shm; the returned SEXP's finalizer frees it on GC. */
-static SEXP mori_shm_wrap_consumer(mori_shm *shm) {
+static SEXP mori_shm_wrap_consumer(rei_shm *shm) {
   SEXP ptr = R_MakeExternalPtr(shm, mori_shm_tag, R_NilValue);
   R_RegisterCFinalizerEx(ptr, mori_shm_finalizer, TRUE);
   return ptr;
@@ -750,11 +750,11 @@ static SEXP mori_shm_wrap_consumer(mori_shm *shm) {
    extptr (unlink / CloseHandle finalizer) via its protected slot. Takes
    ownership of shm. The host copy gets the name / Windows handle; shm
    keeps only the mapping, so munmap and unlink fire independently. */
-static SEXP mori_shm_wrap_producer(mori_shm *shm) {
+static SEXP mori_shm_wrap_producer(rei_shm *shm) {
 
-  mori_shm *host = malloc(sizeof(mori_shm));
+  rei_shm *host = malloc(sizeof(rei_shm));
   if (host == NULL) Rf_error("sora: allocation failure");
-  memcpy(host, shm, sizeof(mori_shm));
+  memcpy(host, shm, sizeof(rei_shm));
   host->addr = NULL;
   host->size = 0;
 #ifdef _WIN32
@@ -771,7 +771,7 @@ static SEXP mori_shm_wrap_producer(mori_shm *shm) {
   return shm_ptr;
 }
 
-static SEXP mori_make_result(mori_shm *shm) {
+static SEXP mori_make_result(rei_shm *shm) {
   SEXP shm_ptr = PROTECT(mori_shm_wrap_producer(shm));
   SEXP result = mori_dispatch_by_magic(shm_ptr, NULL);
   UNPROTECT(1);
@@ -846,7 +846,7 @@ static size_t mori_nested_write(unsigned char *base, SEXP x);
 static size_t mori_nested_size(SEXP x, int *ok) {
 
   R_xlen_t n = XLENGTH(x);
-  size_t total = MORI_ALIGN64(MORI_HEADER_SIZE + 32 * (size_t) n);
+  size_t total = MORI_ALIGN64(REI_HEADER_SIZE + 32 * (size_t) n);
 
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP elt = VECTOR_ELT(x, i);
@@ -901,11 +901,11 @@ static size_t mori_nested_size(SEXP x, int *ok) {
 static size_t mori_nested_write(unsigned char *base, SEXP x) {
 
   R_xlen_t n = XLENGTH(x);
-  size_t cur = MORI_ALIGN64(MORI_HEADER_SIZE + 32 * (size_t) n);
+  size_t cur = MORI_ALIGN64(REI_HEADER_SIZE + 32 * (size_t) n);
 
   /* Reserved header bytes [24-63] are zeroed on every write: an embedder
      may recycle regions, so no stale field may survive a reuse. */
-  memset(base + 24, 0, MORI_HEADER_SIZE - 24);
+  memset(base + 24, 0, REI_HEADER_SIZE - 24);
 
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP elt = VECTOR_ELT(x, i);
@@ -952,7 +952,7 @@ static size_t mori_nested_write(unsigned char *base, SEXP x) {
       cur += MORI_ALIGN64(elt_size);
     }
 
-    memcpy(base + MORI_HEADER_SIZE + 32 * (size_t) i, &entry,
+    memcpy(base + REI_HEADER_SIZE + 32 * (size_t) i, &entry,
            sizeof(mori_elem));
   }
 
@@ -965,7 +965,7 @@ static size_t mori_nested_write(unsigned char *base, SEXP x) {
   UNPROTECT(1);
 
   /* Write header */
-  uint32_t magic = MORI_MAGIC_LIST;
+  uint32_t magic = REI_MAGIC_LIST;
   int32_t n32 = (int32_t) n;
   int64_t as64 = (int64_t) attrs_size;
   memcpy(base, &magic, 4);
@@ -998,7 +998,7 @@ static void mori_shm_create_failed(int category, size_t requested) {
   char sizebuf[32];
   const char *summary, *hint;
   mori_format_bytes(requested, sizebuf, sizeof(sizebuf));
-  mori_err_describe(category, &summary, &hint);
+  rei_err_describe(category, &summary, &hint);
   Rf_error("sora: cannot create region (requested %s): %s%s%s",
            sizebuf, summary, hint[0] != '\0' ? ". " : "", hint);
 }
@@ -1009,7 +1009,7 @@ static size_t morh_size(SEXP x) {
   SEXP attrs = PROTECT(mori_get_attrs_for_serialize(x));
   size_t attrs_size = (attrs != R_NilValue) ? mori_serialize_count(attrs) : 0;
   UNPROTECT(1);
-  return MORI_HEADER_SIZE + data_size + attrs_size;
+  return REI_HEADER_SIZE + data_size + attrs_size;
 }
 
 /* MORH write: header (reserved bytes zeroed) + bare data + attrs. Header
@@ -1020,16 +1020,16 @@ static void morh_write(unsigned char *base, SEXP x) {
   R_xlen_t n = XLENGTH(x);
   size_t data_size = (size_t) n * mori_sizeof_elt(type);
 
-  memset(base, 0, MORI_HEADER_SIZE);
-  memcpy(base + MORI_HEADER_SIZE, DATAPTR_RO(x), data_size);
+  memset(base, 0, REI_HEADER_SIZE);
+  memcpy(base + REI_HEADER_SIZE, DATAPTR_RO(x), data_size);
 
   SEXP attrs = PROTECT(mori_get_attrs_for_serialize(x));
   size_t attrs_size = 0;
   if (attrs != R_NilValue)
-    attrs_size = mori_serialize_into(base + MORI_HEADER_SIZE + data_size,
+    attrs_size = mori_serialize_into(base + REI_HEADER_SIZE + data_size,
                                      attrs);
 
-  uint32_t magic = MORI_MAGIC_VEC;
+  uint32_t magic = REI_MAGIC_VEC;
   int32_t sexptype = (int32_t) type;
   int64_t length = (int64_t) n;
   int64_t as64 = (int64_t) attrs_size;
@@ -1046,7 +1046,7 @@ static size_t mors_size(SEXP x) {
   SEXP attrs = PROTECT(mori_get_attrs_for_serialize(x));
   size_t attrs_size = (attrs != R_NilValue) ? mori_serialize_count(attrs) : 0;
   UNPROTECT(1);
-  return MORI_HEADER_SIZE + mori_string_data_size(x) + attrs_size;
+  return REI_HEADER_SIZE + mori_string_data_size(x) + attrs_size;
 }
 
 /* MORS write: header (reserved bytes zeroed) + string data + attrs. The
@@ -1056,16 +1056,16 @@ static void mors_write(unsigned char *base, SEXP x) {
 
   R_xlen_t n = XLENGTH(x);
 
-  memset(base, 0, MORI_HEADER_SIZE);
-  size_t str_size = mori_write_strings(base + MORI_HEADER_SIZE, x);
+  memset(base, 0, REI_HEADER_SIZE);
+  size_t str_size = mori_write_strings(base + REI_HEADER_SIZE, x);
 
   SEXP attrs = PROTECT(mori_get_attrs_for_serialize(x));
   size_t attrs_size = 0;
   if (attrs != R_NilValue)
-    attrs_size = mori_serialize_into(base + MORI_HEADER_SIZE + str_size,
+    attrs_size = mori_serialize_into(base + REI_HEADER_SIZE + str_size,
                                      attrs);
 
-  uint32_t magic = MORI_MAGIC_STR;
+  uint32_t magic = REI_MAGIC_STR;
   int32_t as32 = (int32_t) attrs_size;
   int64_t n64 = (int64_t) n;
   int64_t sd = (int64_t) str_size;
@@ -1144,8 +1144,8 @@ SEXP mori_create(SEXP x) {
   size_t total = mori_layout_size_impl(x, NULL);
   if (total == 0) return x;
 
-  mori_shm *shm;
-  int rc = mori_shm_create_heap(&shm, total);
+  rei_shm *shm;
+  int rc = rei_shm_create_heap(&shm, total);
   if (rc) mori_shm_create_failed(rc, total);
 
   mori_layout_write((unsigned char *) shm->addr, x);
@@ -1160,7 +1160,7 @@ SEXP mori_create(SEXP x) {
    returned ALTREP's data1 extptr, pinning the mapping to its lifetime. */
 
 static SEXP mori_open_list(SEXP shm_ptr) {
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(shm_ptr);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(shm_ptr);
   return mori_list_wrap(
     (unsigned char *) shm->addr, (int64_t) shm->size, -1, shm_ptr, NULL, NULL
   );
@@ -1168,7 +1168,7 @@ static SEXP mori_open_list(SEXP shm_ptr) {
 
 static SEXP mori_open_vector(SEXP shm_ptr) {
 
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(shm_ptr);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(shm_ptr);
   unsigned char *base = (unsigned char *) shm->addr;
   int32_t sexptype;
   int64_t length, attrs_size;
@@ -1181,19 +1181,19 @@ static SEXP mori_open_vector(SEXP shm_ptr) {
      Short-circuit order keeps the length * elt_size product overflow-free. */
   int64_t region_size = (int64_t) shm->size;
   size_t elt_size = mori_sizeof_elt(sexptype);
-  if (region_size < MORI_HEADER_SIZE || length < 0 || attrs_size < 0 ||
+  if (region_size < REI_HEADER_SIZE || length < 0 || attrs_size < 0 ||
       (elt_size != 0 &&
-       length > (region_size - MORI_HEADER_SIZE) / (int64_t) elt_size) ||
-      attrs_size > region_size - MORI_HEADER_SIZE - length * (int64_t) elt_size)
+       length > (region_size - REI_HEADER_SIZE) / (int64_t) elt_size) ||
+      attrs_size > region_size - REI_HEADER_SIZE - length * (int64_t) elt_size)
     Rf_error("sora: invalid or corrupted shared memory region");
 
   SEXP result = PROTECT(mori_vec_wrap(
-    base + MORI_HEADER_SIZE, (R_xlen_t) length, sexptype, shm_ptr, NULL, NULL
+    base + REI_HEADER_SIZE, (R_xlen_t) length, sexptype, shm_ptr, NULL, NULL
   ));
 
   if (attrs_size > 0) {
     size_t data_bytes = (size_t) length * mori_sizeof_elt(sexptype);
-    mori_restore_attrs(result, base + MORI_HEADER_SIZE + data_bytes,
+    mori_restore_attrs(result, base + REI_HEADER_SIZE + data_bytes,
                        (size_t) attrs_size);
   }
 
@@ -1203,7 +1203,7 @@ static SEXP mori_open_vector(SEXP shm_ptr) {
 
 static SEXP mori_open_string(SEXP shm_ptr) {
 
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(shm_ptr);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(shm_ptr);
   unsigned char *base = (unsigned char *) shm->addr;
   int32_t attrs_size;
   int64_t n, str_data_size;
@@ -1214,18 +1214,18 @@ static SEXP mori_open_string(SEXP shm_ptr) {
   /* Validate the header against the mapped size before any data access:
      the string data and trailing attributes must fit within the region. */
   int64_t region_size = (int64_t) shm->size;
-  if (region_size < MORI_HEADER_SIZE || n < 0 || str_data_size < 0 ||
+  if (region_size < REI_HEADER_SIZE || n < 0 || str_data_size < 0 ||
       attrs_size < 0 ||
-      str_data_size > region_size - MORI_HEADER_SIZE ||
-      attrs_size > region_size - MORI_HEADER_SIZE - str_data_size)
+      str_data_size > region_size - REI_HEADER_SIZE ||
+      attrs_size > region_size - REI_HEADER_SIZE - str_data_size)
     Rf_error("sora: invalid or corrupted shared memory region");
 
   SEXP result = PROTECT(mori_str_wrap(
-    base + MORI_HEADER_SIZE, (R_xlen_t) n, str_data_size, shm_ptr, NULL, NULL
+    base + REI_HEADER_SIZE, (R_xlen_t) n, str_data_size, shm_ptr, NULL, NULL
   ));
 
   if (attrs_size > 0)
-    mori_restore_attrs(result, base + MORI_HEADER_SIZE + (size_t) str_data_size,
+    mori_restore_attrs(result, base + REI_HEADER_SIZE + (size_t) str_data_size,
                        (size_t) attrs_size);
 
   UNPROTECT(1);
@@ -1236,13 +1236,13 @@ static SEXP mori_open_string(SEXP shm_ptr) {
    On unknown magic, errors — GC cleans up shm_ptr's finalizer after longjmp.
    err_name is used in the error message ("" if caller has no name to report). */
 static SEXP mori_dispatch_by_magic(SEXP shm_ptr, const char *err_name) {
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(shm_ptr);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(shm_ptr);
   unsigned char *base = (unsigned char *) shm->addr;
   uint32_t magic;
   memcpy(&magic, base, 4);
-  if (magic == MORI_MAGIC_LIST) return mori_open_list(shm_ptr);
-  if (magic == MORI_MAGIC_VEC) return mori_open_vector(shm_ptr);
-  if (magic == MORI_MAGIC_STR) return mori_open_string(shm_ptr);
+  if (magic == REI_MAGIC_LIST) return mori_open_list(shm_ptr);
+  if (magic == REI_MAGIC_VEC) return mori_open_vector(shm_ptr);
+  if (magic == REI_MAGIC_STR) return mori_open_string(shm_ptr);
   Rf_error("sora: invalid or corrupted shared memory region: '%s'",
            err_name != NULL ? err_name : "");
 }
@@ -1265,14 +1265,14 @@ SEXP mori_shm_open_and_wrap(SEXP name) {
     return R_NilValue;
   const char *s = CHAR(nm_sxp);
 
-  char shm_name[MORI_NAME_MAX];
+  char shm_name[REI_NAME_MAX];
   int32_t path[MORI_MAX_PATH];
   int path_len = 0;
   int rc = mori_parse_id(s, shm_name, sizeof(shm_name), path, &path_len);
   if (rc < 0) return R_NilValue;        /* probe miss */
 
   if (rc == 0) {
-    mori_shm *shm = mori_shm_open_heap(shm_name);
+    rei_shm *shm = rei_shm_open_heap(shm_name);
     if (shm == NULL)
       Rf_error("sora: shared memory region not found: '%s'", shm_name);
     SEXP shm_ptr = PROTECT(mori_shm_wrap_consumer(shm));
@@ -1331,7 +1331,7 @@ SEXP mori_shm_name(SEXP x) {
    resolves to its underlying region. */
 SEXP mori_prune(void) {
   int n = 0;
-  char **list = mori_shm_reap(&n);
+  char **list = rei_shm_reap(&n);
   if (n == 0) return R_NilValue;                  /* list is NULL when n == 0 */
   SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
   for (int i = 0; i < n; i++) {
@@ -1464,7 +1464,7 @@ SEXP mori_walk_path(unsigned char *base, int64_t region_size,
     if (idx < 0 || idx >= cur_n)
       Rf_error("sora: path index out of bounds");
 
-    unsigned char *dir = cur_base + MORI_HEADER_SIZE + 32 * (size_t) idx;
+    unsigned char *dir = cur_base + REI_HEADER_SIZE + 32 * (size_t) idx;
     mori_elem entry;
     memcpy(&entry, dir, sizeof(mori_elem));
     int64_t data_offset = entry.data_offset, data_size = entry.data_size;
@@ -1502,7 +1502,7 @@ SEXP mori_walk_path(unsigned char *base, int64_t region_size,
 static SEXP mori_open_path_c(const char *name,
                              const int32_t *path, int path_len) {
 
-  mori_shm *shm = mori_shm_open_heap(name);
+  rei_shm *shm = rei_shm_open_heap(name);
   if (shm == NULL)
     Rf_error("sora: shared memory region not found: '%s'", name);
 

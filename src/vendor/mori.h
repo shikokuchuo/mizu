@@ -6,7 +6,7 @@
 #include <R_ext/Altrep.h>
 #include <string.h>
 
-#include "mori_region.h"
+#include "librei/internal.h"
 
 // Identifier grammar constants ------------------------------------------------
 
@@ -15,7 +15,7 @@
 #define MORI_FORMAT_BUFLEN   1024              /* formatter stack buffer */
 
 /* External-pointer tag strings (installed once at init). */
-#define MORI_TAG_SHM   "sora_mori_shm"
+#define MORI_TAG_SHM   "rei_shm"
 #define MORI_TAG_HOST  "sora_mori_host"
 #define MORI_TAG_OWNED "sora_mori_owned"
 
@@ -80,7 +80,7 @@ void mori_altrep_init(DllInfo *dll);
 /* SHM extptr finalizers, defined alongside the wrap constructors that
    register them: mori_shm_finalizer releases this side's mapping only;
    mori_host_finalizer releases the SHM name/handle via
-   mori_shm_host_release. */
+   rei_shm_host_release. */
 void mori_shm_finalizer(SEXP ptr);
 void mori_host_finalizer(SEXP ptr);
 
@@ -122,7 +122,7 @@ SEXP mori_walk_path(unsigned char *base, int64_t region_size,
    embedder running a cross-process lifetime protocol uses the pair to
    flag regions on escape and to count remote references on arrival. */
 typedef void (*mori_emit_hook_fn)(SEXP view);
-typedef void (*mori_resolve_hook_fn)(SEXP view, mori_shm *shm);
+typedef void (*mori_resolve_hook_fn)(SEXP view, rei_shm *shm);
 void mori_set_wire_hooks(mori_emit_hook_fn emit, mori_resolve_hook_fn resolve);
 
 // Alignment macro -------------------------------------------------------------

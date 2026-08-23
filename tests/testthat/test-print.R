@@ -3,8 +3,8 @@
 
 test_that("channel handles print one line and survive release", {
   p <- channel_pair()
-  expect_output(print(p[["host"]]), "<sora_channel .*sora_.*: host, open>")
-  expect_output(print(p[["peer"]]), "<sora_channel .*sora_.*: peer, open>")
+  expect_output(print(p[["host"]]), "<sora_channel .*rei_.*: host, open>")
+  expect_output(print(p[["peer"]]), "<sora_channel .*rei_.*: peer, open>")
   # either side's close bit flips the state before release
   .Call(sora:::sora_channel_close_signal, p[["peer"]])
   expect_output(print(p[["host"]]), "<sora_channel .*: host, closed>")
@@ -17,7 +17,7 @@ test_that("pool and task handles print one line and survive destroy", {
   p <- pool_pair(workers = 2L)
   expect_output(
     print(p[["ctrl"]]),
-    "<sora_pool .*sora_.*: controller, 2/2 workers live, 0 pending>"
+    "<sora_pool .*rei_.*: controller, 2/2 workers live, 0 pending>"
   )
   expect_output(print(p[["wk"]]), "<sora_pool .*: worker, 2/2 workers live")
   t <- sora_submit(p[["ctrl"]], 1 + 1)
@@ -48,13 +48,22 @@ test_that("sentinels print as their class", {
   expect_output(print(s), "<sora_timeout>", fixed = TRUE)
 })
 
-test_that("a channel whose peer is gone prints the verdict", {
+test_that("a finalized in-process peer handle reads closed at print", {
   p <- channel_pair()
   host <- p[["host"]]
   rm(p)
-  invisible(gc()) # the peer handle's finalizer releases its liveness lock
-  expect_output(print(host), "peer gone", fixed = TRUE)
+  invisible(gc()) # the peer handle's finalizer signals close
+  expect_output(print(host), ": host, closed>", fixed = TRUE)
   expect_true(sora_close(host, timeout = 5))
+})
+
+test_that("a channel whose peer is gone prints the verdict", {
+  skip_if_no_child_sora()
+  ch <- sora_channel(quote(Sys.sleep(30)))
+  kill_hard(.Call(sora:::sora_channel_stat, ch)[["peer_pid"]])
+  expect_true(wait_until(!sora_alive(ch)))
+  expect_output(print(ch), "peer gone", fixed = TRUE)
+  expect_true(sora_close(ch, timeout = 5))
 })
 
 test_that("a prepared map prints its staging", {

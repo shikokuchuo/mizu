@@ -53,9 +53,9 @@ test_that("a fresh pool reports its layout and registry state", {
   )
   st <- sora_pool_status(p[["ctrl"]])
   prefix <- if (.Platform[["OS.type"]] == "windows") {
-    "Local\\sora_"
+    "Local\\rei_"
   } else {
-    "/sora_"
+    "/rei_"
   }
   expect_true(startsWith(st[["name"]], prefix))
   expect_identical(st[["role"]], "controller")
@@ -84,7 +84,7 @@ test_that("attach validates the region: absent, malformed, or not a pool", {
   # a raw sora region is not a pool: zeroed bytes fail the magic check
   xp <- .Call(sora:::sora_region_create, 4096)
   nm <- .Call(sora:::sora_region_name, xp)
-  suffix <- sub("^.*sora_", "", nm)
+  suffix <- sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", nm)
   expect_error(
     .Call(sora:::sora_pool_attach_call, suffix),
     "invalid pool region"

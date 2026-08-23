@@ -244,7 +244,7 @@ static const R_CallMethodDef CallEntries[] = {
 void R_init_sora(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
-  sora_tune_malloc();
+  rei_tune();
   sora_wrap_init();
   sora_payload_init();
   sora_entity_init();
@@ -260,7 +260,7 @@ void R_init_sora(DllInfo *dll) {
    death-listener teardown, then the preserved-object releases in reverse
    init order. The ALTREP class registrations stay — R has no unregister. */
 void R_unload_sora(DllInfo *dll) {
-  sora_death_listener_teardown();
+  rei_death_listener_teardown();
   sora_pool_fini();
   sora_channel_fini();
   sora_payload_fini();

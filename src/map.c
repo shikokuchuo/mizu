@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include "sora.h"
 
-#define SORA_MAP_MAGIC 0x534F524Du   /* "SORM" */
+#define REI_MAP_MAGIC 0x534F524Du   /* "SORM" */
 
 static SEXP sora_map_tag;
 static SEXP sora_rs_sym;
@@ -32,7 +32,7 @@ void sora_map_init(void) {
   sora_function_sym = Rf_install("function");
 }
 
-enum { SORA_MAP_X_DESC = 0, SORA_MAP_X_RAWVEC };
+enum { REI_MAP_X_DESC = 0, REI_MAP_X_RAWVEC };
 
 /* Map-descriptor region header. Not pool wire format — it rides its own
    region, keyed by the same ABI version — but the same rules apply: the
@@ -41,7 +41,7 @@ typedef struct sora_map_hdr_s {
   uint32_t magic;
   uint32_t version;
   uint32_t flags;            /* reserved, 0 */
-  uint32_t x_kind;           /* SORA_MAP_X_DESC / SORA_MAP_X_RAWVEC */
+  uint32_t x_kind;           /* REI_MAP_X_DESC / REI_MAP_X_RAWVEC */
   uint32_t x_sexptype;       /* RAWVEC section element type */
   uint32_t out_sexptype;     /* template element type; 0 = no output area */
   uint32_t out_elt_size;
@@ -72,13 +72,13 @@ typedef char sora_map_hdr_assert[(sizeof(sora_map_hdr) == 128) ? 1 : -1];
    ordering rides the task claim/publish chain. Completion is never
    recorded here: runners publish their batch histories through their
    ordinary results, and the lost set on death is arithmetic over them. */
-#define SORA_MAP_CANCEL_OFF ((uint64_t) 0)
-#define SORA_MAP_GEN_OFF    ((uint64_t) 4)
-#define SORA_MAP_CURSOR_OFF ((uint64_t) 64)
-#define SORA_MAP_CLAIM_OFF  ((uint64_t) 128)
-#define SORA_MAP_GEN_MASK   ((uint32_t) 0x3FFFFFFF)
+#define REI_MAP_CANCEL_OFF ((uint64_t) 0)
+#define REI_MAP_GEN_OFF    ((uint64_t) 4)
+#define REI_MAP_CURSOR_OFF ((uint64_t) 64)
+#define REI_MAP_CLAIM_OFF  ((uint64_t) 128)
+#define REI_MAP_GEN_MASK   ((uint32_t) 0x3FFFFFFF)
 
-enum { SORA_MORSEL_IDLE = 0, SORA_MORSEL_RUNNING, SORA_MORSEL_ABANDONED };
+enum { REI_MORSEL_IDLE = 0, REI_MORSEL_RUNNING, REI_MORSEL_ABANDONED };
 
 /* Batch sizing policy constants (see sora_map_next): k targets a batch
    duration, growing at most 2x per step and shrinking immediately on
@@ -90,8 +90,8 @@ enum { SORA_MORSEL_IDLE = 0, SORA_MORSEL_RUNNING, SORA_MORSEL_ABANDONED };
    seeded) while cancellation latency stays ~0.1 ms at every setting, so
    the largest candidate wins; the cap from {64, 256} — within noise on
    every overhead row, so the tighter ramp / lost-set bound wins. */
-#define SORA_MAP_T_TARGET  200e-6
-#define SORA_MAP_BATCH_CAP 64
+#define REI_MAP_T_TARGET  200e-6
+#define REI_MAP_BATCH_CAP 64
 
 /* The map-local RAWVEC gate, deliberately looser than sora_raw_eligible:
    no size cap, and attributes are the R side's to check (names-only is
@@ -134,7 +134,7 @@ static const char *map_type_name(int type) {
    over shm that per-call re-reads would re-trust. prot pins the region
    wrap, so the mapping outlives the handle. */
 typedef struct sora_map_h_s {
-  mori_shm *shm;
+  rei_shm *shm;
   sora_map_hdr h;
   /* Batch sizing state (sora_map_next), process-private and never wire
      state, reset at each run's first-call CLAIM CAS. A doorbell help
@@ -145,7 +145,7 @@ typedef struct sora_map_h_s {
   uint32_t run_gen;
   uint64_t k;                /* current batch size, morsels */
   uint64_t k_last;           /* morsels issued last transition */
-  double   t_last;           /* sora_now() at the last issue */
+  double   t_last;           /* rei_now() at the last issue */
   double   cost;             /* est. seconds per morsel (0 = unknown) */
   int      skip;             /* last interval contained a help: no update */
 } sora_map_h;
@@ -155,7 +155,7 @@ static void map_h_finalizer(SEXP xp) {
   R_ClearExternalPtr(xp);
 }
 
-static SEXP map_h_make(mori_shm *shm, const sora_map_hdr *h, SEXP wrap) {
+static SEXP map_h_make(rei_shm *shm, const sora_map_hdr *h, SEXP wrap) {
   sora_map_h *mh = calloc(1, sizeof(*mh));
   if (mh == NULL) Rf_error("sora: allocation failure");
   mh->shm = shm;
@@ -178,22 +178,22 @@ static sora_map_h *map_h_get(SEXP xp) {
 
 static _Atomic uint32_t *map_cancel_word(sora_map_h *mh) {
   return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + SORA_MAP_CANCEL_OFF);
+    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_CANCEL_OFF);
 }
 
 static _Atomic uint32_t *map_gen_word(sora_map_h *mh) {
   return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + SORA_MAP_GEN_OFF);
+    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_GEN_OFF);
 }
 
 static _Atomic uint64_t *map_cursor_word(sora_map_h *mh) {
   return (_Atomic uint64_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + SORA_MAP_CURSOR_OFF);
+    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_CURSOR_OFF);
 }
 
 static _Atomic uint32_t *map_claim_word(sora_map_h *mh, uint32_t r) {
   return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + SORA_MAP_CLAIM_OFF +
+    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_CLAIM_OFF +
      (uint64_t) r * 4);
 }
 
@@ -230,32 +230,32 @@ SEXP sora_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
     Rf_error("sora: invalid map descriptor size");
 
   sora_map_hdr h = {
-    .magic = SORA_MAP_MAGIC,
-    .version = SORA_ABI_VERSION,
+    .magic = REI_MAP_MAGIC,
+    .version = REI_ABI_VERSION,
     .n = n,
     .desc_off = sizeof(sora_map_hdr),
     .desc_len = desc_len,
     .morsel_size = morsel_size,
     .n_morsels = (n + morsel_size - 1) / morsel_size,
-    .claim_n = SORA_MAX_WORKERS,
+    .claim_n = REI_MAX_WORKERS,
   };
-  uint64_t off = MORI_ALIGN64(sizeof(sora_map_hdr) + desc_len);
+  uint64_t off = REI_ALIGN64(sizeof(sora_map_hdr) + desc_len);
   if (x != R_NilValue) {
     size_t elt = mori_sizeof_elt(TYPEOF(x));
     if (elt == 0 || sora_vec_ptr(x) == NULL ||
         (uint64_t) XLENGTH(x) != n)
       Rf_error("sora: x is not eligible for the map raw section");
-    h.x_kind = SORA_MAP_X_RAWVEC;
+    h.x_kind = REI_MAP_X_RAWVEC;
     h.x_sexptype = (uint32_t) TYPEOF(x);
     h.x_off = off;
     h.x_len = n * elt;
-    off = MORI_ALIGN64(off + h.x_len);
+    off = REI_ALIGN64(off + h.x_len);
   }
   /* morsel state between the descriptor / x sections and the output area;
      a fresh region is zero-filled, so cancel, generation, cursor and every
      CLAIM word ((0 << 2) | IDLE) start armed for generation 0 */
   h.state_off = off;
-  off = MORI_ALIGN64(off + SORA_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4);
+  off = REI_ALIGN64(off + REI_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4);
   if (template_sexp != R_NilValue) {
     size_t elt = mori_sizeof_elt(TYPEOF(template_sexp));
     uint64_t m = (uint64_t) XLENGTH(template_sexp);
@@ -272,11 +272,11 @@ SEXP sora_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   if (off > ((uint64_t) 1 << 46))
     Rf_error("sora: map region too large");
 
-  mori_shm *shm;
-  int rc = mori_shm_create_heap(&shm, (size_t) off);
-  if (rc != MORI_OK) {
+  rei_shm *shm;
+  int rc = rei_shm_create_heap(&shm, (size_t) off);
+  if (rc != REI_ERRCAT_NONE) {
     const char *summary, *hint;
-    mori_err_describe(rc, &summary, &hint);
+    rei_err_describe(rc, &summary, &hint);
     sora_stop_shm((double) off,
                  "sora: cannot create map region (%llu bytes): %s%s%s",
                  (unsigned long long) off, summary,
@@ -298,14 +298,14 @@ SEXP sora_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
 
 // Worker-side context -----------------------------------------------------------
 
-static const char *map_hdr_validate(const mori_shm *shm, sora_map_hdr *out) {
+static const char *map_hdr_validate(const rei_shm *shm, sora_map_hdr *out) {
   if (shm->size < sizeof(sora_map_hdr))
     return "region is smaller than a map header";
   sora_map_hdr h;
   memcpy(&h, shm->addr, sizeof(h));
-  if (h.magic != SORA_MAP_MAGIC)
+  if (h.magic != REI_MAP_MAGIC)
     return "bad magic: not a sora map region";
-  if (h.version != SORA_ABI_VERSION)
+  if (h.version != REI_ABI_VERSION)
     return "ABI version mismatch: worker and submitter were built against "
            "different sora wire formats";
   if (h.n == 0 || h.n > ((uint64_t) 1 << 48))
@@ -319,14 +319,14 @@ static const char *map_hdr_validate(const mori_shm *shm, sora_map_hdr *out) {
   if (h.claim_n == 0 || h.claim_n > (1u << 16) ||
       h.state_off < sizeof(sora_map_hdr) || (h.state_off & 63) != 0 ||
       h.state_off > shm->size ||
-      SORA_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4 > shm->size - h.state_off)
+      REI_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4 > shm->size - h.state_off)
     return "morsel state section lies outside the region";
-  if (h.x_kind == SORA_MAP_X_RAWVEC) {
+  if (h.x_kind == REI_MAP_X_RAWVEC) {
     size_t elt = mori_sizeof_elt((int) h.x_sexptype);
     if (elt == 0 || h.x_off > shm->size || h.x_len > shm->size - h.x_off ||
         h.x_len != h.n * elt)
       return "x section lies outside the region";
-  } else if (h.x_kind != SORA_MAP_X_DESC) {
+  } else if (h.x_kind != REI_MAP_X_DESC) {
     return "unknown x section kind";
   }
   if (h.out_sexptype != 0) {
@@ -352,16 +352,15 @@ SEXP sora_map_open(SEXP name_sexp, SEXP writable_sexp) {
   if (TYPEOF(name_sexp) != STRSXP || XLENGTH(name_sexp) != 1)
     Rf_error("sora: expected a map region name");
   const char *name = CHAR(STRING_ELT(name_sexp, 0));
-  mori_shm *shm = Rf_asLogical(writable_sexp) == TRUE ?
-    sora_shm_open_rw_heap(name, 0) : mori_shm_open_heap(name);
+  rei_shm *shm = Rf_asLogical(writable_sexp) == TRUE ?
+    rei_shm_open_rw_heap(name, 0) : rei_shm_open_heap(name);
   if (shm == NULL)
     sora_stop_shm(NA_REAL, "sora: cannot open map region '%s' — its "
                  "submitter died or the map ended", name);
   sora_map_hdr h;
   const char *err = map_hdr_validate(shm, &h);
   if (err != NULL) {
-    mori_shm_close(shm, 0);
-    free(shm);
+    rei_shm_close(shm, 0);
     Rf_error("sora: invalid map region: %s", err);
   }
   SEXP wrap = PROTECT(sora_shm_wrap_consumer(shm));
@@ -392,7 +391,7 @@ static SEXP map_slice_copy(sora_map_h *mh, uint64_t lo, uint64_t hi) {
 
 SEXP sora_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
   sora_map_h *mh = map_h_get(xp);
-  if (mh->h.x_kind != SORA_MAP_X_RAWVEC)
+  if (mh->h.x_kind != REI_MAP_X_RAWVEC)
     Rf_error("sora: map region has no x section");
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
   if (!(lo >= 1) || !(hi >= lo) || hi > (double) mh->h.n)
@@ -524,7 +523,7 @@ SEXP sora_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
       memcpy(INTEGER(seedv) + 1, state, 6 * sizeof(int));
       Rf_defineVar(sora_rs_sym, seedv, R_GlobalEnv);
       UNPROTECT(1);
-      sora_rng_jump(state);
+      rei_rng_jump(state);
     }
     R_xlen_t idx = base0 + i;
     SEXP elt;
@@ -769,15 +768,15 @@ SEXP sora_map_lost(SEXP xp, SEXP runs) {
    the 0-based first morsel of the batch, k its morsel count after the
    final partial grant, [lo, hi] its 1-based element range.
 
-   sig is the opaque address trio from sora_pool_signals (NULL skips the
+   sig is the opaque address trio from rei_pool_signals (NULL skips the
    loads — the in-process protocol tests). pin bypasses the sizing policy
-   with a fixed k; now overrides the sora_now() read — both test entries,
+   with a fixed k; now overrides the rei_now() read — both test entries,
    NULL in production. */
 SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
                   SEXP pin_sexp, SEXP now_sexp) {
   sora_map_h *mh = map_h_get(xp);
   uint32_t r = map_ordinal(mh, r_sexp);
-  uint32_t gen = ((uint32_t) Rf_asReal(gen_sexp)) & SORA_MAP_GEN_MASK;
+  uint32_t gen = ((uint32_t) Rf_asReal(gen_sexp)) & REI_MAP_GEN_MASK;
 
   /* first transition: CAS (gen << 2)|IDLE -> RUNNING — the one atomic
      that both claims the lane and fences the generation. It fails alike
@@ -787,9 +786,9 @@ SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
      generation), so later transitions — and a run resumed through an
      aliased ctx — fall straight through. */
   _Atomic uint32_t *cw = map_claim_word(mh, r);
-  uint32_t running = (gen << 2) | SORA_MORSEL_RUNNING;
+  uint32_t running = (gen << 2) | REI_MORSEL_RUNNING;
   uint32_t w = atomic_load_explicit(cw, memory_order_acquire);
-  if (w == ((gen << 2) | SORA_MORSEL_IDLE) &&
+  if (w == ((gen << 2) | REI_MORSEL_IDLE) &&
       atomic_compare_exchange_strong_explicit(cw, &w, running,
                                               memory_order_seq_cst,
                                               memory_order_acquire))
@@ -811,7 +810,7 @@ SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
 
   int help = 0;
   if (sig != R_NilValue) {
-    sora_pool_sig *s = sora_pool_sig_get(sig);
+    rei_pool_sig *s = sora_pool_sig_get(sig);
     /* a runner is the one place a worker sits for a whole map without
        touching its step loop, where these words are consumed: NULL
        unwinds it there within ~a batch instead of at cursor exhaustion */
@@ -821,7 +820,7 @@ SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
     help = atomic_load_explicit(s->help_wanted, memory_order_relaxed) != 0;
   }
 
-  double now = now_sexp == R_NilValue ? sora_now() : Rf_asReal(now_sexp);
+  double now = now_sexp == R_NilValue ? rei_now() : Rf_asReal(now_sexp);
   uint64_t k;
   if (pin_sexp != R_NilValue) {
     double pk = Rf_asReal(pin_sexp);
@@ -836,12 +835,12 @@ SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
         mh->cost = per > 1e-9 ? per : 1e-9;   /* clock-floor trivial f */
       }
       if (mh->cost > 0) {
-        double want = SORA_MAP_T_TARGET / mh->cost;
+        double want = REI_MAP_T_TARGET / mh->cost;
         uint64_t wk = want >= 1 ? (uint64_t) want : 1;
         /* grow at most 2x per step toward the target; shrink immediately
            on overshoot; clamp to the batch cap */
         mh->k = wk >= mh->k * 2 ? mh->k * 2 : wk;
-        if (mh->k > SORA_MAP_BATCH_CAP) mh->k = SORA_MAP_BATCH_CAP;
+        if (mh->k > REI_MAP_BATCH_CAP) mh->k = REI_MAP_BATCH_CAP;
       }
     }
     k = mh->k;
@@ -866,7 +865,7 @@ SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
   SET_VECTOR_ELT(out, 1, Rf_ScalarReal((double) k));
   SET_VECTOR_ELT(out, 2, Rf_ScalarReal((double) lo));
   SET_VECTOR_ELT(out, 3, Rf_ScalarReal((double) hi));
-  if (mh->h.x_kind == SORA_MAP_X_RAWVEC)
+  if (mh->h.x_kind == REI_MAP_X_RAWVEC)
     SET_VECTOR_ELT(out, 4, map_slice_copy(mh, lo, hi));
   SET_VECTOR_ELT(out, 5, Rf_ScalarLogical(help));
   UNPROTECT(1);
@@ -876,12 +875,12 @@ SEXP sora_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
 /* The exhausted-runner trim's CAS, folding its own trigger: a no-op
    ("idle" refusal) unless the cursor is exhausted or the cancel word is
    set. A won IDLE -> ABANDONED CAS at the current generation proves that
-   runner never started and never will do work — sora_pool_cancel alone
+   runner never started and never will do work — rei_pool_cancel alone
    cannot carry the trim, being advisory and discard-only while the
    trigger condition is the routine end state of every map. Returns the
-   verdict as the morsel-state code itself: SORA_MORSEL_ABANDONED (won,
-   or already trimmed), SORA_MORSEL_RUNNING (the runner is executing or
-   already published — collect it), SORA_MORSEL_IDLE (trigger unarmed:
+   verdict as the morsel-state code itself: REI_MORSEL_ABANDONED (won,
+   or already trimmed), REI_MORSEL_RUNNING (the runner is executing or
+   already published — collect it), REI_MORSEL_IDLE (trigger unarmed:
    collect defers this handle rather than parking on it). */
 SEXP sora_map_abandon(SEXP xp, SEXP r_sexp) {
   sora_map_h *mh = map_h_get(xp);
@@ -889,18 +888,18 @@ SEXP sora_map_abandon(SEXP xp, SEXP r_sexp) {
   _Atomic uint32_t *cw = map_claim_word(mh, r);
   uint32_t gen = atomic_load_explicit(map_gen_word(mh),
                                       memory_order_acquire) &
-    SORA_MAP_GEN_MASK;
+    REI_MAP_GEN_MASK;
   int armed =
     atomic_load_explicit(map_cursor_word(mh), memory_order_acquire) >=
       mh->h.n_morsels ||
     atomic_load_explicit(map_cancel_word(mh), memory_order_acquire) != 0;
   uint32_t w = atomic_load_explicit(cw, memory_order_acquire);
   if (armed)
-    while (w == ((gen << 2) | SORA_MORSEL_IDLE))
+    while (w == ((gen << 2) | REI_MORSEL_IDLE))
       if (atomic_compare_exchange_strong_explicit(
-            cw, &w, (gen << 2) | SORA_MORSEL_ABANDONED,
+            cw, &w, (gen << 2) | REI_MORSEL_ABANDONED,
             memory_order_seq_cst, memory_order_acquire))
-        return Rf_ScalarInteger(SORA_MORSEL_ABANDONED);
+        return Rf_ScalarInteger(REI_MORSEL_ABANDONED);
   return Rf_ScalarInteger((int) (w & 3u));
 }
 
@@ -935,10 +934,10 @@ SEXP sora_map_reset(SEXP xp) {
   sora_map_h *mh = map_h_get(xp);
   uint32_t gen = (atomic_fetch_add_explicit(map_gen_word(mh), 1u,
                                             memory_order_seq_cst) + 1) &
-    SORA_MAP_GEN_MASK;
+    REI_MAP_GEN_MASK;
   for (uint32_t r = 0; r < mh->h.claim_n; r++)
     atomic_store_explicit(map_claim_word(mh, r),
-                          (gen << 2) | SORA_MORSEL_IDLE,
+                          (gen << 2) | REI_MORSEL_IDLE,
                           memory_order_seq_cst);
   atomic_store_explicit(map_cursor_word(mh), 0, memory_order_seq_cst);
   atomic_store_explicit(map_cancel_word(mh), 0u, memory_order_seq_cst);
@@ -960,7 +959,7 @@ SEXP sora_map_info(SEXP xp) {
   SET_VECTOR_ELT(out, 3, Rf_ScalarInteger((int) mh->h.claim_n));
   SET_VECTOR_ELT(out, 4, Rf_ScalarReal((double)
     (atomic_load_explicit(map_gen_word(mh), memory_order_acquire) &
-     SORA_MAP_GEN_MASK)));
+     REI_MAP_GEN_MASK)));
   uint64_t cur = atomic_load_explicit(map_cursor_word(mh),
                                       memory_order_acquire);
   if (cur > mh->h.n_morsels) cur = mh->h.n_morsels;
@@ -978,7 +977,7 @@ SEXP sora_map_info(SEXP xp) {
    mismatch — the R side restages instead of swapping. */
 SEXP sora_map_swap_x(SEXP xp, SEXP x) {
   sora_map_h *mh = map_h_get(xp);
-  if (mh->h.x_kind != SORA_MAP_X_RAWVEC)
+  if (mh->h.x_kind != REI_MAP_X_RAWVEC)
     Rf_error("sora: map region has no x section");
   if ((uint32_t) TYPEOF(x) != mh->h.x_sexptype ||
       (uint64_t) XLENGTH(x) != mh->h.n ||
@@ -998,8 +997,8 @@ SEXP sora_map_claim_state(SEXP xp, SEXP r_sexp) {
   const char *names[] = {"state", "generation", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(
-    (w & 3u) == SORA_MORSEL_IDLE ? "idle" :
-    (w & 3u) == SORA_MORSEL_RUNNING ? "running" : "abandoned"));
+    (w & 3u) == REI_MORSEL_IDLE ? "idle" :
+    (w & 3u) == REI_MORSEL_RUNNING ? "running" : "abandoned"));
   SET_VECTOR_ELT(out, 1, Rf_ScalarReal((double) (w >> 2)));
   UNPROTECT(1);
   return out;

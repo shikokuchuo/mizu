@@ -15,9 +15,9 @@
    symbols round-trip through installTrChar exactly as R's reader
    produces them.
 
-   Streams are self-describing: the first byte is SORA_CODEC_MAGIC where
+   Streams are self-describing: the first byte is REI_CODEC_MAGIC where
    an R binary stream carries 'B', so the read paths dispatch on the
-   payload's first byte and the sora_slot_hdr wire form is untouched.
+   payload's first byte and the rei_slot_hdr wire form is untouched.
    Both ends are the same sora build on one machine (the ABI version gate
    rejects mixed builds), so the format needs no R compatibility and no
    byte-order discipline.
@@ -120,7 +120,7 @@ enum { SC_ENV_GLOBAL = 0, SC_ENV_BASE, SC_ENV_EMPTY, SC_ENV_NS };
    nesting only (CDR chains iterate). Past it the writer falls back (a
    cyclic graph walks straight into the bound) and the reader errors (a
    valid stream never approaches it). */
-#define SORA_CODEC_MAXDEPTH 500
+#define REI_CODEC_MAXDEPTH 500
 
 // Writer ------------------------------------------------------------------------
 
@@ -252,7 +252,7 @@ static void scw_closure(sora_scw *w, SEXP x, unsigned depth) {
 
 static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
   if (w->fail) return;
-  if (depth > SORA_CODEC_MAXDEPTH) { w->fail = 1; return; }
+  if (depth > REI_CODEC_MAXDEPTH) { w->fail = 1; return; }
   R_CheckStack();
 
   if (x == R_NilValue)      { scw_u8(w, SC_NIL); return; }
@@ -399,7 +399,7 @@ static void scw_node(sora_scw *w, SEXP x, unsigned depth) {
    is unambiguous. */
 size_t sora_codec_write(unsigned char *dst, size_t limit, SEXP x) {
   sora_scw w = { dst, limit, 0, 0 };
-  unsigned char magic = SORA_CODEC_MAGIC;
+  unsigned char magic = REI_CODEC_MAGIC;
   scw_bytes(&w, &magic, 1);
   scw_node(&w, x, 0);
   return w.fail ? 0 : w.total;
@@ -481,7 +481,7 @@ static void scr_attrs(sora_scr *r, SEXP x, unsigned depth) {
 }
 
 static SEXP scr_body(sora_scr *r, uint32_t tag, unsigned depth) {
-  if (depth > SORA_CODEC_MAXDEPTH)
+  if (depth > REI_CODEC_MAXDEPTH)
     Rf_error("sora: corrupt payload stream");
   R_CheckStack();
   uint32_t ty = tag & 0x0f;
@@ -633,7 +633,7 @@ static SEXP scr_node(sora_scr *r, unsigned depth) {
    the corrupt-payload discipline of the other tiers. */
 SEXP sora_codec_read(const unsigned char *buf, size_t len) {
   sora_scr r = { buf, buf + len };
-  if (len == 0 || scr_u8(&r) != SORA_CODEC_MAGIC)
+  if (len == 0 || scr_u8(&r) != REI_CODEC_MAGIC)
     Rf_error("sora: corrupt payload stream");
   SEXP out = scr_node(&r, 0);
   if (r.p != r.end)
@@ -653,7 +653,7 @@ SEXP sora_codec_read(const unsigned char *buf, size_t len) {
    raises. */
 int sora_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
                          SEXP *args) {
-  if (len < 2 || buf[0] != SORA_CODEC_MAGIC) return 0;
+  if (len < 2 || buf[0] != REI_CODEC_MAGIC) return 0;
   sora_scr r = { buf + 1, buf + len };
   uint32_t tag = scr_u8(&r);
   if ((tag & 0x0f) != SC_VEC ||

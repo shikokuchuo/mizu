@@ -20,20 +20,20 @@ test_that("lock files land in the resolved per-platform directory", {
   expect_true(dir.exists(dir))
   p <- channel_pair()
   suffix <- .Call(sora:::sora_channel_suffix, p[["host"]])
-  expect_true(file.exists(file.path(dir, sprintf("sora_%s.live.host", suffix))))
-  expect_true(file.exists(file.path(dir, sprintf("sora_%s.live.peer", suffix))))
+  expect_true(file.exists(file.path(dir, sprintf("rei_%s.live.host", suffix))))
+  expect_true(file.exists(file.path(dir, sprintf("rei_%s.live.peer", suffix))))
 })
 
-test_that("SORA_LIVENESS_DIR overrides the default, read-through", {
+test_that("REI_LIVENESS_DIR overrides the default, read-through", {
   d <- tempfile("livedir")
   dir.create(d)
-  Sys.setenv(SORA_LIVENESS_DIR = d)
-  on.exit(Sys.unsetenv("SORA_LIVENESS_DIR"))
+  Sys.setenv(REI_LIVENESS_DIR = d)
+  on.exit(Sys.unsetenv("REI_LIVENESS_DIR"))
   expect_identical(.Call(sora:::sora_live_dir_call), d)
   p <- channel_pair()
   suffix <- .Call(sora:::sora_channel_suffix, p[["host"]])
-  expect_true(file.exists(file.path(d, sprintf("sora_%s.live.host", suffix))))
-  expect_true(file.exists(file.path(d, sprintf("sora_%s.live.peer", suffix))))
+  expect_true(file.exists(file.path(d, sprintf("rei_%s.live.host", suffix))))
+  expect_true(file.exists(file.path(d, sprintf("rei_%s.live.peer", suffix))))
 })
 
 test_that("a holder's death releases the lock to a probing survivor", {
@@ -76,10 +76,10 @@ test_that("liveness handles validate their arguments", {
 
 test_that("an unusable liveness directory fails both constructors cleanly", {
   on.exit({
-    Sys.unsetenv("SORA_LIVENESS_DIR")
+    Sys.unsetenv("REI_LIVENESS_DIR")
     gc() # release the regions the walked-back creates left behind
   })
-  Sys.setenv(SORA_LIVENESS_DIR = file.path(tempfile("sora-absent"), "locks"))
+  Sys.setenv(REI_LIVENESS_DIR = file.path(tempfile("sora-absent"), "locks"))
   expect_error(
     .Call(sora:::sora_channel_create, quote(NULL), 64L, 256L, 0, FALSE),
     "cannot lock host liveness file"
@@ -89,7 +89,7 @@ test_that("an unusable liveness directory fails both constructors cleanly", {
     "cannot create liveness file"
   )
   # past the 900-byte wire budget both refuse before creating anything
-  Sys.setenv(SORA_LIVENESS_DIR = paste0("/", strrep("d", 920)))
+  Sys.setenv(REI_LIVENESS_DIR = paste0("/", strrep("d", 920)))
   expect_error(
     .Call(sora:::sora_channel_create, quote(NULL), 64L, 256L, 0, FALSE),
     "liveness directory path too long"

@@ -1,7 +1,18 @@
-OBJECTS = bounded.o channel.o codec.o condition.o entity.o init.o liveness.o map.o \
-          payload.o pool.o preamble.o rng.o shm_rw.o spill.o stage_r.o \
-          tune.o wait_linux.o wait_macos.o wait_win32.o wrap.o zc.o \
-          vendor/altrep.o vendor/serialize.o vendor/shm.o
+
+# The R-side sources plus the vendored cores: librei (the transport + region
+# layer, native rei_ namespace) and mori's R-only pieces (ALTREP consumer
+# classes + exact-size serialize). Vendored files come from
+# tools/vendor-librei.sh / tools/vendor-mori.sh — never edited in place.
+OBJECTS = bounded.o codec.o condition.o entity.o init.o liveness.o map.o \
+          payload.o preamble.o rng.o stage_r.o verbs_channel.o verbs_pool.o \
+          wrap.o zc.o \
+          vendor/altrep.o vendor/serialize.o \
+          vendor/librei/api.o vendor/librei/bytes.o vendor/librei/channel.o \
+          vendor/librei/err.o vendor/librei/err_tls.o vendor/librei/liveness.o \
+          vendor/librei/parker.o vendor/librei/pool.o vendor/librei/preamble.o \
+          vendor/librei/rng_jump.o vendor/librei/shm.o vendor/librei/shm_rw.o \
+          vendor/librei/spill.o vendor/librei/tune.o vendor/librei/wait_linux.o \
+          vendor/librei/wait_macos.o vendor/librei/wait_win32.o
 
 .PHONY: all clean
 
@@ -9,7 +20,7 @@ all: $(SHLIB)
 
 # R's makefiles track no header dependencies: without this, editing a header
 # recompiles nothing and one sora.so links objects built from two headers.
-$(OBJECTS): sora.h vendor/mori.h vendor/mori_region.h
+$(OBJECTS): sora.h vendor/mori.h vendor/librei/rei.h vendor/librei/internal.h
 
 clean:
 	@rm -f $(OBJECTS) $(SHLIB)

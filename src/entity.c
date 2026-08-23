@@ -6,52 +6,47 @@
 #include <stdlib.h>
 #include "sora.h"
 
-mori_shm *sora_region(SEXP xp);   /* wrap.c */
+rei_shm *sora_region(SEXP xp);   /* wrap.c */
 
-sora_death_watch *sora_death_watch_start(long pid, _Atomic int *flag,
-                                       const sora_parker *pk) {
-  return sora_death_watch_start2(pid, flag, pk, NULL, NULL);
-}
-
-static _Atomic uint32_t *sora_entity_epoch(mori_shm *shm, int entity) {
-  if (entity != SORA_ENTITY_HOST && entity != SORA_ENTITY_PEER)
+static _Atomic uint32_t *sora_entity_epoch(rei_shm *shm, int entity) {
+  if (entity != REI_ENTITY_HOST && entity != REI_ENTITY_PEER)
     Rf_error("sora: invalid entity");
-  if (shm->size < SORA_ENTITY_OFFSET(entity) + 64)
+  if (shm->size < REI_ENTITY_OFFSET(entity) + 64)
     Rf_error("sora: region too small for an entity block");
-  return (_Atomic uint32_t *) ((char *) shm->addr + SORA_ENTITY_OFFSET(entity));
+  return (_Atomic uint32_t *) ((char *) shm->addr + REI_ENTITY_OFFSET(entity));
 }
 
 // Parker ------------------------------------------------------------------------
 
 SEXP sora_park_call(SEXP xp, SEXP entity, SEXP timeout_ms, SEXP create) {
-  mori_shm *shm = sora_region(xp);
+  rei_shm *shm = sora_region(xp);
   int ent = Rf_asInteger(entity);
 
-  sora_parker pk;
-  if (sora_parker_attach(&pk, sora_entity_epoch(shm, ent), shm->name, ent,
+  rei_parker pk;
+  if (rei_parker_attach(&pk, sora_entity_epoch(shm, ent), shm->name, ent,
                         Rf_asLogical(create) == TRUE) != 0)
     Rf_error("sora: cannot attach parker");
-  int rc = sora_park(&pk, sora_parker_snapshot(&pk),
+  int rc = rei_park(&pk, rei_parker_snapshot(&pk),
                     (long) Rf_asInteger(timeout_ms));
-  sora_parker_detach(&pk);
+  rei_parker_detach(&pk);
   return Rf_ScalarInteger(rc);
 }
 
 SEXP sora_unpark_call(SEXP xp, SEXP entity, SEXP create) {
-  mori_shm *shm = sora_region(xp);
+  rei_shm *shm = sora_region(xp);
   int ent = Rf_asInteger(entity);
 
-  sora_parker pk;
-  if (sora_parker_attach(&pk, sora_entity_epoch(shm, ent), shm->name, ent,
+  rei_parker pk;
+  if (rei_parker_attach(&pk, sora_entity_epoch(shm, ent), shm->name, ent,
                         Rf_asLogical(create) == TRUE) != 0)
     Rf_error("sora: cannot attach parker");
-  sora_unpark(&pk);
-  sora_parker_detach(&pk);
+  rei_unpark(&pk);
+  rei_parker_detach(&pk);
   return R_NilValue;
 }
 
 SEXP sora_epoch_call(SEXP xp, SEXP entity) {
-  mori_shm *shm = sora_region(xp);
+  rei_shm *shm = sora_region(xp);
   _Atomic uint32_t *epoch = sora_entity_epoch(shm, Rf_asInteger(entity));
   return Rf_ScalarReal((double)
     atomic_load_explicit(epoch, memory_order_acquire));
@@ -61,9 +56,9 @@ SEXP sora_epoch_call(SEXP xp, SEXP entity) {
 
 typedef struct sora_death_handle_s {
   _Atomic int fired;
-  sora_parker pk;
+  rei_parker pk;
   int has_pk;
-  sora_death_watch *watch;
+  rei_death_watch *watch;
 } sora_death_handle;
 
 static SEXP sora_death_tag;
@@ -75,8 +70,8 @@ void sora_entity_init(void) {
 static void sora_death_finalizer(SEXP xp) {
   sora_death_handle *h = (sora_death_handle *) R_ExternalPtrAddr(xp);
   if (h == NULL) return;
-  sora_death_watch_stop(h->watch);   /* synchronizes with in-flight callbacks */
-  if (h->has_pk) sora_parker_detach(&h->pk);
+  rei_death_watch_stop(h->watch);   /* synchronizes with in-flight callbacks */
+  if (h->has_pk) rei_parker_detach(&h->pk);
   free(h);
   R_ClearExternalPtr(xp);
 }
@@ -89,9 +84,9 @@ SEXP sora_death_watch_call(SEXP pid, SEXP xp, SEXP entity, SEXP create) {
   if (h == NULL) Rf_error("sora: allocation failure");
 
   if (xp != R_NilValue) {
-    mori_shm *shm = sora_region(xp);
+    rei_shm *shm = sora_region(xp);
     int ent = Rf_asInteger(entity);
-    if (sora_parker_attach(&h->pk, sora_entity_epoch(shm, ent), shm->name, ent,
+    if (rei_parker_attach(&h->pk, sora_entity_epoch(shm, ent), shm->name, ent,
                           Rf_asLogical(create) == TRUE) != 0) {
       free(h);
       Rf_error("sora: cannot attach parker");
@@ -99,11 +94,11 @@ SEXP sora_death_watch_call(SEXP pid, SEXP xp, SEXP entity, SEXP create) {
     h->has_pk = 1;
   }
 
-  h->watch = sora_death_watch_start((long) Rf_asReal(pid), &h->fired,
+  h->watch = rei_death_watch_start((long) Rf_asReal(pid), &h->fired,
                                    h->has_pk ? &h->pk : NULL);
   if (h->watch == NULL) {
     long p = (long) Rf_asReal(pid);
-    if (h->has_pk) sora_parker_detach(&h->pk);
+    if (h->has_pk) rei_parker_detach(&h->pk);
     free(h);
     Rf_error("sora: cannot watch pid %ld", p);
   }

@@ -23,8 +23,8 @@
 
 #include "sora.h"
 
-#define SORA_RNG_M1 4294967087ULL
-#define SORA_RNG_M2 4294944443ULL
+#define REI_RNG_M1 4294967087ULL
+#define REI_RNG_M2 4294944443ULL
 
 /* Jump matrices A1^(2^127) mod m1 and A2^(2^127) mod m2 */
 static const unsigned long long A1p127[3][3] = {
@@ -83,23 +83,6 @@ static void mat_pow_mod(const unsigned long long A[3][3], uint64_t k,
   }
 }
 
-/* One 2^127-step stream jump in place over a 6-word CMRG state, stored as
-   R stores it: signed ints holding values in [0, m). Non-static: the map
-   batch loop (map.c) jumps its local state per element. */
-void sora_rng_jump(int *seed) {
-  unsigned long long v1[3] = { (unsigned int) seed[0], (unsigned int) seed[1],
-                               (unsigned int) seed[2] };
-  unsigned long long v2[3] = { (unsigned int) seed[3], (unsigned int) seed[4],
-                               (unsigned int) seed[5] };
-  unsigned long long out1[3], out2[3];
-  mat_vec_mod(A1p127, v1, out1, SORA_RNG_M1);
-  mat_vec_mod(A2p127, v2, out2, SORA_RNG_M2);
-  for (int i = 0; i < 3; i++) {
-    seed[i]     = (int) out1[i];
-    seed[i + 3] = (int) out2[i];
-  }
-}
-
 static void sora_rng_state_check(SEXP state) {
   if (TYPEOF(state) != INTSXP || XLENGTH(state) != 6)
     Rf_error("sora: invalid RNG stream state");
@@ -116,7 +99,7 @@ SEXP sora_map_rng_base(SEXP seed_sexp) {
   int *o = INTEGER(out);
   for (int j = 0; j < 50; j++) seed = 69069 * seed + 1;
   for (int j = 0; j < 6; j++) {
-    do { seed = 69069 * seed + 1; } while (seed >= (unsigned int) SORA_RNG_M2);
+    do { seed = 69069 * seed + 1; } while (seed >= (unsigned int) REI_RNG_M2);
     o[j] = (int) seed;
   }
   /* an all-zero triple is a degenerate CMRG state; R re-randomizes, but a
@@ -135,15 +118,15 @@ SEXP sora_map_rng_seek(SEXP state, SEXP k_sexp) {
   if (!(kd >= 0) || kd > 9.007199254740992e15)
     Rf_error("sora: invalid stream index");
   unsigned long long P1[3][3], P2[3][3], v1[3], v2[3], o1[3], o2[3];
-  mat_pow_mod(A1p127, (uint64_t) kd, P1, SORA_RNG_M1);
-  mat_pow_mod(A2p127, (uint64_t) kd, P2, SORA_RNG_M2);
+  mat_pow_mod(A1p127, (uint64_t) kd, P1, REI_RNG_M1);
+  mat_pow_mod(A2p127, (uint64_t) kd, P2, REI_RNG_M2);
   const int *s = INTEGER(state);
   for (int i = 0; i < 3; i++) {
     v1[i] = (unsigned int) s[i];
     v2[i] = (unsigned int) s[i + 3];
   }
-  mat_vec_mod(P1, v1, o1, SORA_RNG_M1);
-  mat_vec_mod(P2, v2, o2, SORA_RNG_M2);
+  mat_vec_mod(P1, v1, o1, REI_RNG_M1);
+  mat_vec_mod(P2, v2, o2, REI_RNG_M2);
   SEXP out = Rf_allocVector(INTSXP, 6);
   for (int i = 0; i < 3; i++) {
     INTEGER(out)[i] = (int) o1[i];
@@ -164,7 +147,7 @@ SEXP sora_map_rng_install(SEXP state) {
   Rf_defineVar(Rf_install(".Random.seed"), seed, R_GlobalEnv);
   SEXP nxt = Rf_allocVector(INTSXP, 6);
   memcpy(INTEGER(nxt), INTEGER(state), 6 * sizeof(int));
-  sora_rng_jump(INTEGER(nxt));
+  rei_rng_jump(INTEGER(nxt));
   UNPROTECT(1);
   return nxt;
 }

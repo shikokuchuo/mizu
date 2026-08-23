@@ -77,13 +77,13 @@ test_that("peer death surfaces as a sticky sora_peer_gone after draining", {
   expect_true(sora_close(ch, timeout = 10))
 })
 
-test_that("a peer that dies mid-stream loses nothing already published", {
+test_that("a peer that exits mid-stream loses nothing already published", {
   skip_if_no_child_sora()
   ch <- sora_channel(quote({
     for (i in 1:5) {
       sora_send(ch, i)
     }
-    quit(save = "no") # dies without close
+    quit(save = "no") # a clean exit: the exit finalizer signals close
   }))
   got <- list()
   repeat {
@@ -93,6 +93,25 @@ test_that("a peer that dies mid-stream loses nothing already published", {
     }
     got <- c(got, list(r))
   }
+  expect_identical(got, as.list(1:5)) # drained before the verdict
+  expect_s3_class(r, "sora_closed")
+  sora_close(ch, timeout = 10)
+})
+
+test_that("a peer hard-killed mid-stream drains, then reports gone", {
+  skip_if_no_child_sora()
+  ch <- sora_channel(quote({
+    for (i in 1:5) {
+      sora_send(ch, i)
+    }
+    Sys.sleep(30)
+  }))
+  got <- list()
+  for (i in 1:5) {
+    got <- c(got, list(sora_recv(ch, timeout = 30)))
+  }
+  kill_hard(.Call(sora:::sora_channel_stat, ch)[["peer_pid"]])
+  r <- sora_recv(ch, timeout = 30)
   expect_identical(got, as.list(1:5)) # drained before the verdict
   expect_s3_class(r, "sora_peer_gone")
   sora_close(ch, timeout = 10)

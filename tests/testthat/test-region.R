@@ -1,10 +1,14 @@
-# Vendored SHM core under the /sora_ namespace, the sora-owned writable attach,
+# Vendored SHM core under the /rei_ namespace, the sora-owned writable attach,
 # and the GC extptr wrappers (producer: munmap + unlink; consumer: munmap).
 
 test_that("regions are created under the sora namespace with correct size", {
   xp <- .Call(sora:::sora_region_create, 4096)
   nm <- .Call(sora:::sora_region_name, xp)
-  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\sora_" else "/sora_"
+  prefix <- if (.Platform[["OS.type"]] == "windows") {
+    "Local\\rei_"
+  } else {
+    "/rei_"
+  }
   expect_true(startsWith(nm, prefix))
   expect_identical(.Call(sora:::sora_region_size, xp), 4096)
 })
@@ -38,14 +42,22 @@ test_that("peek and poke are bounds-checked", {
 
 test_that("invalid creates and opens error cleanly", {
   expect_error(.Call(sora:::sora_region_create, 0), "invalid region size")
-  expect_error(.Call(sora:::sora_region_open, "/sora_nonexistent_0", FALSE),
-               "cannot open")
-  expect_error(.Call(sora:::sora_region_open, "/sora_nonexistent_0", TRUE),
-               "cannot open")
-  expect_error(.Call(sora:::sora_region_name, new.env()),
-               "not a sora region handle")
-  expect_error(.Call(sora:::sora_region_open, 42L, FALSE),
-               "expected a region name")
+  expect_error(
+    .Call(sora:::sora_region_open, "/sora_nonexistent_0", FALSE),
+    "cannot open"
+  )
+  expect_error(
+    .Call(sora:::sora_region_open, "/sora_nonexistent_0", TRUE),
+    "cannot open"
+  )
+  expect_error(
+    .Call(sora:::sora_region_name, new.env()),
+    "not a sora region handle"
+  )
+  expect_error(
+    .Call(sora:::sora_region_open, 42L, FALSE),
+    "expected a region name"
+  )
 })
 
 test_that("producer GC releases the name; live consumers keep reading", {
@@ -73,16 +85,23 @@ test_that("producer GC releases the name; live consumers keep reading", {
 test_that("clean child exit runs the session-exit finalizers", {
   skip_if_no_child_sora()
   f <- tfile()
-  sora:::sora_spawn(sprintf('
+  sora:::sora_spawn(sprintf(
+    '
     library(sora)
     xp <- .Call(sora:::sora_region_create, 4096)
     tmp <- paste0(%s, ".tmp")
     writeLines(.Call(sora:::sora_region_name, xp), tmp)
     file.rename(tmp, %s)
-  ', deparse(f), deparse(f)))
+  ',
+    deparse(f),
+    deparse(f)
+  ))
   expect_true(wait_for_file(f))
   nm <- readLines(f)
   expect_true(wait_until(
-    inherits(tryCatch(.Call(sora:::sora_region_open, nm, FALSE),
-                      error = identity), "error")))
+    inherits(
+      tryCatch(.Call(sora:::sora_region_open, nm, FALSE), error = identity),
+      "error"
+    )
+  ))
 })

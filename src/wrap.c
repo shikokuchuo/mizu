@@ -20,7 +20,7 @@ void sora_wrap_init(void) {
   sora_host_tag = Rf_install("sora_host");
 }
 
-SEXP sora_shm_wrap_consumer(mori_shm *shm) {
+SEXP sora_shm_wrap_consumer(rei_shm *shm) {
   SEXP ptr = R_MakeExternalPtr(shm, sora_shm_tag, R_NilValue);
   R_RegisterCFinalizerEx(ptr, mori_shm_finalizer, TRUE);
   return ptr;
@@ -33,11 +33,11 @@ SEXP sora_shm_wrap_consumer(mori_shm *shm) {
    release path and drives this one-shot at protocol time (close rendezvous /
    survivor cleanup), with GC as the fallback. Running the finalizer manually
    is safe: it clears the extptr, so the GC pass is a no-op. */
-SEXP sora_shm_wrap_host(mori_shm *shm) {
+SEXP sora_shm_wrap_host(rei_shm *shm) {
 
-  mori_shm *host = malloc(sizeof(mori_shm));
+  rei_shm *host = malloc(sizeof(rei_shm));
   if (host == NULL) Rf_error("sora: allocation failure");
-  memcpy(host, shm, sizeof(mori_shm));
+  memcpy(host, shm, sizeof(rei_shm));
   host->addr = NULL;
   host->size = 0;
 #ifdef _WIN32
@@ -49,7 +49,7 @@ SEXP sora_shm_wrap_host(mori_shm *shm) {
   return host_ptr;
 }
 
-SEXP sora_shm_wrap_producer(mori_shm *shm) {
+SEXP sora_shm_wrap_producer(rei_shm *shm) {
   SEXP host_ptr = PROTECT(sora_shm_wrap_host(shm));
   SEXP shm_ptr = R_MakeExternalPtr(shm, sora_shm_tag, host_ptr);
   R_RegisterCFinalizerEx(shm_ptr, mori_shm_finalizer, TRUE);
@@ -60,17 +60,17 @@ SEXP sora_shm_wrap_producer(mori_shm *shm) {
 /* Non-erroring unwrap for the spill free list: the region behind a
    sora_shm-tagged wrap, NULL for anything else (a finalized wrap's cleared
    pointer included). */
-mori_shm *sora_shm_unwrap(SEXP x) {
+rei_shm *sora_shm_unwrap(SEXP x) {
   if (TYPEOF(x) != EXTPTRSXP || R_ExternalPtrTag(x) != sora_shm_tag)
     return NULL;
-  return (mori_shm *) R_ExternalPtrAddr(x);
+  return (rei_shm *) R_ExternalPtrAddr(x);
 }
 
 /* Shared by the .Call test surface across compilation units. */
-mori_shm *sora_region(SEXP xp) {
+rei_shm *sora_region(SEXP xp) {
   if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != sora_shm_tag)
     Rf_error("sora: not a sora region handle");
-  mori_shm *shm = (mori_shm *) R_ExternalPtrAddr(xp);
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(xp);
   if (shm == NULL || shm->addr == NULL)
     Rf_error("sora: region handle is closed");
   return shm;
@@ -83,11 +83,11 @@ SEXP sora_region_create(SEXP size) {
   if (!(sz >= 1) || sz > 9.007199254740992e15)
     Rf_error("sora: invalid region size");
 
-  mori_shm *shm;
-  int rc = mori_shm_create_heap(&shm, (size_t) sz);
+  rei_shm *shm;
+  int rc = rei_shm_create_heap(&shm, (size_t) sz);
   if (rc) {
     const char *summary, *hint;
-    mori_err_describe(rc, &summary, &hint);
+    rei_err_describe(rc, &summary, &hint);
     sora_stop_shm(sz,
                  "sora: cannot create region (requested %.0f bytes): %s%s%s",
                  sz, summary, hint[0] != '\0' ? ". " : "", hint);
@@ -100,15 +100,15 @@ SEXP sora_region_open(SEXP name, SEXP rw) {
     Rf_error("sora: expected a region name");
   const char *nm = CHAR(STRING_ELT(name, 0));
 
-  mori_shm *shm = Rf_asLogical(rw) == TRUE ?
-    sora_shm_open_rw_heap(nm, 1) : mori_shm_open_heap(nm);
+  rei_shm *shm = Rf_asLogical(rw) == TRUE ?
+    rei_shm_open_rw_heap(nm, 1) : rei_shm_open_heap(nm);
   if (shm == NULL)
     sora_stop_shm(NA_REAL, "sora: cannot open region '%s'", nm);
   return sora_shm_wrap_consumer(shm);
 }
 
 SEXP sora_region_name(SEXP xp) {
-  mori_shm *shm = sora_region(xp);
+  rei_shm *shm = sora_region(xp);
   return Rf_ScalarString(Rf_mkCharLenCE(shm->name, shm->name_len, CE_NATIVE));
 }
 
@@ -119,7 +119,7 @@ SEXP sora_region_size(SEXP xp) {
 /* Raw byte access for tests (e.g. corrupting a preamble). Writing through a
    read-only consumer mapping faults — poke only host / rw handles. */
 SEXP sora_peek(SEXP xp, SEXP offset, SEXP n) {
-  mori_shm *shm = sora_region(xp);
+  rei_shm *shm = sora_region(xp);
   double off = Rf_asReal(offset), len = Rf_asReal(n);
   if (!(off >= 0) || !(len >= 0) || off + len > (double) shm->size)
     Rf_error("sora: peek out of bounds");
@@ -129,7 +129,7 @@ SEXP sora_peek(SEXP xp, SEXP offset, SEXP n) {
 }
 
 SEXP sora_poke(SEXP xp, SEXP offset, SEXP bytes) {
-  mori_shm *shm = sora_region(xp);
+  rei_shm *shm = sora_region(xp);
   if (TYPEOF(bytes) != RAWSXP) Rf_error("sora: expected a raw vector");
   double off = Rf_asReal(offset);
   size_t len = (size_t) XLENGTH(bytes);
@@ -145,7 +145,7 @@ SEXP sora_poke(SEXP xp, SEXP offset, SEXP bytes) {
    mapping cannot outlive its creator anyway). */
 SEXP sora_prune_call(void) {
   int n = 0;
-  char **list = mori_shm_reap(&n);
+  char **list = rei_shm_reap(&n);
   if (n == 0) return R_NilValue;
   SEXP out = PROTECT(Rf_allocVector(STRSXP, n));
   for (int i = 0; i < n; i++) {

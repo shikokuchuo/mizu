@@ -247,9 +247,9 @@ test_that("sora_pool_dump snapshots registries, deques, and result slots", {
   s1 <- sora_submit(p[["wk"]], "nested")
   d <- sora_pool_dump(p[["ctrl"]])
   prefix <- if (.Platform[["OS.type"]] == "windows") {
-    "Local\\sora_"
+    "Local\\rei_"
   } else {
-    "/sora_"
+    "/rei_"
   }
   expect_true(startsWith(d[["name"]], prefix))
   expect_false(d[["shutdown"]])
