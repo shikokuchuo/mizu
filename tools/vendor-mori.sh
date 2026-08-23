@@ -81,31 +81,34 @@ sed -i.bak \
   -e 's|"mori_region\.h"|"librei/internal.h"|' \
   "$DEST/altrep.c" "$DEST/mori.h" "$DEST/serialize.c"
 
-# 3. The bare struct type (not the R-facing mori_shm_* functions).
-sed -i.bak -e 's|[[:<:]]mori_shm[[:>:]]|rei_shm|g' "$DEST/altrep.c" "$DEST/mori.h"
-
-# 4. Extptr tag strings: installed symbols are process-global, so the
-#    vendored view chain must not share tag names with a loaded mori.
+# 3. Extptr tag strings: installed symbols are process-global, so the
+#    vendored view chain shares tag names with neither a loaded mori nor
+#    the package's own region wraps (wrap.c's "rei_shm"). Must run before
+#    the bare-type rule below, which would otherwise rewrite the
+#    "mori_shm" literal to "rei_shm" first.
 sed -i.bak \
-  -e 's|"mori_shm"|"sora_mori_shm"|' \
-  -e 's|"mori_host"|"sora_mori_host"|' \
-  -e 's|"mori_owned"|"sora_mori_owned"|' \
+  -e 's|"mori_shm"|"rei_mori_shm"|' \
+  -e 's|"mori_host"|"rei_mori_host"|' \
+  -e 's|"mori_owned"|"rei_mori_owned"|' \
   "$DEST/mori.h"
 
-# 5. ALTREP class names + registering package: sora's classes stay
+# 4. The bare struct type (not the R-facing mori_shm_* functions).
+sed -i.bak -e 's|[[:<:]]mori_shm[[:>:]]|rei_shm|g' "$DEST/altrep.c" "$DEST/mori.h"
+
+# 5. ALTREP class names + registering package: rei's classes stay
 #    distinguishable from an installed mori's (class identity is name +
 #    package + DllInfo; the first two are user-visible).
-# 6. Error message prefix, package-consistent with the rest of sora.
+# 6. Error message prefix, package-consistent with the rest of rei.
 sed -i.bak \
-  -e 's|"mori_list"|"sora_list"|g' \
-  -e 's|"mori_real"|"sora_real"|g' \
-  -e 's|"mori_integer"|"sora_integer"|g' \
-  -e 's|"mori_logical"|"sora_logical"|g' \
-  -e 's|"mori_raw"|"sora_raw"|g' \
-  -e 's|"mori_complex"|"sora_complex"|g' \
-  -e 's|"mori_string"|"sora_string"|g' \
-  -e 's|, "mori", dll)|, "sora", dll)|g' \
-  -e 's|"mori: |"sora: |g' \
+  -e 's|"mori_list"|"rei_list"|g' \
+  -e 's|"mori_real"|"rei_real"|g' \
+  -e 's|"mori_integer"|"rei_integer"|g' \
+  -e 's|"mori_logical"|"rei_logical"|g' \
+  -e 's|"mori_raw"|"rei_raw"|g' \
+  -e 's|"mori_complex"|"rei_complex"|g' \
+  -e 's|"mori_string"|"rei_string"|g' \
+  -e 's|, "mori", dll)|, "rei", dll)|g' \
+  -e 's|"mori: |"rei: |g' \
   "$DEST/altrep.c"
 
 rm -f "$DEST"/*.bak

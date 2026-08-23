@@ -4,11 +4,11 @@
 # and falls back to R_Serialize at the staging call sites.
 
 codec_rt <- function(x) {
-  b <- .Call(sora:::sora_codec_write_call, x)
+  b <- .Call(rei:::rei_codec_write_call, x)
   if (is.null(b)) {
     return(b)
   }
-  .Call(sora:::sora_codec_read_call, b)
+  .Call(rei:::rei_codec_read_call, b)
 }
 
 test_that("atomic vectors round-trip byte-exactly", {
@@ -76,11 +76,11 @@ test_that("attributes round-trip: names, dim, class, object bit", {
 test_that("S4 objects round-trip with the bit, slots, and class intact", {
   # a slots-only object: the data-less S4SXP form
   methods::setClass(
-    "soraSlots",
+    "reiSlots",
     representation(x = "numeric", id = "character")
   )
-  on.exit(methods::removeClass("soraSlots"), add = TRUE)
-  a <- methods::new("soraSlots", x = c(1.5, 2.5), id = "a")
+  on.exit(methods::removeClass("reiSlots"), add = TRUE)
+  a <- methods::new("reiSlots", x = c(1.5, 2.5), id = "a")
   expect_identical(codec_rt(a), a)
   expect_identical(codec_rt(list(a, 1L)), list(a, 1L))
   # a non-slot attribute rides along
@@ -89,22 +89,22 @@ test_that("S4 objects round-trip with the bit, slots, and class intact", {
   expect_identical(codec_rt(b), b)
   # a data-part class: the S4 flag on an atomic vector node
   methods::setClass(
-    "soraVec",
+    "reiVec",
     contains = "numeric",
     representation(tag = "character")
   )
-  on.exit(methods::removeClass("soraVec"), add = TRUE)
-  v <- methods::new("soraVec", c(1, 2), tag = "t")
+  on.exit(methods::removeClass("reiVec"), add = TRUE)
+  v <- methods::new("reiVec", c(1, 2), tag = "t")
   expect_identical(codec_rt(v), v)
   # a matrix data part: the S4 flag alongside a dim attribute
-  methods::setClass("soraMat", contains = "matrix")
-  on.exit(methods::removeClass("soraMat"), add = TRUE)
-  m <- methods::new("soraMat", matrix(c(1, 2, 3, 4), 2))
+  methods::setClass("reiMat", contains = "matrix")
+  on.exit(methods::removeClass("reiMat"), add = TRUE)
+  m <- methods::new("reiMat", matrix(c(1, 2, 3, 4), 2))
   expect_identical(codec_rt(m), m)
   # a function data part: the S4 flag on a closure node
-  methods::setClass("soraFun", contains = "function")
-  on.exit(methods::removeClass("soraFun"), add = TRUE)
-  f <- methods::new("soraFun", eval(quote(function(x) x + 1), globalenv()))
+  methods::setClass("reiFun", contains = "function")
+  on.exit(methods::removeClass("reiFun"), add = TRUE)
+  f <- methods::new("reiFun", eval(quote(function(x) x + 1), globalenv()))
   expect_identical(codec_rt(f), f)
 })
 
@@ -183,77 +183,77 @@ test_that("keep.source language trees cross with srcrefs dropped", {
 })
 
 test_that("the subset declines cleanly: NULL from the write surface", {
-  expect_null(.Call(sora:::sora_codec_write_call, 1:5)) # ALTREP
-  expect_null(.Call(sora:::sora_codec_write_call, globalenv())) # environment
+  expect_null(.Call(rei:::rei_codec_write_call, 1:5)) # ALTREP
+  expect_null(.Call(rei:::rei_codec_write_call, globalenv())) # environment
   # a closure over a local environment (the function-factory case)
   loc <- local({
     y <- 1
     eval(quote(function(x) x + y))
   })
-  expect_null(.Call(sora:::sora_codec_write_call, loc))
+  expect_null(.Call(rei:::rei_codec_write_call, loc))
   # a byte-compiled closure body
   expect_null(.Call(
-    sora:::sora_codec_write_call,
+    rei:::rei_codec_write_call,
     compiler::cmpfun(eval(quote(function(x) x + 1)))
   ))
   # an attributed language node in the body (a non-srcref attribute
   # survives the strip, and attributed pairlist nodes decline)
   src <- eval(quote(function(x) f(x)), globalenv())
   body(src) <- structure(body(src), note = 1)
-  expect_null(.Call(sora:::sora_codec_write_call, src))
+  expect_null(.Call(rei:::rei_codec_write_call, src))
   # a data.frame's row.names are an ALTREP compact sequence
-  expect_null(.Call(sora:::sora_codec_write_call, data.frame(x = 1:3)))
+  expect_null(.Call(rei:::rei_codec_write_call, data.frame(x = 1:3)))
   # a language node with a non-srcref attribute still declines
   expect_null(.Call(
-    sora:::sora_codec_write_call,
+    rei:::rei_codec_write_call,
     structure(quote(f(x)), note = 1)
   ))
   # an S4 object with an out-of-subset slot declines with it
-  methods::setClass("soraEnv", representation(e = "environment"))
-  on.exit(methods::removeClass("soraEnv"), add = TRUE)
+  methods::setClass("reiEnv", representation(e = "environment"))
+  on.exit(methods::removeClass("reiEnv"), add = TRUE)
   expect_null(.Call(
-    sora:::sora_codec_write_call,
-    methods::new("soraEnv", e = new.env())
+    rei:::rei_codec_write_call,
+    methods::new("reiEnv", e = new.env())
   ))
   # an S4 object with an ALTREP slot
-  methods::setClass("soraAlt", representation(x = "integer"))
-  on.exit(methods::removeClass("soraAlt"), add = TRUE)
+  methods::setClass("reiAlt", representation(x = "integer"))
+  on.exit(methods::removeClass("reiAlt"), add = TRUE)
   expect_null(.Call(
-    sora:::sora_codec_write_call,
-    methods::new("soraAlt", x = 1:3)
+    rei:::rei_codec_write_call,
+    methods::new("reiAlt", x = 1:3)
   ))
 })
 
 test_that("the reader rejects malformed streams", {
-  expect_error(.Call(sora:::sora_codec_read_call, raw(0)), "corrupt")
-  expect_error(.Call(sora:::sora_codec_read_call, as.raw(0x42)), "corrupt")
-  b <- .Call(sora:::sora_codec_write_call, list(a = 1L, b = "x"))
+  expect_error(.Call(rei:::rei_codec_read_call, raw(0)), "corrupt")
+  expect_error(.Call(rei:::rei_codec_read_call, as.raw(0x42)), "corrupt")
+  b <- .Call(rei:::rei_codec_write_call, list(a = 1L, b = "x"))
   expect_error(
-    .Call(sora:::sora_codec_read_call, b[seq_len(length(b) - 1)]),
+    .Call(rei:::rei_codec_read_call, b[seq_len(length(b) - 1)]),
     "corrupt"
   )
-  expect_error(.Call(sora:::sora_codec_read_call, c(b, raw(1))), "corrupt")
+  expect_error(.Call(rei:::rei_codec_read_call, c(b, raw(1))), "corrupt")
   bad <- b
   bad[2] <- as.raw(0x7f)
-  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
   # a corrupt closure environment kind byte
   cf <- .Call(
-    sora:::sora_codec_write_call,
+    rei:::rei_codec_write_call,
     eval(quote(function(x) x), globalenv())
   )
   bad <- cf
   bad[3] <- as.raw(0xff)
-  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
   # the S4 flag on a symbol, a type that never carries it
-  bad <- .Call(sora:::sora_codec_write_call, quote(x))
+  bad <- .Call(rei:::rei_codec_write_call, quote(x))
   bad[2] <- as.raw(0x41)
-  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
   # the primitive flag on a non-symbol
-  bad <- .Call(sora:::sora_codec_write_call, 1L)
+  bad <- .Call(rei:::rei_codec_write_call, 1L)
   bad[2] <- as.raw(0x83)
-  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
   # a primitive name that resolves to no primitive
-  bad <- .Call(sora:::sora_codec_write_call, quote(x))
+  bad <- .Call(rei:::rei_codec_write_call, quote(x))
   bad[2] <- as.raw(0x81)
-  expect_error(.Call(sora:::sora_codec_read_call, bad), "corrupt")
+  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
 })

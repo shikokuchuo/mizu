@@ -1,4 +1,4 @@
-# Static Rscript runner for sora_spawn. A file rather than -e so no per-spawn
+# Static Rscript runner for rei_spawn. A file rather than -e so no per-spawn
 # command file is written; argv rather than environment variables so
 # concurrent launches share no state. argv: <hex expr> <hex libpaths>.
 args <- commandArgs(trailingOnly = TRUE)

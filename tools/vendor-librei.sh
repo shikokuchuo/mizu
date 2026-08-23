@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-PIN="cb845d5fc8c97fc5b4a28a2a91e69861d1fa28b2"  # librei: Align the channel attach malformed-suffix message with the pool's
+PIN="753e619a125f0bb694fc62ef3e7fcdc6687d25f1"  # librei: Remove the macOS registry log at exit once all regions are torn down
 REF="${1:-$PIN}"
 REPO="${LIBREI_REPO:-https://github.com/shikokuchuo/librei}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/librei"

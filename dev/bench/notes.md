@@ -1,8 +1,8 @@
 # Recorded benchmark notes
 
-Dated performance records for sora. The live reports that print against
+Dated performance records for rei. The live reports that print against
 these baselines are `tests/testthat/test-benchmark.R` (eyeball them in CI
-logs); `dev/bench/sora-mirai.R` runs the matched-scenario mirai
+logs); `dev/bench/rei-mirai.R` runs the matched-scenario mirai
 comparison. Nothing here is asserted against — runner timing is too
 variable for thresholds. Append new dated outcomes at the bottom.
 
@@ -15,20 +15,20 @@ this host, so timed intervals are kept >> 1 ms by looping.
 - nanonext `ipc://` pair: 31.7 us per round trip (~31.5k RT/s)
 - mirai local dispatch: 63-124 us per task
 - target regime: >100k small messages/s sustained
-- `sora_map` overhead regime: serial lapply ~0.2 us/element; per-element
-  `sora_submit`/`sora_collect` ~4 us; `mirai_map` ~63-124 us/element
+- `rei_map` overhead regime: serial lapply ~0.2 us/element; per-element
+  `rei_submit`/`rei_collect` ~4 us; `mirai_map` ~63-124 us/element
 
 ## Durable calibration facts
 
 - Small-op floor is the R-interpreter boundary: >85% of a pool round
   trip, the closure call alone ~40% of it. The batch verbs and
-  `sora_map` are the answers for throughput-bound callers.
+  `rei_map` are the answers for throughput-bound callers.
 - Park/wake pair: ~8 us macOS, ~16 us virtualized Linux (isolated by
   pacing an echo peer, stock vs spin=TRUE).
 - Zero-copy floors: SHM_VEC loses to the copy tiers below ~8-16 KiB
   (ARENA ~1.9-2.2 us at 256 B-4 KiB vs SHM_VEC ~2.3-2.9 us).
-  `SORA_ZC_FLOOR` (pool) sits at the 16-64 KiB band;
-  `SORA_ZC_FLOOR_RAW` = 256 KiB (channel arena; lifts under the
+  `REI_ZC_FLOOR` (pool) sits at the 16-64 KiB band;
+  `REI_ZC_FLOOR_RAW` = 256 KiB (channel arena; lifts under the
   Linux-only churn signal). The pool's raw spill is a region too:
   region-raw never beat the view at 64 KiB+ (26.4 vs 21.5 us).
 - Large-payload suite cases are sized for a 1 GB /dev/shm (docker
@@ -274,3 +274,27 @@ this host, so timed intervals are kept >> 1 ms by looping.
   0.22/1.50/11.00 ms/task; sora_map 32 MiB template 0.338s (view
   collect + reduce 0.334s). Consistent with the channel-split record —
   no hot-path cost from the exec/sink indirection.
+
+## 2026-08-23: the extraction no-regression run
+
+Measured on the renamed package (the rename commit with the rchk
+protect fix folded in, installed) against the 2026-08-21 records —
+the pre-extraction baseline. test-benchmark.R: channel round trip 1.50 us;
+one-way 20.0M msg/s; pool round trip 1.0 us/task; pool pipelined 1.0M,
+collect_all 2.0M; channel 1/8/32 MiB round trip 0.06/0.50/1.50 ms; pool
+1/8/64 MiB result 0.22/1.50/11.00 ms/task; rei_map 32 MiB template
+0.338s (view collect + reduce 0.339s); rei_map trivial f 0.09
+us/element; held 8 x 16 MiB reads 8 spills / 0 reused / 8 fresh.
+Small-payload cases (the seam's fixed-overhead probe, n=20k): channel
+NIL round trip 0.95 us, STR1 1.00 us (2026-08-17 baselines 1.3/1.4 us);
+pool submit/collect 0.90 us/task (baseline 1.0). No hot-path regression
+from the extraction — the callback seam costs nothing measurable.
+
+- The attributed guard's bare sub-case reads 121-124 ms on rei AND on
+  the installed pre-extraction sora (same script A/B) — a pre-existing
+  single-iteration artifact of that guard under the post-2026-08-17
+  sizing regime, not an extraction regression. The attributed total is
+  636 ms (725 ms in the 2026-08-12 record).
+- ALTREP 1:2^27 round trip reads 4.00 us on two runs (~3 us on
+  2026-08-12): 1000 iterations against the ~1 ms proc.time tick — the
+  difference is one tick, inside the quantization band.

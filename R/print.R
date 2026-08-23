@@ -1,13 +1,13 @@
-#' Print Methods for sora Objects
+#' Print Methods for rei Objects
 #'
 #' One-line summaries. A channel prints its region name, side, and
 #' conversation state: `open`, `closed` once either side signalled close,
-#' or `peer gone` — the verdict of [sora_alive()], probed at print. A pool
+#' or `peer gone` — the verdict of [rei_alive()], probed at print. A pool
 #' prints its region name, the role of this handle, live workers out of
 #' registry capacity, and pending (uncompleted) tasks. A task handle
 #' prints its state, probed without consuming the result. The state is
 #' `pending`, `ok`, `err`, `cancel`, or `died` in the result-slot
-#' vocabulary of [sora_pool_status()]. It is `collected` once the result is
+#' vocabulary of [rei_pool_status()]. It is `collected` once the result is
 #' taken, or `dropped` when its pool is gone. Sentinels print as their
 #' class. The handle methods never error and never touch the rings. A
 #' handle whose resources are released (a closed channel, a stopped pool)
@@ -19,28 +19,28 @@
 #' @return `x`, invisibly.
 #'
 #' @examples
-#' p <- sora_pool()
+#' p <- rei_pool()
 #' p
-#' t <- sora_submit(p, 1 + 1)
+#' t <- rei_submit(p, 1 + 1)
 #' t
-#' sora_collect(t)
-#' sora_pool_stop(p)
+#' rei_collect(t)
+#' rei_pool_stop(p)
 #' p
 #'
 #' @export
-print.sora_channel <- function(x, ...) {
-  st <- tryCatch(.Call(sora_channel_stat, x), error = function(e) NULL)
+print.rei_channel <- function(x, ...) {
+  st <- tryCatch(.Call(rei_channel_stat, x), error = function(e) NULL)
   cat(
     if (is.null(st)) {
-      "<sora_channel: closed>\n"
+      "<rei_channel: closed>\n"
     } else {
       sprintf(
-        "<sora_channel %s: %s, %s>\n",
+        "<rei_channel %s: %s, %s>\n",
         st[["name"]],
         st[["side"]],
         if (st[["closed"]]) {
           "closed"
-        } else if (sora_alive(x)) {
+        } else if (rei_alive(x)) {
           "open"
         } else {
           "peer gone"
@@ -51,16 +51,16 @@ print.sora_channel <- function(x, ...) {
   invisible(x)
 }
 
-#' @rdname print.sora_channel
+#' @rdname print.rei_channel
 #' @export
-print.sora_pool <- function(x, ...) {
-  st <- tryCatch(sora_pool_status(x), error = function(e) NULL)
+print.rei_pool <- function(x, ...) {
+  st <- tryCatch(rei_pool_status(x), error = function(e) NULL)
   cat(
     if (is.null(st)) {
-      "<sora_pool: closed>\n"
+      "<rei_pool: closed>\n"
     } else {
       sprintf(
-        "<sora_pool %s: %s, %d/%d workers live, %d pending%s>\n",
+        "<rei_pool %s: %s, %d/%d workers live, %d pending%s>\n",
         st[["name"]],
         st[["role"]],
         sum(st[["workers"]] == "live"),
@@ -73,18 +73,18 @@ print.sora_pool <- function(x, ...) {
   invisible(x)
 }
 
-#' @rdname print.sora_channel
+#' @rdname print.rei_channel
 #' @export
-print.sora_task <- function(x, ...) {
-  cat(sprintf("<sora_task: %s>\n", .Call(sora_pool_task_state, x)))
+print.rei_task <- function(x, ...) {
+  cat(sprintf("<rei_task: %s>\n", .Call(rei_pool_task_state, x)))
   invisible(x)
 }
 
-#' @rdname print.sora_channel
+#' @rdname print.rei_channel
 #' @export
-print.sora_map_prepared <- function(x, ...) {
+print.rei_map_prepared <- function(x, ...) {
   cat(sprintf(
-    "<sora_map_prepared: %.0f elements, %s>\n",
+    "<rei_map_prepared: %.0f elements, %s>\n",
     length(x[["x"]]),
     if (is.null(x[["st"]])) {
       "stale (next run restages)"
@@ -97,9 +97,9 @@ print.sora_map_prepared <- function(x, ...) {
   invisible(x)
 }
 
-#' @rdname print.sora_channel
+#' @rdname print.rei_channel
 #' @export
-print.sora_sentinel <- function(x, ...) {
+print.rei_sentinel <- function(x, ...) {
   cat(sprintf("<%s>\n", class(x)[1L]))
   invisible(x)
 }

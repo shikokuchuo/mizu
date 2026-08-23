@@ -82,16 +82,16 @@ wait_until <- function(expr, timeout = 10) {
   }
 }
 
-# Cross-process tests spawn fresh Rscript children that library(sora):
-# available under R CMD check (sora is installed in the check library and
-# sora_spawn propagates its path via argv), but not under a bare load_all().
-child_sora_ok <- local({
+# Cross-process tests spawn fresh Rscript children that library(rei):
+# available under R CMD check (rei is installed in the check library and
+# rei_spawn propagates its path via argv), but not under a bare load_all().
+child_rei_ok <- local({
   val <- NULL
   function() {
     if (is.null(val)) {
       f <- tfile()
-      sora:::sora_spawn(sprintf(
-        'if (requireNamespace("sora", quietly = TRUE)) file.create(%s)',
+      rei:::rei_spawn(sprintf(
+        'if (requireNamespace("rei", quietly = TRUE)) file.create(%s)',
         deparse(f)
       ))
       val <<- wait_for_file(f)
@@ -101,10 +101,10 @@ child_sora_ok <- local({
   }
 })
 
-skip_if_no_child_sora <- function() {
+skip_if_no_child_rei <- function() {
   testthat::skip_if_not(
-    child_sora_ok(),
-    "sora not loadable from child processes"
+    child_rei_ok(),
+    "rei not loadable from child processes"
   )
 }
 
@@ -117,7 +117,7 @@ reaper_ok <- local({
   function() {
     if (is.null(val)) {
       f <- tfile()
-      sora:::sora_spawn(sprintf(
+      rei:::rei_spawn(sprintf(
         '
         tmp <- paste0(%s, ".tmp")
         writeLines(as.character(Sys.getpid()), tmp)
@@ -150,7 +150,7 @@ channel_pair <- function(
   spin = FALSE
 ) {
   host <- .Call(
-    sora:::sora_channel_create,
+    rei:::rei_channel_create,
     quote(NULL),
     capacity,
     slot_size,
@@ -158,12 +158,12 @@ channel_pair <- function(
     spin
   )
   att <- .Call(
-    sora:::sora_channel_attach,
-    .Call(sora:::sora_channel_suffix, host)
+    rei:::rei_channel_attach,
+    .Call(rei:::rei_channel_suffix, host)
   )
   peer <- att[[1L]]
-  .Call(sora:::sora_channel_ready_set, peer)
-  if (!.Call(sora:::sora_channel_ready_wait, host, 10)) {
+  .Call(rei:::rei_channel_ready_set, peer)
+  if (!.Call(rei:::rei_channel_ready_wait, host, 10)) {
     stop("channel peer not ready")
   }
   list(host = host, peer = peer)
@@ -174,23 +174,23 @@ channel_pair <- function(
 # producer can exceed any idle bound — so only other sentinels end the loop.
 echo_expr <- quote(
   repeat {
-    x <- sora_recv(ch, timeout = 30)
-    if (inherits(x, "sora_timeout")) {
+    x <- rei_recv(ch, timeout = 30)
+    if (inherits(x, "rei_timeout")) {
       next
     }
-    if (inherits(x, "sora_sentinel")) {
+    if (inherits(x, "rei_sentinel")) {
       break
     }
-    sora_send(ch, x)
+    rei_send(ch, x)
   }
 )
 
 # Orderly in-process channel teardown: the peer signals its close (flush +
 # bit + wake), so both ends' close rendezvous succeeds.
 channel_end <- function(p) {
-  .Call(sora:::sora_channel_close_signal, p[["peer"]])
-  .Call(sora:::sora_channel_close, p[["host"]], 5)
-  .Call(sora:::sora_channel_close, p[["peer"]], 5)
+  .Call(rei:::rei_channel_close_signal, p[["peer"]])
+  .Call(rei:::rei_channel_close, p[["host"]], 5)
+  .Call(rei:::rei_channel_close, p[["peer"]], 5)
 }
 
 # In-process pool pair: controller plus one or more worker handles joined
@@ -207,7 +207,7 @@ pool_pair <- function(
   slot_size = 512L
 ) {
   ctrl <- .Call(
-    sora:::sora_pool_create,
+    rei:::rei_pool_create,
     workers,
     max_submitters,
     injection_cap,
@@ -215,10 +215,10 @@ pool_pair <- function(
     result_slots,
     slot_size
   )
-  suffix <- .Call(sora:::sora_pool_suffix, ctrl)
+  suffix <- .Call(rei:::rei_pool_suffix, ctrl)
   wks <- lapply(seq_len(workers) - 1L, function(slot) {
-    wk <- .Call(sora:::sora_pool_worker_join, suffix, slot)
-    .Call(sora:::sora_pool_set_eval, wk)
+    wk <- .Call(rei:::rei_pool_worker_join, suffix, slot)
+    .Call(rei:::rei_pool_set_eval, wk)
     wk
   })
   list(ctrl = ctrl, wk = wks[[1L]], wks = wks)
@@ -229,10 +229,10 @@ pool_pair <- function(
 # handler — so publish it as the task's ERR result, as worker_main does.
 pool_step <- function(p, timeout = 0, wk = p[["wk"]]) {
   e <- tryCatch(
-    return(.Call(sora:::sora_pool_step, wk, timeout)),
+    return(.Call(rei:::rei_pool_step, wk, timeout)),
     error = function(e) e
   )
-  if (.Call(sora:::sora_pool_run_outcome, wk, e) != 0L) {
+  if (.Call(rei:::rei_pool_run_outcome, wk, e) != 0L) {
     stop(e)
   }
   1L
@@ -241,14 +241,14 @@ pool_step <- function(p, timeout = 0, wk = p[["wk"]]) {
 # Test-only: move up to n queued injection entries onto the worker's own
 # deque (the stand-in for Phase 3's nested submit)
 pool_pull <- function(p, n, wk = p[["wk"]]) {
-  .Call(sora:::sora_pool_deque_pull, wk, n)
+  .Call(rei:::rei_pool_deque_pull, wk, n)
 }
 
 # Orderly in-process teardown: the workers leave (their slots free), then
 # the controller destroys (broadcast + unlink + release).
 pool_end <- function(p) {
   for (wk in p[["wks"]]) {
-    .Call(sora:::sora_pool_leave, wk)
+    .Call(rei:::rei_pool_leave, wk)
   }
-  .Call(sora:::sora_pool_destroy, p[["ctrl"]])
+  .Call(rei:::rei_pool_destroy, p[["ctrl"]])
 }

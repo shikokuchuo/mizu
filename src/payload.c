@@ -3,9 +3,9 @@
    / result slots. The channel adds its arena tier around these; the pool has
    no arena (its payloads release at collect or slot reuse — unordered — so a
    producer-local FIFO allocator does not apply) and stages through
-   sora_payload_stage directly. */
+   rei_payload_stage directly. */
 
-#include "sora.h"
+#include "rei.h"
 
 /* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
    R, where ATTRIB() was still the sanctioned spelling. */
@@ -13,7 +13,7 @@
 #define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
 #endif
 
-void *sora_vec_ptr(SEXP x) {
+void *rei_vec_ptr(SEXP x) {
   switch (TYPEOF(x)) {
   case LGLSXP:  return LOGICAL(x);
   case INTSXP:  return INTEGER(x);
@@ -24,7 +24,7 @@ void *sora_vec_ptr(SEXP x) {
   return NULL;
 }
 
-int sora_raw_type(SEXP x, size_t *out_len) {
+int rei_raw_type(SEXP x, size_t *out_len) {
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
     break;
@@ -39,17 +39,17 @@ int sora_raw_type(SEXP x, size_t *out_len) {
   return 1;
 }
 
-int sora_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
+int rei_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
   size_t n;
-  if (!sora_raw_type(x, &n) || n > inline_max) return 0;
+  if (!rei_raw_type(x, &n) || n > inline_max) return 0;
   *out_len = n;
   return 1;
 }
 
-int sora_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
+int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
                    uint32_t inline_max, SEXP x) {
   /* The ALTREP exclusion keeps foreign ALTSTRINGs on the serialize path
-     (their Elt may materialize); sora's own string views never reach here
+     (their Elt may materialize); rei's own string views never reach here
      (the REF check upstream claims them first) */
   if (TYPEOF(x) != STRSXP || XLENGTH(x) != 1 || ALTREP(x) ||
       ANY_ATTRIB(x) || Rf_isS4(x))
@@ -71,17 +71,17 @@ int sora_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
 }
 
 /* The shared empty args list of a no-argument task: one preserved vector
-   serves both the submitter (sora_submit's capture) and the worker (the
+   serves both the submitter (rei_submit's capture) and the worker (the
    task-frame read), so a constant task allocates no VECSXP(0) on either
    side. Read-only everywhere it appears — marked not-mutable, so a stray
    write fails loudly instead of corrupting every task. */
 static SEXP empty_args;
 
-SEXP sora_empty_args(void) {
+SEXP rei_empty_args(void) {
   return empty_args;
 }
 
-void sora_payload_init(void) {
+void rei_payload_init(void) {
   empty_args = Rf_allocVector(VECSXP, 0);
   R_PreserveObject(empty_args);
 #if R_VERSION >= R_Version(4, 5, 0)
@@ -89,21 +89,21 @@ void sora_payload_init(void) {
 #endif
 }
 
-void sora_payload_fini(void) {
+void rei_payload_fini(void) {
   R_ReleaseObject(empty_args);
 }
 
 // Spill staging ------------------------------------------------------------
 
-/* The service-form checkout: rei_stage_spill_get, raising sora_error_shm on
+/* The service-form checkout: rei_stage_spill_get, raising rei_error_shm on
    create failure (the stager's raise-on-failure discipline). */
-rei_shm *sora_spill_get_raise(rei_handle *h, size_t n) {
+rei_shm *rei_spill_get_raise(rei_handle *h, size_t n) {
   rei_shm *shm;
   if (rei_stage_spill_get(h, n, &shm) != REI_OK) {
     const char *summary, *hint;
     rei_err_describe(rei_last_error_category(), &summary, &hint);
-    sora_stop_shm((double) n,
-                 "sora: cannot create payload region (%llu bytes): %s%s%s",
+    rei_stop_shm((double) n,
+                 "rei: cannot create payload region (%llu bytes): %s%s%s",
                  (unsigned long long) n, summary,
                  hint[0] != '\0' ? ". " : "", hint);
   }
@@ -116,9 +116,9 @@ rei_shm *sora_spill_get_raise(rei_handle *h, size_t n) {
    through the binding's drop hook). PreserveObject precedes retain: it can
    longjmp, and an uncommitted checkout rolls back with nothing pinned. */
 
-void sora_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
+void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, rei_handle *h) {
-  rei_shm *shm = sora_spill_get_raise(h, n);
+  rei_shm *shm = rei_spill_get_raise(h, n);
   mori_serialize_into((unsigned char *) shm->addr, x);
   hdr->kind = REI_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
@@ -129,10 +129,10 @@ void sora_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
   rei_stage_pin(h, (void *) x);
 }
 
-void sora_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
+void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, rei_handle *h) {
-  rei_shm *shm = sora_spill_get_raise(h, n);
-  memcpy(shm->addr, sora_vec_ptr(x), n);
+  rei_shm *shm = rei_spill_get_raise(h, n);
+  memcpy(shm->addr, rei_vec_ptr(x), n);
   hdr->kind = REI_KIND_RAWSPILL;
   hdr->len = (uint32_t) n;
   hdr->aux = (uint64_t) TYPEOF(x) | ((uint64_t) shm->name_len << 8);
@@ -143,11 +143,11 @@ void sora_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
 /* The SHM_RAW spill of a codec stream (n from the counting first pass):
    the region alone is retained — the writer rejected ALTREP, so no
    hook-emitted identifier can ride along. */
-void sora_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
+void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
                               SEXP x, size_t n, rei_handle *h) {
-  rei_shm *shm = sora_spill_get_raise(h, n);
-  if (sora_codec_write((unsigned char *) shm->addr, shm->size, x) != n)
-    Rf_error("sora: codec write mismatch");   /* the walk is deterministic */
+  rei_shm *shm = rei_spill_get_raise(h, n);
+  if (rei_codec_write((unsigned char *) shm->addr, shm->size, x) != n)
+    Rf_error("rei: codec write mismatch");   /* the walk is deterministic */
   hdr->kind = REI_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
@@ -160,7 +160,7 @@ void sora_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
    no hook-emitted identifier can ride along), unlike the serialize tiers,
    where a stream may carry mori identifiers whose views the pin keeps
    alive until consumer-done. */
-void sora_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
+void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, SEXP x, rei_handle *h) {
   size_t rawlen, total;
   /* NULL stages as the immediate kind: the canonical empty result / ACK
@@ -171,23 +171,23 @@ void sora_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
     hdr->aux = 0;
     return;
   }
-  /* a sora-native view crosses by reference (REF) at any size — required
+  /* a rei-native view crosses by reference (REF) at any size — required
      once SHM_VEC views exist: the serialize-hook fallback resolves
      uncounted, and the producer could recycle under the far side's view.
      The pin keeps the view (and with it the region) until consumer-done. */
-  if (sora_zc_ref_stage(hdr, payload, inline_max, x)) {
+  if (rei_zc_ref_stage(hdr, payload, inline_max, x)) {
     R_PreserveObject(x);
     rei_stage_pin(h, (void *) x);
     return;
   }
-  if (sora_raw_eligible(x, inline_max, &rawlen)) {
-    memcpy(payload, sora_vec_ptr(x), rawlen);
+  if (rei_raw_eligible(x, inline_max, &rawlen)) {
+    memcpy(payload, rei_vec_ptr(x), rawlen);
     hdr->kind = REI_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
     return;
   }
-  if (sora_str1_stage(hdr, payload, inline_max, x))
+  if (rei_str1_stage(hdr, payload, inline_max, x))
     return;
   /* SHM_VEC: mori-layout-eligible objects (atomic vectors, strings, list
      trees) past the budget and the zc floor — cheap probes keep the
@@ -197,8 +197,8 @@ void sora_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
      serialize copy: fall to SHM_RAW, whose region surrenders
      deterministically at consumer-done. */
   if (!((rei_handle *) h)->fl.churn &&
-      sora_zc_eligible(x, inline_max, &total)) {
-    sora_zc_stage(hdr, payload, x, total, h);
+      rei_zc_eligible(x, inline_max, &total)) {
+    rei_zc_stage(hdr, payload, x, total, h);
     return;
   }
   /* Raw-bytes spill: the vectors RAWVEC takes inline, past the inline
@@ -206,15 +206,15 @@ void sora_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
      churn-gated), and bare bytes skip both the serialize pass here and
      the parse at the far end. */
   size_t n;
-  if (sora_raw_type(x, &n) && n <= UINT32_MAX) {
-    sora_payload_spill_raw(hdr, payload, x, n, h);
+  if (rei_raw_type(x, &n) && n <= UINT32_MAX) {
+    rei_payload_spill_raw(hdr, payload, x, n, h);
     return;
   }
   /* the compact codec ahead of R_Serialize: no per-call ref-table
      allocation on either side, and a self-contained stream (the writer
      rejects ALTREP, so no mori identifier can ride along) that pins
      nothing — the NIL/RAWVEC/STR1 discipline */
-  n = sora_codec_write(payload, inline_max, x);
+  n = rei_codec_write(payload, inline_max, x);
   if (n != 0) {
     if (n <= inline_max) {
       hdr->kind = REI_KIND_INLINE;
@@ -222,10 +222,10 @@ void sora_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
       hdr->aux = 0;
       return;
     }
-    sora_payload_spill_codec(hdr, payload, x, n, h);
+    rei_payload_spill_codec(hdr, payload, x, n, h);
     return;
   }
-  n = sora_serialize_bounded(payload, inline_max, x);
+  n = rei_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {
     hdr->kind = REI_KIND_INLINE;
     hdr->len = (uint32_t) n;
@@ -234,7 +234,7 @@ void sora_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
     rei_stage_pin(h, (void *) x);
     return;
   }
-  sora_payload_spill_shm(hdr, payload, x, n, h);
+  rei_payload_spill_shm(hdr, payload, x, n, h);
 }
 
 // Read -----------------------------------------------------------------------
@@ -244,21 +244,21 @@ void sora_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
    through rei_read_region (which sets ctx->gone on a vanished region — the
    read_fn then propagates by returning NULL); the view tiers open their own
    split mappings through the R-side cache zoc (ctx->binding_ctx). */
-SEXP sora_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
+SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
                        uint32_t inline_max, rei_read_ctx *ctx) {
-  sora_zc_cache *zoc = &((sora_handle *) ctx->binding_ctx)->zoc;
+  rei_zc_cache *zoc = &((rei_r_handle *) ctx->binding_ctx)->zoc;
   switch (hdr->kind) {
   case REI_KIND_NIL:
     return R_NilValue;
   case REI_KIND_STR1: {
     if (hdr->aux == REI_STR1_NA) {
-      if (hdr->len != 0) Rf_error("sora: corrupt payload slot");
+      if (hdr->len != 0) Rf_error("rei: corrupt payload slot");
       SEXP y = Rf_allocVector(STRSXP, 1);
       SET_STRING_ELT(y, 0, NA_STRING);
       return y;
     }
     if (hdr->len > inline_max || hdr->aux > CE_BYTES)
-      Rf_error("sora: corrupt payload slot");
+      Rf_error("rei: corrupt payload slot");
     SEXP y = PROTECT(Rf_allocVector(STRSXP, 1));
     SET_STRING_ELT(y, 0, Rf_mkCharLenCE((const char *) payload,
                                         (int) hdr->len,
@@ -268,25 +268,25 @@ SEXP sora_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
   }
   case REI_KIND_INLINE:
     if (hdr->len > inline_max || hdr->len == 0)
-      Rf_error("sora: corrupt payload slot");
+      Rf_error("rei: corrupt payload slot");
     return payload[0] == REI_CODEC_MAGIC ?
-      sora_codec_read(payload, hdr->len) :
+      rei_codec_read(payload, hdr->len) :
       mori_unserialize_from((unsigned char *) payload, hdr->len);
   case REI_KIND_RAWVEC: {
     int type = (int) hdr->aux;
     size_t elt = mori_sizeof_elt(type);
     if (elt == 0 || hdr->len > inline_max || hdr->len % elt != 0)
-      Rf_error("sora: corrupt payload slot");
+      Rf_error("rei: corrupt payload slot");
     SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
-    memcpy(sora_vec_ptr(y), payload, hdr->len);
+    memcpy(rei_vec_ptr(y), payload, hdr->len);
     return y;
   }
   case REI_KIND_SHM_VEC: {
-    SEXP v = sora_zc_read(hdr, payload, &ctx->gone, zoc);
+    SEXP v = rei_zc_read(hdr, payload, &ctx->gone, zoc);
     return ctx->gone ? NULL : v;
   }
   case REI_KIND_REF: {
-    SEXP v = sora_zc_ref_read(hdr, payload, &ctx->gone, zoc);
+    SEXP v = rei_zc_ref_read(hdr, payload, &ctx->gone, zoc);
     return ctx->gone ? NULL : v;
   }
   case REI_KIND_RAWSPILL: {
@@ -298,17 +298,17 @@ SEXP sora_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     size_t elt = mori_sizeof_elt(type);
     if (elt == 0 || hdr->len % elt != 0 ||
         name_len == 0 || name_len >= REI_NAME_MAX)
-      Rf_error("sora: corrupt payload slot");
+      Rf_error("rei: corrupt payload slot");
     rei_shm *shm = rei_read_region(ctx, payload, name_len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
-    if (hdr->len > shm->size) Rf_error("sora: corrupt payload slot");
+    if (hdr->len > shm->size) Rf_error("rei: corrupt payload slot");
     SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
-    memcpy(sora_vec_ptr(y), shm->addr, hdr->len);
+    memcpy(rei_vec_ptr(y), shm->addr, hdr->len);
     return y;
   }
   case REI_KIND_SHM_RAW: {
     if (hdr->len == 0 || hdr->len >= REI_NAME_MAX)
-      Rf_error("sora: corrupt payload slot");
+      Rf_error("rei: corrupt payload slot");
     rei_shm *shm = rei_read_region(ctx, payload, hdr->len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
     /* aux is the exact stream length: a recycled region is larger than the
@@ -317,8 +317,8 @@ SEXP sora_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
       (size_t) hdr->aux : shm->size;
     unsigned char *stream = (unsigned char *) shm->addr;
     return stream[0] == REI_CODEC_MAGIC ?
-      sora_codec_read(stream, len) : mori_unserialize_from(stream, len);
+      rei_codec_read(stream, len) : mori_unserialize_from(stream, len);
   }
   }
-  Rf_error("sora: corrupt payload slot");
+  Rf_error("rei: corrupt payload slot");
 }

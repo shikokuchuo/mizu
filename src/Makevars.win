@@ -19,8 +19,8 @@ OBJECTS = bounded.o codec.o condition.o entity.o init.o liveness.o map.o \
 all: $(SHLIB)
 
 # R's makefiles track no header dependencies: without this, editing a header
-# recompiles nothing and one sora.so links objects built from two headers.
-$(OBJECTS): sora.h vendor/mori.h vendor/librei/rei.h vendor/librei/internal.h
+# recompiles nothing and one rei.so links objects built from two headers.
+$(OBJECTS): rei.h vendor/mori.h vendor/librei/rei.h vendor/librei/internal.h
 
 clean:
 	@rm -f $(OBJECTS) $(SHLIB)

@@ -1,7 +1,7 @@
 /* The .Call test surface over the core's preamble write/validate
    (vendor/librei/preamble.c): the wire format itself is librei's. */
 
-#include "sora.h"
+#include "rei.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -12,16 +12,16 @@
 
 // .Call test surface -----------------------------------------------------------
 
-rei_shm *sora_region(SEXP xp);   /* wrap.c */
+rei_shm *rei_region(SEXP xp);   /* wrap.c */
 
-SEXP sora_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
+SEXP rei_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
                              SEXP drop, SEXP livedir) {
-  rei_shm *shm = sora_region(xp);
+  rei_shm *shm = rei_region(xp);
   if (shm->size < REI_FIXED_LAYOUT_SIZE)
-    Rf_error("sora: region too small for a channel preamble");
+    Rf_error("rei: region too small for a channel preamble");
   if (TYPEOF(drop) != REALSXP || XLENGTH(drop) < 2 ||
       TYPEOF(livedir) != REALSXP || XLENGTH(livedir) < 2)
-    Rf_error("sora: drop and livedir must be numeric vectors of length 2");
+    Rf_error("rei: drop and livedir must be numeric vectors of length 2");
 
   rei_preamble p = {
     .magic = REI_MAGIC,
@@ -43,12 +43,12 @@ SEXP sora_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
   return R_NilValue;
 }
 
-SEXP sora_preamble_validate_call(SEXP xp) {
-  rei_shm *shm = sora_region(xp);
+SEXP rei_preamble_validate_call(SEXP xp) {
+  rei_shm *shm = rei_region(xp);
 
   rei_preamble p;
   const char *err = rei_preamble_validate(shm->addr, shm->size, &p);
-  if (err != NULL) Rf_error("sora: invalid channel region: %s", err);
+  if (err != NULL) Rf_error("rei: invalid channel region: %s", err);
 
   const char *names[] = {"version", "cap", "slot", "host_pid", "arena_size",
                          "drop_offset", "drop_size", "livedir_offset",

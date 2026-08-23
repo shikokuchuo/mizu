@@ -15,9 +15,9 @@
 #define MORI_FORMAT_BUFLEN   1024              /* formatter stack buffer */
 
 /* External-pointer tag strings (installed once at init). */
-#define MORI_TAG_SHM   "rei_shm"
-#define MORI_TAG_HOST  "sora_mori_host"
-#define MORI_TAG_OWNED "sora_mori_owned"
+#define MORI_TAG_SHM   "rei_mori_shm"
+#define MORI_TAG_HOST  "rei_mori_host"
+#define MORI_TAG_OWNED "rei_mori_owned"
 
 // Types -----------------------------------------------------------------------
 

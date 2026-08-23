@@ -1,9 +1,9 @@
-# sora_map: parallel map over a pool. One call stages f / `...` / x once
+# rei_map: parallel map over a pool. One call stages f / `...` / x once
 # (a single descriptor stream in one fresh map region — or entirely inline
 # in chunk tasks when it fits the entry budget), then submits one *runner*
 # task per live worker: runners self-schedule element ranges off a shared
 # cursor in the map region (morsel-driven scheduling), one adaptive-sized
-# batch per sora_map_next transition, and publish their batch histories as
+# batch per rei_map_next transition, and publish their batch histories as
 # their single ordinary result. Workers materialize the map context at
 # most once each (cached on the worker handle, prot[5]); a RAWVEC-eligible
 # x is sliced per batch straight from the mapping, never deserialized; the
@@ -12,7 +12,7 @@
 # chunks: the morsel state needs the region, and at those sizes chunk
 # overhead is already negligible. The stages below are composable so the
 # deterministic harness can interleave pool_step() between submit and
-# collect — sora_map merely composes them.
+# collect — rei_map merely composes them.
 
 # Worker-side function references, built once at install time. String form
 # keeps the own-namespace ::: out of the code tree (both are internal, and
@@ -22,8 +22,8 @@
 # named-argument bindings keeps the serialized wrapper inside a
 # slot_size = 256 pool's 224-byte entry inline budget (`pool` stays a
 # symbol — it must resolve to the evaluating worker's own handle).
-map_chunk_ref <- str2lang("sora:::map_chunk")
-map_runner_ref <- str2lang("sora:::map_runner")
+map_chunk_ref <- str2lang("rei:::map_chunk")
+map_runner_ref <- str2lang("rei:::map_runner")
 
 # One blob-path chunk task's wire payload: map_chunk(pool, r, b[, s]).
 map_payload <- function(st, r) {
@@ -66,14 +66,14 @@ map_morsels_per_runner <- 256
 # it once and threaded through submit and collect absolute — the _try
 # entries convert to a remaining budget at entry — so R-side expiry checks
 # and C-side waits read a single timescale, with no per-call allocation.
-mono_time <- function() .Call(sora_now_call)
+mono_time <- function() .Call(rei_now_call)
 
 #' Parallel Map Over a Pool
 #'
 #' Maps `f` over the elements of `x` on a pool and returns the results in
 #' input order. The result is a list by default, or an atomic vector (or
 #' matrix) with [vapply()] semantics when `.template` is given. Unlike
-#' mapping with per-element [sora_submit()] calls, one `sora_map()` call
+#' mapping with per-element [rei_submit()] calls, one `rei_map()` call
 #' serializes `f`, the constant arguments in `...`, and `x` exactly once.
 #' It submits one *runner* task per live worker, and each worker
 #' materializes that map context at most once. The per-element residual
@@ -109,7 +109,7 @@ mono_time <- function() .Call(sora_now_call)
 #' submitted while no worker is live queues a single runner in the
 #' injection ring and runs when a worker joins. If the result-slot
 #' subrange of the submitter is fully occupied by outstanding tasks,
-#' `sora_map()` errors immediately, before it stages anything.
+#' `rei_map()` errors immediately, before it stages anything.
 #'
 #' @section Templates:
 #' `.template` gives `vapply()` semantics: every result must match its
@@ -127,25 +127,25 @@ mono_time <- function() .Call(sora_now_call)
 #' template path: the generic results of a runner accumulate on the worker
 #' and publish once, so `.template` both caps worker memory and moves the
 #' values cross-process without serialization. Note for readers of
-#' [sora_pool_stats()]: a map with large *generic* results publishes them
+#' [rei_pool_stats()]: a map with large *generic* results publishes them
 #' through the ordinary result framing. Such a map can add a few
 #' result-slot `spills` per call even when the `slot_size` of the pool is
 #' right for its usual traffic.
 #'
 #' @section Errors, timeout, and cleanup:
 #' An error raised by `f` signals again in the caller as the original
-#' condition. A `sora_map_index` field names the failing element: the first
+#' condition. A `rei_map_index` field names the failing element: the first
 #' by element index among the elements that ran. Failure is fail-fast. The
 #' erroring runner sets the shared cancel word of the map before it
 #' publishes. So every peer stops within about one batch instead of
 #' draining the remaining elements. If a worker dies mid-map, the map
-#' raises `sora_error_worker_died` (see [sora_error]), carrying the lost
+#' raises `rei_error_worker_died` (see [rei_error]), carrying the lost
 #' elements as an `elements` field: a two-column matrix of inclusive
 #' `lo, hi` ranges. Loss is reported runner-granular and conservatively.
 #' The results of a dead runner publish only at the end, so everything it
 #' completed is reported lost alongside what it was executing, never the
 #' reverse. On `.timeout` expiry, mid-submit or mid-collect, the
-#' outstanding work is cancelled and the `sora_timeout` sentinel is
+#' outstanding work is cancelled and the `rei_timeout` sentinel is
 #' returned, never raised. Executing runners observe cancellation within
 #' about one batch (one element where `f` is expensive), independent of
 #' `length(x)`. The slot of a published-uncollected result is released
@@ -169,7 +169,7 @@ mono_time <- function() .Call(sora_now_call)
 #' processes reproduces the streams of one uninterrupted run.
 #'
 #' @section Nested maps:
-#' `sora_map(pool, ...)` inside a task expression uses the own handle of
+#' `rei_map(pool, ...)` inside a task expression uses the own handle of
 #' the evaluating worker (bound as `pool`). Runner submissions push onto
 #' the own deque of the worker. The blocked collect executes its own
 #' runners while idle peers steal the rest: fork/join-shaped recursive
@@ -189,13 +189,13 @@ mono_time <- function() .Call(sora_now_call)
 #' result, or a `mori::share()`d vector, reduces to its ~30-byte
 #' identifier inside the staged descriptor, and workers read elements
 #' straight off the shared pages with OS demand paging — no worker copies
-#' any part of `x` (`sora_map` itself never calls mori).
+#' any part of `x` (`rei_map` itself never calls mori).
 #'
 #' As in [lapply()], `x` is indexed with `[[` on the workers after an
 #' `as.list()` coercion of anything that is not a plain vector. So a
 #' data.frame maps over its columns, and a factor over its elements.
 #'
-#' @inheritParams sora_submit
+#' @inheritParams rei_submit
 #' @param x a vector (atomic or list) to map over. Anything else is
 #'   coerced with `as.list()`, as [lapply()] does.
 #' @param f a function (or, as [match.fun()] accepts, its name) applied as
@@ -211,8 +211,8 @@ mono_time <- function() .Call(sora_now_call)
 #'   streams: `seed`, or `c(seed, offset)` to shift every element's
 #'   stream by `offset` positions. See the Reproducible RNG section.
 #' @param .timeout seconds after which the map gives up, cancels its
-#'   outstanding work, and returns the `sora_timeout` sentinel (class
-#'   `c("sora_timeout", "sora_sentinel")`). `Inf` (the default) waits
+#'   outstanding work, and returns the `rei_timeout` sentinel (class
+#'   `c("rei_timeout", "rei_sentinel")`). `Inf` (the default) waits
 #'   indefinitely. One deadline covers submission and collection.
 #' @param .collect `"value"` (the default) gathers template results into
 #'   an owning R vector. `"view"` instead returns an ALTREP view over the
@@ -227,17 +227,17 @@ mono_time <- function() .Call(sora_now_call)
 #'   `typeof(.template)` (an `m * length(x)` matrix when
 #'   `length(.template) > 1`) — an owning vector, or a copy-on-write view
 #'   over the shared output area with `.collect = "view"`. On `.timeout`
-#'   expiry, the `sora_timeout` sentinel.
+#'   expiry, the `rei_timeout` sentinel.
 #'
 #' @examples
-#' p <- sora_pool()
-#' sora_map(p, 1:10, function(i) i * 2L)
-#' v <- sora_map(p, rnorm(1e5), abs, .template = numeric(1))
-#' sora_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
-#' sora_pool_stop(p)
+#' p <- rei_pool()
+#' rei_map(p, 1:10, function(i) i * 2L)
+#' v <- rei_map(p, rnorm(1e5), abs, .template = numeric(1))
+#' rei_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
+#' rei_pool_stop(p)
 #'
 #' @export
-sora_map <- function(
+rei_map <- function(
   pool,
   x,
   f,
@@ -258,8 +258,8 @@ sora_map <- function(
   map_run(pool, st, .timeout, .collect)
 }
 
-# The one run path shared by sora_map (stage + run on an anonymous state)
-# and sora_map_run (a prepared state, re-armed by the caller): submit the
+# The one run path shared by rei_map (stage + run on an anonymous state)
+# and rei_map_run (a prepared state, re-armed by the caller): submit the
 # tasks, collect against the single deadline, and keep the interrupt
 # backstop armed — Ctrl-C in submit or collect cancels every outstanding
 # task and drops the references; after a clean collect all handles are
@@ -269,21 +269,21 @@ map_run <- function(pool, st, timeout, collect = "value") {
   on.exit(map_cancel(st))
   map_submit(pool, st, deadline)
   if (st[["timed_out"]]) {
-    return(.Call(sora_map_timeout_call))
+    return(.Call(rei_map_timeout_call))
   }
   map_collect(st, deadline, collect)
 }
 
 #' Prepared Maps: Stage Once, Run Many
 #'
-#' `sora_map_prepare()` stages a map — `f`, the constant arguments in
+#' `rei_map_prepare()` stages a map — `f`, the constant arguments in
 #' `...`, and `x` — serialized once into a shared map region, without
-#' running it. It returns a prepared-map handle. Each `sora_map_run()`
+#' running it. It returns a prepared-map handle. Each `rei_map_run()`
 #' then costs only task submission and collection: no serialization and
 #' no region create. Because the region (and its name) stays alive across
 #' runs, workers that ran a previous run reuse their cached map context
 #' instead of re-attaching. Repeated stochastic simulation is the headline
-#' use. `sora_map_run(pm, .seed = i)` varies the RNG streams per run for
+#' use. `rei_map_run(pm, .seed = i)` varies the RNG streams per run for
 #' free: the seed state rides the runner payloads, not the region.
 #'
 #' Between runs, the shared scheduling state of the region is re-armed in
@@ -291,7 +291,7 @@ map_run <- function(pool, st, timeout, collect = "value") {
 #' in every claim word advances. A straggler task from a previous run can
 #' never issue against the cursor of the new run. After an unclean run — a
 #' `.timeout` expiry, an error in `f`, a worker death — the handle is
-#' marked stale. The next `sora_map_run()` restages into a fresh region
+#' marked stale. The next `rei_map_run()` restages into a fresh region
 #' transparently (the old one unlinks at garbage collection under any
 #' stragglers). A run collected with `.collect = "view"` restages
 #' likewise: the returned view pins its region, so the next run stages
@@ -304,22 +304,22 @@ map_run <- function(pool, st, timeout, collect = "value") {
 #' when the handle is dropped. The chunking geometry is fixed at prepare
 #' time. The runner count adapts to the live workers at each run.
 #'
-#' @inheritParams sora_map
+#' @inheritParams rei_map
 #'
-#' @return `sora_map_prepare()`: a prepared-map handle. `sora_map_run()`:
-#'   exactly what [sora_map()] returns for the staged map — a list, a
-#'   templated atomic vector, or the `sora_timeout` sentinel.
+#' @return `rei_map_prepare()`: a prepared-map handle. `rei_map_run()`:
+#'   exactly what [rei_map()] returns for the staged map — a list, a
+#'   templated atomic vector, or the `rei_timeout` sentinel.
 #'
 #' @examples
-#' p <- sora_pool()
-#' pm <- sora_map_prepare(p, 1:1000, function(i, draws) {
+#' p <- rei_pool()
+#' pm <- rei_map_prepare(p, 1:1000, function(i, draws) {
 #'   mean(rnorm(draws)) * i
 #' }, draws = 100L)
-#' runs <- lapply(1:50, function(s) sora_map_run(pm, .seed = s))
-#' sora_pool_stop(p)
+#' runs <- lapply(1:50, function(s) rei_map_run(pm, .seed = s))
+#' rei_pool_stop(p)
 #'
 #' @export
-sora_map_prepare <- function(
+rei_map_prepare <- function(
   pool,
   x,
   f,
@@ -339,12 +339,12 @@ sora_map_prepare <- function(
   if (length(x) > 0L) {
     pm[["st"]] <- map_stage(pool, x, f, pm[["dots"]], .template, .chunks)
   }
-  class(pm) <- "sora_map_prepared"
+  class(pm) <- "rei_map_prepared"
   pm
 }
 
 #' @section Replacing x between runs:
-#' `sora_map_run(pm, x = x2)` runs over a replacement `x`. When both the
+#' `rei_map_run(pm, x = x2)` runs over a replacement `x`. When both the
 #' staged and the replacement `x` are bare-byte eligible (atomic,
 #' non-ALTREP, no attributes beyond names) with identical type and length,
 #' the swap is in place. The new bytes are copied over the `x` section of
@@ -354,18 +354,18 @@ sora_map_prepare <- function(
 #' different shape or type, a list, a map staged inline — restages
 #' transparently on the next run.
 #'
-#' @rdname sora_map_prepare
-#' @param pm a prepared-map handle from [sora_map_prepare()].
+#' @rdname rei_map_prepare
+#' @param pm a prepared-map handle from [rei_map_prepare()].
 #' @export
-sora_map_run <- function(
+rei_map_run <- function(
   pm,
   x = NULL,
   .seed = NULL,
   .timeout = Inf,
   .collect = "value"
 ) {
-  if (!inherits(pm, "sora_map_prepared")) {
-    stop("sora: not a prepared-map handle", call. = FALSE)
+  if (!inherits(pm, "rei_map_prepared")) {
+    stop("rei: not a prepared-map handle", call. = FALSE)
   }
   map_collect_check(.collect, pm[["template"]])
   if (!is.null(x)) {
@@ -399,7 +399,7 @@ sora_map_run <- function(
   # a view collect consumes the region (the returned view pins it), so a
   # prepared handle restages on its next run instead of re-arming pages a
   # held view still reads
-  if (!inherits(r, "sora_timeout") && !isTRUE(st[["consumed"]])) {
+  if (!inherits(r, "rei_timeout") && !isTRUE(st[["consumed"]])) {
     pm[["st"]] <- st
   }
   r
@@ -419,12 +419,12 @@ map_swap_x <- function(pm, x) {
     isTRUE(st[["xraw"]]) &&
     typeof(x) == typeof(pm[["x"]]) &&
     length(x) == length(pm[["x"]]) &&
-    .Call(sora_map_eligible, x) >= 0 &&
+    .Call(rei_map_eligible, x) >= 0 &&
     (is.null(attributes(x)) ||
       identical(names(attributes(x)), "names"))
   pm[["x"]] <- x
   if (swappable) {
-    .Call(sora_map_swap_x, st[["wrap"]], x)
+    .Call(rei_map_swap_x, st[["wrap"]], x)
     st[["nms"]] <- names(x)
   } else {
     pm[["st"]] <- NULL
@@ -445,30 +445,30 @@ map_seed_state <- function(seed) {
   n <- length(seed)
   if (!is.numeric(seed) || n == 0L || n > 2L) {
     stop(
-      "sora: .seed must be a numeric vector of length 1 or 2",
+      "rei: .seed must be a numeric vector of length 1 or 2",
       call. = FALSE
     )
   }
   s <- seed[1L]
   if (!is.finite(s) || abs(s) > .Machine$integer.max) {
-    stop("sora: .seed[1] must be an integer", call. = FALSE)
+    stop("rei: .seed[1] must be an integer", call. = FALSE)
   }
-  base <- .Call(sora_map_rng_base, s)
+  base <- .Call(rei_map_rng_base, s)
   if (n == 1L) {
     return(base)
   }
-  # the fractional check is the one C can't do: sora_map_rng_seek truncates
+  # the fractional check is the one C can't do: rei_map_rng_seek truncates
   # k to uint64_t, so a fractional offset would silently floor. NA /
   # negative / fractional get the specific message here; Inf and huge
   # offsets error on the C side ("invalid stream index")
   offset <- seed[2L]
   if (is.na(offset) || offset < 0 || offset != floor(offset)) {
     stop(
-      "sora: .seed[2] (stream offset) must be a non-negative integer",
+      "rei: .seed[2] (stream offset) must be a non-negative integer",
       call. = FALSE
     )
   }
-  .Call(sora_map_rng_seek, base, offset)
+  .Call(rei_map_rng_seek, base, offset)
 }
 
 # One runner per live worker (floored at 1 so a workerless map still
@@ -487,17 +487,17 @@ map_runner_count <- function(caps, nm = Inf) {
 map_rearm <- function(pool, st, seed) {
   st[["seed_state"]] <- map_seed_state(seed)
   if (is.null(st[["blob"]])) {
-    caps <- .Call(sora_pool_map_caps, pool)
+    caps <- .Call(rei_pool_map_caps, pool)
     if (caps[[2L]] == 0L) {
-      stop_sora(
-        "sora_error_slots_exhausted",
+      stop_rei(
+        "rei_error_slots_exhausted",
         paste0(
-          "sora: result slots exhausted \u2014 collect or ",
+          "rei: result slots exhausted \u2014 collect or ",
           "cancel outstanding tasks first"
         )
       )
     }
-    st[["gen"]] <- .Call(sora_map_reset, st[["wrap"]])
+    st[["gen"]] <- .Call(rei_map_reset, st[["wrap"]])
     st[["R"]] <- map_runner_count(caps, st[["nm"]])
     st[["handles"]] <- vector("list", st[["R"]])
   } else {
@@ -512,11 +512,11 @@ map_collect_check <- function(collect, template) {
     return(invisible())
   }
   if (!identical(collect, "view")) {
-    stop("sora: .collect must be \"value\" or \"view\"", call. = FALSE)
+    stop("rei: .collect must be \"value\" or \"view\"", call. = FALSE)
   }
   if (is.null(template) || !typeof(template) %in% map_template_types) {
     stop(
-      "sora: .collect = \"view\" requires an atomic .template ",
+      "rei: .collect = \"view\" requires an atomic .template ",
       "(logical, integer, double, complex or raw)",
       call. = FALSE
     )
@@ -533,7 +533,7 @@ map_template_check <- function(template) {
       length(template) == 0L
   ) {
     stop(
-      "sora: .template must be a logical, integer, double, complex, ",
+      "rei: .template must be a logical, integer, double, complex, ",
       "raw or character vector of positive length",
       call. = FALSE
     )
@@ -559,12 +559,12 @@ map_empty <- function(x, template) {
   out
 }
 
-strip_srcref <- function(f) .Call(sora_strip_srcref, f)
+strip_srcref <- function(f) .Call(rei_strip_srcref, f)
 
 # Stage one map call: the RAWVEC gate, the region-less probe, morsel
 # geometry, and the region create — in that order, so slot exhaustion
 # errors before anything exists. Returns the mutable map state the other
-# stages share; sora_map's frame holds it (and with it the region's
+# stages share; rei_map's frame holds it (and with it the region's
 # producer wrap) for the map's duration.
 map_stage <- function(
   pool,
@@ -600,12 +600,12 @@ map_stage <- function(
   # free_rs counts FREE slots in this submitter's own subrange (claiming a
   # worker's submitter slot on nested first use); zero errors here, before
   # any region is created
-  caps <- .Call(sora_pool_map_caps, pool)
+  caps <- .Call(rei_pool_map_caps, pool)
   if (caps[[2L]] == 0L) {
-    stop_sora(
-      "sora_error_slots_exhausted",
+    stop_rei(
+      "rei_error_slots_exhausted",
       paste0(
-        "sora: result slots exhausted \u2014 collect or cancel ",
+        "rei: result slots exhausted \u2014 collect or cancel ",
         "outstanding tasks first"
       )
     )
@@ -613,13 +613,13 @@ map_stage <- function(
   if (!is.null(chunks)) {
     chunks <- as.numeric(chunks)
     if (length(chunks) != 1L || is.na(chunks) || chunks < 1) {
-      stop("sora: .chunks must be a positive number", call. = FALSE)
+      stop("rei: .chunks must be a positive number", call. = FALSE)
     }
   }
 
   # the names-tolerant RAWVEC gate: C checks type / ALTREP / S4, the
   # attribute condition (none, or names only) is cheaper here
-  xlen <- .Call(sora_map_eligible, x)
+  xlen <- .Call(rei_map_eligible, x)
   if (
     xlen >= 0 &&
       !is.null(attributes(x)) &&
@@ -639,13 +639,13 @@ map_stage <- function(
   inline_entry <- caps[[4L]]
   desc_len <- NULL
   if (is.null(template) && !(st[["xraw"]] && xlen > inline_entry)) {
-    bl <- .Call(sora_bounded_call, list(f, dots, x), inline_entry)
+    bl <- .Call(rei_bounded_call, list(f, dots, x), inline_entry)
     desc_len <- bl[[1L]]
     if (!is.null(bl[[2L]])) {
       st[["blob"]] <- bl[[2L]]
       if (
         is.null(.Call(
-          sora_bounded_call,
+          rei_bounded_call,
           map_payload(st, c(1, 1)),
           inline_entry
         )[[2L]])
@@ -692,7 +692,7 @@ map_stage <- function(
     st[["gen"]] <- 0
     desc <- if (st[["xraw"]]) list(f, dots) else list(f, dots, x)
     sr <- .Call(
-      sora_map_stage,
+      rei_map_stage,
       desc,
       if (st[["xraw"]]) x,
       if (!st[["xraw"]]) desc_len,
@@ -715,7 +715,7 @@ map_stage <- function(
 # inside a ring-space wait) cancels the tasks already in and marks the
 # state timed out — the caller returns the sentinel. Runners are ordinary
 # tasks — stolen, balanced, reaped like any other work — except flagged
-# SORA_ENTRY_RUNNER on the wire, so a doorbell help beat re-homes one onto
+# REI_ENTRY_RUNNER on the wire, so a doorbell help beat re-homes one onto
 # the helper's own deque instead of executing a join ticket nested. Chunk
 # tasks stay unflagged: bounded work, no cursor to drain.
 map_submit <- function(pool, st, deadline = Inf) {
@@ -738,13 +738,13 @@ map_submit <- function(pool, st, deadline = Inf) {
       runner_payload(st, k - 1L)
     }
     h <- .Call(
-      sora_pool_submit_try,
+      rei_pool_submit_try,
       pool,
       payload,
       deadline,
       if (blob) 0L else 1L
     )
-    if (inherits(h, "sora_timeout")) {
+    if (inherits(h, "rei_timeout")) {
       st[["timed_out"]] <- TRUE
       return(invisible(st))
     }
@@ -771,20 +771,20 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
   if (!is.null(st[["blob"]])) {
     # blob path: in-order chunk collection, as ever
     for (k in seq_len(st[["C"]])) {
-      # terminal outcomes come back sora_caught-boxed (only C boxes, so an
+      # terminal outcomes come back rei_caught-boxed (only C boxes, so an
       # OK result that is itself a condition stays bare) — no handler frame
-      v <- .Call(sora_pool_collect_try, st[["handles"]][[k]], deadline)
+      v <- .Call(rei_pool_collect_try, st[["handles"]][[k]], deadline)
       # terminal outcomes are all classed; a bare value skips every check
       if (is.object(v)) {
-        if (inherits(v, "sora_caught")) {
+        if (inherits(v, "rei_caught")) {
           v <- v[[1L]]
           map_cancel(st)
-          if (inherits(v, "sora_error_worker_died")) {
+          if (inherits(v, "rei_error_worker_died")) {
             elts <- cbind(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]])
-            stop_sora(
-              "sora_error_worker_died",
+            stop_rei(
+              "rei_error_worker_died",
               sprintf(
-                "sora: worker died while executing map elements %s",
+                "rei: worker died while executing map elements %s",
                 map_ranges_label(elts)
               ),
               slot = v[["slot"]],
@@ -794,7 +794,7 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
           }
           stop(v)
         }
-        if (inherits(v, "sora_timeout")) {
+        if (inherits(v, "rei_timeout")) {
           map_cancel(st)
           return(v)
         }
@@ -821,25 +821,25 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
     # consume one runner handle: FALSE when the park slice (or the map
     # deadline) expired with the slot still pending
     consume <- function(k, deadline) {
-      v <- .Call(sora_pool_collect_try, st[["handles"]][[k]], deadline)
+      v <- .Call(rei_pool_collect_try, st[["handles"]][[k]], deadline)
       # terminal outcomes are all classed; a bare value skips every check
       if (is.object(v)) {
-        if (inherits(v, "sora_timeout")) {
+        if (inherits(v, "rei_timeout")) {
           return(FALSE)
         }
-        if (inherits(v, "sora_caught")) {
+        if (inherits(v, "rei_caught")) {
           v <- v[[1L]]
           # fail fast: peers stop within ~a batch (idempotent — an erroring
           # runner already stored this before its ERR publish)
-          .Call(sora_map_cancel_set, st[["wrap"]])
-          if (inherits(v, "sora_error_worker_died")) {
+          .Call(rei_map_cancel_set, st[["wrap"]])
+          if (inherits(v, "rei_error_worker_died")) {
             if (is.null(died)) died <<- v
-          } else if (!is.null(v[["sora_map_index"]])) {
+          } else if (!is.null(v[["rei_map_index"]])) {
             errs[[length(errs) + 1L]] <<- v
             # the erroring runner's completed batches still count against
             # the lost set; only its uncompleted batch reports lost
-            if (!is.null(v[["sora_map_hist"]])) {
-              runs[[length(runs) + 1L]] <<- v[["sora_map_hist"]]
+            if (!is.null(v[["rei_map_hist"]])) {
+              runs[[length(runs) + 1L]] <<- v[["rei_map_hist"]]
             }
           } else {
             map_cancel(st)
@@ -863,18 +863,18 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
       for (k in pending) {
         if (mono_time() >= deadline) {
           map_cancel(st)
-          return(.Call(sora_map_timeout_call))
+          return(.Call(rei_map_timeout_call))
         }
         # the verdict is the C morsel-state code: 2 abandoned, 1 running,
         # 0 idle
-        verdict <- .Call(sora_map_abandon, st[["wrap"]], k - 1L)
+        verdict <- .Call(rei_map_abandon, st[["wrap"]], k - 1L)
         done <- if (verdict == 2L) {
           # abandoned: never started and never will — cancel and drop; a
           # claim that lands anyway loses its first-call CAS and publishes
           # empty
           h <- st[["handles"]][[k]]
           if (!is.null(h)) {
-            .Call(sora_pool_cancel, h)
+            .Call(rei_pool_cancel, h)
           }
           st[["handles"]][k] <- list(NULL)
           TRUE
@@ -898,7 +898,7 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
         now <- mono_time()
         if (now >= deadline) {
           map_cancel(st)
-          return(.Call(sora_map_timeout_call))
+          return(.Call(rei_map_timeout_call))
         }
         if (consume(pending[[1L]], min(deadline, now + 0.05))) {
           pending <- pending[-1L]
@@ -909,11 +909,11 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
       map_cancel(st)
       # the lost set is arithmetic over the collected histories, in C:
       # issued = [0, cursor), lost = issued minus their union
-      elts <- .Call(sora_map_lost, st[["wrap"]], runs)
-      stop_sora(
-        "sora_error_worker_died",
+      elts <- .Call(rei_map_lost, st[["wrap"]], runs)
+      stop_rei(
+        "rei_error_worker_died",
         sprintf(
-          "sora: worker died while executing map elements %s",
+          "rei: worker died while executing map elements %s",
           map_ranges_label(elts)
         ),
         slot = died[["slot"]],
@@ -926,13 +926,13 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
       # first by element index among the runners that ran — the set that
       # ran already depended on steal order; the fail-fast store only
       # shrinks it sooner
-      idx <- vapply(errs, function(e) as.numeric(e[["sora_map_index"]]), 0)
+      idx <- vapply(errs, function(e) as.numeric(e[["rei_map_index"]]), 0)
       stop(errs[[which.min(idx)]])
     }
     if (!st[["direct"]]) {
       # generic assembly: one C pass splices every runner's batch value
       # lists into out by element position
-      .Call(sora_map_splice, out, runs, st[["ms"]])
+      .Call(rei_map_splice, out, runs, st[["ms"]])
     }
   }
   if (!st[["direct"]] && is.null(st[["template"]])) {
@@ -949,14 +949,14 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
   if (st[["direct"]] && identical(collect, "view")) {
     st[["consumed"]] <- TRUE
     return(.Call(
-      sora_map_gather_view,
+      rei_map_gather_view,
       st[["wrap"]],
       st[["nms"]],
       names(st[["template"]])
     ))
   }
   res <- if (st[["direct"]]) {
-    .Call(sora_map_gather, st[["wrap"]])
+    .Call(rei_map_gather, st[["wrap"]])
   } else {
     vapply(out, identity, st[["template"]], USE.NAMES = FALSE)
   }
@@ -981,17 +981,17 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
 # (or pool shutdown) unwinds — both C entries no-op on closed handles.
 map_cancel <- function(st) {
   if (!is.null(st[["wrap"]])) {
-    .Call(sora_map_cancel_set, st[["wrap"]])
+    .Call(rei_map_cancel_set, st[["wrap"]])
   }
   for (h in st[["handles"]]) {
-    if (!is.null(h)) .Call(sora_pool_cancel, h)
+    if (!is.null(h)) .Call(rei_pool_cancel, h)
   }
   st[["handles"]] <- vector("list", length(st[["handles"]]))
   invisible()
 }
 
 # Worker-side blob-path chunk evaluator, riding each chunk task as
-# sora:::map_chunk(pool, r, b[, s]): `pool` resolves to the evaluating
+# rei:::map_chunk(pool, r, b[, s]): `pool` resolves to the evaluating
 # worker's own handle via the base-env binding (as nested submit), `r`
 # packs c(lo, hi) as doubles, `b` is the inline descriptor blob — the
 # sizes this path admits make a per-chunk unserialize negligible, so
@@ -999,7 +999,7 @@ map_cancel <- function(st) {
 map_chunk <- function(pool, r, b, s = NULL) {
   lo <- r[[1L]]
   hi <- r[[2L]]
-  d <- .Call(sora_unserialize_call, b)
+  d <- .Call(rei_unserialize_call, b)
   sr <- NULL
   if (!is.null(s)) {
     # per-element streams: seek to element lo's stream in O(log lo), then
@@ -1015,9 +1015,9 @@ map_chunk <- function(pool, r, b, s = NULL) {
         assign(".Random.seed", os, envir = globalenv())
       }
     )
-    sr <- .Call(sora_map_rng_seek, s, lo)
+    sr <- .Call(rei_map_rng_seek, s, lo)
   }
-  # the element loop is one .Call (sora_map_batch builds the f call once
+  # the element loop is one .Call (rei_map_batch builds the f call once
   # and swaps only the element cell per iteration, lapply's discipline);
   # one tryCatch per chunk, not per element, annotates an escaping error
   # with the failing element's index — stamped into eic by the loop
@@ -1026,7 +1026,7 @@ map_chunk <- function(pool, r, b, s = NULL) {
   eic <- numeric(1L)
   tryCatch(
     .Call(
-      sora_map_batch,
+      rei_map_batch,
       NULL,
       d[[1L]],
       d[[2L]],
@@ -1040,7 +1040,7 @@ map_chunk <- function(pool, r, b, s = NULL) {
     ),
     error = function(e) {
       if (eic[[1L]] >= 1) {
-        e[["sora_map_index"]] <- eic[[1L]]
+        e[["rei_map_index"]] <- eic[[1L]]
       }
       stop(e)
     }
@@ -1048,10 +1048,10 @@ map_chunk <- function(pool, r, b, s = NULL) {
 }
 
 # Worker-side morsel runner, riding each runner task as
-# sora:::map_runner(pool, n, a[, s]): `n` names the map region, `a`
+# rei:::map_runner(pool, n, a[, s]): `n` names the map region, `a`
 # packs the runner's ordinal into the CLAIM array, the run generation its
 # payload carries, and the template flag. The whole batch transition is
-# one .Call: sora_map_next claims the runner's CLAIM lane on its first
+# one .Call: rei_map_next claims the runner's CLAIM lane on its first
 # call (NULL when the trim won, or when a prepared reset re-armed the
 # word — the runner exits without issuing), then per transition checks
 # the cancel word and the pool signals, sizes and issues the next batch
@@ -1072,7 +1072,7 @@ map_runner <- function(pool, n, a, s = NULL) {
   xp <- ctx[["xp"]]
   f <- ctx[["f"]]
   dots <- ctx[["dots"]]
-  sig <- .Call(sora_pool_signals, pool)
+  sig <- .Call(rei_pool_signals, pool)
   hm <- numeric(8)
   hk <- numeric(8)
   vals <- if (!tmpl) vector("list", 8L)
@@ -1091,14 +1091,14 @@ map_runner <- function(pool, n, a, s = NULL) {
   }
   tryCatch(
     repeat {
-      nx <- .Call(sora_map_next, xp, r, g, sig, NULL, NULL)
+      nx <- .Call(rei_map_next, xp, r, g, sig, NULL, NULL)
       if (is.null(nx)) {
         break
       }
       # doorbell: one foreign injection task between batches hands
       # concurrent submitters their chunk-boundary interleave back
       if (nx[[6L]]) {
-        .Call(sora_pool_help_once, pool)
+        .Call(rei_pool_help_once, pool)
       }
       lo <- nx[[3L]]
       hi <- nx[[4L]]
@@ -1113,8 +1113,8 @@ map_runner <- function(pool, n, a, s = NULL) {
       # batch, one jump per element inside the batch loop — results
       # invariant across morsel size, batch sizing, runner count, and
       # issue order
-      sr <- if (!is.null(s)) .Call(sora_map_rng_seek, s, lo)
-      # the element loop itself is one .Call per batch: sora_map_batch
+      sr <- if (!is.null(s)) .Call(rei_map_rng_seek, s, lo)
+      # the element loop itself is one .Call per batch: rei_map_batch
       # builds the f call once and swaps only the element cell per
       # iteration (lapply's discipline), with template writes and RNG
       # installs inline. eic is the loop's in-flight element index, so
@@ -1123,7 +1123,7 @@ map_runner <- function(pool, n, a, s = NULL) {
       eic <- numeric(1L)
       out <- tryCatch(
         .Call(
-          sora_map_batch,
+          rei_map_batch,
           xp,
           f,
           dots,
@@ -1137,7 +1137,7 @@ map_runner <- function(pool, n, a, s = NULL) {
         ),
         error = function(e) {
           if (eic[[1L]] >= 1) {
-            e[["sora_map_index"]] <- eic[[1L]]
+            e[["rei_map_index"]] <- eic[[1L]]
           }
           stop(e)
         }
@@ -1161,12 +1161,12 @@ map_runner <- function(pool, n, a, s = NULL) {
       # leave it so collect treats it as fatal. An annotated one carries
       # the completed batches, so a death lost-set scan counts only this
       # runner's uncompleted batch
-      if (!is.null(e[["sora_map_index"]])) {
-        e[["sora_map_hist"]] <- list(hm[seq_len(nb)], hk[seq_len(nb)])
+      if (!is.null(e[["rei_map_index"]])) {
+        e[["rei_map_hist"]] <- list(hm[seq_len(nb)], hk[seq_len(nb)])
       }
       # the fail-fast store, ahead of the ERR publish: peers observe it
       # within ~a batch instead of draining the cursor first
-      .Call(sora_map_cancel_set, xp)
+      .Call(rei_map_cancel_set, xp)
       stop(e)
     }
   )
@@ -1184,14 +1184,14 @@ map_runner <- function(pool, n, a, s = NULL) {
 # — no-populate, validates the header, and unserializes the one
 # descriptor stream: at most once per worker per map.
 map_ctx <- function(pool, name) {
-  cache <- .Call(sora_pool_map_cache, pool)
+  cache <- .Call(rei_pool_map_cache, pool)
   ctx <- get0(name, envir = cache, inherits = FALSE)
   if (is.null(ctx)) {
     if (length(ls(cache)) >= 8L) {
       rm(list = ls(cache), envir = cache)
     }
-    xp <- .Call(sora_map_open, name, TRUE)
-    d <- .Call(sora_map_desc, xp)
+    xp <- .Call(rei_map_open, name, TRUE)
+    d <- .Call(rei_map_desc, xp)
     ctx <- list(
       f = d[[1L]],
       dots = d[[2L]],

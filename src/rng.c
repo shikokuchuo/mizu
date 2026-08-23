@@ -1,4 +1,4 @@
-/* L'Ecuyer-CMRG RNG stream advancement for sora_map(.seed = ) ----------------
+/* L'Ecuyer-CMRG RNG stream advancement for rei_map(.seed = ) ----------------
  *
  * Pure-C implementation of MRG32k3a stream jumping. Moduli and jump matrix
  * constants below are from the RngStreams package by Pierre L'Ecuyer,
@@ -21,7 +21,7 @@
  * jumps — what keeps per-element streams chunking-invariant at no
  * per-chunk O(k) cost), and the per-element .Random.seed install. */
 
-#include "sora.h"
+#include "rei.h"
 
 #define REI_RNG_M1 4294967087ULL
 #define REI_RNG_M2 4294944443ULL
@@ -83,9 +83,9 @@ static void mat_pow_mod(const unsigned long long A[3][3], uint64_t k,
   }
 }
 
-static void sora_rng_state_check(SEXP state) {
+static void rei_rng_state_check(SEXP state) {
   if (TYPEOF(state) != INTSXP || XLENGTH(state) != 6)
-    Rf_error("sora: invalid RNG stream state");
+    Rf_error("rei: invalid RNG stream state");
 }
 
 /* Derive the base 6-word CMRG state from a scalar seed, replicating R's
@@ -93,7 +93,7 @@ static void sora_rng_state_check(SEXP state) {
    then one draw per state word rejected until it falls below m2 — so the
    result is bit-identical to what set.seed(seed, "L'Ecuyer-CMRG") installs,
    with no write to the caller's .Random.seed. */
-SEXP sora_map_rng_base(SEXP seed_sexp) {
+SEXP rei_map_rng_base(SEXP seed_sexp) {
   unsigned int seed = (unsigned int) Rf_asInteger(seed_sexp);
   SEXP out = Rf_allocVector(INTSXP, 6);
   int *o = INTEGER(out);
@@ -112,11 +112,11 @@ SEXP sora_map_rng_base(SEXP seed_sexp) {
 
 /* state advanced k stream jumps, in O(log k): element k's stream is the
    base advanced k jumps, identical for any chunking or steal order. */
-SEXP sora_map_rng_seek(SEXP state, SEXP k_sexp) {
-  sora_rng_state_check(state);
+SEXP rei_map_rng_seek(SEXP state, SEXP k_sexp) {
+  rei_rng_state_check(state);
   double kd = Rf_asReal(k_sexp);
   if (!(kd >= 0) || kd > 9.007199254740992e15)
-    Rf_error("sora: invalid stream index");
+    Rf_error("rei: invalid stream index");
   unsigned long long P1[3][3], P2[3][3], v1[3], v2[3], o1[3], o2[3];
   mat_pow_mod(A1p127, (uint64_t) kd, P1, REI_RNG_M1);
   mat_pow_mod(A2p127, (uint64_t) kd, P2, REI_RNG_M2);
@@ -139,8 +139,8 @@ SEXP sora_map_rng_seek(SEXP state, SEXP k_sexp) {
    form: kind word 10407, then the 6 state words) and return the state
    advanced one jump — the chunk loop's per-element step. The worker's own
    RNG state is saved and restored around the chunk loop on the R side. */
-SEXP sora_map_rng_install(SEXP state) {
-  sora_rng_state_check(state);
+SEXP rei_map_rng_install(SEXP state) {
+  rei_rng_state_check(state);
   SEXP seed = PROTECT(Rf_allocVector(INTSXP, 7));
   INTEGER(seed)[0] = 10407;
   memcpy(INTEGER(seed) + 1, INTEGER(state), 6 * sizeof(int));

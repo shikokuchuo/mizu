@@ -11,41 +11,41 @@
 
 test_that("round-trip latency reports against the socket baseline", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  ch <- sora_channel(echo_expr, capacity = 1024L)
+  skip_if_no_child_rei()
+  ch <- rei_channel(echo_expr, capacity = 1024L)
 
   rt <- function(n) {
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
-      sora_send(ch, 0L)
-      sora_recv(ch, 30)
+      rei_send(ch, 0L)
+      rei_recv(ch, 30)
     }
     (proc.time()[[3]] - t0) / n * 1e6
   }
   rt(500L) # warm-up
   us <- min(rt(2000L), rt(2000L), rt(2000L))
   cat(sprintf("\nround-trip: %.2f us (baseline 31.73 us)\n", us))
-  expect_true(sora_close(ch, timeout = 10))
+  expect_true(rei_close(ch, timeout = 10))
 })
 
 test_that("one-way throughput reports against the >100k msg/s regime", {
   skip_on_cran()
-  skip_if_no_child_sora()
+  skip_if_no_child_rei()
   n <- 200000L
-  ch <- sora_channel(
+  ch <- rei_channel(
     quote({
       total <- 0L
       repeat {
-        xs <- sora_recv_batch(ch, n = 4096L, timeout = 30)
-        if (inherits(xs, "sora_timeout")) {
+        xs <- rei_recv_batch(ch, n = 4096L, timeout = 30)
+        if (inherits(xs, "rei_timeout")) {
           next # an idle producer is not terminal (cf. echo_expr)
         }
-        if (inherits(xs, "sora_sentinel")) {
+        if (inherits(xs, "rei_sentinel")) {
           break
         }
         total <- total + length(xs)
         if (total >= 200000L) {
-          sora_send(ch, total)
+          rei_send(ch, total)
           break
         }
       }
@@ -58,23 +58,23 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
   sent <- 0L
   while (sent < n) {
     want <- min(4096L, n - sent)
-    sent <- sent + sora_send_batch(ch, batch[seq_len(want)])
+    sent <- sent + rei_send_batch(ch, batch[seq_len(want)])
   }
-  expect_identical(sora_recv(ch, 60), n) # peer's receipt count
+  expect_identical(rei_recv(ch, 60), n) # peer's receipt count
   rate <- n / (proc.time()[[3]] - t0)
   cat(sprintf("\none-way: %.0f msg/s (target > 100000)\n", rate))
-  expect_true(sora_close(ch, timeout = 10))
+  expect_true(rei_close(ch, timeout = 10))
 })
 
 test_that("pool task dispatch reports against the mirai baseline", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  p <- sora_pool(1L, max_submitters = 2L) # 2048 result slots for us
+  skip_if_no_child_rei()
+  p <- rei_pool(1L, max_submitters = 2L) # 2048 result slots for us
 
   rt <- function(n) {
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
-      sora_collect(sora_submit(p, NULL), timeout = 30)
+      rei_collect(rei_submit(p, NULL), timeout = 30)
     }
     (proc.time()[[3]] - t0) / n * 1e6
   }
@@ -89,10 +89,10 @@ test_that("pool task dispatch reports against the mirai baseline", {
     t0 <- proc.time()[[3]]
     ts <- vector("list", n)
     for (i in seq_len(n)) {
-      ts[[i]] <- sora_submit(p, NULL)
+      ts[[i]] <- rei_submit(p, NULL)
     }
     for (i in seq_len(n)) {
-      sora_collect(ts[[i]], timeout = 30)
+      rei_collect(ts[[i]], timeout = 30)
     }
     n / (proc.time()[[3]] - t0)
   }
@@ -106,9 +106,9 @@ test_that("pool task dispatch reports against the mirai baseline", {
     t0 <- proc.time()[[3]]
     ts <- vector("list", n)
     for (i in seq_len(n)) {
-      ts[[i]] <- sora_submit(p, NULL)
+      ts[[i]] <- rei_submit(p, NULL)
     }
-    sora_collect_all(ts, timeout = 30)
+    rei_collect_all(ts, timeout = 30)
     n / (proc.time()[[3]] - t0)
   }
   tpa(200L)
@@ -117,14 +117,14 @@ test_that("pool task dispatch reports against the mirai baseline", {
 
   # once the worker parks, its stat mirror is exact
   total <- 200 + 2 * 1000 + 2 * (200 + 2 * 2000)
-  expect_true(wait_until(sora_pool_stats(p)[["workers"]][["tasks"]] == total))
-  expect_true(sora_pool_stop(p))
+  expect_true(wait_until(rei_pool_stats(p)[["workers"]][["tasks"]] == total))
+  expect_true(rei_pool_stop(p))
 })
 
-test_that("sora_map reports against serial lapply and per-task dispatch", {
+test_that("rei_map reports against serial lapply and per-task dispatch", {
   skip_on_cran() # host + 2 workers exceeds 2 cores
-  skip_if_no_child_sora()
-  p <- sora_pool(2L)
+  skip_if_no_child_rei()
+  p <- rei_pool(2L)
 
   # overhead regime: trivial f, where per-element cost is everything
   # (baselines: dev/bench/notes.md)
@@ -133,7 +133,7 @@ test_that("sora_map reports against serial lapply and per-task dispatch", {
   f <- function(i) i + 1L
   mp <- function() {
     t0 <- proc.time()[[3]]
-    r <- sora_map(p, x, f, .template = numeric(1), .timeout = 60)
+    r <- rei_map(p, x, f, .template = numeric(1), .timeout = 60)
     us <- (proc.time()[[3]] - t0) / n * 1e6
     expect_identical(r, x + 1)
     us
@@ -144,7 +144,7 @@ test_that("sora_map reports against serial lapply and per-task dispatch", {
   base <- vapply(x, f, numeric(1))
   lap <- (proc.time()[[3]] - t0) / n * 1e6
   cat(sprintf(
-    "\nsora_map trivial f: %.2f us/element (serial vapply %.2f, per-task dispatch ~4, mirai_map 63-124)\n",
+    "\nrei_map trivial f: %.2f us/element (serial vapply %.2f, per-task dispatch ~4, mirai_map 63-124)\n",
     us,
     lap
   ))
@@ -158,11 +158,11 @@ test_that("sora_map reports against serial lapply and per-task dispatch", {
     i
   }
   t0 <- proc.time()[[3]]
-  r <- sora_map(p, 1:64, slow, .timeout = 60)
+  r <- rei_map(p, 1:64, slow, .timeout = 60)
   el <- proc.time()[[3]] - t0
   expect_identical(r, as.list(1:64))
-  cat(sprintf("sora_map 64 x 5ms on 2 workers: %.2fs (serial 0.32s)\n", el))
-  expect_true(sora_pool_stop(p))
+  cat(sprintf("rei_map 64 x 5ms on 2 workers: %.2fs (serial 0.32s)\n", el))
+  expect_true(rei_pool_stop(p))
 })
 
 # The memcpy-bound regime the next cases measure: the before/after
@@ -170,20 +170,20 @@ test_that("sora_map reports against serial lapply and per-task dispatch", {
 
 test_that("large-vector channel round trip reports the memcpy-bound regime", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  ch <- sora_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_rei()
+  ch <- rei_channel(echo_expr, capacity = 64L)
 
   rt <- function(x, n) {
-    sora_send(ch, x)
-    expect_identical(sora_recv(ch, 60), x) # correctness on the warm-up
+    rei_send(ch, x)
+    expect_identical(rei_recv(ch, 60), x) # correctness on the warm-up
     best <- Inf
     for (r in 1:3) {
       gc() # views free their spill regions only via finalizers; keep lent
       # regions bounded so the suite fits a 1 GB /dev/shm (docker default)
       t0 <- proc.time()[[3]]
       for (i in seq_len(n)) {
-        sora_send(ch, x)
-        sora_recv(ch, 60)
+        rei_send(ch, x)
+        rei_recv(ch, 60)
       }
       best <- min(best, proc.time()[[3]] - t0)
     }
@@ -204,24 +204,24 @@ test_that("large-vector channel round trip reports the memcpy-bound regime", {
     ))
   }
   gc()
-  expect_true(sora_close(ch, timeout = 10))
+  expect_true(rei_close(ch, timeout = 10))
 })
 
 test_that("pool task returning a large vector reports the memcpy-bound regime", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  p <- sora_pool(1L, max_submitters = 2L)
+  skip_if_no_child_rei()
+  p <- rei_pool(1L, max_submitters = 2L)
 
   for (mb in c(1, 8, 64)) {
     n <- mb * 131072
-    t <- sora_submit(p, seq_len(n) + 0, n = n)
-    expect_identical(sora_collect(t, 60), seq_len(n) + 0) # warm-up
+    t <- rei_submit(p, seq_len(n) + 0, n = n)
+    expect_identical(rei_collect(t, 60), seq_len(n) + 0) # warm-up
     best <- Inf
     for (r in 1:3) {
       gc() # collected views free their spill regions only via finalizers
       t0 <- proc.time()[[3]]
       for (i in seq_len(max(1L, 32L %/% mb))) {
-        sora_collect(sora_submit(p, seq_len(n) + 0, n = n), 60)
+        rei_collect(rei_submit(p, seq_len(n) + 0, n = n), 60)
       }
       best <- min(best, proc.time()[[3]] - t0)
     }
@@ -234,13 +234,13 @@ test_that("pool task returning a large vector reports the memcpy-bound regime", 
     ))
   }
   gc()
-  expect_true(sora_pool_stop(p))
+  expect_true(rei_pool_stop(p))
 })
 
-test_that("template sora_map at large n reports the staging/gather memcpy regime", {
+test_that("template rei_map at large n reports the staging/gather memcpy regime", {
   skip_on_cran() # host + 2 workers exceeds 2 cores
-  skip_if_no_child_sora()
-  p <- sora_pool(2L)
+  skip_if_no_child_rei()
+  p <- rei_pool(2L)
 
   # 32 MiB x section staged once (map.c), 32 MiB template output gathered back
   n <- 4 * 1024 * 1024
@@ -248,7 +248,7 @@ test_that("template sora_map at large n reports the staging/gather memcpy regime
   f <- function(i) i + 1
   mp <- function() {
     t0 <- proc.time()[[3]]
-    r <- sora_map(p, x, f, .template = numeric(1), .timeout = 60)
+    r <- rei_map(p, x, f, .template = numeric(1), .timeout = 60)
     el <- proc.time()[[3]] - t0
     expect_identical(r, x + 1)
     el
@@ -256,7 +256,7 @@ test_that("template sora_map at large n reports the staging/gather memcpy regime
   mp() # warm-up
   el <- min(mp(), mp())
   cat(sprintf(
-    "\nsora_map 32 MiB template: %.3fs (%.2f us/element)\n",
+    "\nrei_map 32 MiB template: %.3fs (%.2f us/element)\n",
     el,
     el / n * 1e6
   ))
@@ -265,7 +265,7 @@ test_that("template sora_map at large n reports the staging/gather memcpy regime
   # view over the output area); the full-sweep read faults pages
   mpv <- function() {
     t0 <- proc.time()[[3]]
-    r <- sora_map(
+    r <- rei_map(
       p,
       x,
       f,
@@ -281,32 +281,32 @@ test_that("template sora_map at large n reports the staging/gather memcpy regime
   gc() # a collected view's map region is released only by its finalizer
   elv <- min(mpv(), mpv())
   cat(sprintf(
-    "sora_map 32 MiB template, view collect + reduce: %.3fs (%.2f us/element)\n",
+    "rei_map 32 MiB template, view collect + reduce: %.3fs (%.2f us/element)\n",
     elv,
     elv / n * 1e6
   ))
-  expect_true(sora_pool_stop(p))
+  expect_true(rei_pool_stop(p))
 })
 
 test_that("guard: ALTREP input stays a compact stream", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  ch <- sora_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_rei()
+  ch <- rei_channel(echo_expr, capacity = 64L)
 
   x <- 1:(128 * 1024 * 1024) # ALTREP seq: 512 MiB materialized
   xb <- serialize(x, NULL)
   len <- length(xb)
   expect_lt(len, 1024L) # the compact-stream premise
-  sora_send(ch, x)
+  rei_send(ch, x)
   # compare the serialized streams, not the objects: identical() would
   # materialize both sequences (two 512 MiB allocations — valgrind's
   # large-range mmap warnings); equal compact streams are equal values
-  expect_identical(serialize(sora_recv(ch, 60), NULL), xb)
+  expect_identical(serialize(rei_recv(ch, 60), NULL), xb)
   n <- 1000L # looped: proc.time ticks at ~1 ms on this platform
   t0 <- proc.time()[[3]]
   for (i in seq_len(n)) {
-    sora_send(ch, x)
-    sora_recv(ch, 60)
+    rei_send(ch, x)
+    rei_recv(ch, 60)
   }
   el <- proc.time()[[3]] - t0
   cat(sprintf(
@@ -314,18 +314,18 @@ test_that("guard: ALTREP input stays a compact stream", {
     el / n * 1e6,
     len
   ))
-  expect_true(sora_close(ch, timeout = 10))
+  expect_true(rei_close(ch, timeout = 10))
 })
 
 test_that("guard: partial read of a wide matrix pays full unserialize today", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  ch <- sora_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_rei()
+  ch <- rei_channel(echo_expr, capacity = 64L)
 
   m <- matrix(seq_len(131072 * 100) + 0, nrow = 131072) # 100 MiB, 100 cols
-  sora_send(ch, m)
+  rei_send(ch, m)
   t0 <- proc.time()[[3]]
-  y <- sora_recv(ch, 60)
+  y <- rei_recv(ch, 60)
   t1 <- proc.time()[[3]]
   expect_identical(y, m)
   for (i in 1:100) {
@@ -338,20 +338,20 @@ test_that("guard: partial read of a wide matrix pays full unserialize today", {
     (t1 - t0) * 1e3,
     (t2 - t1) * 10
   ))
-  expect_true(sora_close(ch, timeout = 10))
+  expect_true(rei_close(ch, timeout = 10))
 })
 
 test_that("guard: held results do not pin payload regions today", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  p <- sora_pool(1L, max_submitters = 2L)
+  skip_if_no_child_rei()
+  p <- rei_pool(1L, max_submitters = 2L)
 
   n <- 2 * 1024 * 1024 # 16 MiB results
   held <- vector("list", 8L)
   for (i in seq_len(8L)) {
-    held[[i]] <- sora_collect(sora_submit(p, seq_len(n) + 0, n = n), 60)
+    held[[i]] <- rei_collect(rei_submit(p, seq_len(n) + 0, n = n), 60)
   }
-  st <- sora_pool_stats(p)[["submitters"]]
+  st <- rei_pool_stats(p)[["submitters"]]
   st <- st[st[["status"]] == "live", ] # one row per slot; the idle slot reads zero
   cat(sprintf(
     "\nheld 8 x 16 MiB: spills %d, spill_reuse %d, fresh regions %d\n",
@@ -360,23 +360,23 @@ test_that("guard: held results do not pin payload regions today", {
     st[["spills"]] - st[["spill_reuse"]]
   ))
   expect_identical(held[[8L]], seq_len(n) + 0)
-  expect_true(sora_pool_stop(p))
+  expect_true(rei_pool_stop(p))
 })
 
 test_that("guard: attributed large vector reports the attrs-parse share", {
   skip_on_cran()
-  skip_if_no_child_sora()
-  ch <- sora_channel(echo_expr, capacity = 64L)
+  skip_if_no_child_rei()
+  ch <- rei_channel(echo_expr, capacity = 64L)
 
   x <- seq_len(4 * 1024 * 1024) + 0 # 32 MiB
   names(x) <- paste0("n", seq_along(x)) # non-trivial attrs blob
   rt <- function(v, n) {
-    sora_send(ch, v)
-    expect_identical(sora_recv(ch, 60), v)
+    rei_send(ch, v)
+    expect_identical(rei_recv(ch, 60), v)
     t0 <- proc.time()[[3]]
     for (i in seq_len(n)) {
-      sora_send(ch, v)
-      sora_recv(ch, 60)
+      rei_send(ch, v)
+      rei_recv(ch, 60)
     }
     (proc.time()[[3]] - t0) / n
   }
@@ -392,5 +392,5 @@ test_that("guard: attributed large vector reports the attrs-parse share", {
     sx * 1e3,
     (s - sx) * 1e3
   ))
-  expect_true(sora_close(ch, timeout = 10))
+  expect_true(rei_close(ch, timeout = 10))
 })

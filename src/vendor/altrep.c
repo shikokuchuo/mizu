@@ -348,11 +348,11 @@ SEXP mori_vec_wrap(const void *data, R_xlen_t length, int sexptype,
   case LGLSXP:   cls = mori_logical_class; break;
   case RAWSXP:   cls = mori_raw_class;     break;
   case CPLXSXP:  cls = mori_complex_class; break;
-  default:       Rf_error("sora: unsupported ALTREP type %d", sexptype);
+  default:       Rf_error("rei: unsupported ALTREP type %d", sexptype);
   }
 
   mori_vec *v = malloc(sizeof(mori_vec));
-  if (v == NULL) Rf_error("sora: allocation failure");
+  if (v == NULL) Rf_error("rei: allocation failure");
   v->owned.release = release;
   v->owned.release_arg = release_arg;
   v->data = data;
@@ -401,7 +401,7 @@ static inline SEXP mori_string_elt_shm(mori_str *s, R_xlen_t i) {
   if (e.str_offset < 0 ||
       e.str_offset > s->str_bytes - (int64_t) e.str_length ||
       e.str_encoding < CE_NATIVE || e.str_encoding > CE_BYTES)
-    Rf_error("sora: invalid string data");
+    Rf_error("rei: invalid string data");
 
   return Rf_mkCharLenCE((const char *) (s->data + e.str_offset),
                         e.str_length, (cetype_t) e.str_encoding);
@@ -470,15 +470,15 @@ SEXP mori_str_wrap(const unsigned char *region_base, R_xlen_t n,
 
   if (n < 0 || data_size < 0 ||
       n > data_size / (R_xlen_t) sizeof(mori_str_entry))
-    Rf_error("sora: invalid string data");
+    Rf_error("rei: invalid string data");
 
   size_t table_size = sizeof(mori_str_entry) * (size_t) n;
   size_t aligned = MORI_ALIGN64(table_size);
   if (aligned > (size_t) data_size)
-    Rf_error("sora: invalid string data");
+    Rf_error("rei: invalid string data");
 
   mori_str *s = malloc(sizeof(mori_str));
-  if (s == NULL) Rf_error("sora: allocation failure");
+  if (s == NULL) Rf_error("rei: allocation failure");
 
   s->owned.release = release;
   s->owned.release_arg = release_arg;
@@ -509,9 +509,9 @@ static SEXP mori_unwrap_element(unsigned char *base, int64_t region_size,
   int32_t sexptype = entry.sexptype, attrs_size = entry.attrs_size;
 
   if (mori_oob(data_offset, data_size, region_size))
-    Rf_error("sora: invalid element data");
+    Rf_error("rei: invalid element data");
   if (attrs_size < 0 || attrs_size > data_size)
-    Rf_error("sora: invalid element data");
+    Rf_error("rei: invalid element data");
 
   SEXP result;
   if (sexptype == VECSXP) {
@@ -532,7 +532,7 @@ static SEXP mori_unwrap_element(unsigned char *base, int64_t region_size,
     if (elt_size != 0 &&
         (length < 0 ||
          length > (data_size - attrs_size) / (int64_t) elt_size))
-      Rf_error("sora: invalid element data");
+      Rf_error("rei: invalid element data");
     result = PROTECT(mori_vec_wrap(
       base + data_offset, (R_xlen_t) length, sexptype, keeper, NULL, NULL
     ));
@@ -584,12 +584,12 @@ static SEXP mori_make_view_extptr(unsigned char *base, int64_t region_size,
                                   int64_t *out_attrs_size) {
 
   if (region_size < REI_HEADER_SIZE)
-    Rf_error("sora: invalid nested list region");
+    Rf_error("rei: invalid nested list region");
 
   uint32_t magic;
   memcpy(&magic, base, 4);
   if (magic != REI_MAGIC_LIST)
-    Rf_error("sora: invalid nested list region");
+    Rf_error("rei: invalid nested list region");
 
   int32_t n;
   int64_t attrs_offset, attrs_size;
@@ -599,10 +599,10 @@ static SEXP mori_make_view_extptr(unsigned char *base, int64_t region_size,
 
   if (n < 0 || n > (region_size - REI_HEADER_SIZE) / 32 ||
       mori_oob(attrs_offset, attrs_size, region_size))
-    Rf_error("sora: invalid nested list region");
+    Rf_error("rei: invalid nested list region");
 
   mori_list_view *v = malloc(sizeof(mori_list_view));
-  if (v == NULL) Rf_error("sora: allocation failure");
+  if (v == NULL) Rf_error("rei: allocation failure");
   v->owned.release = NULL;
   v->owned.release_arg = NULL;
   v->base = base;
@@ -753,7 +753,7 @@ static SEXP mori_shm_wrap_consumer(rei_shm *shm) {
 static SEXP mori_shm_wrap_producer(rei_shm *shm) {
 
   rei_shm *host = malloc(sizeof(rei_shm));
-  if (host == NULL) Rf_error("sora: allocation failure");
+  if (host == NULL) Rf_error("rei: allocation failure");
   memcpy(host, shm, sizeof(rei_shm));
   host->addr = NULL;
   host->size = 0;
@@ -999,7 +999,7 @@ static void mori_shm_create_failed(int category, size_t requested) {
   const char *summary, *hint;
   mori_format_bytes(requested, sizebuf, sizeof(sizebuf));
   rei_err_describe(category, &summary, &hint);
-  Rf_error("sora: cannot create region (requested %s): %s%s%s",
+  Rf_error("rei: cannot create region (requested %s): %s%s%s",
            sizebuf, summary, hint[0] != '\0' ? ". " : "", hint);
 }
 
@@ -1185,7 +1185,7 @@ static SEXP mori_open_vector(SEXP shm_ptr) {
       (elt_size != 0 &&
        length > (region_size - REI_HEADER_SIZE) / (int64_t) elt_size) ||
       attrs_size > region_size - REI_HEADER_SIZE - length * (int64_t) elt_size)
-    Rf_error("sora: invalid or corrupted shared memory region");
+    Rf_error("rei: invalid or corrupted shared memory region");
 
   SEXP result = PROTECT(mori_vec_wrap(
     base + REI_HEADER_SIZE, (R_xlen_t) length, sexptype, shm_ptr, NULL, NULL
@@ -1218,7 +1218,7 @@ static SEXP mori_open_string(SEXP shm_ptr) {
       attrs_size < 0 ||
       str_data_size > region_size - REI_HEADER_SIZE ||
       attrs_size > region_size - REI_HEADER_SIZE - str_data_size)
-    Rf_error("sora: invalid or corrupted shared memory region");
+    Rf_error("rei: invalid or corrupted shared memory region");
 
   SEXP result = PROTECT(mori_str_wrap(
     base + REI_HEADER_SIZE, (R_xlen_t) n, str_data_size, shm_ptr, NULL, NULL
@@ -1243,7 +1243,7 @@ static SEXP mori_dispatch_by_magic(SEXP shm_ptr, const char *err_name) {
   if (magic == REI_MAGIC_LIST) return mori_open_list(shm_ptr);
   if (magic == REI_MAGIC_VEC) return mori_open_vector(shm_ptr);
   if (magic == REI_MAGIC_STR) return mori_open_string(shm_ptr);
-  Rf_error("sora: invalid or corrupted shared memory region: '%s'",
+  Rf_error("rei: invalid or corrupted shared memory region: '%s'",
            err_name != NULL ? err_name : "");
 }
 
@@ -1274,7 +1274,7 @@ SEXP mori_shm_open_and_wrap(SEXP name) {
   if (rc == 0) {
     rei_shm *shm = rei_shm_open_heap(shm_name);
     if (shm == NULL)
-      Rf_error("sora: shared memory region not found: '%s'", shm_name);
+      Rf_error("rei: shared memory region not found: '%s'", shm_name);
     SEXP shm_ptr = PROTECT(mori_shm_wrap_consumer(shm));
     SEXP result = PROTECT(mori_dispatch_by_magic(shm_ptr, shm_name));
     if (mori_resolve_hook != NULL) mori_resolve_hook(result, shm);
@@ -1462,7 +1462,7 @@ SEXP mori_walk_path(unsigned char *base, int64_t region_size,
   for (int k = 0; k < path_len - 1; k++) {
     int32_t idx = path[k];
     if (idx < 0 || idx >= cur_n)
-      Rf_error("sora: path index out of bounds");
+      Rf_error("rei: path index out of bounds");
 
     unsigned char *dir = cur_base + REI_HEADER_SIZE + 32 * (size_t) idx;
     mori_elem entry;
@@ -1471,9 +1471,9 @@ SEXP mori_walk_path(unsigned char *base, int64_t region_size,
     int32_t sexptype = entry.sexptype;
 
     if (sexptype != VECSXP)
-      Rf_error("sora: path step is not a nested list");
+      Rf_error("rei: path step is not a nested list");
     if (mori_oob(data_offset, data_size, cur_region_size))
-      Rf_error("sora: invalid nested region");
+      Rf_error("rei: invalid nested region");
 
     /* Bare extptr: no ALTLIST wrapper, no attr restore (intermediate is
        never observed; only its index in the keeper chain matters). */
@@ -1490,7 +1490,7 @@ SEXP mori_walk_path(unsigned char *base, int64_t region_size,
 
   int32_t leaf_idx = path[path_len - 1];
   if (leaf_idx < 0 || leaf_idx >= cur_n)
-    Rf_error("sora: leaf index out of bounds");
+    Rf_error("rei: leaf index out of bounds");
 
   SEXP result = mori_unwrap_element(cur_base, cur_region_size,
                                     leaf_idx, cur_keeper);
@@ -1504,7 +1504,7 @@ static SEXP mori_open_path_c(const char *name,
 
   rei_shm *shm = rei_shm_open_heap(name);
   if (shm == NULL)
-    Rf_error("sora: shared memory region not found: '%s'", name);
+    Rf_error("rei: shared memory region not found: '%s'", name);
 
   SEXP shm_ptr = PROTECT(mori_shm_wrap_consumer(shm));
   SEXP result = PROTECT(mori_walk_path(
@@ -1527,7 +1527,7 @@ static SEXP mori_Unserialize(SEXP class_info, SEXP state) {
   if (TYPEOF(state) == STRSXP) {
     SEXP opened = mori_shm_open_and_wrap(state);
     if (opened != R_NilValue) return opened;
-    Rf_error("sora: invalid serialized state for a shared object");
+    Rf_error("rei: invalid serialized state for a shared object");
   }
   return state;
 }
@@ -1545,7 +1545,7 @@ static SEXP mori_string_Unserialize(SEXP class_info, SEXP state) {
     SEXP opened = mori_shm_open_and_wrap(state);
     if (opened != R_NilValue) return opened;
   }
-  Rf_error("sora: invalid serialized state for a shared string vector");
+  Rf_error("rei: invalid serialized state for a shared string vector");
 }
 
 // ALTREP class registration ---------------------------------------------------
@@ -1558,7 +1558,7 @@ typedef R_altrep_class_t (*mori_make_class_fn)(const char *, const char *,
 static R_altrep_class_t mori_register_vec_class(mori_make_class_fn make,
                                                 const char *name,
                                                 DllInfo *dll) {
-  R_altrep_class_t cls = make(name, "sora", dll);
+  R_altrep_class_t cls = make(name, "rei", dll);
   R_set_altrep_Length_method(cls, mori_vec_Length);
   R_set_altvec_Dataptr_method(cls, mori_vec_Dataptr);
   R_set_altvec_Dataptr_or_null_method(cls, mori_vec_Dataptr_or_null);
@@ -1574,7 +1574,7 @@ void mori_altrep_init(DllInfo *dll) {
   mori_owned_tag = Rf_install(MORI_TAG_OWNED);
 
   /* ALTLIST class */
-  mori_list_class = R_make_altlist_class("sora_list", "sora", dll);
+  mori_list_class = R_make_altlist_class("rei_list", "rei", dll);
   R_set_altrep_Length_method(mori_list_class, mori_list_Length);
   R_set_altrep_Duplicate_method(mori_list_class, mori_list_Duplicate);
   R_set_altvec_Dataptr_method(mori_list_class, mori_list_Dataptr);
@@ -1587,18 +1587,18 @@ void mori_altrep_init(DllInfo *dll) {
 
   /* ALTREP atomic vector classes (all share the same mori_vec_* methods) */
   mori_real_class    = mori_register_vec_class(R_make_altreal_class,
-                                               "sora_real",    dll);
+                                               "rei_real",    dll);
   mori_integer_class = mori_register_vec_class(R_make_altinteger_class,
-                                               "sora_integer", dll);
+                                               "rei_integer", dll);
   mori_logical_class = mori_register_vec_class(R_make_altlogical_class,
-                                               "sora_logical", dll);
+                                               "rei_logical", dll);
   mori_raw_class     = mori_register_vec_class(R_make_altraw_class,
-                                               "sora_raw",     dll);
+                                               "rei_raw",     dll);
   mori_complex_class = mori_register_vec_class(R_make_altcomplex_class,
-                                               "sora_complex", dll);
+                                               "rei_complex", dll);
 
   /* ALTSTRING class */
-  mori_string_class = R_make_altstring_class("sora_string", "sora", dll);
+  mori_string_class = R_make_altstring_class("rei_string", "rei", dll);
   R_set_altrep_Length_method(mori_string_class, mori_string_Length);
   R_set_altrep_Duplicate_method(mori_string_class, mori_string_Duplicate);
   R_set_altvec_Dataptr_method(mori_string_class, mori_string_Dataptr);
