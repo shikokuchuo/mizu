@@ -342,3 +342,31 @@ Bench hygiene: the pool-batch row in dev/bench/rei-mirai.R (and the
 mirrored sora-mirai.R) now runs k=10 bursts per rep — one 10k burst
 lands inside mclock's 1 ms tick and quantized to 10M/5M/3.3M tasks/s,
 which is how the regression stayed hidden from that row.
+
+## 2026-08-23: the Linux pool-rt gap — getpid on the fork guard
+
+The residual Linux gap vs sora (plan-linux-parity.md: pool sequential rt
+1.5 vs 1.0 us, pipelined pool ~10-20% behind, pre-existing) traced to the
+fork guards, not the wait path. `strace -c -f` on a 20k sequential-rt loop
+(container, rocker/r-ver:4.6.1 on linuxkit): identical futex (41186) and
+sched_yield (~16k) counts both packages, but rei made 116105 getpid calls
+vs sora's 54600 — ~6/round trip against sora's ~3. glibc has not cached
+getpid since 2.25, so each is a real syscall. rei pays the check twice per
+verb (the .Call veneer's handle unwrap, then the core's pool_get) plus the
+task finalizer's guard; sora's monolith checks once per verb.
+
+Fix (upstream librei fe46aa8, vendored): rei_self_pid() caches the pid in
+a static atomic, zeroed by a pthread_atfork child handler so a forked
+child re-reads; pthread_once registers the handler on the first miss.
+Fork-through-libc is the only in-scope fork (R's own), as for every
+atfork guard. All fork guards (veneer, core verbs, cancel/release/state,
+the finalizer) keep their checks — they are now relaxed atomic loads.
+
+Measured after (dev/bench/rei-sora-linux.R, interleaved A/B, 5 rounds,
+best-of): pool rt rei 1.0 = sora 1.0 us; pipelined pool rei 1.0M vs sora
+909k tasks/s; channel batch rei 14.3M = sora 14.3M rt/s best-case (rei's
+per-round median one mclock tick below sora's — the k-burst read is that
+the plan's 16.7-vs-20.0M row was tick quantization, not a real deficit).
+strace re-check: getpid absent from the profile (was 116105 calls).
+Suites: Linux container rei 2009 / sora 2004 pass, 0 fail, 0 skip; macOS
+1998 pass, 0 fail, 2 expected zc skips.

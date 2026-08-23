@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-PIN="753e619a125f0bb694fc62ef3e7fcdc6687d25f1"  # librei: Remove the macOS registry log at exit once all regions are torn down
+PIN="fe46aa8b52809323a43d9283ce1f39ec195846bb"  # librei: Cache the self pid with an atfork reset
 REF="${1:-$PIN}"
 REPO="${LIBREI_REPO:-https://github.com/shikokuchuo/librei}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/librei"
