@@ -29,17 +29,18 @@ knitr::opts_chunk$set(
  \/_______/
 ```
 
-Parallel computation and data exchange between R processes on the same machine.
-Lock-free channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
+rei is the R binding to [librei](https://github.com/shikokuchuo/librei), a C library for lock-free shared-memory IPC.
+
+Parallel computation and data exchange between R processes: channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
+
 A channel is a two-way message link between an R session and a helper process that it spawns.
 A pool is a set of worker processes that divide submitted tasks among themselves.
 In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.
+
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
 R evaluates code on a single thread, so parallelism in R means multiple processes.
 rei makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
-rei complements [mirai](https://mirai.r-lib.org), the general solution for parallel and distributed computing in R.
-Payload contents interoperate transparently with [mori](https://shikokuchuo.net/mori/) shared objects.
 
 ## Installation
 
@@ -114,3 +115,7 @@ Headline numbers against mirai (M4 Pro; the map row is from the benchmark in the
 ## Reference vignette
 
 `vignette("reference", package = "rei")` covers the full surface: batch operations and sentinel values, nested tasks and `rei_map()`, growing, attaching to, and observing a running pool, benchmarks against mirai, sizing `/dev/shm` on Linux, and crash semantics.
+
+---
+
+Please note that this project is released with a [Contributor Code of Conduct](https://github.com/shikokuchuo/rei/blob/main/.github/CODE_OF_CONDUCT.md). By participating in this project you agree to abide by its terms.
