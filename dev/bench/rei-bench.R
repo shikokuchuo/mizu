@@ -1,8 +1,7 @@
-# Report-only benchmark: rei's task pool against mirai, matched
-# scenario-for-scenario on one machine. Prints each number as it lands and
-# a summary table at the end; asserts nothing. (dev/bench/rei-bench.R runs
-# the same rei rows without mirai, as the standalone counterpart of
-# pyrei's benchmarks/rei-bench.py.)
+# Report-only benchmark: the rei channel and pool on their own, the R
+# counterpart of pyrei's benchmarks/rei-bench.py (the mirai/nanonext
+# comparison rows live in dev/bench/rei-mirai.R). Prints each number as
+# it lands and a summary table at the end; asserts nothing.
 #
 #   1. sequential round-trip  evaluate 1L, 1 worker: submit + collect loop
 #   2. pipelined throughput   evaluate 1L, 1 worker: fire n, collect n;
@@ -18,34 +17,20 @@
 #   4. parallel fan-out       small compute tasks, 4 workers: fire all,
 #                             collect all (in-process loop as the anchor)
 #   5. streaming              one-way 1L messages: channel send_batch /
-#                             recv_batch against one mirai task per message
-#   6. parallel map           rei_map against mirai_map, 4 workers: trivial
-#                             f per-element overhead (serial lapply as the
-#                             anchor, plus rei_map's .template and .seed
-#                             variants), then scenario 4's fan-out work as
-#                             one map call. The models differ by design:
-#                             mirai_map submits one mirai per element, so
-#                             its per-task cost is its per-element cost;
-#                             rei_map stages f/x once and submits ~8 chunk
-#                             tasks per worker — that amortization is what
-#                             the scenario measures
+#                             recv_batch
+#   6. parallel map           rei_map, 4 workers: trivial f per-element
+#                             overhead (serial lapply as the anchor, plus
+#                             rei_map's .template and .seed variants),
+#                             then scenario 4's fan-out work as one map
+#                             call, then a skewed-f regime exercising the
+#                             self-scheduled morsel claims
 #
-# Scenarios 1 and 2 carry a raw-transport floor row: a rei channel echoing
-# 1L, no task model on top. Scenarios 1 and 5 also carry the socket-stack
-# floor — a nanonext ipc:// pair moving the same 1L serialization-free
-# (raw out, integer back), the transport under mirai. mirai's smallest
-# unit is the task, so its task rows are also its floor. No nanonext row
-# in scenario 2: one thread pumping 10k unacknowledged echoes through
-# bounded socket buffers can deadlock — the pattern needs a sized ring.
+# Timings are best-of-3 after warm-up; single runs on a busy machine still
+# jitter.
 #
-# mirai runs every scenario both ways: dispatcher = TRUE and FALSE. Timings
-# are best-of-3 after warm-up; single runs on a busy machine still jitter.
-#
-# Run:  Rscript dev/bench/rei-mirai.R
+# Run:  Rscript dev/bench/rei-bench.R
 
 library(rei)
-library(mirai)
-library(nanonext)
 
 # helpers ----------------------------------------------------------------------
 
@@ -67,6 +52,9 @@ note <- function(scenario, framework, value, unit) {
       unit = unit
     )
 }
+
+# elapsed ms off the core's monotonic clock (µs-scale on all platforms)
+mclock <- function() rei:::mono_time() * 1000
 
 timed <- function(expr) {
   t0 <- mclock()
@@ -130,52 +118,9 @@ echo_expr <- quote(
   }
 )
 
-new_child <- function(code) {
-  system2(
-    file.path(R.home("bin"), "Rscript"),
-    c("-e", shQuote(code)),
-    wait = FALSE,
-    stdout = FALSE,
-    stderr = FALSE
-  )
-}
-
-# an ipc:// pair with `body` looping in a child peer, f(socket) driving it
-# from here; a 1-byte message is the poison pill that stops the peer
-with_nn_pair <- function(tag, body, f) {
-  url <- sprintf("ipc://%s/rei-bench-%s-%d", tempdir(), tag, Sys.getpid())
-  s <- socket("pair", listen = url)
-  new_child(sprintf(
-    '
-library(nanonext)
-s <- socket("pair", dial = "%s")
-%s
-close(s)
-',
-    url,
-    body
-  ))
-  on.exit({
-    invisible(send(s, as.raw(0xff), mode = "raw", block = TRUE))
-    close(s)
-  })
-  f(s)
-}
-
-# every mirai row runs both ways, dispatcher and direct, on a daemon pool
-# torn down after: f gets the framework label to hand note()
-each_daemons <- function(n, prefix, f) {
-  for (disp in c(TRUE, FALSE)) {
-    daemons(n, dispatcher = disp)
-    f(paste(prefix, if (disp) "dispatcher" else "direct"))
-    daemons(0L)
-  }
-}
-
 cat(sprintf(
-  "rei %s | mirai %s | R %s | %s\n",
+  "rei %s | R %s | %s\n",
   packageVersion("rei"),
-  packageVersion("mirai"),
   getRversion(),
   R.version[["platform"]]
 ))
@@ -185,35 +130,7 @@ cat(sprintf(
 cat("\n== 1. sequential round-trip (evaluate 1L, 1 worker) ==\n")
 n <- 2000L
 
-with_nn_pair(
-  "s1",
-  '
-repeat {
-  m <- recv(s, mode = "raw", block = TRUE)
-  if (length(m) == 1L) break
-  send(s, m, mode = "raw", block = TRUE)
-}',
-  function(s) {
-    warmup(function() {
-      send(s, 1L, mode = "raw", block = TRUE)
-      recv(s, mode = "integer", block = TRUE)
-    })
-    note_us(
-      "sequential rt",
-      "nanonext pair",
-      n,
-      function() {
-        for (i in seq_len(n)) {
-          send(s, 1L, mode = "raw", block = TRUE)
-          recv(s, mode = "integer", block = TRUE)
-        }
-      },
-      "us/rt"
-    )
-  }
-)
-
-nc <- 20000L # channel rt is µs-scale and mclock ticks whole ms: run long
+nc <- 20000L # channel rt is µs-scale: run long to average out jitter
 with_channel(
   echo_expr,
   function(ch) {
@@ -246,20 +163,11 @@ with_pool(1L, function(p) {
   })
 })
 
-each_daemons(1L, "mirai", function(fw) {
-  warmup(function() mirai(1L)[])
-  note_us("sequential rt", fw, n, function() {
-    for (i in seq_len(n)) {
-      mirai(1L)[]
-    }
-  })
-})
-
 # 2. pipelined throughput ------------------------------------------------------
 
 cat("\n== 2. pipelined throughput (evaluate 1L, 1 worker) ==\n")
 n <- 10000L
-k <- 10L # cycles per rep, again outrunning mclock's ms granularity
+k <- 10L # cycles per rep, again averaging out jitter
 
 with_channel(echo_expr, function(ch) {
   # default capacity holds n
@@ -345,8 +253,8 @@ with_pool(
 
 # the batch pair: one submit crossing + one collect crossing per burst.
 # exprs is built once outside the timed loop, as a real caller hoists it.
-# k bursts per rep: one 10k burst lands inside mclock's 1 ms tick and
-# quantizes to 10M/5M/3.3M tasks/s
+# k bursts per rep: one 10k burst is sub-ms and would quantize against
+# any clock's resolution
 with_pool(
   1L,
   function(p) {
@@ -365,13 +273,6 @@ with_pool(
   },
   list(result_slots = 20480L)
 )
-
-each_daemons(1L, "mirai", function(fw) {
-  warmup(function() mirai(1L)[])
-  note_rate("pipelined", fw, n, function() {
-    pipeline(function() mirai(1L), function(m) m[], n)
-  })
-})
 
 # 3. payload round-trip --------------------------------------------------------
 
@@ -421,22 +322,6 @@ for (pl in payloads) {
   )
 }
 
-each_daemons(1L, "mirai", function(fw) {
-  mirai(NULL)[]
-  for (pl in payloads) {
-    x <- runif(pl[["size"]])
-    n <- pl[["n"]]
-    if (!identical(mirai(x, .args = list(x = x))[], x)) {
-      stop("mirai roundtrip mismatch")
-    }
-    note_us(payload_label(pl[["size"]]), fw, n, function() {
-      for (i in seq_len(n)) {
-        mirai(x, .args = list(x = x))[]
-      }
-    })
-  }
-})
-
 # 4. parallel fan-out ----------------------------------------------------------
 
 cat("\n== 4. parallel fan-out (sum(runif(1e4)) x 2000, 4 workers) ==\n")
@@ -456,18 +341,11 @@ with_pool(4L, function(p) {
   note_rate("fan-out", "rei pool", n, function() pipeline(fire, reap, n))
 })
 
-each_daemons(4L, "mirai", function(fw) {
-  pipeline(function() mirai(NULL), function(m) m[], n)
-  note_rate("fan-out", fw, n, function() {
-    pipeline(function() mirai(sum(runif(1e4))), function(m) m[], n)
-  })
-})
-
 # 5. streaming -----------------------------------------------------------------
 
 cat("\n== 5. streaming (one-way 1L messages, batched) ==\n")
 n <- 200000L
-k <- 10L # rounds per rep: one round outruns mclock's ms granularity
+k <- 10L # rounds per rep: one round is short enough to jitter
 
 # the peer counts arrivals and sends one receipt per n, so the same channel
 # serves the warm-up round and every rep
@@ -511,47 +389,6 @@ with_channel(
   }
 )
 
-# the socket has no batch lever: one send per message is its real cost
-with_nn_pair(
-  "s5",
-  '
-total <- 0L
-repeat {
-  m <- recv(s, mode = "raw", block = TRUE)
-  if (length(m) == 1L) break
-  total <- total + 1L
-  if (total >= 200000L) {
-    send(s, total, mode = "raw", block = TRUE)
-    total <- 0L
-  }
-}',
-  function(s) {
-    nn_round <- function() {
-      for (i in seq_len(n)) {
-        send(s, 1L, mode = "raw", block = TRUE)
-      }
-      if (!identical(recv(s, mode = "integer", block = TRUE), n)) {
-        stop("stream count mismatch")
-      }
-    }
-    nn_round()
-    note_rate("streaming", "nanonext pair", n, nn_round, "msg/s")
-  }
-)
-
-n <- 20000L # a message costs mirai a whole task: 10x fewer keeps the
-# run short, and the rate is the comparison either way
-each_daemons(1L, "mirai", function(fw) {
-  warmup(function() mirai(1L)[])
-  note_rate(
-    "streaming",
-    fw,
-    n,
-    function() pipeline(function() mirai(1L), function(m) m[], n),
-    "msg/s"
-  )
-})
-
 # 6. parallel map ---------------------------------------------------------------
 
 cat("\n== 6. parallel map (f over n elements, 4 workers) ==\n")
@@ -561,7 +398,7 @@ n <- 10000L
 x <- runif(n)
 f <- function(v) v + 1
 
-k <- 10L # map calls per rep: a trivial map outruns mclock's ms ticks
+k <- 10L # map calls per rep: a trivial map is sub-ms, so loop to average
 note_us(
   "map trivial f",
   "serial lapply",
@@ -627,17 +464,6 @@ with_pool(4L, function(p) {
   )
 })
 
-each_daemons(4L, "mirai_map", function(fw) {
-  invisible(mirai_map(x[seq_len(200L)], f)[])
-  note_us(
-    "map trivial f",
-    fw,
-    n,
-    function() invisible(mirai_map(x, f)[]),
-    "us/elt"
-  )
-})
-
 # compute regime: scenario 4's fan-out work as a single map call — the
 # per-element overhead above amortized against real tasks
 n <- 2000L
@@ -650,17 +476,6 @@ with_pool(4L, function(p) {
     "rei_map",
     n,
     function() rei_map(p, seq_len(n), g),
-    "elts/s"
-  )
-})
-
-each_daemons(4L, "mirai_map", function(fw) {
-  invisible(mirai_map(seq_len(200L), g)[])
-  note_rate(
-    "map fan-out",
-    fw,
-    n,
-    function() invisible(mirai_map(seq_len(n), g)[]),
     "elts/s"
   )
 })
@@ -678,16 +493,6 @@ with_pool(4L, function(p) {
     "map skewed f",
     "rei_map",
     best_ms(function() timed(rei_map(p, xs, h))),
-    "ms wall"
-  )
-})
-
-each_daemons(4L, "mirai_map", function(fw) {
-  invisible(mirai_map(xs[seq_len(200L)], h)[])
-  note(
-    "map skewed f",
-    fw,
-    best_ms(function() timed(invisible(mirai_map(xs, h)[]))),
     "ms wall"
   )
 })

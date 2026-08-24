@@ -2,8 +2,8 @@
 
 Dated performance records for rei. The live reports that print against
 these baselines are `tests/testthat/test-benchmark.R` (eyeball them in CI
-logs); `dev/bench/rei-mirai.R` runs the matched-scenario mirai
-comparison. Nothing here is asserted against — runner timing is too
+logs); `dev/bench/rei-bench.R` runs the rei-only rows and
+`dev/bench/rei-mirai.R` the matched-scenario mirai comparison. Nothing here is asserted against — runner timing is too
 variable for thresholds. Append new dated outcomes at the bottom.
 
 All records are M4 Pro, R 4.6.1 unless marked; A/B ratios are the valid

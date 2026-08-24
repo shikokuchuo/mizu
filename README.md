@@ -74,6 +74,31 @@ rei_collect(t)
 rei_pool_stop(p)
 ```
 
+## Parallel map
+
+`rei_map()` maps a function over a vector or list on the pool and returns the results in input order.
+The function and data cross into shared memory once; a handful of chunk tasks divide the elements, and each worker self-schedules element ranges off a shared cursor.
+
+``` r
+p <- rei_pool(n_workers = 4L)
+
+rei_map(p, 1:5, \(i) i * 2L, .template = integer(1))
+#> [1]  2  4  6  8 10
+
+rei_pool_stop(p)
+```
+
+## Benchmarks
+
+Headline numbers against mirai (M4 Pro; the map row is from the benchmark in the reference vignette, the rest from `dev/bench/rei-mirai.R`):
+
+| Benchmark | rei | mirai | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 1.0 µs | 105.5 µs | 106x |
+| Pipelined tasks, 1 worker | 833,000 tasks/s | 9,700 tasks/s | 86x |
+| 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
+| Parallel map of 2,000 tasks, 4 workers | 5.09 ms | 210 ms | 41x |
+
 ## Reference vignette
 
 `vignette("reference", package = "rei")` covers the full surface: batch operations and sentinel values, nested tasks and `rei_map()`, growing, attaching to, and observing a running pool, benchmarks against mirai, sizing `/dev/shm` on Linux, and crash semantics.
