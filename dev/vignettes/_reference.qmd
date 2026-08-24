@@ -240,6 +240,24 @@ Container runtimes set it to 64 MB by default.
 Use `docker run --shm-size=4g`, or the equivalent in your orchestrator.
 Size it to your peak in-flight payload traffic.
 
+## Linux memory allocator
+
+This section applies only to Linux with glibc.
+
+When rei starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
+It raises the mmap threshold to 32 MB and the trim threshold to 128 MB.
+This keeps large payloads in fast memory.
+Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
+
+Your own R process does not change.
+If you want the same settings there, set them before R starts:
+
+``` sh
+export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
+```
+
+If you have set `GLIBC_TUNABLES`, rei respects your values.
+
 ## When a process dies
 
 The death of any participant is detected at OS notification latency, with no heartbeats and no polling.

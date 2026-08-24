@@ -7,13 +7,22 @@
 #' enough that work can be divided at granularities usually reserved for
 #' threads.
 #'
-#' @section Linux allocator tuning:
-#' On glibc Linux, loading rei raises the mmap and trim thresholds of
-#' the C library allocator (to 32 MB and 128 MB). Payloads that cross a
-#' process boundary are materialized as fresh vectors, and the glibc
-#' defaults map, fault, and unmap every large one. A process that set its
-#' own malloc tunables via 'GLIBC_TUNABLES' is left untouched. Other
-#' platforms are unaffected.
+#' @section Linux memory allocator:
+#' This section applies only to Linux with glibc.
+#'
+#' When rei starts a channel peer or a pool worker, that process changes
+#' two settings of the C memory allocator. It raises the mmap threshold
+#' to 32 MB and the trim threshold to 128 MB. This keeps large payloads
+#' in fast memory. Without this change, glibc asks the kernel to map and
+#' unmap each large payload, and that work is slow.
+#'
+#' Your own R process does not change. If you want the same settings
+#' there, set 'GLIBC_TUNABLES' before R starts:
+#' \preformatted{
+#' export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
+#' }
+#'
+#' If you have set 'GLIBC_TUNABLES', rei respects your values.
 #'
 #' @useDynLib rei, .registration = TRUE
 #'

@@ -112,9 +112,15 @@ Headline numbers against mirai (M4 Pro; the map row is from the benchmark in the
 | 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
 | Parallel map of 2,000 tasks, 4 workers | 5.09 ms | 210 ms | 41x |
 
+## Linux memory allocator
+
+On glibc Linux, the channel peers and pool workers that rei starts tune the C memory allocator for large payloads.
+Your own R process is unchanged.
+See the reference vignette for the details and the opt-in for your own process.
+
 ## Reference vignette
 
-`vignette("reference", package = "rei")` covers the full surface: batch operations and sentinel values, nested tasks and `rei_map()`, growing, attaching to, and observing a running pool, benchmarks against mirai, sizing `/dev/shm` on Linux, and crash semantics.
+`vignette("reference", package = "rei")` covers the full surface: batch operations and sentinel values, nested tasks and `rei_map()`, growing, attaching to, and observing a running pool, benchmarks against mirai, sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics.
 
 ---
 

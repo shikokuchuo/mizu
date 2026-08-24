@@ -259,9 +259,10 @@ rei_alive <- function(ch) .Call(rei_channel_alive, ch)
 # the expression (and every region its identifiers name) alive exactly until
 # then. The epilogue is the peer half of the close protocol.
 peer_main <- function(token) {
-  if (!"package:rei" %in% search()) {
+  if (!any(search() == "package:rei")) {
     attachNamespace("rei")
   }
+  .Call(rei_tune_malloc)
   att <- .Call(rei_channel_attach, token)
   ch <- att[[1L]]
   expr <- att[[2L]]

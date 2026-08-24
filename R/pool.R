@@ -743,9 +743,10 @@ rei_pool_trace <- function(pool, fn = NULL) {
 # any task eval, which is infrastructure failure and takes the worker
 # down.
 worker_main <- function(token, slot) {
-  if (!"package:rei" %in% search()) {
+  if (!any(search() == "package:rei")) {
     attachNamespace("rei")
   }
+  .Call(rei_tune_malloc)
   h <- .Call(rei_pool_worker_join, token, slot)
   .Call(rei_pool_set_eval, h)
   status <- 0L

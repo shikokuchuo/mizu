@@ -212,8 +212,8 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 rei        288.15µs 394.13µs     1959.   546.5KB     30.3
-#> 2 mirai        6.24ms   7.83ms      126.    3.89MB     21.4
+#> 1 rei        271.91µs 383.27µs     2024.   546.5KB     30.2
+#> 2 mirai        7.38ms   7.64ms      129.    3.89MB     24.3
 ```
 
 End to end, rei is **20x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
@@ -239,12 +239,12 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial       18.3ms   19.1ms     52.5     30.8MB   551.  
-#> 2 rei          5.09ms    5.7ms    146.      50.7KB     0   
-#> 3 mirai      210.35ms  210.3ms      4.75    19.1MB     9.51
+#> 1 serial       16.7ms  17.99ms     55.6     30.8MB   639.  
+#> 2 rei             5ms   5.47ms    153.      51.7KB     0   
+#> 3 mirai       216.7ms 216.65ms      4.62    19.1MB     9.23
 ```
 
-rei turns the four workers into a **3.3x** gain over the serial loop, and runs **37x** ahead of mirai (medians).
+rei turns the four workers into a **3.3x** gain over the serial loop, and runs **40x** ahead of mirai (medians).
 
 ``` r
 daemons(0L)
@@ -261,6 +261,24 @@ Everything rei creates must fit in it: pool and channel regions, plus the per-pa
 Container runtimes set it to 64 MB by default.
 Use `docker run --shm-size=4g`, or the equivalent in your orchestrator.
 Size it to your peak in-flight payload traffic.
+
+## Linux memory allocator
+
+This section applies only to Linux with glibc.
+
+When rei starts a channel peer or a pool worker, that process changes two settings of the C memory allocator.
+It raises the mmap threshold to 32 MB and the trim threshold to 128 MB.
+This keeps large payloads in fast memory.
+Without this change, glibc asks the kernel to map and unmap each large payload, and that work is slow.
+
+Your own R process does not change.
+If you want the same settings there, set them before R starts:
+
+``` sh
+export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_threshold=134217728
+```
+
+If you have set `GLIBC_TUNABLES`, rei respects your values.
 
 ## When a process dies
 

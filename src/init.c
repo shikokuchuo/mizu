@@ -36,6 +36,13 @@ SEXP rei_onload_probe(void) {
   return R_NilValue;
 }
 
+/* glibc malloc tuning for the spawned peer/worker processes only — the
+   host R process is left alone (set GLIBC_TUNABLES there instead). */
+SEXP rei_tune_malloc(void) {
+  rei_tune();
+  return R_NilValue;
+}
+
 SEXP rei_bounded_call(SEXP, SEXP);
 SEXP rei_unserialize_call(SEXP);
 SEXP rei_codec_write_call(SEXP);
@@ -139,6 +146,7 @@ SEXP rei_pool_zc_info(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
   {"rei_onload_probe",           (DL_FUNC) &rei_onload_probe,              0},
+  {"rei_tune_malloc",            (DL_FUNC) &rei_tune_malloc,               0},
   {"rei_bounded_call",           (DL_FUNC) &rei_bounded_call,              2},
   {"rei_unserialize_call",       (DL_FUNC) &rei_unserialize_call,          1},
   {"rei_codec_write_call",       (DL_FUNC) &rei_codec_write_call,          1},
@@ -244,7 +252,6 @@ static const R_CallMethodDef CallEntries[] = {
 void R_init_rei(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
-  rei_tune();
   rei_wrap_init();
   rei_payload_init();
   rei_entity_init();
