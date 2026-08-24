@@ -129,6 +129,7 @@ NORET void rei_stop_shm(double bytes, const char *fmt, ...)
 NORET void rei_stop_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
 NORET void rei_cond_signal(SEXP cond);
+SEXP rei_cond_set_index(SEXP cond, int index);
 SEXP rei_caught(SEXP cond);
 SEXP rei_caught_cond(const char *subclass, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);

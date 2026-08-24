@@ -402,15 +402,7 @@ rei_submit_batch <- function(pool, exprs, ..., .timeout = Inf) {
 #'
 #' @export
 rei_collect_any <- function(tasks, timeout = Inf) {
-  res <- .Call(rei_pool_collect_any, tasks, timeout)
-  if (inherits(res, "rei_caught")) {
-    cond <- res[[1L]]
-    if (is.list(cond)) {
-      cond$index <- attr(res, "index")
-    }
-    stop(cond)
-  }
-  res
+  .Call(rei_pool_collect_any, tasks, timeout)
 }
 
 #' Collect the Results of Several Tasks, in Order
@@ -464,15 +456,7 @@ rei_collect_any <- function(tasks, timeout = Inf) {
 #'
 #' @export
 rei_collect_all <- function(tasks, timeout = Inf) {
-  res <- .Call(rei_pool_collect_all, tasks, timeout)
-  if (inherits(res, "rei_caught")) {
-    cond <- res[[1L]]
-    if (is.list(cond)) {
-      cond$index <- attr(res, "index")
-    }
-    stop(cond)
-  }
-  res
+  .Call(rei_pool_collect_all, tasks, timeout)
 }
 
 #' Cancel a Task

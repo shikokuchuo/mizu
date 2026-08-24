@@ -16,7 +16,6 @@ static SEXP rei_task_tag;
 static SEXP rei_sig_tag;
 static SEXP rei_class_pool;
 static SEXP rei_class_task;
-static SEXP rei_index_sym;
 
 static void rei_pool_finalizer(SEXP xp);
 static void rei_task_finalizer(SEXP xp);
@@ -29,7 +28,6 @@ void rei_pool_init(void) {
   R_PreserveObject(rei_class_pool);
   rei_class_task = Rf_mkString("rei_task");
   R_PreserveObject(rei_class_task);
-  rei_index_sym = Rf_install("index");
 }
 
 void rei_pool_fini(void) {
@@ -605,9 +603,9 @@ static rei_pool *tasks_get(SEXP tasks, rei_task **ts_out, R_xlen_t *n_out) {
   return (rei_pool *) h->core;
 }
 
-/* Wait on any of a submitter's outstanding tasks. Terminal outcomes return
-   rei_caught-boxed with the 1-based list position on an "index" attribute
-   for the R wrapper to re-signal. */
+/* Wait on any of a submitter's outstanding tasks. A terminal non-OK
+   outcome is re-signalled here with the 1-based list position as the
+   condition's "index" field. */
 SEXP rei_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   rei_task *ts;
   R_xlen_t n;
@@ -621,9 +619,12 @@ SEXP rei_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   SEXP val = PROTECT((SEXP) v);
   int index = (int) idx + 1;   /* R 1-based */
   if (Rf_inherits(val, "rei_caught")) {
-    Rf_setAttrib(val, rei_index_sym, Rf_ScalarInteger(index));
-    UNPROTECT(1);
-    return val;
+    SEXP cond = VECTOR_ELT(val, 0);
+    if (TYPEOF(cond) == VECSXP)
+      cond = rei_cond_set_index(cond, index);
+    PROTECT(cond);
+    rei_cond_signal(cond);          /* no return */
+    UNPROTECT(2);        /* unreachable: rei_cond_signal is NORET */
   }
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
   SEXP names = PROTECT(Rf_allocVector(STRSXP, 2));
@@ -637,8 +638,8 @@ SEXP rei_pool_collect_any_call(SEXP tasks, SEXP timeout) {
 }
 
 /* Wait on all of a submitter's outstanding tasks. On success fills in list
-   order; on the first non-OK outcome by position returns its rei_caught
-   box with the 1-based index, the rest staying collectible. A timeout
+   order; on the first non-OK outcome by position re-signals its condition
+   with the 1-based index, the rest staying collectible. A timeout
    consumes nothing. */
 SEXP rei_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   rei_task *ts;
@@ -655,10 +656,16 @@ SEXP rei_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   }
   if (st == REI_ERR) pool_raise(p);
   if (err_idx < (size_t) n) {
-    /* the first non-OK by position: its box, with the 1-based index */
+    /* the first non-OK by position: signal with the 1-based index */
     SEXP val = VECTOR_ELT(out, (R_xlen_t) err_idx);
-    Rf_setAttrib(val, rei_index_sym,
-                 Rf_ScalarInteger((int) err_idx + 1));
+    if (Rf_inherits(val, "rei_caught")) {
+      SEXP cond = VECTOR_ELT(val, 0);
+      if (TYPEOF(cond) == VECSXP)
+        cond = rei_cond_set_index(cond, (int) err_idx + 1);
+      PROTECT(cond);
+      rei_cond_signal(cond);        /* no return */
+      UNPROTECT(2);      /* unreachable: rei_cond_signal is NORET */
+    }
     UNPROTECT(1);
     return val;
   }

@@ -41,6 +41,39 @@ NORET void rei_cond_signal(SEXP cond) {
   Rf_error("rei: condition not signalled");
 }
 
+/* Set the "index" field on a condition list with `$<-` semantics: replace
+   in place when the name is present, else append one element (attributes,
+   class included, carried over). Returns the condition UNPROTECTED — the
+   caller PROTECTs at the call site (nothing allocates between). */
+SEXP rei_cond_set_index(SEXP cond, int index) {
+  PROTECT(cond);
+  SEXP names = Rf_getAttrib(cond, R_NamesSymbol);
+  R_xlen_t n = XLENGTH(cond);
+  R_xlen_t nn = TYPEOF(names) == STRSXP ? XLENGTH(names) : 0;
+  R_xlen_t m = n < nn ? n : nn;
+  for (R_xlen_t i = 0; i < m; i++) {
+    SEXP nm = STRING_ELT(names, i);
+    if (nm != NA_STRING && strcmp(CHAR(nm), "index") == 0) {
+      SET_VECTOR_ELT(cond, i, Rf_ScalarInteger(index));
+      UNPROTECT(1);
+      return cond;
+    }
+  }
+  PROTECT(names);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, n + 1));
+  SEXP onames = PROTECT(Rf_allocVector(STRSXP, n + 1));
+  for (R_xlen_t i = 0; i < n; i++) {
+    SET_VECTOR_ELT(out, i, VECTOR_ELT(cond, i));
+    SET_STRING_ELT(onames, i, i < nn ? STRING_ELT(names, i) : R_BlankString);
+  }
+  SET_VECTOR_ELT(out, n, Rf_ScalarInteger(index));
+  SET_STRING_ELT(onames, n, Rf_mkChar("index"));
+  Rf_setAttrib(out, R_NamesSymbol, onames);
+  Rf_copyMostAttrib(cond, out);
+  UNPROTECT(4);                  /* cond, names, out, onames */
+  return out;
+}
+
 NORET void rei_stop(const char *subclass, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
