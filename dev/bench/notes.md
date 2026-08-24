@@ -370,3 +370,54 @@ the plan's 16.7-vs-20.0M row was tick quantization, not a real deficit).
 strace re-check: getpid absent from the profile (was 116105 calls).
 Suites: Linux container rei 2009 / sora 2004 pass, 0 fail, 0 skip; macOS
 1998 pass, 0 fail, 2 expected zc skips.
+
+## 2026-08-24: batch-recv heap corruption fixed — sink-callback verbs
+
+The streaming scenario's child death (~750 rounds x 20k messages, xzone
+malloc SIGTRAP in the receive path) was binding-side: recv_batch and
+collect_all materialized n fresh SEXPs into an R_alloc'd void ** across
+the remaining reads' allocations — unprotected and invisible to rchk —
+so a mid-batch GC freed them and the later SET_VECTOR_ELT wrote dangling
+pointers. Fix landed upstream (librei ff8987c, vendored): sink-callback
+forms rei_channel_recv_batch_fn / rei_pool_collect_all_fn deliver each
+product as it is read; the rei veneer anchors it in a pre-PROTECTed
+VECSXP (rei_vec_sink). collect_any got plain PROTECTs.
+
+Acceptance: /tmp/repro-stream5.R completes all 3000 rounds (60M
+messages, 4x the old failure point) with no crash; the full bench below
+runs end-to-end, streaming row included (was the crash site). Suites:
+1998 pass, 0 fail, 2 expected zc skips.
+
+  sequential rt        rei channel                   1.0 us/rt
+  sequential rt        rei pool                      0.7 us/task
+  pipelined            rei channel           1,213,314.3 rt/s
+  pipelined            rei channel batch    20,956,672.1 rt/s
+  pipelined            rei pool                983,973.5 tasks/s
+  pipelined            rei pool batch        4,478,999.1 tasks/s
+  payload 8,000 B      rei pool                      3.2 us/task
+  payload 800,000 B    rei pool                     76.9 us/task
+  payload 8,000,000 B  rei pool                    405.1 us/task
+  fan-out              in-process               23,248.0 tasks/s
+  fan-out              rei pool                 81,505.8 tasks/s
+  streaming            rei channel          44,069,324.7 msg/s
+  map fan-out          rei_map                  82,441.2 elts/s
+  map skewed f         rei_map                      11.8 ms wall
+
+Follow-up the same day: rei-bench.R is back on bench::mark (median of
+auto-calibrated iterations, filter_gc = FALSE, check/memory off) — the
+revert to best-of-3 was only dodging this bug. The streaming row's
+~0.5 s of 2M-message iterations (~22M messages) now doubles as the
+receive-path stress run and passes. Medians read lower than best-of-3
+on the jitter-prone rows (pool pipelined 419k vs 984k tasks/s, pool
+batch 3.0M vs 4.5M, sequential pool rt 1.1 vs 0.7 us); the steady rows
+are unchanged (channel batch 20.8M rt/s, streaming 44.6M msg/s,
+payloads 2.5 / 75.1 / 399.0 us).
+
+A/B regression check (same day): /tmp/ab-bench.R, best-of-5, the fixed
+build vs HEAD (pre-fix) installed alternately, two runs each. Deltas are
+within run-to-run variance on every row — channel rt 0.88/0.90 us,
+channel batch 22.5M/21.7-22.2M rt/s, pool rt 0.78/0.74-0.78 us, pool
+batch 5.1-5.3M/4.8-5.2M tasks/s, streaming 45.2-46.2M/46.4-47.0M msg/s
+(post/pre). The sink indirection plus the pre-allocated result vector
+costs nothing measurable; the batch rows if anything trend slightly
+faster (one allocation, no second pass over the array).

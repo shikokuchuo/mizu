@@ -94,7 +94,7 @@ Headline numbers against mirai (M4 Pro; the map row is from the benchmark in the
 
 | Benchmark | rei | mirai | Speedup |
 |----|----|----|----|
-| Trivial task round trip | 1.0 µs | 105.5 µs | 106x |
+| Trivial task round trip | 0.5 µs | 105.0 µs | 210x |
 | Pipelined tasks, 1 worker | 833,000 tasks/s | 9,700 tasks/s | 86x |
 | 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
 | Parallel map of 2,000 tasks, 4 workers | 5.09 ms | 210 ms | 41x |

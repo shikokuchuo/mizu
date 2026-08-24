@@ -618,10 +618,11 @@ SEXP rei_pool_collect_any_call(SEXP tasks, SEXP timeout) {
                                        timeout_ms_of(timeout));
   if (st == REI_TIMEOUT) return rei_sent_timeout;
   if (st == REI_ERR) pool_raise(p);
-  SEXP val = (SEXP) v;
+  SEXP val = PROTECT((SEXP) v);
   int index = (int) idx + 1;   /* R 1-based */
   if (Rf_inherits(val, "rei_caught")) {
     Rf_setAttrib(val, rei_index_sym, Rf_ScalarInteger(index));
+    UNPROTECT(1);
     return val;
   }
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
@@ -631,7 +632,7 @@ SEXP rei_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   Rf_setAttrib(out, R_NamesSymbol, names);
   SET_VECTOR_ELT(out, 0, Rf_ScalarInteger(index));
   SET_VECTOR_ELT(out, 1, val);
-  UNPROTECT(2);
+  UNPROTECT(3);
   return out;
 }
 
@@ -643,25 +644,27 @@ SEXP rei_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   rei_task *ts;
   R_xlen_t n;
   rei_pool *p = tasks_get(tasks, &ts, &n);
-  void **vals = (void **) R_alloc(n, sizeof(void *));
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
   size_t err_idx = 0;
-  rei_status st = rei_pool_collect_all(p, ts, (size_t) n, vals, &err_idx,
-                                       timeout_ms_of(timeout));
-  if (st == REI_TIMEOUT) return rei_sent_timeout;
+  rei_status st = rei_pool_collect_all_fn(p, ts, (size_t) n, rei_vec_sink,
+                                          out, &err_idx,
+                                          timeout_ms_of(timeout));
+  if (st == REI_TIMEOUT) {
+    UNPROTECT(1);
+    return rei_sent_timeout;
+  }
   if (st == REI_ERR) pool_raise(p);
   if (err_idx < (size_t) n) {
     /* the first non-OK by position: its box, with the 1-based index */
-    SEXP val = (SEXP) vals[err_idx];
+    SEXP val = VECTOR_ELT(out, (R_xlen_t) err_idx);
     Rf_setAttrib(val, rei_index_sym,
                  Rf_ScalarInteger((int) err_idx + 1));
+    UNPROTECT(1);
     return val;
   }
-  SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
   SEXP nms = Rf_getAttrib(tasks, R_NamesSymbol);
   if (nms != R_NilValue)
     Rf_setAttrib(out, R_NamesSymbol, nms);
-  for (R_xlen_t i = 0; i < n; i++)
-    SET_VECTOR_ELT(out, i, (SEXP) vals[i]);
   UNPROTECT(1);
   return out;
 }

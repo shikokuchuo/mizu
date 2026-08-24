@@ -64,6 +64,7 @@ SEXP rei_empty_args(void);
 // Payload framing (payload.c) -----------------------------------------------------
 
 void *rei_vec_ptr(SEXP x);
+void rei_vec_sink(void *ctx, size_t i, void *obj);
 int rei_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
 int rei_raw_type(SEXP x, size_t *out_len);
 int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,

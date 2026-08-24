@@ -125,6 +125,14 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
   return 0;
 }
 
+/* The batch-verb sink (recv_batch_fn / collect_all_fn): anchor each read
+   product in a pre-PROTECTed VECSXP as it is delivered, so no SEXP sits
+   unprotected across the next read's allocations. SET_VECTOR_ELT does
+   not allocate. */
+void rei_vec_sink(void *ctx, size_t i, void *obj) {
+  SET_VECTOR_ELT((SEXP) ctx, (R_xlen_t) i, (SEXP) obj);
+}
+
 // Channel read --------------------------------------------------------------------
 
 /* The transport has already resolved an arena-referencing frame to its byte

@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-PIN="fe46aa8b52809323a43d9283ce1f39ec195846bb"  # librei: Cache the self pid with an atfork reset
+PIN="ff8987c596a93d192ad19022af95983b9b8e14c1"  # librei: Add sink-callback forms of recv_batch and collect_all
 REF="${1:-$PIN}"
 REPO="${LIBREI_REPO:-https://github.com/shikokuchuo/librei}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/librei"

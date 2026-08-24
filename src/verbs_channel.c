@@ -320,20 +320,28 @@ SEXP rei_channel_recv_call(SEXP xp, SEXP timeout) {
 }
 
 /* Up to n messages; waits only for the first, then drains already-published
-   ones without waiting further. The sentinel discipline matches recv. */
+   ones without waiting further. The sentinel discipline matches recv. The
+   sink form anchors each message in out as it is read — the array form
+   would hold n unprotected SEXPs across the remaining reads. */
 SEXP rei_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   rei_channel *c = chan_core(xp);
   int n = Rf_asInteger(n_sexp);
   if (n < 1) Rf_error("rei: n must be at least 1");
-  void **objs = (void **) R_alloc(n, sizeof(void *));
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
   size_t count = 0;
-  rei_status st =
-    rei_channel_recv_batch(c, objs, (size_t) n, &count, timeout_ms_of(timeout));
+  rei_status st = rei_channel_recv_batch_fn(c, (size_t) n, &count,
+                                            rei_vec_sink, out,
+                                            timeout_ms_of(timeout));
   if (st == REI_ERR) chan_raise(c);
-  if (st != REI_OK) return status_sentinel(st);
-  SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) count));
-  for (size_t i = 0; i < count; i++)
-    SET_VECTOR_ELT(out, (R_xlen_t) i, (SEXP) objs[i]);
+  if (st != REI_OK) {
+    UNPROTECT(1);
+    return status_sentinel(st);
+  }
+  if (count < (size_t) n) {
+    SEXP res = PROTECT(Rf_lengthgets(out, (R_xlen_t) count));
+    UNPROTECT(2);
+    return res;
+  }
   UNPROTECT(1);
   return out;
 }

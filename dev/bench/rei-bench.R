@@ -25,8 +25,9 @@
 #                             call, then a skewed-f regime exercising the
 #                             self-scheduled morsel claims
 #
-# Timings are best-of-3 after warm-up; single runs on a busy machine still
-# jitter.
+# Timings are bench::mark medians over its auto-calibrated iteration
+# counts, after warm-up, with GC time kept in (filter_gc = FALSE) — the
+# streaming row's iterations double as a receive-path stress run.
 #
 # Run:  Rscript dev/bench/rei-bench.R
 
@@ -34,7 +35,6 @@ library(rei)
 
 # helpers ----------------------------------------------------------------------
 
-REPS <- 3L
 results <- list()
 
 note <- function(scenario, framework, value, unit) {
@@ -53,27 +53,30 @@ note <- function(scenario, framework, value, unit) {
     )
 }
 
-# elapsed ms off the core's monotonic clock (µs-scale on all platforms)
-mclock <- function() rei:::mono_time() * 1000
-
-timed <- function(expr) {
-  t0 <- mclock()
-  expr
-  mclock() - t0 # ms
+# one rep of f() timed by bench::mark: auto-calibrated iterations, the
+# median in ms. check = FALSE (reps return large or no values), memory =
+# FALSE (no profmem), filter_gc = FALSE (GC is part of the workload)
+mark_ms <- function(f) {
+  bm <- bench::mark(
+    f(),
+    min_time = 0.5,
+    check = FALSE,
+    memory = FALSE,
+    filter_gc = FALSE
+  )
+  as.numeric(bm[["median"]]) * 1000
 }
 
-best_ms <- function(f) min(vapply(seq_len(REPS), function(i) f(), 0))
-
-# the two reporting shapes: f() is one rep of `ops` operations, timed
-# best-of-REPS, reported per operation or as a rate. Keep the measured loop
-# inline in f — one closure call is 0.04 us, not nothing against a 1 us row,
-# so there is deliberately no helper for it
+# the two reporting shapes: f() is one rep of `ops` operations, reported
+# per operation or as a rate. Keep the measured loop inline in f — one
+# closure call is 0.04 us, not nothing against a 1 us row, so there is
+# deliberately no helper for it
 note_us <- function(scenario, framework, ops, f, unit = "us/task") {
-  note(scenario, framework, best_ms(function() timed(f())) * 1000 / ops, unit)
+  note(scenario, framework, mark_ms(f) * 1000 / ops, unit)
 }
 
 note_rate <- function(scenario, framework, ops, f, unit = "tasks/s") {
-  note(scenario, framework, ops / best_ms(function() timed(f())) * 1000, unit)
+  note(scenario, framework, ops / mark_ms(f) * 1000, unit)
 }
 
 warmup <- function(f, n = 200L) {
@@ -492,7 +495,7 @@ with_pool(4L, function(p) {
   note(
     "map skewed f",
     "rei_map",
-    best_ms(function() timed(rei_map(p, xs, h))),
+    mark_ms(function() rei_map(p, xs, h)),
     "ms wall"
   )
 })
