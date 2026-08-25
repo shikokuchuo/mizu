@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Vendors the librei core into src/vendor/librei/: the public header, the
-# internal header (first-party binding TUs compile against it), and all core
-# TUs, flattened. No substitutions — the package's namespace is rei's own,
-# so the core vendors natively (see the ipc plan, Phase 1 step 5).
+# binding-author header (rei_ext.h — the package's own TUs compile against
+# it, never internal.h), the internal header (the vendored core TUs still
+# include it), and all core TUs, flattened. No substitutions — the
+# package's namespace is rei's own, so the core vendors natively (see the
+# ipc plan, Phase 1 step 5).
 #
 # Usage: tools/vendor-librei.sh [ref]
 #   ref         tag, branch, or full commit SHA to vendor (default: the pin)
@@ -16,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="ff8987c596a93d192ad19022af95983b9b8e14c1"  # librei: Add sink-callback forms of recv_batch and collect_all
+PIN="fc6a41ccbfce09bbba40cf38d24df2b5bfa7875e"  # librei: Split the public surface into stable rei.h and binding-author rei_ext.h tiers
 REF="${1:-$PIN}"
 REPO="${LIBREI_REPO:-https://github.com/shikokuchuo/librei}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/librei"
@@ -53,6 +55,7 @@ mkdir -p "$DEST"
 rm -f "$DEST"/*.c "$DEST"/*.h "$DEST"/VENDOR
 
 cp "$src_root/include/rei.h" "$DEST/rei.h"
+cp "$src_root/include/rei_ext.h" "$DEST/rei_ext.h"
 cp "$src_root/src/internal.h" "$DEST/internal.h"
 for f in "$src_root"/src/*.c; do
   cp "$f" "$DEST/"

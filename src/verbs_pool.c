@@ -990,5 +990,5 @@ SEXP rei_pool_map_cache(SEXP xp) {
 /* Test / debug surface: c(free-list entries, lent-ledger entries). */
 SEXP rei_pool_zc_info(SEXP xp) {
   rei_pool *p = pool_core(xp);
-  return rei_zc_fl_info(&((rei_handle *) p)->fl);
+  return rei_zc_fl_info((rei_handle *) p);
 }

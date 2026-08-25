@@ -95,8 +95,8 @@ static void rei_zc_rel_fire(void *arg) {
    recv hot path (the SHM_RAW cache's populated open exists because a
    stream is unserialized in full immediately; a view is not). */
 static rei_shm *rei_zc_open(const char *name) {
-  rei_shm *shm = rei_shm_open_rw_heap(name, 0);
-  if (shm == NULL) return NULL;
+  rei_shm *shm;
+  if (rei_shm_open_rw(&shm, name, 0) != REI_OK) return NULL;
   size_t size = shm->size;
 #ifdef _WIN32
   /* MapViewOfFile offsets must be 64 KiB allocation-granularity aligned,
@@ -455,11 +455,11 @@ static void rei_zc_ref_mark(SEXP x) {
     atomic_fetch_or_explicit(rei_zc_flags_(shm->addr), REI_ZC_FLAG_REFHELD,
                              memory_order_acq_rel);
   } else {
-    rei_shm tmp;
-    if (rei_shm_open_rw_stack(&tmp, shm->name, 0) == 0) {
-      atomic_fetch_or_explicit(rei_zc_flags_(tmp.addr), REI_ZC_FLAG_REFHELD,
+    rei_shm *tmp;
+    if (rei_shm_open_rw(&tmp, shm->name, 0) == REI_OK) {
+      atomic_fetch_or_explicit(rei_zc_flags_(tmp->addr), REI_ZC_FLAG_REFHELD,
                                memory_order_acq_rel);
-      rei_shm_close_stack(&tmp, 0);
+      rei_shm_close(tmp, 0);
     }
   }
 }
@@ -594,9 +594,11 @@ SEXP rei_zc_refcount_call(SEXP x) {
 }
 
 /* c(free-list entries, lent-ledger entries) for a handle's spill state. */
-SEXP rei_zc_fl_info(rei_spill_fl *fl) {
+SEXP rei_zc_fl_info(rei_handle *h) {
+  uint32_t fl_n, led_n;
+  rei_handle_spill_info(h, &fl_n, &led_n);
   SEXP out = Rf_allocVector(INTSXP, 2);
-  INTEGER(out)[0] = (int) fl->n;
-  INTEGER(out)[1] = (int) fl->led_n;
+  INTEGER(out)[0] = (int) fl_n;
+  INTEGER(out)[1] = (int) led_n;
   return out;
 }

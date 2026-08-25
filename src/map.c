@@ -273,10 +273,9 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
     Rf_error("rei: map region too large");
 
   rei_shm *shm;
-  int rc = rei_shm_create_heap(&shm, (size_t) off);
-  if (rc != REI_ERRCAT_NONE) {
+  if (rei_shm_create(&shm, (size_t) off) != REI_OK) {
     const char *summary, *hint;
-    rei_err_describe(rc, &summary, &hint);
+    rei_err_describe(rei_last_error_category(), &summary, &hint);
     rei_stop_shm((double) off,
                  "rei: cannot create map region (%llu bytes): %s%s%s",
                  (unsigned long long) off, summary,
@@ -352,9 +351,10 @@ SEXP rei_map_open(SEXP name_sexp, SEXP writable_sexp) {
   if (TYPEOF(name_sexp) != STRSXP || XLENGTH(name_sexp) != 1)
     Rf_error("rei: expected a map region name");
   const char *name = CHAR(STRING_ELT(name_sexp, 0));
-  rei_shm *shm = Rf_asLogical(writable_sexp) == TRUE ?
-    rei_shm_open_rw_heap(name, 0) : rei_shm_open_heap(name);
-  if (shm == NULL)
+  rei_shm *shm;
+  rei_status st = Rf_asLogical(writable_sexp) == TRUE ?
+    rei_shm_open_rw(&shm, name, 0) : rei_shm_open(&shm, name);
+  if (st != REI_OK)
     rei_stop_shm(NA_REAL, "rei: cannot open map region '%s' — its "
                  "submitter died or the map ended", name);
   rei_map_hdr h;

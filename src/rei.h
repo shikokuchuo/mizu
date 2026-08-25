@@ -1,14 +1,17 @@
 /* rei.h — the R-internal header: the R binding's declarations on top of the
-   vendored librei core. The wire format, the core verbs, and the region layer
-   live in vendor/librei/rei.h (the authority) and vendor/librei/internal.h;
-   the ALTREP consumer classes and exact-size serialize streams come from
-   vendor/mori.h. Only R-coupled declarations live here. */
+   vendored librei core. The wire format and the core verbs live in
+   vendor/librei/rei.h (the authority); the binding-author surface (the seam,
+   the stager services, the promoted parker/liveness/preamble internals) in
+   vendor/librei/rei_ext.h — never vendor/librei/internal.h, which only the
+   vendored core TUs include. The ALTREP consumer classes and exact-size
+   serialize streams come from vendor/mori.h. Only R-coupled declarations
+   live here. */
 
 #ifndef REI_H
 #define REI_H
 
 #include "vendor/librei/rei.h"
-#include "vendor/librei/internal.h"
+#include "vendor/librei/rei_ext.h"
 #include "vendor/mori.h"
 #include <stdatomic.h>
 
@@ -115,7 +118,7 @@ void rei_zc_cache_store(rei_zc_cache *oc, const unsigned char *name,
                          uint32_t len, SEXP wrap);
 SEXP rei_zc_view_check_call(SEXP x);
 SEXP rei_zc_refcount_call(SEXP x);
-SEXP rei_zc_fl_info(rei_spill_fl *fl);
+SEXP rei_zc_fl_info(rei_handle *h);
 
 // Classed error conditions (condition.c) -------------------------------------------
 

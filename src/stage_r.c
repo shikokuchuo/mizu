@@ -53,7 +53,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
     /* a length-1 string's bytes are self-contained: pin nothing */
   } else if (rei_raw_type(x, &rawlen) && rawlen > inline_max &&
              rawlen <= UINT32_MAX &&
-             (rawlen <= REI_ZC_FLOOR_RAW || h->fl.churn) &&
+             (rawlen <= REI_ZC_FLOOR_RAW || rei_handle_churn(h)) &&
              (chunk = rei_stage_arena_alloc(h, REI_ALIGN64(rawlen),
                                             &off)) != NULL) {
     /* Raw-bytes arena spill: the vectors RAWVEC takes inline, past the
@@ -68,7 +68,8 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
     hdr->len = (uint32_t) rawlen;
     hdr->aux = (uint64_t) TYPEOF(x);
     memcpy(payload, &off, sizeof(off));
-  } else if (!h->fl.churn && rei_zc_eligible(x, inline_max, &total)) {
+  } else if (rei_zc_eligible(x, inline_max, &total) &&
+             !rei_handle_churn(h)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
        never hold a view (chunk lifetime tracks ring advance). The churn

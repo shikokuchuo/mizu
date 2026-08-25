@@ -84,10 +84,9 @@ SEXP rei_region_create(SEXP size) {
     Rf_error("rei: invalid region size");
 
   rei_shm *shm;
-  int rc = rei_shm_create_heap(&shm, (size_t) sz);
-  if (rc) {
+  if (rei_shm_create(&shm, (size_t) sz) != REI_OK) {
     const char *summary, *hint;
-    rei_err_describe(rc, &summary, &hint);
+    rei_err_describe(rei_last_error_category(), &summary, &hint);
     rei_stop_shm(sz,
                  "rei: cannot create region (requested %.0f bytes): %s%s%s",
                  sz, summary, hint[0] != '\0' ? ". " : "", hint);
@@ -100,9 +99,10 @@ SEXP rei_region_open(SEXP name, SEXP rw) {
     Rf_error("rei: expected a region name");
   const char *nm = CHAR(STRING_ELT(name, 0));
 
-  rei_shm *shm = Rf_asLogical(rw) == TRUE ?
-    rei_shm_open_rw_heap(nm, 1) : rei_shm_open_heap(nm);
-  if (shm == NULL)
+  rei_shm *shm;
+  rei_status st = Rf_asLogical(rw) == TRUE ?
+    rei_shm_open_rw(&shm, nm, 1) : rei_shm_open(&shm, nm);
+  if (st != REI_OK)
     rei_stop_shm(NA_REAL, "rei: cannot open region '%s'", nm);
   return rei_shm_wrap_consumer(shm);
 }

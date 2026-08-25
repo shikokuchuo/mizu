@@ -196,8 +196,8 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
      only signal) the fresh region per SHM_VEC payload is dearer than the
      serialize copy: fall to SHM_RAW, whose region surrenders
      deterministically at consumer-done. */
-  if (!((rei_handle *) h)->fl.churn &&
-      rei_zc_eligible(x, inline_max, &total)) {
+  if (rei_zc_eligible(x, inline_max, &total) &&
+      !rei_handle_churn(h)) {
     rei_zc_stage(hdr, payload, x, total, h);
     return;
   }

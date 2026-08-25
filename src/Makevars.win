@@ -8,7 +8,8 @@ OBJECTS = bounded.o codec.o condition.o entity.o init.o liveness.o map.o \
           wrap.o zc.o \
           vendor/altrep.o vendor/serialize.o \
           vendor/librei/api.o vendor/librei/bytes.o vendor/librei/channel.o \
-          vendor/librei/err.o vendor/librei/err_tls.o vendor/librei/liveness.o \
+          vendor/librei/err.o vendor/librei/err_tls.o vendor/librei/ext.o \
+          vendor/librei/liveness.o \
           vendor/librei/parker.o vendor/librei/pool.o vendor/librei/preamble.o \
           vendor/librei/rng_jump.o vendor/librei/shm.o vendor/librei/shm_rw.o \
           vendor/librei/spill.o vendor/librei/tune.o vendor/librei/wait_linux.o \
@@ -20,7 +21,8 @@ all: $(SHLIB)
 
 # R's makefiles track no header dependencies: without this, editing a header
 # recompiles nothing and one rei.so links objects built from two headers.
-$(OBJECTS): rei.h vendor/mori.h vendor/librei/rei.h vendor/librei/internal.h
+$(OBJECTS): rei.h vendor/mori.h vendor/librei/rei.h vendor/librei/rei_ext.h \
+            vendor/librei/internal.h
 
 clean:
 	@rm -f $(OBJECTS) $(SHLIB)
