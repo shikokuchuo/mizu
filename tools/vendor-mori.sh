@@ -17,7 +17,7 @@
 
 set -euo pipefail
 
-PIN="a10800e23b9afc0fe26dde058341287834af948f"  # mori rei branch: Vendor the region layer from librei
+PIN="f55cd3ca8a7c4190ddd5501f53b1ab362d0aa87c"  # mori rei branch: Vendor librei at the rei.h/rei_ext.h surface split
 REF="${1:-$PIN}"
 REPO="${MORI_REPO:-https://github.com/shikokuchuo/mori}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor"

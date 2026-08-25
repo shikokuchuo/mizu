@@ -146,14 +146,16 @@ static size_t rei_zc_str_probe(SEXP x) {
    tree rejects it outright: nested views must cross by reference on the
    serialize-hook path (the wire hooks keep them counted) — the layout
    writer would copy their bytes, and a copied view can never be REF'd
-   back. Foreign ALTREP leaves cost 0 here; the oracle rejects the tree
-   later. Serialized leaves cost 0 too, so a tree whose bulk is
+   back. Foreign ALTREP leaves failing mori_altrep_readable cost 0 here;
+   the oracle rejects the tree later. Serialized leaves cost 0 too,
+   so a tree whose bulk is
    non-eligible (a big environment, a call) stays on the serialize tiers —
    MORL's win is the eligible leaves. */
 static size_t rei_zc_tree_probe(SEXP x, int *reject) {
-  if (*reject || ALTREP(x)) {
-    if (*reject == 0 && ALTREP(x) && mori_view_check(x)) *reject = 1;
-    return 0;
+  if (*reject) return 0;
+  if (ALTREP(x)) {
+    if (mori_view_check(x)) { *reject = 1; return 0; }
+    if (!mori_altrep_readable(x)) return 0;  /* lazy: the oracle vetoes */
   }
   int type = TYPEOF(x);
   size_t elt = mori_sizeof_elt(type);
@@ -177,21 +179,24 @@ static size_t rei_zc_tree_probe(SEXP x, int *reject) {
 
 /* SHM_VEC eligibility: an object the mori layouts cover whose layout
    bytes exceed both the inline budget and REI_ZC_FLOOR. Atomic vectors
-   gate on the O(1) data size (an ALTREP input must never stage: staging
-   grabs DATAPTR and materializes it — 1:1e8 would become an 800 MB
-   memcpy against the ~100-byte stream its serialized-state hook emits).
+   gate on the O(1) data size (a lazy ALTREP input must never stage:
+   staging grabs DATAPTR and materializes it — 1:1e8 would become an
+   800 MB memcpy against the ~100-byte stream its serialized-state hook
+   emits. The mori_altrep_readable probe admits directly readable,
+   keeper-free data without materializing: R's S4 data-part wrappers
+   forward to their data part).
    Strings and list trees have no O(1) size, and mori_layout_size's walk
    serialize-counts non-eligible leaves — a per-send tax the pool's small
    task payloads must not pay — so a cheap lower-bound probe gates the
    exact walk, which then doubles as region size and oracle (0 rejects
-   foreign ALTREP nodes and S4). Top-level LISTSXP stays on the serialize
+   foreign ALTREP nodes). Top-level LISTSXP stays on the serialize
    tiers: the layout coerces it to VECSXP, a type change a transport must
    not make. */
 int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   int type = TYPEOF(x);
   size_t elt = mori_sizeof_elt(type);
   if (elt != 0) {
-    if (ALTREP(x) || Rf_isS4(x)) return 0;
+    if (ALTREP(x) && !mori_altrep_readable(x)) return 0;
     size_t data = (size_t) XLENGTH(x) * elt;
     if (data <= (size_t) inline_max || data < REI_ZC_FLOOR) return 0;
     size_t total = mori_layout_size(x);
@@ -204,8 +209,11 @@ int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   if (type == STRSXP) {
     /* a foreign ALTREP string's Elt may materialize it — the probe must
        not touch it (a rei view is safe: its accessors read the shared
-       pages or the materialized copy) */
-    if ((ALTREP(x) && !mori_view_check(x)) || Rf_isS4(x)) return 0;
+       pages or the materialized copy). The mori_altrep_readable probe
+       admits directly readable, keeper-free data (R's S4 data-part
+       wrappers) without touching elements. */
+    if (ALTREP(x) && !mori_view_check(x) && !mori_altrep_readable(x))
+      return 0;
     if (rei_zc_str_probe(x) <= gate) return 0;
   } else if (type == VECSXP) {
     int reject = 0;
@@ -370,6 +378,7 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
       mori_restore_attrs(view,
                          base + REI_HEADER_SIZE + (size_t) length * elt,
                          (size_t) attrs_size);
+    view = mori_apply_s4(view, base);
     UNPROTECT(1);
     return view;
   }
@@ -395,6 +404,7 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
     if (attrs_size > 0)
       mori_restore_attrs(view, base + REI_HEADER_SIZE + (size_t) str_size,
                          (size_t) attrs_size);
+    view = mori_apply_s4(view, base);
     UNPROTECT(1);
     return view;
   }

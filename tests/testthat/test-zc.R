@@ -36,6 +36,76 @@ test_that("tier selection: big atomic vectors cross as views, others copy", {
   channel_end(p)
 })
 
+test_that("S4 objects cross as views with the bit intact", {
+  methods::setClass("reiS4Int", contains = "integer")
+  methods::setClass("reiS4Chr", contains = "character")
+  methods::setClass("reiS4List", contains = "list")
+  p <- channel_pair(arena_size = 0)
+
+  x <- methods::new("reiS4Int", as.integer(runif(100000) * 100)) # 400 KB
+  rei_send(p[["host"]], x)
+  y <- rei_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  expect_true(isS4(y))
+  expect_identical(y, x)
+  # held views pin their spill regions: release each before the next send
+  # or the churn signal (Linux only) drops staging to the copy tiers
+  rm(y)
+  invisible(gc())
+
+  xs <- methods::new("reiS4Chr", paste0("s", 1:20000))
+  rei_send(p[["host"]], xs)
+  ys <- rei_recv(p[["peer"]], 5)
+  expect_true(is_view(ys))
+  expect_true(isS4(ys))
+  expect_identical(ys, xs)
+  rm(ys)
+  invisible(gc())
+
+  xl <- methods::new("reiS4List", list(a = runif(30000), b = runif(20000)))
+  rei_send(p[["host"]], xl)
+  yl <- rei_recv(p[["peer"]], 5)
+  expect_true(is_view(yl))
+  expect_true(isS4(yl))
+  expect_identical(yl, xl)
+
+  xe <- list(
+    s4 = methods::new("reiS4Int", as.integer(runif(30000) * 100)),
+    plain = runif(30000)
+  )
+  rei_send(p[["host"]], xe)
+  ye <- rei_recv(p[["peer"]], 5)
+  expect_true(isS4(ye[["s4"]]))
+  expect_identical(ye, xe)
+
+  # a received S4 view re-sends as REF with the bit intact
+  rei_send(p[["peer"]], yl)
+  z <- rei_recv(p[["host"]], 5)
+  expect_true(is_view(z))
+  expect_true(isS4(z))
+
+  # an S4 wrapper over a lazy ALTREP data part stays on the copy tiers
+  xc <- methods::new("reiS4Int", 1:100000)
+  rei_send(p[["host"]], xc)
+  yc <- rei_recv(p[["peer"]], 5)
+  expect_false(is_view(yc))
+  expect_true(isS4(yc))
+  expect_identical(yc, xc)
+  channel_end(p)
+})
+
+test_that("pool results carry the S4 bit on the view tier", {
+  methods::setClass("reiS4Pool", contains = "numeric")
+  p <- pool_pair()
+  t <- rei_submit(p[["ctrl"]], methods::new("reiS4Pool", runif(100000)))
+  pool_step(p)
+  r <- rei_collect(t, 5)
+  expect_true(is_view(r))
+  expect_true(isS4(r))
+  expect_identical(length(r), 100000L)
+  pool_end(p)
+})
+
 test_that("the channel's raw floor: mid-size vectors copy, big ones view", {
   p <- channel_pair(arena_size = 2 * 1024 * 1024)
   x <- runif(20000) # 160 KB: past the zc floor, under the raw floor
