@@ -15,20 +15,21 @@
 #                             800 KB ride in-slot and 8 MB takes the spill
 #                             tier (SHM_VEC views; on Linux the churn
 #                             signal falls back to SHM_RAW reuse)
-#   4. parallel fan-out       small compute tasks, 4 workers: fire all,
-#                             collect all (in-process loop as the anchor)
+#   4. parallel fan-out       ~10 us compute tasks, 4 workers: fire all,
+#                             collect all (in-process loop as the anchor);
+#                             scenario 6 maps the same work in one call
 #   5. streaming              one-way 1L messages: channel send_batch /
 #                             recv_batch against one mirai task per message
 #   6. parallel map           rei_map against mirai_map, 4 workers: trivial
 #                             f per-element overhead (serial lapply as the
 #                             anchor, plus rei_map's .template and .seed
-#                             variants), then scenario 4's fan-out work as
-#                             one map call. The models differ by design:
-#                             mirai_map submits one mirai per element, so
-#                             its per-task cost is its per-element cost;
-#                             rei_map stages f/x once and submits ~8 chunk
-#                             tasks per worker — that amortization is what
-#                             the scenario measures
+#                             variants), then ~10 us tasks as one map call
+#                             (the README table's last row). The models
+#                             differ by design: mirai_map submits one mirai
+#                             per element, so its per-task cost is its
+#                             per-element cost; rei_map stages f/x once and
+#                             submits ~8 chunk tasks per worker — that
+#                             amortization is what the scenario measures
 #
 # Scenarios 1 and 2 carry a raw-transport floor row: a rei channel echoing
 # 1L, no task model on top. Scenarios 1 and 5 also carry the socket-stack
@@ -41,7 +42,7 @@
 # mirai runs every scenario both ways: dispatcher = TRUE and FALSE. Timings
 # are best-of-3 after warm-up; single runs on a busy machine still jitter.
 #
-# Run:  Rscript dev/bench/rei-mirai.R
+# Run:  Rscript dev/bench/rei-mirai-bench.R
 
 library(rei)
 library(mirai)
@@ -439,18 +440,18 @@ each_daemons(1L, "mirai", function(fw) {
 
 # 4. parallel fan-out ----------------------------------------------------------
 
-cat("\n== 4. parallel fan-out (sum(runif(1e4)) x 2000, 4 workers) ==\n")
+cat("\n== 4. parallel fan-out (sum(runif(2e3)) x 2000, 4 workers) ==\n")
 n <- 2000L
 
 note_rate("fan-out", "in-process", n, function() {
   for (i in seq_len(n)) {
-    sum(runif(1e4))
+    sum(runif(2e3))
   }
 })
 
 with_pool(4L, function(p) {
   # 2048 default slots for us
-  fire <- function() rei_submit(p, sum(runif(1e4)))
+  fire <- function() rei_submit(p, sum(runif(2e3)))
   reap <- function(t) rei_collect(t, timeout = 30)
   pipeline(fire, reap, n)
   note_rate("fan-out", "rei pool", n, function() pipeline(fire, reap, n))
@@ -459,7 +460,7 @@ with_pool(4L, function(p) {
 each_daemons(4L, "mirai", function(fw) {
   pipeline(function() mirai(NULL), function(m) m[], n)
   note_rate("fan-out", fw, n, function() {
-    pipeline(function() mirai(sum(runif(1e4))), function(m) m[], n)
+    pipeline(function() mirai(sum(runif(2e3))), function(m) m[], n)
   })
 })
 
@@ -638,30 +639,36 @@ each_daemons(4L, "mirai_map", function(fw) {
   )
 })
 
-# compute regime: scenario 4's fan-out work as a single map call — the
-# per-element overhead above amortized against real tasks
+# compute regime: scenario 4's task work as a single map call —
+# sum(runif(2e3)), ~10 us (calibrated 11.5 on the M4 Pro); the README
+# table's last row (the task size of the vignette's winsum benchmark)
 n <- 2000L
-g <- function(i) sum(runif(1e4))
+g <- function(i) sum(runif(2e3))
+
+note(
+  "map ~10us tasks",
+  "serial lapply",
+  best_ms(function() timed(invisible(lapply(seq_len(n), g)))),
+  "ms wall"
+)
 
 with_pool(4L, function(p) {
   invisible(rei_map(p, seq_len(n), g))
-  note_rate(
-    "map fan-out",
+  note(
+    "map ~10us tasks",
     "rei_map",
-    n,
-    function() rei_map(p, seq_len(n), g),
-    "elts/s"
+    best_ms(function() timed(invisible(rei_map(p, seq_len(n), g)))),
+    "ms wall"
   )
 })
 
 each_daemons(4L, "mirai_map", function(fw) {
   invisible(mirai_map(seq_len(200L), g)[])
-  note_rate(
-    "map fan-out",
+  note(
+    "map ~10us tasks",
     fw,
-    n,
-    function() invisible(mirai_map(seq_len(n), g)[]),
-    "elts/s"
+    best_ms(function() timed(invisible(mirai_map(seq_len(n), g)[]))),
+    "ms wall"
   )
 })
 

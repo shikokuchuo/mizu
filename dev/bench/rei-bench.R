@@ -1,6 +1,6 @@
 # Report-only benchmark: the rei channel and pool on their own, the R
 # counterpart of pyrei's benchmarks/rei-bench.py (the mirai/nanonext
-# comparison rows live in dev/bench/rei-mirai.R). Prints each number as
+# comparison rows live in dev/bench/rei-mirai-bench.R). Prints each number as
 # it lands and a summary table at the end; asserts nothing.
 #
 #   1. sequential round-trip  evaluate 1L, 1 worker: submit + collect loop
@@ -14,16 +14,17 @@
 #                             800 KB ride in-slot and 8 MB takes the spill
 #                             tier (SHM_VEC views; on Linux the churn
 #                             signal falls back to SHM_RAW reuse)
-#   4. parallel fan-out       small compute tasks, 4 workers: fire all,
-#                             collect all (in-process loop as the anchor)
+#   4. parallel fan-out       ~10 us compute tasks, 4 workers: fire all,
+#                             collect all (in-process loop as the anchor);
+#                             scenario 6 maps the same work in one call
 #   5. streaming              one-way 1L messages: channel send_batch /
 #                             recv_batch
 #   6. parallel map           rei_map, 4 workers: trivial f per-element
 #                             overhead (serial lapply as the anchor, plus
 #                             rei_map's .template and .seed variants),
-#                             then scenario 4's fan-out work as one map
-#                             call, then a skewed-f regime exercising the
-#                             self-scheduled morsel claims
+#                             then ~10 us tasks as one map call (the README
+#                             table's last row), then a skewed-f regime
+#                             exercising the self-scheduled morsel claims
 #
 # Timings are bench::mark medians over its auto-calibrated iteration
 # counts, after warm-up, with GC time kept in (filter_gc = FALSE) — the
@@ -327,18 +328,18 @@ for (pl in payloads) {
 
 # 4. parallel fan-out ----------------------------------------------------------
 
-cat("\n== 4. parallel fan-out (sum(runif(1e4)) x 2000, 4 workers) ==\n")
+cat("\n== 4. parallel fan-out (sum(runif(2e3)) x 2000, 4 workers) ==\n")
 n <- 2000L
 
 note_rate("fan-out", "in-process", n, function() {
   for (i in seq_len(n)) {
-    sum(runif(1e4))
+    sum(runif(2e3))
   }
 })
 
 with_pool(4L, function(p) {
   # 2048 default slots for us
-  fire <- function() rei_submit(p, sum(runif(1e4)))
+  fire <- function() rei_submit(p, sum(runif(2e3)))
   reap <- function(t) rei_collect(t, timeout = 30)
   pipeline(fire, reap, n)
   note_rate("fan-out", "rei pool", n, function() pipeline(fire, reap, n))
@@ -467,19 +468,26 @@ with_pool(4L, function(p) {
   )
 })
 
-# compute regime: scenario 4's fan-out work as a single map call — the
-# per-element overhead above amortized against real tasks
+# compute regime: scenario 4's task work as a single map call —
+# sum(runif(2e3)), ~10 us (calibrated 11.5 on the M4 Pro); the README
+# table's last row
 n <- 2000L
-g <- function(i) sum(runif(1e4))
+g <- function(i) sum(runif(2e3))
+
+note(
+  "map ~10us tasks",
+  "serial lapply",
+  mark_ms(function() invisible(lapply(seq_len(n), g))),
+  "ms wall"
+)
 
 with_pool(4L, function(p) {
   invisible(rei_map(p, seq_len(n), g))
-  note_rate(
-    "map fan-out",
+  note(
+    "map ~10us tasks",
     "rei_map",
-    n,
-    function() rei_map(p, seq_len(n), g),
-    "elts/s"
+    mark_ms(function() invisible(rei_map(p, seq_len(n), g))),
+    "ms wall"
   )
 })
 

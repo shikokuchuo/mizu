@@ -3,7 +3,7 @@
 Dated performance records for rei. The live reports that print against
 these baselines are `tests/testthat/test-benchmark.R` (eyeball them in CI
 logs); `dev/bench/rei-bench.R` runs the rei-only rows and
-`dev/bench/rei-mirai.R` the matched-scenario mirai comparison. Nothing here is asserted against — runner timing is too
+`dev/bench/rei-mirai-bench.R` the matched-scenario mirai comparison. Nothing here is asserted against — runner timing is too
 variable for thresholds. Append new dated outcomes at the bottom.
 
 All records are M4 Pro, R 4.6.1 unless marked; A/B ratios are the valid
@@ -421,3 +421,19 @@ batch 5.1-5.3M/4.8-5.2M tasks/s, streaming 45.2-46.2M/46.4-47.0M msg/s
 (post/pre). The sink indirection plus the pre-allocated result vector
 costs nothing measurable; the batch rows if anything trend slightly
 faster (one allocation, no second pass over the array).
+
+## 2026-08-25: map ~10 us compute regime
+
+dev/bench/rei-mirai-bench.R scenario 6's compute regime is now
+sum(runif(2e3)) x 2,000 as one map call, ms wall (was scenario 4's
+sum(runif(1e4)) fan-out, elts/s) — the README table's last row, so all
+four rows source from the one file; dev/bench/rei-bench.R's scenario 6
+compute regime mirrors it (rei rows only). Task size calibrated at 11.5 us on
+this host (~10 us nominal, the size of the vignette's winsum
+benchmark). Measured (M4 Pro, R 4.6.1): serial lapply 18.0 ms, rei_map
+5.0 ms, mirai_map 218 ms dispatcher / 89 ms direct. README row updated
+to 5.0 ms / 218 ms / 44x (was 5.09 ms / 210 ms / 41x from the
+vignette's bench::mark precompile). Scenario 4 (parallel fan-out) in
+both scripts now uses the same task, restoring the 4/6 same-work link:
+in-process 118k tasks/s, rei pool 333k, mirai 9.2k dispatcher /
+23.0k direct.
