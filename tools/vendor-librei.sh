@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="fc6a41ccbfce09bbba40cf38d24df2b5bfa7875e"  # librei: Split the public surface into stable rei.h and binding-author rei_ext.h tiers
+PIN="e90df3bde7d2e7a2aebef6a41c23a70fc5e1b6d2"  # librei: Recognize the pyrei codec magic in the keeperless gate
 REF="${1:-$PIN}"
 REPO="${LIBREI_REPO:-https://github.com/shikokuchuo/librei}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/librei"
