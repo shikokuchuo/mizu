@@ -23,9 +23,9 @@
    byte-order discipline.
 
    Self-containment is the second dividend: the writer rejects ALTREP
-   anywhere in the graph (mori-shared objects are ALTREP views; the
+   anywhere in the graph (shared objects are ALTREP views; the
    identifier wire hooks fire only from ALTREP serialization), so a codec
-   stream can carry no mori identifier and the sender pins NO keeper —
+   stream can carry no view identifier and the sender pins NO keeper —
    the same discipline as the RAWVEC/STR1 immediates.
 
    Closures cross with the environment by reference — global / base /
@@ -272,7 +272,7 @@ static void scw_node(rei_scw *w, SEXP x, unsigned depth) {
     scw_header(w, (uint32_t) type, x, depth);
     if (w->fail) return;
     scw_bytes(w, rei_vec_ptr(x),
-              (size_t) XLENGTH(x) * mori_sizeof_elt((int) ty));
+              (size_t) XLENGTH(x) * rei_view_sizeof_elt((int) ty));
     return;
   }
   case STRSXP: {
@@ -523,7 +523,7 @@ static SEXP scr_body(rei_scr *r, uint32_t tag, unsigned depth) {
     SEXPTYPE rt = ty == SC_LGL ? LGLSXP : ty == SC_INT ? INTSXP :
       ty == SC_REAL ? REALSXP : ty == SC_CPLX ? CPLXSXP : RAWSXP;
     uint64_t len = scr_u64(r);
-    size_t elt = mori_sizeof_elt((int) rt);
+    size_t elt = rei_view_sizeof_elt((int) rt);
     /* len is stream-bounded: each element costs elt bytes still ahead */
     if (elt == 0 || len > (uint64_t) (r->end - r->p) / elt)
       Rf_error("rei: corrupt payload stream");

@@ -3,16 +3,19 @@
    vendor/librei/rei.h (the authority); the binding-author surface (the seam,
    the stager services, the promoted parker/liveness/preamble internals) in
    vendor/librei/rei_ext.h — never vendor/librei/internal.h, which only the
-   vendored core TUs include. The ALTREP consumer classes and exact-size
-   serialize streams come from vendor/mori.h. Only R-coupled declarations
-   live here. */
+   vendored core TUs and the view layer include (the view layer manages
+   embedder-owned regions through the heap-form region API). The view layer
+   itself — the ALTREP consumer classes, the REIH/REIS/REIL layout writer,
+   and the exact-size serialize streams — is first-class here: view.h,
+   view.c, serialize.c (rei is its upstream; mori vendors it from this
+   repo). Only R-coupled declarations live here. */
 
 #ifndef REI_H
 #define REI_H
 
 #include "vendor/librei/rei.h"
 #include "vendor/librei/rei_ext.h"
-#include "vendor/mori.h"
+#include "view.h"
 #include <stdatomic.h>
 
 /* Cold-call annotation for raise-only helpers: keeps their call sites from
@@ -72,7 +75,7 @@ size_t rei_serialize_bounded(unsigned char *dst, size_t limit, SEXP object);
    self-describing — the first byte is REI_CODEC_MAGIC where an R binary
    stream carries 'B', so readers dispatch on it and the slot header is
    untouched. The writer rejects ALTREP anywhere in the graph, so a codec
-   stream carries no mori identifier and needs no pin. */
+   stream carries no view identifier and needs no pin. */
 size_t rei_codec_write(unsigned char *dst, size_t limit, SEXP object);
 SEXP rei_codec_read(const unsigned char *buf, size_t len);
 int rei_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
@@ -93,7 +96,7 @@ int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
 rei_shm *rei_spill_get_raise(rei_handle *h, size_t n);
 /* The spill tiers, staged through the handle's services (rei_stage_spill_get
    / rei_stage_retain / rei_stage_pin): the region checkout is the handle's,
-   the pin is the staged object where a stream may carry hook-emitted mori
+   the pin is the staged object where a stream may carry hook-emitted view
    identifiers (the codec stream is ALTREP-free and pins nothing). */
 void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, rei_handle *h);

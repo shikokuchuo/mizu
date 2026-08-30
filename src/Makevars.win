@@ -1,12 +1,10 @@
 
-# The R-side sources plus the vendored cores: librei (the transport + region
-# layer, native rei_ namespace) and mori's R-only pieces (ALTREP consumer
-# classes + exact-size serialize). Vendored files come from
-# tools/vendor-librei.sh / tools/vendor-mori.sh — never edited in place.
+# The R-side sources (including the first-class view layer: view.o and
+# serialize.o) plus the vendored librei core (the transport + region layer).
+# Vendored files come from tools/vendor-librei.sh — never edited in place.
 OBJECTS = bounded.o codec.o condition.o entity.o init.o liveness.o map.o \
-          payload.o preamble.o rng.o stage_r.o verbs_channel.o verbs_pool.o \
-          wrap.o zc.o \
-          vendor/altrep.o vendor/serialize.o \
+          payload.o preamble.o rng.o serialize.o stage_r.o verbs_channel.o \
+          verbs_pool.o view.o wrap.o zc.o \
           vendor/librei/api.o vendor/librei/bytes.o vendor/librei/channel.o \
           vendor/librei/err.o vendor/librei/err_tls.o vendor/librei/ext.o \
           vendor/librei/liveness.o \
@@ -21,7 +19,7 @@ all: $(SHLIB)
 
 # R's makefiles track no header dependencies: without this, editing a header
 # recompiles nothing and one rei.so links objects built from two headers.
-$(OBJECTS): rei.h vendor/mori.h vendor/librei/rei.h vendor/librei/rei_ext.h \
+$(OBJECTS): rei.h view.h vendor/librei/rei.h vendor/librei/rei_ext.h \
             vendor/librei/internal.h
 
 clean:

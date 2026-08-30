@@ -82,7 +82,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
   } else {
     /* the compact codec ahead of R_Serialize (payload.c): a codec stream
        is self-contained — the writer rejects ALTREP, so no hook-emitted
-       mori identifier can ride along — and pins nothing */
+       view identifier can ride along — and pins nothing */
     size_t n = rei_codec_write(payload, inline_max, x);
     int self_contained = n != 0;
     if (!self_contained)
@@ -101,7 +101,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
           if (rei_codec_write(chunk, n, x) != n)
             Rf_error("rei: codec write mismatch");
         } else {
-          mori_serialize_into(chunk, x);
+          rei_view_serialize_into(chunk, x);
         }
         hdr->kind = REI_KIND_ARENA;
         hdr->len = 0;
@@ -156,13 +156,13 @@ void *rei_r_read_channel(const rei_slot_hdr *hdr,
       ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
       return (void *) rei_mark_foreign;
     }
-    return (void *) mori_unserialize_from((unsigned char *) payload, limit);
+    return (void *) rei_view_unserialize_from((unsigned char *) payload, limit);
   }
   if (hdr->kind == REI_KIND_RAWSPILL) {
     /* resolved RAWVEC bytes (the pool's region framing of this kind is
        read in rei_payload_read) */
     int type = (int) hdr->aux;
-    size_t elt = mori_sizeof_elt(type);
+    size_t elt = rei_view_sizeof_elt(type);
     if (elt == 0 || hdr->len % elt != 0)
       Rf_error("rei: corrupt payload slot");
     SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));

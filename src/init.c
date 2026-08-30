@@ -259,7 +259,7 @@ void R_init_rei(DllInfo *dll) {
   rei_pool_init();
   rei_map_init();
   rei_zc_init();
-  mori_altrep_init(dll);
+  rei_view_altrep_init(dll);
 }
 
 /* Called by R if the DLL is ever unloaded (the package deliberately has no

@@ -31,11 +31,11 @@ int rei_raw_type(SEXP x, size_t *out_len) {
   default:
     return 0;
   }
-  /* The ALTREP exclusion is the linkage-free gate keeping mori-shared
+  /* The ALTREP exclusion is the linkage-free gate keeping shared
      vectors on the hook path; the S4 bit is recorded by serialize, so it
      disqualifies alongside attributes. */
   if (ALTREP(x) || ANY_ATTRIB(x) || Rf_isS4(x)) return 0;
-  *out_len = (size_t) XLENGTH(x) * mori_sizeof_elt(TYPEOF(x));
+  *out_len = (size_t) XLENGTH(x) * rei_view_sizeof_elt(TYPEOF(x));
   return 1;
 }
 
@@ -119,7 +119,7 @@ rei_shm *rei_spill_get_raise(rei_handle *h, size_t n) {
 void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, rei_handle *h) {
   rei_shm *shm = rei_spill_get_raise(h, n);
-  mori_serialize_into((unsigned char *) shm->addr, x);
+  rei_view_serialize_into((unsigned char *) shm->addr, x);
   hdr->kind = REI_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
@@ -158,7 +158,7 @@ void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
 /* The NIL, RAWVEC, and STR1 kinds retain nothing: their slot bytes are
    self-contained (RAWVEC and STR1 exclude ALTREP, attributes, and S4, so
    no hook-emitted identifier can ride along), unlike the serialize tiers,
-   where a stream may carry mori identifiers whose views the pin keeps
+   where a stream may carry view identifiers whose views the pin keeps
    alive until consumer-done. */
 void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, SEXP x, rei_handle *h) {
@@ -189,7 +189,7 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
   }
   if (rei_str1_stage(hdr, payload, inline_max, x))
     return;
-  /* SHM_VEC: mori-layout-eligible objects (atomic vectors, strings, list
+  /* SHM_VEC: view-layout-eligible objects (atomic vectors, strings, list
      trees) past the budget and the zc floor — cheap probes keep the
      layout-size walk off the inline path (zc.c). Under churn (the last
      spill miss swept the lent ledger and reclaimed nothing — a Linux-
@@ -212,7 +212,7 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
   }
   /* the compact codec ahead of R_Serialize: no per-call ref-table
      allocation on either side, and a self-contained stream (the writer
-     rejects ALTREP, so no mori identifier can ride along) that pins
+     rejects ALTREP, so no view identifier can ride along) that pins
      nothing — the NIL/RAWVEC/STR1 discipline */
   n = rei_codec_write(payload, inline_max, x);
   if (n != 0) {
@@ -278,10 +278,10 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
       }
       rei_stop_python_payload();
     }
-    return mori_unserialize_from((unsigned char *) payload, hdr->len);
+    return rei_view_unserialize_from((unsigned char *) payload, hdr->len);
   case REI_KIND_RAWVEC: {
     int type = (int) hdr->aux;
-    size_t elt = mori_sizeof_elt(type);
+    size_t elt = rei_view_sizeof_elt(type);
     if (elt == 0 || hdr->len > inline_max || hdr->len % elt != 0)
       Rf_error("rei: corrupt payload slot");
     SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
@@ -302,7 +302,7 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
        kind is resolved by the transport, never reaching here) */
     int type = (int) (hdr->aux & 0xff);
     uint32_t name_len = (uint32_t) (hdr->aux >> 8);
-    size_t elt = mori_sizeof_elt(type);
+    size_t elt = rei_view_sizeof_elt(type);
     if (elt == 0 || hdr->len % elt != 0 ||
         name_len == 0 || name_len >= REI_NAME_MAX)
       Rf_error("rei: corrupt payload slot");
@@ -332,7 +332,7 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
       }
       rei_stop_python_payload();
     }
-    return mori_unserialize_from(stream, len);
+    return rei_view_unserialize_from(stream, len);
   }
   }
   Rf_error("rei: corrupt payload slot");

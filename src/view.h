@@ -1,38 +1,38 @@
-#ifndef MORI_H
-#define MORI_H
+#ifndef REI_VIEW_H
+#define REI_VIEW_H
 
 #include <Rversion.h>
 #include <Rinternals.h>
 #include <R_ext/Altrep.h>
 #include <string.h>
 
-#include "librei/internal.h"
+#include "vendor/librei/internal.h"
 
 // Identifier grammar constants ------------------------------------------------
 
-#define MORI_MAX_PATH        64                /* max indices in a path */
-#define MORI_IDENTIFIER_MAX  1024              /* parser input length cap */
-#define MORI_FORMAT_BUFLEN   1024              /* formatter stack buffer */
+#define REI_VIEW_MAX_PATH        64                /* max indices in a path */
+#define REI_VIEW_IDENTIFIER_MAX  1024              /* parser input length cap */
+#define REI_VIEW_FORMAT_BUFLEN   1024              /* formatter stack buffer */
 
 /* External-pointer tag strings (installed once at init). */
-#define MORI_TAG_SHM   "rei_mori_shm"
-#define MORI_TAG_HOST  "rei_mori_host"
-#define MORI_TAG_OWNED "rei_mori_owned"
+#define REI_VIEW_TAG_SHM   "rei_view_shm"
+#define REI_VIEW_TAG_HOST  "rei_view_host"
+#define REI_VIEW_TAG_OWNED "rei_view_owned"
 
 /* Region header flags word at byte offset 32 of the 64-byte header —
    bytes [24-31] remain embedder cross-process state, [36-63] reserved.
    Bit 0 records the S4 object bit, which the layouts otherwise cannot
    carry. */
-#define MORI_FLAGS_OFF 32
-#define MORI_FLAG_S4 0x1u
+#define REI_VIEW_FLAGS_OFF 32
+#define REI_VIEW_FLAG_S4 0x1u
 
 // Types -----------------------------------------------------------------------
 
-typedef struct mori_buf_s {
+typedef struct rei_view_buf_s {
   unsigned char *buf;
   size_t len;
   size_t cur;
-} mori_buf;
+} rei_view_buf;
 
 /* Embedder release callback, fired exactly once per view — at COW
    materialization or at the view finalizer, whichever comes first. Embedded
@@ -41,35 +41,35 @@ typedef struct mori_buf_s {
    converted, points to its initial member). ALTLIST views fire at the
    finalizer only: extracted element views keep referencing the region, so a
    list is never fully detached before the whole view tree is finalized. */
-typedef void (*mori_release_fn)(void *);
+typedef void (*rei_view_release_fn)(void *);
 
-typedef struct mori_owned_s {
-  mori_release_fn release;
+typedef struct rei_view_owned_s {
+  rei_view_release_fn release;
   void *release_arg;
-} mori_owned;
+} rei_view_owned;
 
-typedef struct mori_vec_s {
-  mori_owned owned;
+typedef struct rei_view_vec_s {
+  rei_view_owned owned;
   const void *data;
   R_xlen_t length;
   int32_t index;   /* -1 = standalone, >= 0 = element of ALTLIST */
-} mori_vec;
+} rei_view_vec;
 
-typedef struct mori_list_view_s {
-  mori_owned owned;
-  unsigned char *base;       /* points to child MORL start */
+typedef struct rei_view_list_s {
+  rei_view_owned owned;
+  unsigned char *base;       /* points to child REIL start */
   int64_t region_size;       /* bounds all reads within this region */
   int32_t n_elements;
   int32_t index;             /* -1 = root, >= 0 = sub-list */
-} mori_list_view;
+} rei_view_list;
 
 // serialize.c -----------------------------------------------------------------
 
-size_t mori_serialize_count(SEXP object);
-size_t mori_serialize_into(unsigned char *dst, SEXP object);
-SEXP mori_unserialize_from(unsigned char *src, size_t size);
+size_t rei_view_serialize_count(SEXP object);
+size_t rei_view_serialize_into(unsigned char *dst, SEXP object);
+SEXP rei_view_unserialize_from(unsigned char *src, size_t size);
 
-static inline size_t mori_sizeof_elt(int type) {
+static inline size_t rei_view_sizeof_elt(int type) {
   switch (type) {
   case REALSXP:  return sizeof(double);
   case INTSXP:   return sizeof(int);
@@ -87,7 +87,7 @@ static inline size_t mori_sizeof_elt(int type) {
    (a lazy ALTREP, a materialized compact sequence, an extptr-data1 view)
    is rejected: the layout write would materialize it or forfeit its
    compact wire form. */
-static inline int mori_altrep_readable(SEXP x) {
+static inline int rei_view_altrep_readable(SEXP x) {
   SEXP inner = R_altrep_data1(x);
   if (ALTREP(inner) || TYPEOF(inner) != TYPEOF(x)) return 0;
   const void *pi = DATAPTR_OR_NULL(inner);
@@ -98,55 +98,55 @@ static inline int mori_altrep_readable(SEXP x) {
    attributes land, so a read never consults a class definition
    (Rf_asS4 with complete = 0 sets the bit in place on a fresh object).
    Call on a validated region (>= REI_HEADER_SIZE bytes); embedders
-   wrapping MORH / MORS roots through the raw constructors call this
+   wrapping REIH / REIS roots through the raw constructors call this
    last. */
-static inline SEXP mori_apply_s4(SEXP x, const unsigned char *base) {
+static inline SEXP rei_view_apply_s4(SEXP x, const unsigned char *base) {
   uint32_t flags;
-  memcpy(&flags, base + MORI_FLAGS_OFF, 4);
-  return (flags & MORI_FLAG_S4) ? Rf_asS4(x, TRUE, 0) : x;
+  memcpy(&flags, base + REI_VIEW_FLAGS_OFF, 4);
+  return (flags & REI_VIEW_FLAG_S4) ? Rf_asS4(x, TRUE, 0) : x;
 }
 
 // altrep.c --------------------------------------------------------------------
 
-void mori_altrep_init(DllInfo *dll);
+void rei_view_altrep_init(DllInfo *dll);
 
 /* SHM extptr finalizers, defined alongside the wrap constructors that
-   register them: mori_shm_finalizer releases this side's mapping only;
-   mori_host_finalizer releases the SHM name/handle via
+   register them: rei_view_shm_finalizer releases this side's mapping only;
+   rei_view_host_finalizer releases the SHM name/handle via
    rei_shm_host_release. */
-void mori_shm_finalizer(SEXP ptr);
-void mori_host_finalizer(SEXP ptr);
+void rei_view_shm_finalizer(SEXP ptr);
+void rei_view_host_finalizer(SEXP ptr);
 
 /* Wrap constructors: the returned view's data1 pins `keeper` through its
    protected slot; release/release_arg ride the owned metadata and fire
    once (materialize or finalizer). Internal callers pass NULL, NULL. */
-SEXP mori_vec_wrap(const void *data, R_xlen_t length, int sexptype,
-                   SEXP keeper, mori_release_fn release, void *release_arg);
-SEXP mori_str_wrap(const unsigned char *region_base, R_xlen_t n,
+SEXP rei_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
+                   SEXP keeper, rei_view_release_fn release, void *release_arg);
+SEXP rei_view_str_wrap(const unsigned char *region_base, R_xlen_t n,
                    int64_t data_size, SEXP keeper,
-                   mori_release_fn release, void *release_arg);
-SEXP mori_list_wrap(unsigned char *base, int64_t region_size, int32_t index,
-                    SEXP keeper, mori_release_fn release, void *release_arg);
-void mori_restore_attrs(SEXP result, unsigned char *buf, size_t size);
+                   rei_view_release_fn release, void *release_arg);
+SEXP rei_view_list_wrap(unsigned char *base, int64_t region_size, int32_t index,
+                    SEXP keeper, rei_view_release_fn release, void *release_arg);
+void rei_view_restore_attrs(SEXP result, unsigned char *buf, size_t size);
 
 /* Layout oracle and writer for embedder-managed regions: the size pass
    walks the tree and returns 0 for anything the layout writer must not
-   take: an ALTREP node is rejected unless it is a mori view (rides the
-   wire hooks) or mori_altrep_readable (R's S4 data-part wrappers
+   take: an ALTREP node is rejected unless it is a view (rides the
+   wire hooks) or rei_view_altrep_readable (R's S4 data-part wrappers
    qualify; a compact 1:1e8 would materialize through DATAPTR_RO at
-   write). The write emits exactly mori_layout_size bytes and zeroes
+   write). The write emits exactly rei_view_layout_size bytes and zeroes
    header reserved bytes. */
-size_t mori_layout_size(SEXP x);
-void mori_layout_write(unsigned char *base, SEXP x);
+size_t rei_view_layout_size(SEXP x);
+void rei_view_layout_write(unsigned char *base, SEXP x);
 
 /* View introspection: C-level is_shared, the identifier formatter, the
    identifier parser, and a path walk over an already-open region (keeper
    flows to the returned view's chain). */
-int mori_view_check(SEXP x);
-SEXP mori_shm_name(SEXP x);
-int mori_parse_id(const char *s, char *name_out, size_t name_out_size,
+int rei_view_check(SEXP x);
+SEXP rei_view_shm_name(SEXP x);
+int rei_view_parse_id(const char *s, char *name_out, size_t name_out_size,
                   int32_t *path_out, int *path_len);
-SEXP mori_walk_path(unsigned char *base, int64_t region_size,
+SEXP rei_view_walk_path(unsigned char *base, int64_t region_size,
                     const int32_t *path, int path_len, SEXP keeper);
 
 /* Embedder wire hooks (optional; set once at embedder load): `emit` fires
@@ -156,12 +156,12 @@ SEXP mori_walk_path(unsigned char *base, int64_t region_size,
    paths after the wrap, with the freshly opened consumer mapping. An
    embedder running a cross-process lifetime protocol uses the pair to
    flag regions on escape and to count remote references on arrival. */
-typedef void (*mori_emit_hook_fn)(SEXP view);
-typedef void (*mori_resolve_hook_fn)(SEXP view, rei_shm *shm);
-void mori_set_wire_hooks(mori_emit_hook_fn emit, mori_resolve_hook_fn resolve);
+typedef void (*rei_view_emit_hook_fn)(SEXP view);
+typedef void (*rei_view_resolve_hook_fn)(SEXP view, rei_shm *shm);
+void rei_view_set_wire_hooks(rei_view_emit_hook_fn emit, rei_view_resolve_hook_fn resolve);
 
 // Alignment macro -------------------------------------------------------------
 
-#define MORI_ALIGN64(x) (((x) + 63) & ~(size_t)63)
+#define REI_VIEW_ALIGN64(x) (((x) + 63) & ~(size_t)63)
 
-#endif /* MORI_H */
+#endif /* REI_VIEW_H */

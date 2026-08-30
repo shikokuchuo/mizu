@@ -1,5 +1,5 @@
 /* GC extptr wrappers over the vendored finalizers — SHM lifetime is fully
-   automatic, the same chained-finalizer discipline mori uses internally.
+   automatic, the same chained-finalizer discipline the view layer uses.
    Producer side: a rei_shm-tagged mapping extptr (munmap finalizer) chained
    to a rei_host-tagged extptr (unlink / CloseHandle finalizer, which also
    balances the macOS registry log) via its protected slot; the host copy
@@ -22,7 +22,7 @@ void rei_wrap_init(void) {
 
 SEXP rei_shm_wrap_consumer(rei_shm *shm) {
   SEXP ptr = R_MakeExternalPtr(shm, rei_shm_tag, R_NilValue);
-  R_RegisterCFinalizerEx(ptr, mori_shm_finalizer, TRUE);
+  R_RegisterCFinalizerEx(ptr, rei_view_shm_finalizer, TRUE);
   return ptr;
 }
 
@@ -45,14 +45,14 @@ SEXP rei_shm_wrap_host(rei_shm *shm) {
 #endif
 
   SEXP host_ptr = R_MakeExternalPtr(host, rei_host_tag, R_NilValue);
-  R_RegisterCFinalizerEx(host_ptr, mori_host_finalizer, TRUE);
+  R_RegisterCFinalizerEx(host_ptr, rei_view_host_finalizer, TRUE);
   return host_ptr;
 }
 
 SEXP rei_shm_wrap_producer(rei_shm *shm) {
   SEXP host_ptr = PROTECT(rei_shm_wrap_host(shm));
   SEXP shm_ptr = R_MakeExternalPtr(shm, rei_shm_tag, host_ptr);
-  R_RegisterCFinalizerEx(shm_ptr, mori_shm_finalizer, TRUE);
+  R_RegisterCFinalizerEx(shm_ptr, rei_view_shm_finalizer, TRUE);
   UNPROTECT(1);
   return shm_ptr;
 }

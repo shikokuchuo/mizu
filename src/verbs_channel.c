@@ -214,11 +214,11 @@ SEXP rei_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
     drop[0] = REI_DROP_SOURCE;
     memcpy(drop + 1, src, expr_size);
   } else {
-    expr_size = mori_serialize_count(expr);
+    expr_size = rei_view_serialize_count(expr);
     drop = malloc(expr_size + 1);
     if (drop == NULL) Rf_error("rei: allocation failure");
     drop[0] = REI_DROP_R;
-    mori_serialize_into(drop + 1, expr);
+    rei_view_serialize_into(drop + 1, expr);
   }
 
   rei_r_handle *h = calloc(1, sizeof(*h));
@@ -294,7 +294,7 @@ SEXP rei_channel_attach_call(SEXP suffix_sexp) {
   SEXP xp = PROTECT(chan_wrap(h));
 
   /* materialize-before-ready: the host's frame keeps the expression — and
-     through mori's keeper chains every region its identifiers name — alive
+     through the view layer's keeper chains every region its identifiers name — alive
      exactly until ready is observed. An REI_DROP_R drop unserializes to
      the expression; an REI_DROP_SOURCE drop is UTF-8 source text, returned
      as a string for the caller to parse (kept opaque here so the tag
@@ -305,7 +305,7 @@ SEXP rei_channel_attach_call(SEXP suffix_sexp) {
   if (n == 0 || (bytes[0] != REI_DROP_R && bytes[0] != REI_DROP_SOURCE))
     Rf_error("rei: foreign channel drop (not an R bootstrap)");
   SEXP drop = bytes[0] == REI_DROP_R ?
-    PROTECT(mori_unserialize_from((unsigned char *) (bytes + 1),
+    PROTECT(rei_view_unserialize_from((unsigned char *) (bytes + 1),
                                   (size_t) n - 1)) :
     PROTECT(Rf_ScalarString(Rf_mkCharLenCE((const char *) (bytes + 1),
                                            (int) (n - 1), CE_UTF8)));

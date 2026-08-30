@@ -4,7 +4,7 @@
    flips to count-only mode on overflow: one pass total for payloads that fit
    (the dominant case in the target regime), and an exact total size for the
    spill allocation when they don't, at the cost of at most one inline budget
-   of discarded copy. Same R_outpstream discipline as mori_serialize_into;
+   of discarded copy. Same R_outpstream discipline as rei_view_serialize_into;
    the vendored two-pass invariant is untouched on the spill path. */
 
 #include "rei.h"
@@ -64,5 +64,5 @@ SEXP rei_bounded_call(SEXP object, SEXP limit) {
 
 SEXP rei_unserialize_call(SEXP bytes) {
   if (TYPEOF(bytes) != RAWSXP) Rf_error("rei: expected a raw vector");
-  return mori_unserialize_from(RAW(bytes), (size_t) XLENGTH(bytes));
+  return rei_view_unserialize_from(RAW(bytes), (size_t) XLENGTH(bytes));
 }

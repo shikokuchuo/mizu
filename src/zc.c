@@ -1,12 +1,12 @@
-/* Zero-copy payload tiers (zc.c): SHM_VEC — a mori-layout object (atomic
+/* Zero-copy payload tiers (zc.c): SHM_VEC — a view-layout object (atomic
    vector, string vector, or list tree) in a spill region, wrapped ALTREP
    at receive (no allocVector, no memcpy, no parse) — and REF — the /rei_
    identifier of an object already in shared memory, resolved to a view of
-   the same pages. The receive machinery is the vendored mori ALTREP
-   layer; what rei adds is the cross-process release protocol: a
+   the same pages. The receive machinery is the view layer (view.c);
+   what zc.c adds is the cross-process release protocol: a
    refcount in the region header's reserved bytes (rei.h), a per-handle
    lent-region ledger on the producer, and a once-only release callback
-   per view (mori's embedder hook — fired at COW materialization or at the
+   per view (the layer's embedder release hook — fired at COW materialization or at the
    view finalizer, whichever comes first; list views fire at the finalizer
    only, since extracted element views keep referencing the region).
 
@@ -20,7 +20,7 @@
    list crossing a channel) never reach the top-level tier selection: R's
    serializer emits their identifiers via the vendored Serialized_state
    hooks and the far side resolves them inside R_Unserialize. Mori's wire
-   hooks (mori_set_wire_hooks, set at load) keep that path inside the
+   hooks (rei_view_set_wire_hooks, set at load) keep that path inside the
    protocol: emit marks the region REFHELD (the holder set widens beyond
    the direct peer), resolve does the counted add and arms the release
    callback before the read returns — which happens-before the
@@ -39,22 +39,22 @@
 #endif
 
 static SEXP rei_rel_tag;      /* the release-record extptr */
-static SEXP rei_shm_tag_sym;  /* installed MORI_TAG_SHM: the chain terminus */
+static SEXP rei_shm_tag_sym;  /* installed REI_VIEW_TAG_SHM: the chain terminus */
 
 static void rei_zc_ref_mark(SEXP x);
 static void rei_zc_wire_resolve(SEXP view, rei_shm *shm);
 
 void rei_zc_init(void) {
   rei_rel_tag = Rf_install("rei_view_release");
-  rei_shm_tag_sym = Rf_install(MORI_TAG_SHM);
-  mori_set_wire_hooks(rei_zc_ref_mark, rei_zc_wire_resolve);
+  rei_shm_tag_sym = Rf_install(REI_VIEW_TAG_SHM);
+  rei_view_set_wire_hooks(rei_zc_ref_mark, rei_zc_wire_resolve);
 }
 
 // View release ------------------------------------------------------------------
 
 /* One per wrapped view: the refcount sub, armed only after the add lands
    (a longjmp between wrap and add must not sub a count it never added).
-   pid is the fork guard (mori's host-finalizer pattern): views are
+   pid is the fork guard (the view layer's host-finalizer pattern): views are
    ordinary R objects that cross mclapply forks, and a child-side GC must
    not sub a count it never added. owned is the record's own RW mapping
    of the region (wire-resolve records only — the vendored resolve maps
@@ -80,7 +80,7 @@ static void rei_rel_finalizer(SEXP ptr) {
   }
 }
 
-/* The mori_owned release hook: run the finalizer early (it clears the
+/* The rei_view_owned release hook: run the finalizer early (it clears the
    extptr, so the GC pass is a no-op). Fires at COW materialization — the
    shared pages are dead weight from there. */
 static void rei_zc_rel_fire(void *arg) {
@@ -90,7 +90,7 @@ static void rei_zc_rel_fire(void *arg) {
 // Consumer open: split mapping ---------------------------------------------------
 
 /* Page 0 read-write (the refcount word needs it), remaining pages
-   read-only (mori's RO discipline). Lazy everywhere — a view is touched
+   read-only (the view layer's RO discipline). Lazy everywhere — a view is touched
    on demand, so eager PTE install would prefault never-read pages on the
    recv hot path (the SHM_RAW cache's populated open exists because a
    stream is unserialized in full immediately; a view is not). */
@@ -127,7 +127,7 @@ static rei_shm *rei_zc_open(const char *name) {
 
 // Eligibility --------------------------------------------------------------------
 
-/* Lower bound on the MORS layout size (header + offset table + packed
+/* Lower bound on the REIS layout size (header + offset table + packed
    string bytes; attrs excluded): 64 + align64(16 per entry) + the CHARSXP
    bytes. Walks string lengths only — no allocation, no serialize count. */
 static size_t rei_zc_str_probe(SEXP x) {
@@ -140,25 +140,25 @@ static size_t rei_zc_str_probe(SEXP x) {
   return total;
 }
 
-/* Lower bound on the MORL layout size: layout-eligible leaf bytes only
+/* Lower bound on the REIL layout size: layout-eligible leaf bytes only
    (headers, directory, attrs, and serialized leaves all excluded), so the
-   exact mori_layout_size always exceeds it. A rei view anywhere in the
+   exact rei_view_layout_size always exceeds it. A rei view anywhere in the
    tree rejects it outright: nested views must cross by reference on the
    serialize-hook path (the wire hooks keep them counted) — the layout
    writer would copy their bytes, and a copied view can never be REF'd
-   back. Foreign ALTREP leaves failing mori_altrep_readable cost 0 here;
+   back. Foreign ALTREP leaves failing rei_view_altrep_readable cost 0 here;
    the oracle rejects the tree later. Serialized leaves cost 0 too,
    so a tree whose bulk is
    non-eligible (a big environment, a call) stays on the serialize tiers —
-   MORL's win is the eligible leaves. */
+   REIL's win is the eligible leaves. */
 static size_t rei_zc_tree_probe(SEXP x, int *reject) {
   if (*reject) return 0;
   if (ALTREP(x)) {
-    if (mori_view_check(x)) { *reject = 1; return 0; }
-    if (!mori_altrep_readable(x)) return 0;  /* lazy: the oracle vetoes */
+    if (rei_view_check(x)) { *reject = 1; return 0; }
+    if (!rei_view_altrep_readable(x)) return 0;  /* lazy: the oracle vetoes */
   }
   int type = TYPEOF(x);
-  size_t elt = mori_sizeof_elt(type);
+  size_t elt = rei_view_sizeof_elt(type);
   if (elt != 0) return (size_t) XLENGTH(x) * elt;
   if (type == STRSXP) return rei_zc_str_probe(x);
   if (type == VECSXP) {
@@ -177,15 +177,15 @@ static size_t rei_zc_tree_probe(SEXP x, int *reject) {
   return 0;
 }
 
-/* SHM_VEC eligibility: an object the mori layouts cover whose layout
+/* SHM_VEC eligibility: an object the view layouts cover whose layout
    bytes exceed both the inline budget and REI_ZC_FLOOR. Atomic vectors
    gate on the O(1) data size (a lazy ALTREP input must never stage:
    staging grabs DATAPTR and materializes it — 1:1e8 would become an
    800 MB memcpy against the ~100-byte stream its serialized-state hook
-   emits. The mori_altrep_readable probe admits directly readable,
+   emits. The rei_view_altrep_readable probe admits directly readable,
    keeper-free data without materializing: R's S4 data-part wrappers
    forward to their data part).
-   Strings and list trees have no O(1) size, and mori_layout_size's walk
+   Strings and list trees have no O(1) size, and rei_view_layout_size's walk
    serialize-counts non-eligible leaves — a per-send tax the pool's small
    task payloads must not pay — so a cheap lower-bound probe gates the
    exact walk, which then doubles as region size and oracle (0 rejects
@@ -194,12 +194,12 @@ static size_t rei_zc_tree_probe(SEXP x, int *reject) {
    not make. */
 int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   int type = TYPEOF(x);
-  size_t elt = mori_sizeof_elt(type);
+  size_t elt = rei_view_sizeof_elt(type);
   if (elt != 0) {
-    if (ALTREP(x) && !mori_altrep_readable(x)) return 0;
+    if (ALTREP(x) && !rei_view_altrep_readable(x)) return 0;
     size_t data = (size_t) XLENGTH(x) * elt;
     if (data <= (size_t) inline_max || data < REI_ZC_FLOOR) return 0;
-    size_t total = mori_layout_size(x);
+    size_t total = rei_view_layout_size(x);
     if (total == 0 || total <= (size_t) inline_max) return 0;
     *out_total = total;
     return 1;
@@ -209,10 +209,10 @@ int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   if (type == STRSXP) {
     /* a foreign ALTREP string's Elt may materialize it — the probe must
        not touch it (a rei view is safe: its accessors read the shared
-       pages or the materialized copy). The mori_altrep_readable probe
+       pages or the materialized copy). The rei_view_altrep_readable probe
        admits directly readable, keeper-free data (R's S4 data-part
        wrappers) without touching elements. */
-    if (ALTREP(x) && !mori_view_check(x) && !mori_altrep_readable(x))
+    if (ALTREP(x) && !rei_view_check(x) && !rei_view_altrep_readable(x))
       return 0;
     if (rei_zc_str_probe(x) <= gate) return 0;
   } else if (type == VECSXP) {
@@ -221,7 +221,7 @@ int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   } else {
     return 0;
   }
-  size_t total = mori_layout_size(x);
+  size_t total = rei_view_layout_size(x);
   if (total == 0) return 0;
   *out_total = total;
   return 1;
@@ -238,7 +238,7 @@ int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
 void rei_zc_stage(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                   size_t total, rei_handle *h) {
   rei_shm *shm = rei_spill_get_raise(h, (size_t) total);
-  mori_layout_write((unsigned char *) shm->addr, x);
+  rei_view_layout_write((unsigned char *) shm->addr, x);
   int type = TYPEOF(x);
   hdr->kind = REI_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
@@ -359,7 +359,7 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
     memcpy(&type, base + 4, 4);
     memcpy(&length, base + 8, 8);
     memcpy(&attrs_size, base + 16, 8);
-    size_t elt = mori_sizeof_elt(type);
+    size_t elt = rei_view_sizeof_elt(type);
     if (elt == 0 || length < 0 || attrs_size < 0 ||
         length > (region_size - (int64_t) REI_HEADER_SIZE) / (int64_t) elt ||
         attrs_size >
@@ -371,14 +371,14 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
                                    (size_t) length * elt +
                                    (size_t) attrs_size)))
       Rf_error("rei: corrupt payload slot");
-    SEXP view = PROTECT(mori_vec_wrap(base + REI_HEADER_SIZE,
+    SEXP view = PROTECT(rei_view_vec_wrap(base + REI_HEADER_SIZE,
                                       (R_xlen_t) length, type, name_xp,
                                       rei_zc_rel_fire, rel_xp));
     if (attrs_size > 0)
-      mori_restore_attrs(view,
+      rei_view_restore_attrs(view,
                          base + REI_HEADER_SIZE + (size_t) length * elt,
                          (size_t) attrs_size);
-    view = mori_apply_s4(view, base);
+    view = rei_view_apply_s4(view, base);
     UNPROTECT(1);
     return view;
   }
@@ -398,13 +398,13 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
                                    (size_t) str_size +
                                    (size_t) attrs_size)))
       Rf_error("rei: corrupt payload slot");
-    SEXP view = PROTECT(mori_str_wrap(base + REI_HEADER_SIZE, (R_xlen_t) n,
+    SEXP view = PROTECT(rei_view_str_wrap(base + REI_HEADER_SIZE, (R_xlen_t) n,
                                       str_size, name_xp, rei_zc_rel_fire,
                                       rel_xp));
     if (attrs_size > 0)
-      mori_restore_attrs(view, base + REI_HEADER_SIZE + (size_t) str_size,
+      rei_view_restore_attrs(view, base + REI_HEADER_SIZE + (size_t) str_size,
                          (size_t) attrs_size);
-    view = mori_apply_s4(view, base);
+    view = rei_view_apply_s4(view, base);
     UNPROTECT(1);
     return view;
   }
@@ -413,7 +413,7 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
        layout size isn't header-derivable, so aux cross-checks the type */
     if (aux != 0 && (uint32_t) (aux & 0xff) != (uint32_t) VECSXP)
       Rf_error("rei: corrupt payload slot");
-    return mori_list_wrap(base, region_size, -1, name_xp, rei_zc_rel_fire,
+    return rei_view_list_wrap(base, region_size, -1, name_xp, rei_zc_rel_fire,
                           rel_xp);
   }
   Rf_error("rei: corrupt payload slot");
@@ -476,14 +476,14 @@ static void rei_zc_ref_mark(SEXP x) {
 
 int rei_zc_ref_stage(rei_slot_hdr *hdr, unsigned char *payload,
                      uint32_t inline_max, SEXP x) {
-  if (!mori_view_check(x)) return 0;
+  if (!rei_view_check(x)) return 0;
   /* data2 set on a vector or string view means COW-materialized: the
      release already fired (the region may be recycled) and the private
      copy may hold mutations — such a view must cross by value. A list
      view's data2 is only the element cache: reads never detach it (the
      release fires at the finalizer), so list views REF at any time. */
   if (TYPEOF(x) != VECSXP && R_altrep_data2(x) != R_NilValue) return 0;
-  SEXP id = mori_shm_name(x);
+  SEXP id = rei_view_shm_name(x);
   if (id == R_NilValue) return 0;
   const char *s = CHAR(STRING_ELT(id, 0));
   size_t len = strlen(s);
@@ -498,15 +498,15 @@ int rei_zc_ref_stage(rei_slot_hdr *hdr, unsigned char *payload,
 
 SEXP rei_zc_ref_read(const rei_slot_hdr *hdr, const unsigned char *payload,
                      int *gone, rei_zc_cache *oc) {
-  if (hdr->len == 0 || hdr->len >= MORI_IDENTIFIER_MAX)
+  if (hdr->len == 0 || hdr->len >= REI_VIEW_IDENTIFIER_MAX)
     Rf_error("rei: corrupt payload slot");
-  char buf[MORI_IDENTIFIER_MAX];
+  char buf[REI_VIEW_IDENTIFIER_MAX];
   memcpy(buf, payload, hdr->len);
   buf[hdr->len] = '\0';
   char name[REI_NAME_MAX];
-  int32_t path[MORI_MAX_PATH];
+  int32_t path[REI_VIEW_MAX_PATH];
   int path_len = 0;
-  if (mori_parse_id(buf, name, sizeof(name), path, &path_len) < 0)
+  if (rei_view_parse_id(buf, name, sizeof(name), path, &path_len) < 0)
     Rf_error("rei: corrupt payload slot");
   rei_shm *shm = NULL;
   SEXP name_xp = rei_zc_prep(name, (uint32_t) strlen(name), gone, oc,
@@ -520,13 +520,13 @@ SEXP rei_zc_ref_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     atomic_fetch_add_explicit(rei_zc_rc(shm->addr), 1, memory_order_acq_rel);
     ((rei_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
   } else {
-    view = PROTECT(mori_walk_path((unsigned char *) shm->addr,
+    view = PROTECT(rei_view_walk_path((unsigned char *) shm->addr,
                                   (int64_t) shm->size, path, path_len,
                                   name_xp));
     /* a path leaf that is itself a view gets the release hook armed (a
        serialized leaf references nothing — no count needed) */
-    if (mori_view_check(view)) {
-      mori_owned *o = (mori_owned *) R_ExternalPtrAddr(R_altrep_data1(view));
+    if (rei_view_check(view)) {
+      rei_view_owned *o = (rei_view_owned *) R_ExternalPtrAddr(R_altrep_data1(view));
       if (o != NULL && o->release == NULL) {
         o->release = rei_zc_rel_fire;
         o->release_arg = (void *) rel_xp;
@@ -540,7 +540,7 @@ SEXP rei_zc_ref_read(const rei_slot_hdr *hdr, const unsigned char *payload,
 }
 
 /* The wire-resolve release: the same sub as the prep-path finalizer, but
-   the record rides the view's mori_owned release slot (mori's once-only
+   the record rides the view's rei_view_owned release slot (the layer's once-only
    discipline fires it at materialize or finalizer — no extptr of our own
    to anchor) and owns its RW mapping of the region. */
 static void rei_zc_wire_rel(void *arg) {
@@ -557,8 +557,8 @@ static void rei_zc_wire_rel(void *arg) {
    hence before the consumer-done signal, while the sender's keeper still
    pins the payload and with it the view's own count. */
 static void rei_zc_wire_resolve(SEXP view, rei_shm *shm) {
-  if (!mori_view_check(view)) return;  /* a serialized leaf references nothing */
-  mori_owned *o = (mori_owned *) R_ExternalPtrAddr(R_altrep_data1(view));
+  if (!rei_view_check(view)) return;  /* a serialized leaf references nothing */
+  rei_view_owned *o = (rei_view_owned *) R_ExternalPtrAddr(R_altrep_data1(view));
   if (o == NULL || o->release != NULL) return;
   rei_shm *rw = rei_zc_open(shm->name);
   if (rw == NULL)
@@ -581,7 +581,7 @@ static void rei_zc_wire_resolve(SEXP view, rei_shm *shm) {
 // Test / debug surface --------------------------------------------------------------
 
 SEXP rei_zc_view_check_call(SEXP x) {
-  return Rf_ScalarLogical(mori_view_check(x));
+  return Rf_ScalarLogical(rei_view_check(x));
 }
 
 /* c(refcount, flags) of the region behind a view; integer(0) for anything
@@ -590,7 +590,7 @@ SEXP rei_zc_view_check_call(SEXP x) {
 SEXP rei_zc_refcount_call(SEXP x) {
   /* the chain walk reads ALTREP slots: gate on view identity first —
      on a plain vector data1 aliases the length field */
-  if (!mori_view_check(x)) return Rf_allocVector(INTSXP, 0);
+  if (!rei_view_check(x)) return Rf_allocVector(INTSXP, 0);
   SEXP terminus = rei_view_terminus(x);
   rei_shm *shm = terminus == R_NilValue ? NULL :
     (rei_shm *) R_ExternalPtrAddr(terminus);

@@ -110,7 +110,7 @@ SEXP rei_map_eligible(SEXP x) {
   }
   if (ALTREP(x) || Rf_isS4(x)) return Rf_ScalarReal(-1);
   return Rf_ScalarReal((double) XLENGTH(x) *
-                       (double) mori_sizeof_elt(TYPEOF(x)));
+                       (double) rei_view_sizeof_elt(TYPEOF(x)));
 }
 
 static const char *map_type_name(int type) {
@@ -209,7 +209,7 @@ static uint32_t map_ordinal(rei_map_h *mh, SEXP r_sexp) {
    stream size when the R side already counted it (the region-less probe's
    bounded pass), or NULL to count here — so the descriptor costs one count
    pass and one write pass total, never two counts. The write re-verifies
-   the count: mori_serialize_into checks no bounds, and a mismatch here
+   the count: rei_view_serialize_into checks no bounds, and a mismatch here
    means heap corruption, not a recoverable condition. morsel_size fixes
    the region's morsel geometry (the R side derives it; prepared re-runs
    inherit it). Returns list(name, map handle pinning the producer wrap);
@@ -225,7 +225,7 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
     Rf_error("rei: invalid map morsel size");
   uint64_t morsel_size = (uint64_t) msd;
   size_t desc_len = desc_len_sexp == R_NilValue ?
-    mori_serialize_count(desc) : (size_t) Rf_asReal(desc_len_sexp);
+    rei_view_serialize_count(desc) : (size_t) Rf_asReal(desc_len_sexp);
   if (desc_len == 0)
     Rf_error("rei: invalid map descriptor size");
 
@@ -241,7 +241,7 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   };
   uint64_t off = REI_ALIGN64(sizeof(rei_map_hdr) + desc_len);
   if (x != R_NilValue) {
-    size_t elt = mori_sizeof_elt(TYPEOF(x));
+    size_t elt = rei_view_sizeof_elt(TYPEOF(x));
     if (elt == 0 || rei_vec_ptr(x) == NULL ||
         (uint64_t) XLENGTH(x) != n)
       Rf_error("rei: x is not eligible for the map raw section");
@@ -257,7 +257,7 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   h.state_off = off;
   off = REI_ALIGN64(off + REI_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4);
   if (template_sexp != R_NilValue) {
-    size_t elt = mori_sizeof_elt(TYPEOF(template_sexp));
+    size_t elt = rei_view_sizeof_elt(TYPEOF(template_sexp));
     uint64_t m = (uint64_t) XLENGTH(template_sexp);
     if (elt == 0 || m == 0)
       Rf_error("rei: invalid map template");
@@ -321,7 +321,7 @@ static const char *map_hdr_validate(const rei_shm *shm, rei_map_hdr *out) {
       REI_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4 > shm->size - h.state_off)
     return "morsel state section lies outside the region";
   if (h.x_kind == REI_MAP_X_RAWVEC) {
-    size_t elt = mori_sizeof_elt((int) h.x_sexptype);
+    size_t elt = rei_view_sizeof_elt((int) h.x_sexptype);
     if (elt == 0 || h.x_off > shm->size || h.x_len > shm->size - h.x_off ||
         h.x_len != h.n * elt)
       return "x section lies outside the region";
@@ -329,7 +329,7 @@ static const char *map_hdr_validate(const rei_shm *shm, rei_map_hdr *out) {
     return "unknown x section kind";
   }
   if (h.out_sexptype != 0) {
-    size_t elt = mori_sizeof_elt((int) h.out_sexptype);
+    size_t elt = rei_view_sizeof_elt((int) h.out_sexptype);
     if (elt == 0 || elt != h.out_elt_size || h.out_m == 0 ||
         h.out_m > ((uint64_t) 1 << 32) || h.out_off > shm->size ||
         h.n > (shm->size - h.out_off) / (h.out_m * elt))
@@ -371,7 +371,7 @@ SEXP rei_map_open(SEXP name_sexp, SEXP writable_sexp) {
 
 SEXP rei_map_desc(SEXP xp) {
   rei_map_h *mh = map_h_get(xp);
-  return mori_unserialize_from((unsigned char *) mh->shm->addr +
+  return rei_view_unserialize_from((unsigned char *) mh->shm->addr +
                                mh->h.desc_off, (size_t) mh->h.desc_len);
 }
 
@@ -379,7 +379,7 @@ SEXP rei_map_desc(SEXP xp) {
    mapping — per chunk, not per map, so a worker never holds more than a
    chunk of a huge x. */
 static SEXP map_slice_copy(rei_map_h *mh, uint64_t lo, uint64_t hi) {
-  size_t elt = mori_sizeof_elt((int) mh->h.x_sexptype);
+  size_t elt = rei_view_sizeof_elt((int) mh->h.x_sexptype);
   R_xlen_t len = (R_xlen_t) (hi - lo + 1);
   SEXP out = Rf_allocVector((SEXPTYPE) mh->h.x_sexptype, len);
   memcpy(rei_vec_ptr(out),
@@ -511,7 +511,7 @@ SEXP rei_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
      whole vector per worker. NULL when an ALTREP has no data block (a
      compact 1:n), where the standard accessors stand. */
   const void *xd = NULL;
-  if (mori_sizeof_elt(xt) != 0)
+  if (rei_view_sizeof_elt(xt) != 0)
     xd = ALTREP(x) ? DATAPTR_OR_NULL(x) : rei_vec_ptr(x);
   for (R_xlen_t i = 0; i < len; i++) {
     if ((i & 63) == 0) R_CheckUserInterrupt();
@@ -587,14 +587,14 @@ SEXP rei_map_gather(SEXP xp) {
    until the view is released (the R side marks the map state consumed, so
    a prepared re-run restages instead of overwriting the pages). With no
    mori-shm hop in that chain the view never crosses by reference — a
-   re-send degrades to a materializing copy, as the region is not a MORH
+   re-send degrades to a materializing copy, as the region is not an REIH
    layout and REF resolution would misread it. */
 SEXP rei_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
   rei_map_h *mh = map_h_get(xp);
   if (mh->h.out_sexptype == 0)
     Rf_error("rei: map region has no output area");
   uint64_t n = mh->h.n, m = mh->h.out_m;
-  SEXP view = PROTECT(mori_vec_wrap(
+  SEXP view = PROTECT(rei_view_vec_wrap(
     (unsigned char *) mh->shm->addr + mh->h.out_off, (R_xlen_t) (n * m),
     (int) mh->h.out_sexptype, xp, NULL, NULL));
   if (m == 1) {
