@@ -257,6 +257,53 @@ test_that("dropping the controller handle shuts the pool down at GC", {
   expect_error(.Call(rei:::rei_pool_attach_call, suffix), "cannot open")
 })
 
+test_that("pool teardown releases outstanding submitter pins", {
+  p <- pool_pair()
+  flag <- new.env()
+  flag$n <- 0L
+  for (i in seq_len(3)) {
+    e <- new.env()
+    reg.finalizer(e, function(x) flag$n <- flag$n + 1L, onexit = TRUE)
+    rei_submit(p[["ctrl"]], identity, x = e) # serialize fallback: pins
+  }
+  rm(e)
+  pool_end(p) # the destroy drops the unclaimed tasks' pins
+  expect_identical(
+    wait_until({
+      gc()
+      flag$n == 3L
+    }),
+    TRUE
+  )
+})
+
+test_that("a collected result's worker-side pin releases to GC", {
+  p <- pool_pair()
+  f <- tfile()
+  on.exit(unlink(f), add = TRUE)
+  t <- rei_submit(
+    p[["ctrl"]],
+    local({
+      e <- new.env()
+      reg.finalizer(e, function(x) file.create(path), onexit = TRUE)
+      e
+    }),
+    path = f
+  )
+  pool_step(p)
+  invisible(rei_collect(t, 5)) # delivers a finalizer-free copy
+  # the worker's next idle step sweeps the collected result's keeper entry
+  expect_identical(
+    wait_until({
+      pool_step(p)
+      gc()
+      file.exists(f)
+    }),
+    TRUE
+  )
+  pool_end(p)
+})
+
 test_that("stop warns and reports FALSE when workers outlive the wait", {
   p <- pool_pair()
   # the in-process worker cannot exit: the bounded wait must expire

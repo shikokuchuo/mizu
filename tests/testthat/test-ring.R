@@ -253,6 +253,88 @@ test_that("keepers pin sent payloads across the sender's GC", {
   expect_identical(sum(y), csum)
 })
 
+test_that("the same pinned payload crosses twice, collected one at a time", {
+  p <- channel_pair()
+  e <- new.env()
+  e$x <- 42L
+  rei_send(p[["host"]], e) # serialize fallback: one pin per send
+  rei_send(p[["host"]], e)
+  gc()
+  expect_identical(rei_recv(p[["peer"]], 5)$x, 42L)
+  gc()
+  expect_identical(rei_recv(p[["peer"]], 5)$x, 42L)
+  channel_end(p)
+})
+
+test_that("pinned payloads round-trip under gctorture", {
+  p <- channel_pair(arena_size = 0)
+  gctorture(TRUE)
+  on.exit(gctorture(FALSE), add = TRUE)
+  e <- new.env()
+  e$x <- "pin me"
+  rei_send(p[["host"]], e)
+  expect_identical(rei_recv(p[["peer"]], 5)$x, "pin me")
+  x <- runif(100000)
+  rei_send(p[["host"]], x)
+  y <- rei_recv(p[["peer"]], 5)
+  rei_send(p[["peer"]], y) # a received view re-sends as REF, pinning the view
+  expect_identical(as.numeric(rei_recv(p[["host"]], 5)), x)
+  channel_end(p)
+})
+
+test_that("channel teardown releases outstanding pins to GC", {
+  p <- channel_pair()
+  flag <- new.env()
+  flag$n <- 0L
+  for (i in seq_len(3)) {
+    e <- new.env()
+    reg.finalizer(e, function(x) flag$n <- flag$n + 1L, onexit = TRUE)
+    rei_send(p[["host"]], e)
+  }
+  rm(e)
+  channel_end(p) # the destroy drops the unreceived sends' pins
+  expect_identical(
+    wait_until({
+      gc()
+      flag$n == 3L
+    }),
+    TRUE
+  )
+})
+
+test_that("pinned payloads cycle intact across many rounds", {
+  p <- channel_pair()
+  for (i in seq_len(200)) {
+    e <- new.env()
+    e$i <- i
+    rei_send(p[["host"]], e)
+    expect_identical(rei_recv(p[["peer"]], 5)$i, i)
+  }
+  channel_end(p)
+})
+
+test_that("a consumer-done pin releases the staged object to GC", {
+  p <- channel_pair()
+  flag <- new.env()
+  flag$done <- FALSE
+  e <- new.env()
+  reg.finalizer(e, function(x) flag$done <- TRUE, onexit = TRUE)
+  rei_send(p[["host"]], e)
+  invisible(rei_recv(p[["peer"]], 5)) # the received copy carries no finalizer
+  rm(e)
+  # the release fires only at the producer's next verb (the per-verb reap),
+  # so poll nudge + gc(): a drop that never fires fails on timeout
+  expect_identical(
+    wait_until({
+      rei_send(p[["host"]], NULL)
+      gc()
+      flag$done
+    }),
+    TRUE
+  )
+  channel_end(p)
+})
+
 test_that("pure-spin mode moves messages without parking", {
   p <- channel_pair(spin = TRUE)
   expect_true(.Call(rei:::rei_channel_stat, p[["host"]])[["spin"]])
