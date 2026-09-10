@@ -101,8 +101,11 @@ rei_shm *rei_spill_get_raise(rei_handle *h, size_t n);
 /* The per-handle pin (stage_r.c): one cons cell pushed on the prot-anchored
    pin chain and registered as the core's opaque token via rei_stage_pin;
    the drop hook tombstones the cell. The cons precedes rei_stage_pin, so a
-   failed allocation abandons the stage with nothing pinned. */
-void rei_r_pin(rei_handle *h, SEXP x);
+   failed allocation abandons the stage with nothing pinned. Cold: called
+   only on the pinned tiers (which already pay the serialize pass) — the
+   annotation keeps it out of the hot verbs' code layout (the 2026-08-23
+   cold-recorder record in dev/bench/notes.md). */
+void rei_r_pin(rei_handle *h, SEXP x) REI_COLD;
 /* The spill tiers, staged through the handle's services (rei_stage_spill_get
    / rei_stage_retain / rei_stage_pin): the region checkout is the handle's,
    the pin is the staged object where a stream may carry hook-emitted view

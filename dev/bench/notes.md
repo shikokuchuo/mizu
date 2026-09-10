@@ -455,3 +455,20 @@ pool 1/8/64 MiB 0.25/1.50/12.00 ms, rei_map 32 MiB template 0.347s / view
 skips). RSS smoke: 1e5 env-payload roundtrips per leg x 3 — 152.5 MB high-water
 on leg 1, +0.1/+0.0 MB on legs 2-3 (pins do not accumulate; the splice keeps
 the chain proportional to live pins).
+
+A/B regression check (same day, vs e2f1818, alternating installs, two rounds
+each): the switch build drew a bad LTO code-layout ticket — channel batch
+14.0-15.5M vs 19.5-21.7M rt/s and streaming 33-34M vs 42-44M msg/s, on rows
+that execute no pin code at all, and a cross-process env-echo probe went
+12-14 to 18.6-18.8 us/rt. Isolation: the vendored-accessor-only build is
+flat; an old-mechanics variant (the new call sites, R_PreserveObject /
+R_ReleaseObject bodies) runs at pre speed everywhere; the in-process pin
+delta (env rt minus codec rt) is 0.30-0.35 us pre vs 0.40-0.50 post; and an
+in-process echoed env round trip (2 pins + 2 drops + 2 serializes) is
+identical at 3.8 us across pre / post / cold builds. So the mechanics cost
+nothing measurable and the hit was layout. REI_COLD on rei_r_pin /
+pins_splice (the 2026-08-23 cold-recorder discipline — the pin runs only on
+the serialize-paying tiers) restores the rows: channel batch 21.0-21.7M,
+streaming 41.8-43.3M msg/s, pipelined and sequential rt flat, full suite
+2232 pass. A ~2.5 us residual on the synthetic cross-process env-echo probe
+is child-side layout draw (the identical in-process round trip is flat).

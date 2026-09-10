@@ -376,6 +376,7 @@ void rei_r_trace(rei_trace_event event, uint64_t task_id, void *ctx) {
 /* Unlink the tombstoned cells and recount. Live cells keep their addresses,
    so outstanding tokens never dangle. Runs only at stage time — never in
    the drop hook, which mutates no chain linkage. */
+static void pins_splice(rei_r_handle *rh) REI_COLD;
 static void pins_splice(rei_r_handle *rh) {
   SEXP prev = R_NilValue;   /* R_NilValue while no live head cell is seen */
   SEXP cell = VECTOR_ELT(rh->prot, rh->pin_slot);
