@@ -268,17 +268,22 @@ test_that("the same pinned payload crosses twice, collected one at a time", {
 
 test_that("pinned payloads round-trip under gctorture", {
   p <- channel_pair(arena_size = 0)
-  gctorture(TRUE)
-  on.exit(gctorture(FALSE), add = TRUE)
   e <- new.env()
   e$x <- "pin me"
-  rei_send(p[["host"]], e)
-  expect_identical(rei_recv(p[["peer"]], 5)$x, "pin me")
   x <- runif(100000)
+  # torture the verbs only: per-allocation GC makes expectation machinery
+  # (and any large-heap run) cost minutes, and hours under valgrind
+  on.exit(gctorture(FALSE), add = TRUE)
+  gctorture(TRUE)
+  rei_send(p[["host"]], e)
+  got <- rei_recv(p[["peer"]], 5)
   rei_send(p[["host"]], x)
   y <- rei_recv(p[["peer"]], 5)
   rei_send(p[["peer"]], y) # a received view re-sends as REF, pinning the view
-  expect_identical(as.numeric(rei_recv(p[["host"]], 5)), x)
+  back <- rei_recv(p[["host"]], 5)
+  gctorture(FALSE)
+  expect_identical(got$x, "pin me")
+  expect_identical(as.numeric(back), x)
   channel_end(p)
 })
 
