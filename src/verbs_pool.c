@@ -160,7 +160,7 @@ static double timeout_ms_of(SEXP timeout) {
 
 /* Raise a pool verb's REI_ERR as a classed error with the handle's recorded
    message (the core's messages are the R contract's). */
-static NORET void pool_raise(rei_pool *p) {
+NORET static void pool_raise(rei_pool *p) {
   rei_errcat cat = rei_pool_errcat(p);
   const char *msg = rei_pool_error(p);
   switch (cat) {
@@ -176,7 +176,7 @@ static NORET void pool_raise(rei_pool *p) {
 /* Raise a create/attach/join failure off the thread-local slot, where the
    core composes the full message (size + hint included). Space/existence
    failures carry the shm class; everything else is a plain error. */
-static NORET void pool_raise_tls(void) {
+NORET static void pool_raise_tls(void) {
   rei_errcat cat = rei_last_error_category();
   const char *msg = rei_last_error_message();
   switch (cat) {

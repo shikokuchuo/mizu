@@ -153,14 +153,14 @@ static SEXP status_sentinel(rei_status st) {
 
 /* Raise a REI_ERR from a handle verb as a classed error with the handle's
    recorded message. */
-static NORET void chan_raise(rei_channel *c) {
+NORET static void chan_raise(rei_channel *c) {
   rei_stop("rei_error", "rei: %s", rei_channel_error(c));
 }
 
 /* Raise a create/attach failure off the thread-local slot, where the core
    composes the full message (size + hint included). Space/existence
    failures carry the shm class; everything else is a plain error. */
-static NORET void chan_raise_tls(void) {
+NORET static void chan_raise_tls(void) {
   rei_errcat cat = rei_last_error_category();
   const char *msg = rei_last_error_message();
   switch (cat) {
