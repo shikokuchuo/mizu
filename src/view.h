@@ -86,12 +86,19 @@ static inline size_t rei_view_sizeof_elt(int type) {
    same type whose data pointer the wrapper shares. Anything else foreign
    (a lazy ALTREP, a materialized compact sequence, an extptr-data1 view)
    is rejected: the layout write would materialize it or forfeit its
-   compact wire form. */
+   compact wire form. R >= 4.6.1 patched / 4.7.0 (svn r90309): the
+   wrapper's data-pointer request consolidates a shared data part in
+   place (duplicate + swap into data1), so take the wrapper's pointer
+   first, then re-read data1. */
 static inline int rei_view_altrep_readable(SEXP x) {
   SEXP inner = R_altrep_data1(x);
   if (ALTREP(inner) || TYPEOF(inner) != TYPEOF(x)) return 0;
+  const void *px = DATAPTR_OR_NULL(x);
+  if (px == NULL) return 0;
+  inner = R_altrep_data1(x);   /* re-read: the pointer request may swap it */
+  if (ALTREP(inner) || TYPEOF(inner) != TYPEOF(x)) return 0;
   const void *pi = DATAPTR_OR_NULL(inner);
-  return pi != NULL && DATAPTR_OR_NULL(x) == pi;
+  return pi != NULL && pi == px;
 }
 
 /* Apply a region header's S4 flag to a freshly wrapped view — after
