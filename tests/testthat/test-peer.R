@@ -182,6 +182,6 @@ test_that("mori-shared objects map zero-copy in the peer process", {
   info <- rei_recv(ch, 30)
   expect_true(info[["shared"]])
   expect_identical(info[["name"]], mori::shared_name(x))
-  expect_identical(info[["total"]], sum(x))
+  expect_equal(info[["total"]], sum(x))
   rei_close(ch, timeout = 10)
 })

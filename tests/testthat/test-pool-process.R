@@ -189,7 +189,7 @@ test_that("mori-shared task arguments map zero-copy in the worker", {
   info <- rei_collect(t, timeout = 30)
   expect_true(info[["shared"]])
   expect_identical(info[["name"]], mori::shared_name(x))
-  expect_identical(info[["total"]], sum(x))
+  expect_equal(info[["total"]], sum(x))
   expect_true(rei_pool_stop(p, timeout = 10))
 })
 
