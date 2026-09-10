@@ -437,3 +437,21 @@ vignette's bench::mark precompile). Scenario 4 (parallel fan-out) in
 both scripts now uses the same task, restoring the 4/6 same-work link:
 in-process 118k tasks/s, rei pool 333k, mirai 9.2k dispatcher /
 23.0k direct.
+
+## 2026-09-10: PROT-anchored pin lifetimes (drop-side O(1))
+
+Replaced R_PreserveObject/R_ReleaseObject on the hot per-payload pin paths
+with a per-handle cons-cell chain rooted in the extptr's PROT field
+(rei_r_pin/rei_r_drop; O(1) tombstone release replacing the precious list's
+first-match linear scan; upstream librei 0d5ef84 adds the
+rei_handle_binding_ctx accessor). The win is all on the drop side and grows
+with the session's precious-list size, so flat in a fresh-session benchmark
+is the expected outcome. test-benchmark.R, this host, standalone run:
+channel rt 2.00 us, one-way 20M msg/s, pool rt 1.0 us/task, pool pipelined
+500k / collect_all 1.0M tasks/s, ALTREP 1:2^27 round trip 5.00 us (the
+serialize-fallback pinned row — flat), channel 1/8/32 MiB 0.09/0.50/2.00 ms,
+pool 1/8/64 MiB 0.25/1.50/12.00 ms, rei_map 32 MiB template 0.347s / view
+0.346s, 32 MiB attributed 687 ms. Full suite 2232 pass, 0 fail (5 expected
+skips). RSS smoke: 1e5 env-payload roundtrips per leg x 3 — 152.5 MB high-water
+on leg 1, +0.1/+0.0 MB on legs 2-3 (pins do not accumulate; the splice keeps
+the chain proportional to live pins).
