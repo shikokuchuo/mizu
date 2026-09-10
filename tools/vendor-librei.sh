@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="e90df3bde7d2e7a2aebef6a41c23a70fc5e1b6d2"  # librei: Recognize the pyrei codec magic in the keeperless gate
+PIN="0d5ef8441075a05ac4688563dcd928a574012229"  # librei: Add rei_handle_binding_ctx handle query for binding-side stage hooks
 REF="${1:-$PIN}"
 REPO="${LIBREI_REPO:-https://github.com/shikokuchuo/librei}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/librei"
