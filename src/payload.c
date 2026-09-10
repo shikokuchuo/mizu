@@ -112,9 +112,9 @@ rei_shm *rei_spill_get_raise(rei_handle *h, size_t n) {
 
 /* Each stages through the handle's services: the region checkout
    (rei_stage_spill_get), the retain (rei_stage_retain), and for the
-   serialize stream the pin of x (R_PreserveObject + rei_stage_pin, released
-   through the binding's drop hook). PreserveObject precedes retain: it can
-   longjmp, and an uncommitted checkout rolls back with nothing pinned. */
+   serialize stream the pin of x (rei_r_pin, released through the binding's
+   drop hook). The pin precedes retain: its cons-cell push can longjmp, and
+   an uncommitted checkout rolls back with nothing pinned. */
 
 void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, rei_handle *h) {
@@ -124,9 +124,8 @@ void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
   memcpy(payload, shm->name, shm->name_len);
-  R_PreserveObject(x);
+  rei_r_pin(h, x);
   rei_stage_retain(h, shm);
-  rei_stage_pin(h, (void *) x);
 }
 
 void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
@@ -176,8 +175,7 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
      uncounted, and the producer could recycle under the far side's view.
      The pin keeps the view (and with it the region) until consumer-done. */
   if (rei_zc_ref_stage(hdr, payload, inline_max, x)) {
-    R_PreserveObject(x);
-    rei_stage_pin(h, (void *) x);
+    rei_r_pin(h, x);
     return;
   }
   if (rei_raw_eligible(x, inline_max, &rawlen)) {
@@ -230,8 +228,7 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
     hdr->kind = REI_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = 0;
-    R_PreserveObject(x);
-    rei_stage_pin(h, (void *) x);
+    rei_r_pin(h, x);
     return;
   }
   rei_payload_spill_shm(hdr, payload, x, n, h);

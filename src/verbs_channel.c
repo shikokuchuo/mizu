@@ -96,12 +96,14 @@ static void chan_binding(rei_r_handle *h, rei_binding *b) {
 }
 
 /* Build the extptr around a created/attached core handle: the prot chain
-   ([0] the zc view cache's wrap table) and the finalizer. */
+   ([0] the zc view cache's wrap table, [1] the pin chain) and the
+   finalizer. */
 static SEXP chan_wrap(rei_r_handle *h) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 1));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(prot, 0, Rf_allocVector(VECSXP, REI_OPEN_CACHE_MAX));
   h->zoc.wraps = VECTOR_ELT(prot, 0);
   h->prot = prot;
+  h->pin_slot = 1;
   SEXP xp = PROTECT(R_MakeExternalPtr(h, rei_chan_tag, prot));
   R_RegisterCFinalizerEx(xp, rei_chan_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, rei_class_channel);

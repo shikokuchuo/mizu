@@ -245,10 +245,9 @@ void rei_zc_stage(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
   hdr->aux = (uint64_t) (type == LISTSXP ? VECSXP : type) |
     ((uint64_t) total << 8);
   memcpy(payload, shm->name, shm->name_len);
-  R_PreserveObject(x);
+  rei_r_pin(h, x);
   /* the producer-loan refcount store (rc = 1, flags = 0) rides the retain */
   rei_stage_retain_zc(h, shm);
-  rei_stage_pin(h, (void *) x);
 }
 
 // Receive ---------------------------------------------------------------------------

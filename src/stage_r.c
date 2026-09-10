@@ -42,8 +42,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
        once SHM_VEC views exist: the serialize-hook fallback resolves
        uncounted, and the producer could recycle under the far side's view;
        the pin is the view itself */
-    R_PreserveObject(x);
-    rei_stage_pin(h, (void *) x);
+    rei_r_pin(h, x);
   } else if (rei_raw_eligible(x, inline_max, &rawlen)) {
     memcpy(payload, rei_vec_ptr(x), rawlen);
     hdr->kind = REI_KIND_RAWVEC;
@@ -91,10 +90,8 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
       hdr->kind = REI_KIND_INLINE;
       hdr->len = (uint32_t) n;
       hdr->aux = 0;
-      if (!self_contained) {
-        R_PreserveObject(x);
-        rei_stage_pin(h, (void *) x);
-      }
+      if (!self_contained)
+        rei_r_pin(h, x);
     } else {
       if ((chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off)) != NULL) {
         if (self_contained) {
@@ -108,10 +105,8 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
         hdr->aux = off;
         uint64_t n64 = (uint64_t) n;
         memcpy(payload, &n64, sizeof(n64));
-        if (!self_contained) {
-          R_PreserveObject(x);
-          rei_stage_pin(h, (void *) x);
-        }
+        if (!self_contained)
+          rei_r_pin(h, x);
       } else {
         /* reap before staging: the consumer's latest head publish may
            have released a fitting region for this very spill to pop */
@@ -369,6 +364,58 @@ void rei_r_trace(rei_trace_event event, uint64_t task_id, void *ctx) {
   UNPROTECT(3);
 }
 
+// Pin chain ---------------------------------------------------------------------
+
+/* Package-local precious list: one cons cell per pin, chained through the
+   handle's prot vector. O(1) push at stage, O(1) tombstone at drop; dead
+   cells are spliced lazily at stage time. The cell is the core's opaque
+   pin token. Invariant: pinned objects are never R_NilValue (the NIL tier
+   pins nothing), so CAR == R_NilValue marks a dead cell. */
+#define REI_SPLICE_MIN 64   /* dead cells before a splice is considered */
+
+/* Unlink the tombstoned cells and recount. Live cells keep their addresses,
+   so outstanding tokens never dangle. Runs only at stage time — never in
+   the drop hook, which mutates no chain linkage. */
+static void pins_splice(rei_r_handle *rh) {
+  SEXP prev = R_NilValue;   /* R_NilValue while no live head cell is seen */
+  SEXP cell = VECTOR_ELT(rh->prot, rh->pin_slot);
+  uint32_t live = 0;
+  while (cell != R_NilValue) {
+    SEXP next = CDR(cell);
+    if (CAR(cell) == R_NilValue) {
+      if (prev == R_NilValue)
+        SET_VECTOR_ELT(rh->prot, rh->pin_slot, next);
+      else
+        SETCDR(prev, next);
+    } else {
+      prev = cell;
+      live++;
+    }
+    cell = next;
+  }
+  rh->pins_total = live;
+  rh->pins_dead = 0;
+}
+
+/* Pin the staged object: push a fresh cons cell onto the handle's chain and
+   register the cell as the core's opaque pin token. The cons precedes
+   rei_stage_pin, preserving the longjmp ordering — a failed cons abandons
+   the stage with nothing pinned, and rollback pairs each committed pin with
+   exactly one drop. The fresh cell is stored into the anchored prot slot
+   with no allocation between creation and store. The splice gate (at least
+   REI_SPLICE_MIN dead, and dead at least half the chain) bounds the chain
+   to ~2x live pins between splices. */
+void rei_r_pin(rei_handle *h, SEXP x) {
+  rei_r_handle *rh = (rei_r_handle *) rei_handle_binding_ctx(h);
+  if (rh->pins_dead >= REI_SPLICE_MIN &&
+      rh->pins_dead >= rh->pins_total / 2)
+    pins_splice(rh);
+  SEXP cell = CONS(x, VECTOR_ELT(rh->prot, rh->pin_slot));
+  SET_VECTOR_ELT(rh->prot, rh->pin_slot, cell);
+  rh->pins_total++;
+  rei_stage_pin(h, (void *) cell);
+}
+
 // Interrupt / GC / cache hooks ----------------------------------------------------
 
 /* The check hook: R_CheckUserInterrupt longjmps (never returns nonzero), so
@@ -380,13 +427,15 @@ int rei_r_check(void *ctx) {
   return 0;
 }
 
-/* The drop hook: release the staged object's R_PreserveObject, balanced
-   against the stager's preserve at every release point (collect, slot
-   reuse, the worker keeper sweep, a cancelled publish, a rollback,
-   teardown). Fires only on the handle-owning thread. */
+/* The drop hook: tombstone the pin's chain cell, releasing the staged
+   object to the GC. Balanced against the stager's rei_r_pin at every
+   release point (collect, slot reuse, the worker keeper sweep, a cancelled
+   publish, a rollback, teardown). No allocation and no chain mutation, so
+   safe from extptr finalizers; fires only on the handle-owning thread. Dead
+   cells the splice never reached die with the extptr's prot at GC. */
 void rei_r_drop(void *ctx, void *pin) {
-  (void) ctx;
-  R_ReleaseObject((SEXP) pin);
+  SETCAR((SEXP) pin, R_NilValue);
+  ((rei_r_handle *) ctx)->pins_dead++;
 }
 
 /* The sweep hook: a pool worker going idle or departing drops its map

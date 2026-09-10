@@ -45,14 +45,18 @@ typedef struct rei_zc_cache_s {
 /* The channel/pool extptr's address and the binding ctx. The core handle
    (a rei_channel or rei_pool) is opaque; everything R-side rides here: the
    prot chain (GC-visible slots) and the zc view cache — keyed on SEXP views,
-   so it cannot live in the R-free core. Channel prot: [0] zoc wraps. Pool
-   prot: [0] eval env, [1] trace fn, [2] map cache, [3] zoc wraps. */
+   so it cannot live in the R-free core. Channel prot: [0] zoc wraps,
+   [1] pin chain. Pool prot: [0] eval env, [1] trace fn, [2] map cache,
+   [3] zoc wraps, [4] pin chain. */
 typedef struct rei_r_handle_s {
   rei_handle *core;         /* the core handle; NULL after destroy */
   SEXP prot;                /* the extptr's prot chain */
   long self_pid;            /* fork guard */
   int role;                 /* pool: REI_ROLE_*; channel: -1 */
   int saw_foreign;          /* channel: a read flagged a foreign payload */
+  int pin_slot;             /* prot slot of the pin chain */
+  uint32_t pins_dead;       /* tombstoned pin cells awaiting splice */
+  uint32_t pins_total;      /* pin chain length (live + dead) */
   rei_zc_cache zoc;        /* the R-side zc view cache */
 } rei_r_handle;
 
@@ -94,6 +98,11 @@ int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
    failure (the stager's raise-on-failure discipline). Shared by the
    payload and zc spill paths. */
 rei_shm *rei_spill_get_raise(rei_handle *h, size_t n);
+/* The per-handle pin (stage_r.c): one cons cell pushed on the prot-anchored
+   pin chain and registered as the core's opaque token via rei_stage_pin;
+   the drop hook tombstones the cell. The cons precedes rei_stage_pin, so a
+   failed allocation abandons the stage with nothing pinned. */
+void rei_r_pin(rei_handle *h, SEXP x);
 /* The spill tiers, staged through the handle's services (rei_stage_spill_get
    / rei_stage_retain / rei_stage_pin): the region checkout is the handle's,
    the pin is the staged object where a stream may carry hook-emitted view
@@ -177,8 +186,9 @@ SEXP rei_condition_flatten(SEXP cond, size_t budget);
 
 /* Registered on every handle at create/attach/join. stage/read/exec are the
    tier dispatch, the materialize, and the task evaluator; check polls
-   R_CheckUserInterrupt; drop releases the staged object's R_PreserveObject;
-   sweep drops the pool worker's map cache at idle/depart. */
+   R_CheckUserInterrupt; drop tombstones the staged object's pin-chain cell
+   (no allocation — finalizer-safe); sweep drops the pool worker's map cache
+   at idle/depart. */
 int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
                          unsigned char *payload, uint32_t inline_max,
                          rei_handle *h);

@@ -80,12 +80,13 @@ static void pool_binding(rei_r_handle *h, rei_binding *b, int worker) {
 
 /* Build the extptr around a created/joined/attached core handle: the prot
    chain ([0] eval env, [1] trace fn, [2] map cache, [3] the zc view cache's
-   wrap table) and the finalizer. */
+   wrap table, [4] the pin chain) and the finalizer. */
 static SEXP pool_wrap(rei_r_handle *h) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 4));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 5));
   SET_VECTOR_ELT(prot, 3, Rf_allocVector(VECSXP, REI_OPEN_CACHE_MAX));
   h->zoc.wraps = VECTOR_ELT(prot, 3);
   h->prot = prot;
+  h->pin_slot = 4;
   SEXP xp = PROTECT(R_MakeExternalPtr(h, rei_pool_tag, prot));
   R_RegisterCFinalizerEx(xp, rei_pool_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, rei_class_pool);
