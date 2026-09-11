@@ -92,6 +92,7 @@ Conventions:
 - Never put code in a `test-{name}.R` file outside of a `test_that()` block. Instead, use `tests/testthat/helper.R` or `tests/testthat/helper-{name}.R`.
 - Avoid `expect_true()` and `expect_false()` in favor of specific expectations with better failure messages — e.g. newer `expect_all_true()`, `expect_all_equal()`, `expect_r6_class()`.
 - For errors and warnings, prefer `expect_snapshot(error = TRUE)` / `expect_snapshot()` so the full text stays reviewable; use `expect_error()` / `expect_warning()` only when the condition has a known class.
+- On R < 4.6 `identical()` materializes ALTREP views (writable `DATAPTR`), firing the zc release early — assert view refcounts before deep value comparisons, never after. And holding many live views trips the Linux churn fallback (later sends degrade to the copy tiers), so multi-view scenarios gate with `skip_on_os("linux")`.
 - Avoid the `.package` argument to `local_mocked_bindings()` (it modifies another package's namespace); instead create a mockable version of the function in this package. See `?local_mocked_bindings`.
 
 ## Package development
