@@ -123,6 +123,9 @@ The workers write the results straight into shared memory: each result crosses t
 rei_map(p, seq.int(-5, 5), abs, .template = numeric(1))
 ```
 
+An `integer64` template (bit64's layout, constructed without bit64) is also supported.
+int64 joins no widening lattice, so results must be exact `integer64` of the template's length.
+
 Random numbers drawn inside the function are not reproducible by default, and cost nothing extra.
 Pass `.seed` to give every element its own L'Ecuyer-CMRG stream.
 Then the results are identical for any chunking, worker count, or steal order:
@@ -188,6 +191,7 @@ rei_close(ch)
 ```
 
 Atomic vectors cross without serialization: an R `numeric`, `integer`, or `raw` vector arrives in Python as a NumPy `float64`, `int32`, or `uint8` array, and the same dtypes travel back the other way.
+An `integer64` vector crosses as a NumPy `int64` array both ways — bit64's exact layout, constructed without bit64 — with `NA` at `INT64_MIN` in each direction.
 A large vector arrives as a zero-copy read-only view over the shared pages — the same ALTREP mechanism as between R processes, surfaced on the Python side as a NumPy array that maps the region.
 Strings cross as strings in both directions; `NA_character_` reads as `None` in Python, and `None` comes back as `NULL`.
 Anything else Python sends — scalars and containers ride its compact codec, other objects pickle — is declined with a "Python payload" error.

@@ -527,3 +527,19 @@ nested-view fan-in (2000 refs to one 800 KiB region, in-process) 1.00 ms
 round trip — 0.50 us per reference against the ~7 us resolve the plan
 measured pre-change.
 Full suite 2300 pass, 0 fail (6 expected skips: 3 macOS, 3 pyrei env).
+
+## 2026-09-11: README refresh and the sequential-rt tick mirage
+
+dev/bench/rei-mirai-bench.R against the README rows (M4 Pro, R 4.6.1). The
+pool round-trip 0.7/0.5 us readings were whole-ms mclock quantization: the
+row looped n=2000 (~2 ms real) and best-of-3 caught a 1 ms tick. Sustained
+is ~1.1 us (n=200k), matching the 2026-08-18 fine-timer record. The row now
+loops np=20000 in both bench scripts (the channel row's remedy) and reads
+0.8-0.9 us vs mirai dispatcher 100-106 us across runs — README row set to
+0.8 / 100.5 / 126x.
+pyrei A/B (perf_counter_ns, no quantization): 0.75-0.80 us/rt — same core,
+the ~0.3 us delta the R-side .Call boundary. Pipelined 909k was the same
+tick luck (a ~12 ms rep snapping to 10/11/12/13 ms = 1.0M/909k/833k/769k);
+that row stays at the recorded 833k / 9.7k / 86x, k-cycles the candidate
+fix. Payload 8 MB and map ~10us rows held: this run's 433 us / 18.5 ms and
+6.0 / 216 ms read below the recorded 46x / 44x.

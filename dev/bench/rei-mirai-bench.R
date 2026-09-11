@@ -238,10 +238,12 @@ with_channel(
   capacity = 1024L
 )
 
+np <- 20000L # pool rt is as µs-scale as the channel's: same whole-ms tick,
+# same remedy
 with_pool(1L, function(p) {
   warmup(function() rei_collect(rei_submit(p, 1L), timeout = 30))
-  note_us("sequential rt", "rei pool", n, function() {
-    for (i in seq_len(n)) {
+  note_us("sequential rt", "rei pool", np, function() {
+    for (i in seq_len(np)) {
       rei_collect(rei_submit(p, 1L), timeout = 30)
     }
   })

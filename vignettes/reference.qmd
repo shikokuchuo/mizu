@@ -133,6 +133,9 @@ rei_map(p, seq.int(-5, 5), abs, .template = numeric(1))
 #>  [1] 5 4 3 2 1 0 1 2 3 4 5
 ```
 
+An `integer64` template (bit64’s layout, constructed without bit64) is also supported.
+int64 joins no widening lattice, so results must be exact `integer64` of the template’s length.
+
 Random numbers drawn inside the function are not reproducible by default, and cost nothing extra.
 Pass `.seed` to give every element its own L’Ecuyer-CMRG stream.
 Then the results are identical for any chunking, worker count, or steal order:
@@ -194,11 +197,11 @@ while True:
 
 rei_send(ch, c(1.5, 2.5, 3.5))
 rei_recv(ch, timeout = 5)
-#> [1] 3 5 7
 rei_close(ch)
 ```
 
 Atomic vectors cross without serialization: an R `numeric`, `integer`, or `raw` vector arrives in Python as a NumPy `float64`, `int32`, or `uint8` array, and the same dtypes travel back the other way.
+An `integer64` vector crosses as a NumPy `int64` array both ways — bit64’s exact layout, constructed without bit64 — with `NA` at `INT64_MIN` in each direction.
 A large vector arrives as a zero-copy read-only view over the shared pages — the same ALTREP mechanism as between R processes, surfaced on the Python side as a NumPy array that maps the region.
 Strings cross as strings in both directions; `NA_character_` reads as `None` in Python, and `None` comes back as `NULL`.
 Anything else Python sends — scalars and containers ride its compact codec, other objects pickle — is declined with a “Python payload” error.
@@ -244,11 +247,11 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 rei        354.98µs  413.6µs     1954.   546.5KB     30.1
-#> 2 mirai        7.12ms    7.6ms      130.    3.89MB     21.2
+#> 1 rei        298.73µs 373.71µs     2315.   546.5KB     35.3
+#> 2 mirai        7.36ms   7.71ms      125.    3.89MB     20.4
 ```
 
-End to end, rei is **18x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
+End to end, rei is **21x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
 
 **Two thousand small tasks.**
 Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece.
@@ -271,12 +274,12 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      16.79ms  16.79ms     59.6     30.9MB  1370.  
-#> 2 rei          5.16ms   6.11ms    149.      47.5KB     0   
-#> 3 mirai      216.12ms 216.12ms      4.63    19.1MB     9.25
+#> 1 serial       19.2ms   19.2ms     52.1     30.9MB  1146.  
+#> 2 rei          4.89ms   5.63ms    143.      50.6KB     0   
+#> 3 mirai      219.54ms 219.54ms      4.56    19.1MB     9.11
 ```
 
-rei turns the four workers into a **2.7x** gain over the serial loop, and runs **35x** ahead of mirai (medians).
+rei turns the four workers into a **3.4x** gain over the serial loop, and runs **39x** ahead of mirai (medians).
 
 ``` r
 daemons(0L)

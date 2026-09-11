@@ -45,13 +45,14 @@ test_that("a batch receive raises on a foreign payload and stays usable", {
   ch <- rei_channel(
     "
 import pyrei, numpy as np
-ch.send(np.array([1.0]))
 ch.send(42)
+ch.recv(30)
 ch.send(np.array([2.0]))
 ",
     launcher = rei_py_launcher(py, stdout = FALSE, stderr = FALSE)
   )
   expect_error(rei_recv_batch(ch, 2L, 30), "Python payload")
+  rei_send(ch, 0)
   expect_identical(rei_recv(ch, 30), 2.0)
   expect_true(rei_close(ch, timeout = 10))
 })
