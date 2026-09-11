@@ -444,19 +444,30 @@ test_that("int64 reports the raw tiers against the legacy paths", {
   n <- 100000L
   x <- bit64::as.integer64(seq_len(n))
   f <- function(xi) xi
+  # no closure over the test frame: after the raw map, r1 holds 100k
+  # view-backed scalars (the runners' big value lists arrive SHM_VEC), and a
+  # serialized f would drag them into map two's descriptor as per-element
+  # references — one fresh mapping per resolve exhausts vm.max_map_count on
+  # the Linux workers
+  environment(f) <- baseenv()
   t0 <- proc.time()[[3]]
   r1 <- rei_map(p, x, f, .timeout = 60)
   raw_s <- proc.time()[[3]] - t0
-  xn <- setNames(x, paste0("e", seq_len(n)))
+  # the descriptor leg at a fifth of the elements: bit64's
+  # as.list.integer64 protects per element, overflowing R < 4.6's fixed
+  # protection stack at full length
+  nd <- 20000L
+  xn <- setNames(x[seq_len(nd)], paste0("e", seq_len(nd)))
   t0 <- proc.time()[[3]]
   r2 <- rei_map(p, xn, f, .timeout = 60)
   desc_s <- proc.time()[[3]] - t0
-  expect_identical(r1, unname(r2))
+  expect_identical(r1[seq_len(nd)], unname(r2))
   cat(sprintf(
-    "rei_map int64 x (%d elements, 2 workers): %.3f s raw section, %.3f s descriptor\n",
+    "rei_map int64 x (%d elements, 2 workers): %.3f s raw section, %.3f s descriptor (%d elements)\n",
     n,
     raw_s,
-    desc_s
+    desc_s,
+    nd
   ))
   expect_true(rei_pool_stop(p))
 })
