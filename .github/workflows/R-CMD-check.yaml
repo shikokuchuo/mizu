@@ -30,6 +30,7 @@ jobs:
     env:
       GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
       R_KEEP_PKG_SOURCE: yes
+      CROSSLANG_PAT: ${{ secrets.CROSSLANG_PAT }}
 
     steps:
       - uses: actions/checkout@v7
@@ -48,17 +49,19 @@ jobs:
           needs: check
 
       # The cross-language tests need a python3 with pyrei and NumPy (they
-      # probe-skip otherwise). Skipped on Windows: the helper probes
-      # `python3`, which setup-python does not provide there, and pyrei's
-      # build forces clang-cl.
+      # probe-skip otherwise). pyrei is a private repo, so these steps
+      # need the CROSSLANG_PAT secret (a PAT with read access to pyrei);
+      # without it they skip and the tests probe-skip. Skipped on Windows:
+      # the helper probes `python3`, which setup-python does not provide
+      # there, and pyrei's build forces clang-cl.
       - uses: actions/setup-python@v7
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && env.CROSSLANG_PAT != ''
         with:
           python-version: "3.13"
 
       - name: Install pyrei (cross-language tests)
-        if: runner.os != 'Windows'
-        run: pip install git+https://github.com/shikokuchuo/pyrei.git numpy
+        if: runner.os != 'Windows' && env.CROSSLANG_PAT != ''
+        run: pip install git+https://x-access-token:${CROSSLANG_PAT}@github.com/shikokuchuo/pyrei.git numpy
 
       - uses: r-lib/actions/check-r-package@v2
         with:
