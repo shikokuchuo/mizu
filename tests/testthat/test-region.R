@@ -102,6 +102,7 @@ test_that("clean child exit runs the session-exit finalizers", {
     inherits(
       tryCatch(.Call(rei:::rei_region_open, nm, FALSE), error = identity),
       "error"
-    )
+    ),
+    timeout = 30 # the child's R shutdown on a loaded CI runner
   ))
 })
