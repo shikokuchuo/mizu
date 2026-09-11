@@ -149,6 +149,10 @@ static inline int rei_is_python_payload(const unsigned char *p, size_t n) {
 // Zero-copy payload tiers (zc.c) ---------------------------------------------------
 
 void rei_zc_init(void);
+/* The consumer split open (page 0 RW, the tail RO): registered as the view
+   layer's embedder open hook, so the wire-resolve cache's mappings carry the
+   same protection split as the prep path's, which calls it directly. */
+rei_shm *rei_zc_open(const char *name);
 int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total);
 /* Stage x as SHM_VEC through the handle's services: the region checkout, the
    zc producer-loan retain (rei_stage_retain_zc performs the refcount store),

@@ -20,9 +20,16 @@ SEXP rei_view_int64_class;       /* STRSXP(1) "integer64" — preserved at init 
 static rei_view_emit_hook_fn rei_view_emit_hook;
 static rei_view_resolve_hook_fn rei_view_resolve_hook;
 
+/* Embedder open hook (view.h): the consumer-mapping cache's miss branch. */
+static rei_view_open_hook_fn rei_view_open_hook;
+
 void rei_view_set_wire_hooks(rei_view_emit_hook_fn emit, rei_view_resolve_hook_fn resolve) {
   rei_view_emit_hook = emit;
   rei_view_resolve_hook = resolve;
+}
+
+void rei_view_set_open_hook(rei_view_open_hook_fn hook) {
+  rei_view_open_hook = hook;
 }
 
 // Element directory (for list SHM layout) -------------------------------------
@@ -816,6 +823,79 @@ static SEXP rei_view_make_result(rei_shm *shm) {
   return result;
 }
 
+// Consumer-mapping cache (identifier resolve paths) -----------------------------
+
+/* The wire-resolve paths (the ALTREP Unserialize methods) dedupe consumer
+   mappings per region name: a payload carrying many references to few
+   regions would otherwise multiply mappings on the receiver (Linux caps a
+   process's VMA count — enough nested references against stock limits wedge
+   the resolve with ENOMEM). Process-global, not per-handle: R_Unserialize's
+   ALTREP method gets (class_info, state) only — no handle rides the resolve.
+   Sound because the protocol separates the concerns: mappings are per-region
+   (shared here), refcounts per-view (each resolve fires the resolve hook and
+   each view adds/subs its own count on the shared base). Eviction never
+   unmaps: a live view pins the cached wrap through its keeper chain, so
+   eviction only drops the cache's reference. One behavioral caveat: a cached
+   mapping resolves a name whose region was since unlinked (a forged/stale
+   identifier then reads stale-but-valid pages instead of erroring "not
+   found") — unreachable in-protocol, where the sender's keeper pins the
+   region through the read. */
+static SEXP rei_view_cache_wraps;  /* VECSXP(REI_VIEW_CACHE_MAX), preserved at init */
+static char rei_view_cache_names[REI_VIEW_CACHE_MAX][REI_NAME_MAX];
+static uint8_t rei_view_cache_len[REI_VIEW_CACHE_MAX];   /* 0 = empty slot */
+static uint64_t rei_view_cache_stamp[REI_VIEW_CACHE_MAX];
+static uint64_t rei_view_cache_tick;
+
+/* The name-keyed lookup: the wrap SEXP on a hit (stamp bumped), R_NilValue
+   on a miss or a finalized entry (the caller re-opens and re-stores). A
+   forked child inherits the entries — the mappings are its own; an entry
+   finalized before the fork reads as a miss and reopens. */
+static SEXP rei_view_cache_find(const char *name, size_t len) {
+  for (int i = 0; i < REI_VIEW_CACHE_MAX; i++)
+    if (rei_view_cache_len[i] == len &&
+        memcmp(rei_view_cache_names[i], name, len) == 0) {
+      SEXP wrap = VECTOR_ELT(rei_view_cache_wraps, i);
+      if (R_ExternalPtrAddr(wrap) == NULL) return R_NilValue;  /* finalized */
+      rei_view_cache_stamp[i] = ++rei_view_cache_tick;
+      return wrap;
+    }
+  return R_NilValue;
+}
+
+static void rei_view_cache_store(const char *name, size_t len, SEXP wrap) {
+  int slot = 0;
+  for (int i = 0; i < REI_VIEW_CACHE_MAX; i++) {
+    if (rei_view_cache_len[i] == 0) {
+      slot = i;
+      break;
+    }
+    if (rei_view_cache_stamp[i] < rei_view_cache_stamp[slot]) slot = i;
+  }
+  SET_VECTOR_ELT(rei_view_cache_wraps, slot, wrap);  /* the evicted LRU drops to GC */
+  memcpy(rei_view_cache_names[slot], name, len);
+  rei_view_cache_len[slot] = (uint8_t) len;
+  rei_view_cache_stamp[slot] = ++rei_view_cache_tick;
+}
+
+/* The single home of the resolve paths' consumer open: cache consult, then
+   the embedder's open hook or the default fully-RO open, wrapped and cached.
+   The resolve hook is the call sites', fired per resolve (the counted add
+   belongs to the view, not the mapping) — never inside this miss branch, or
+   a cache hit would skip it. Returns the wrap UNPROTECTED — the caller
+   PROTECTs (nothing allocates between). */
+static SEXP rei_view_open_consumer(const char *name) {
+  size_t len = strlen(name);
+  SEXP wrap = rei_view_cache_find(name, len);
+  if (wrap != R_NilValue) return wrap;
+  rei_shm *shm = rei_view_open_hook != NULL ?
+    rei_view_open_hook(name) : rei_shm_open_heap(name);
+  if (shm == NULL)
+    Rf_error("rei: shared memory region not found: '%s'", name);
+  wrap = rei_view_shm_wrap_consumer(shm);
+  rei_view_cache_store(name, len, wrap);
+  return wrap;
+}
+
 // String write helper (shared by standalone and list paths) -------------------
 
 /* Returns total bytes written (including alignment padding). */
@@ -1324,12 +1404,11 @@ SEXP rei_view_shm_open_and_wrap(SEXP name) {
   if (rc < 0) return R_NilValue;        /* probe miss */
 
   if (rc == 0) {
-    rei_shm *shm = rei_shm_open_heap(shm_name);
-    if (shm == NULL)
-      Rf_error("rei: shared memory region not found: '%s'", shm_name);
-    SEXP shm_ptr = PROTECT(rei_view_shm_wrap_consumer(shm));
+    SEXP shm_ptr = PROTECT(rei_view_open_consumer(shm_name));
     SEXP result = PROTECT(rei_view_dispatch_by_magic(shm_ptr, shm_name));
-    if (rei_view_resolve_hook != NULL) rei_view_resolve_hook(result, shm);
+    if (rei_view_resolve_hook != NULL)
+      rei_view_resolve_hook(result,
+                            (rei_shm *) R_ExternalPtrAddr(shm_ptr));
     UNPROTECT(2);
     return result;
   }
@@ -1550,15 +1629,13 @@ SEXP rei_view_walk_path(unsigned char *base, int64_t region_size,
   return result;
 }
 
-/* Open parent SHM and walk the path, returning the leaf element. */
+/* Open parent SHM (through the consumer cache) and walk the path,
+   returning the leaf element. */
 static SEXP rei_view_open_path_c(const char *name,
                              const int32_t *path, int path_len) {
 
-  rei_shm *shm = rei_shm_open_heap(name);
-  if (shm == NULL)
-    Rf_error("rei: shared memory region not found: '%s'", name);
-
-  SEXP shm_ptr = PROTECT(rei_view_shm_wrap_consumer(shm));
+  SEXP shm_ptr = PROTECT(rei_view_open_consumer(name));
+  rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(shm_ptr);
   SEXP result = PROTECT(rei_view_walk_path(
     (unsigned char *) shm->addr, (int64_t) shm->size, path, path_len, shm_ptr
   ));
@@ -1629,6 +1706,11 @@ void rei_view_altrep_init(DllInfo *dll) {
      interned tag, so preserve it explicitly (the layer has no fini) */
   rei_view_int64_class = Rf_mkString("integer64");
   R_PreserveObject(rei_view_int64_class);
+
+  /* the consumer-mapping cache's wraps vector (fresh VECSXP is NIL-filled;
+     a name_len of 0 marks an empty slot) */
+  rei_view_cache_wraps = Rf_allocVector(VECSXP, REI_VIEW_CACHE_MAX);
+  R_PreserveObject(rei_view_cache_wraps);
 
   /* ALTLIST class */
   rei_view_list_class = R_make_altlist_class("rei_list", "rei", dll);

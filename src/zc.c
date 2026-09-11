@@ -48,6 +48,9 @@ void rei_zc_init(void) {
   rei_rel_tag = Rf_install("rei_view_release");
   rei_shm_tag_sym = Rf_install(REI_VIEW_TAG_SHM);
   rei_view_set_wire_hooks(rei_zc_ref_mark, rei_zc_wire_resolve);
+  /* the vendored resolve cache opens through rei's split open, so every
+     consumer mapping — cached or prep-path — has a writable page 0 */
+  rei_view_set_open_hook(rei_zc_open);
 }
 
 // View release ------------------------------------------------------------------
@@ -56,13 +59,11 @@ void rei_zc_init(void) {
    (a longjmp between wrap and add must not sub a count it never added).
    pid is the fork guard (the view layer's host-finalizer pattern): views are
    ordinary R objects that cross mclapply forks, and a child-side GC must
-   not sub a count it never added. owned is the record's own RW mapping
-   of the region (wire-resolve records only — the vendored resolve maps
-   fully RO, but the refcount word needs a writable page 0); NULL on the
-   prep path, where the mapping belongs to the open cache / wrap chain. */
+   not sub a count it never added. base points into the view's mapping —
+   the prep path's own, or the vendored resolve cache's shared one (pinned
+   by the view's keeper chain there, never by the record). */
 typedef struct rei_zc_rel_s {
   unsigned char *base;
-  rei_shm *owned;
   long pid;
   int armed;
 } rei_zc_rel;
@@ -72,9 +73,6 @@ static void rei_rel_finalizer(SEXP ptr) {
   if (rel != NULL) {
     if (rel->armed && rel->pid == rei_self_pid())
       atomic_fetch_sub_explicit(rei_zc_rc(rel->base), 1, memory_order_acq_rel);
-    if (rel->owned != NULL) {
-      rei_shm_close(rel->owned, 0);
-    }
     free(rel);
     R_ClearExternalPtr(ptr);
   }
@@ -93,8 +91,11 @@ static void rei_zc_rel_fire(void *arg) {
    read-only (the view layer's RO discipline). Lazy everywhere — a view is touched
    on demand, so eager PTE install would prefault never-read pages on the
    recv hot path (the SHM_RAW cache's populated open exists because a
-   stream is unserialized in full immediately; a view is not). */
-static rei_shm *rei_zc_open(const char *name) {
+   stream is unserialized in full immediately; a view is not).
+   Two call paths: registered as the view layer's embedder open hook
+   (rei_zc_init) — the wire-resolve cache's misses — and called directly by
+   the prep path below (the per-handle cache). */
+rei_shm *rei_zc_open(const char *name) {
   rei_shm *shm;
   if (rei_shm_open_rw(&shm, name, 0) != REI_OK) return NULL;
   size_t size = shm->size;
@@ -327,7 +328,6 @@ static SEXP rei_zc_prep(const char *name, uint32_t name_len, int *gone,
     Rf_error("rei: allocation failure");
   }
   rel->base = (unsigned char *) shm->addr;
-  rel->owned = NULL;
   rel->pid = rei_self_pid();
   rel->armed = 0;
   SEXP rel_xp = PROTECT(R_MakeExternalPtr(rel, rei_rel_tag, map_wrap));
@@ -453,26 +453,16 @@ static SEXP rei_view_terminus(SEXP x) {
 
 /* Mark a view's region REFHELD (the holder set widens beyond the direct
    peer, so the producer's death backstop must leak + unlink rather than
-   force-reclaim). A rei zc mapping is page-0 RW already (the terminus's
-   prot is the release extptr); a vendored (hook-path) mapping is fully
-   RO, so set the flag through a brief RW open instead. */
+   force-reclaim). Every rei consumer mapping has a writable page 0 — the
+   prep path's split open and the vendored cache's hook open alike — so the
+   flag store goes straight through the chain terminus. */
 static void rei_zc_ref_mark(SEXP x) {
   SEXP terminus = rei_view_terminus(x);
   if (terminus == R_NilValue) return;
   rei_shm *shm = (rei_shm *) R_ExternalPtrAddr(terminus);
   if (shm == NULL || shm->addr == NULL) return;
-  SEXP prot = R_ExternalPtrProtected(terminus);
-  if (TYPEOF(prot) == EXTPTRSXP && R_ExternalPtrTag(prot) == rei_rel_tag) {
-    atomic_fetch_or_explicit(rei_zc_flags_(shm->addr), REI_ZC_FLAG_REFHELD,
-                             memory_order_acq_rel);
-  } else {
-    rei_shm *tmp;
-    if (rei_shm_open_rw(&tmp, shm->name, 0) == REI_OK) {
-      atomic_fetch_or_explicit(rei_zc_flags_(tmp->addr), REI_ZC_FLAG_REFHELD,
-                               memory_order_acq_rel);
-      rei_shm_close(tmp, 0);
-    }
-  }
+  atomic_fetch_or_explicit(rei_zc_flags_(shm->addr), REI_ZC_FLAG_REFHELD,
+                           memory_order_acq_rel);
 }
 
 int rei_zc_ref_stage(rei_slot_hdr *hdr, unsigned char *payload,
@@ -540,15 +530,21 @@ SEXP rei_zc_ref_read(const rei_slot_hdr *hdr, const unsigned char *payload,
   return view;
 }
 
-/* The wire-resolve release: the same sub as the prep-path finalizer, but
-   the record rides the view's rei_view_owned release slot (the layer's once-only
+/* The wire-resolve release: the same sub as the prep-path finalizer, the
+   record riding the view's rei_view_owned release slot (the layer's once-only
    discipline fires it at materialize or finalizer — no extptr of our own
-   to anchor) and owns its RW mapping of the region. */
+   to anchor). The sub goes through the vendored cache's shared mapping, so
+   it relies on same-cycle GC order: if a dead view and an evicted cached
+   mapping die in one GC cycle, the view's release must run before the
+   mapping's munmap. It does by registration order — the mapping wrap is
+   registered before every view over it, and same-cycle finalizers run in
+   reverse registration order (weak-ref list, prepended at registration, run
+   head-first; de-facto but long-stable — the prep path's
+   map_wrap -> rel_xp prot chain already relies on it). */
 static void rei_zc_wire_rel(void *arg) {
   rei_zc_rel *rel = (rei_zc_rel *) arg;
   if (rel->armed && rel->pid == rei_self_pid())
     atomic_fetch_sub_explicit(rei_zc_rc(rel->base), 1, memory_order_acq_rel);
-  rei_shm_close(rel->owned, 0);
   free(rel);
 }
 
@@ -556,26 +552,23 @@ static void rei_zc_wire_rel(void *arg) {
    in a larger payload) gets the same counted protocol as the SHM_VEC / REF
    tiers. The add lands inside R_Unserialize — before the read returns,
    hence before the consumer-done signal, while the sender's keeper still
-   pins the payload and with it the view's own count. */
+   pins the payload and with it the view's own count. shm is the layer's
+   cached mapping — page 0 writable because rei registered rei_zc_open as
+   the open hook — so the record pins no mapping of its own; the view's
+   keeper chain holds it. */
 static void rei_zc_wire_resolve(SEXP view, rei_shm *shm) {
   if (!rei_view_check(view)) return;  /* a serialized leaf references nothing */
   rei_view_owned *o = (rei_view_owned *) R_ExternalPtrAddr(R_altrep_data1(view));
   if (o == NULL || o->release != NULL) return;
-  rei_shm *rw = rei_zc_open(shm->name);
-  if (rw == NULL)
-    Rf_error("rei: cannot open payload region '%s'", shm->name);
   rei_zc_rel *rel = malloc(sizeof(rei_zc_rel));
-  if (rel == NULL) {
-    rei_shm_close(rw, 0);
+  if (rel == NULL)
     Rf_error("rei: allocation failure");
-  }
-  rel->base = (unsigned char *) rw->addr;
-  rel->owned = rw;
+  rel->base = (unsigned char *) shm->addr;
   rel->pid = rei_self_pid();
   rel->armed = 0;
   o->release = rei_zc_wire_rel;
   o->release_arg = rel;
-  atomic_fetch_add_explicit(rei_zc_rc(rw->addr), 1, memory_order_acq_rel);
+  atomic_fetch_add_explicit(rei_zc_rc(shm->addr), 1, memory_order_acq_rel);
   rel->armed = 1;
 }
 

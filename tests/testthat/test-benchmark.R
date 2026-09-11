@@ -395,6 +395,44 @@ test_that("guard: attributed large vector reports the attrs-parse share", {
   expect_true(rei_close(ch, timeout = 10))
 })
 
+test_that("nested-view fan-in reports the wire-resolve dedup regime", {
+  skip_on_cran()
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  rei_send(p[["host"]], x)
+  v <- rei_recv(p[["peer"]], 5)
+
+  # 2000 references to one region in a single payload: the receive side pays
+  # one cached mapping, not two fresh mappings per reference (the Linux
+  # vm.max_map_count wedge of the 2026-09-11 CI postmortem)
+  k <- 2000L
+  payload <- rep(list(v), k)
+  rei_send(p[["peer"]], payload)
+  w <- rei_recv(p[["host"]], 60) # warm-up and correctness
+  expect_true(.Call(rei:::rei_zc_view_check, w[[1L]]))
+  expect_identical(as.numeric(w[[k]]), x)
+  rm(w)
+  gc() # resolved views free their counts only via finalizers
+  best <- Inf
+  for (r in 1:3) {
+    t0 <- proc.time()[[3]]
+    rei_send(p[["peer"]], payload)
+    w <- rei_recv(p[["host"]], 60)
+    best <- min(best, proc.time()[[3]] - t0)
+    rm(w)
+    gc()
+  }
+  cat(sprintf(
+    "nested-view fan-in (%d refs to one 800 KiB region): %.2f ms round trip (%.2f us per ref)\n",
+    k,
+    best * 1e3,
+    best * 1e6 / k
+  ))
+  rm(payload)
+  gc()
+  channel_end(p)
+})
+
 test_that("int64 reports the raw tiers against the legacy paths", {
   skip_on_cran()
   skip_if_no_child_rei()

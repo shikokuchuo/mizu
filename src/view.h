@@ -180,6 +180,20 @@ typedef void (*rei_view_emit_hook_fn)(SEXP view);
 typedef void (*rei_view_resolve_hook_fn)(SEXP view, rei_shm *shm);
 void rei_view_set_wire_hooks(rei_view_emit_hook_fn emit, rei_view_resolve_hook_fn resolve);
 
+/* Embedder open hook (optional; set once at embedder load): the identifier
+   resolve paths dedupe consumer mappings through a process-global
+   name-keyed cache whose miss branch opens through this hook instead of the
+   default fully-RO rei_shm_open_heap. An embedder whose cross-process
+   protocol writes the region header (a refcount word on page 0) installs a
+   page-0-RW open here; the hook returns a heap rei_shm * the layer wraps
+   and owns, same as the default open. The cache size is a view-layer
+   constant on purpose: a bare REI_OPEN_CACHE_MAX would survive vendoring
+   verbatim into mori, whose region layer defines only MORI_OPEN_CACHE_MAX —
+   the REI_VIEW_ prefix renames to MORI_CACHE_MAX and cannot collide. */
+#define REI_VIEW_CACHE_MAX 16
+typedef rei_shm *(*rei_view_open_hook_fn)(const char *name);
+void rei_view_set_open_hook(rei_view_open_hook_fn hook);
+
 // Alignment macro -------------------------------------------------------------
 
 #define REI_VIEW_ALIGN64(x) (((x) + 63) & ~(size_t)63)

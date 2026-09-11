@@ -509,6 +509,131 @@ test_that("a view nested in a larger payload resolves counted (channel)", {
   channel_end(p)
 })
 
+test_that("wire resolves cluster on the mapping cache; counts stay per-view", {
+  p <- channel_pair(arena_size = 0)
+  x1 <- runif(100000)
+  x2 <- runif(100000)
+  rei_send(p[["host"]], x1)
+  v1 <- rei_recv(p[["peer"]], 5)
+  rei_send(p[["host"]], x2)
+  v2 <- rei_recv(p[["peer"]], 5)
+  b1 <- rc_of(v1)[1L]
+  b2 <- rc_of(v2)[1L]
+
+  # 50 references across 2 regions: 2 cached mappings but 50 counted adds —
+  # a resolve hook fired per open instead of per resolve would read +2
+  w <- unserialize(serialize(c(rep(list(v1), 25), rep(list(v2), 25)), NULL))
+  expect_true(is_view(w[[1L]]))
+  expect_true(is_view(w[[50L]]))
+  expect_identical(rc_of(v1)[1L], b1 + 25L)
+  expect_identical(rc_of(v2)[1L], b2 + 25L)
+  expect_identical(as.numeric(w[[50L]]), x2)
+  rm(w)
+  invisible(gc())
+  expect_identical(rc_of(v1)[1L], b1)
+  expect_identical(rc_of(v2)[1L], b2)
+  channel_end(p)
+})
+
+test_that("cache eviction never unmaps under live views; counts rebalance after GC", {
+  p <- channel_pair(arena_size = 0)
+  xs <- lapply(1:18, function(i) runif(100000))
+  vs <- lapply(xs, function(xi) {
+    rei_send(p[["host"]], xi)
+    rei_recv(p[["peer"]], 5)
+  })
+  bs <- vapply(vs, function(v) rc_of(v)[1L], integer(1))
+
+  # 18 regions against 16 cache slots: the first two wraps are evicted
+  # mid-resolve — their views keep the mappings through their own chains
+  w <- unserialize(serialize(vs, NULL))
+  expect_true(is_view(w[[1L]]))
+  expect_identical(as.numeric(w[[1L]]), xs[[1L]])
+  expect_identical(as.numeric(w[[18L]]), xs[[18L]])
+  expect_identical(rc_of(vs[[1L]])[1L], bs[1L] + 1L)
+  expect_identical(rc_of(vs[[18L]])[1L], bs[18L] + 1L)
+  rm(w)
+  invisible(gc())
+  expect_identical(rc_of(vs[[1L]])[1L], bs[1L])
+  expect_identical(rc_of(vs[[18L]])[1L], bs[18L])
+  channel_end(p)
+})
+
+test_that("a nested-resolved view re-marks REFHELD through the shared mapping", {
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  rei_send(p[["host"]], x)
+  v <- rei_recv(p[["peer"]], 5)
+  rei_send(p[["host"]], "reap") # the loan drops; v pins the region
+  rei_recv(p[["peer"]], 5) # drain the reap message (the ring is FIFO)
+  expect_identical(rc_of(v), c(1L, 0L))
+
+  # v crosses nested (the serialize-hook path): the host's resolve wraps it
+  # over the vendored cache's mapping
+  rei_send(p[["peer"]], list("wrap", v))
+  w <- rei_recv(p[["host"]], 30)
+  rv <- w[[2L]]
+  expect_true(is_view(rv))
+  expect_identical(rc_of(v), c(2L, 1L))
+
+  # re-sending the resolved view nested fires the emit hook on a vendored
+  # chain terminus: the flag store goes straight through the shared mapping
+  rei_send(p[["host"]], list("wrap", rv))
+  w2 <- rei_recv(p[["peer"]], 30)
+  expect_true(is_view(w2[[2L]]))
+  expect_identical(as.numeric(w2[[2L]]), x)
+  expect_identical(rc_of(v), c(3L, 1L))
+  channel_end(p)
+})
+
+test_that("a forked child's resolve and GC leave the parent's count unmoved", {
+  skip_on_os("windows") # no fork
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  rei_send(p[["host"]], x)
+  v <- rei_recv(p[["peer"]], 5)
+  w <- unserialize(serialize(list(v), NULL)) # the entry the child inherits
+  before <- rc_of(v)[1L]
+
+  env <- environment()
+  res <- parallel::mcparallel(
+    {
+      w2 <- unserialize(serialize(list(v), NULL)) # an inherited cache hit
+      rm(w, envir = env) # the parent-armed record: the pid guard skips it
+      rm(w2)
+      invisible(gc())
+      .Call(rei:::rei_zc_refcount, v)[1L]
+    },
+    silent = TRUE
+  )
+  expect_identical(parallel::mccollect(res)[[1L]], before)
+  expect_identical(rc_of(v)[1L], before) # the child's GC subbed only its own
+  expect_identical(as.numeric(v), x) # the parent's mapping intact
+  rm(w)
+  invisible(gc())
+  channel_end(p)
+})
+
+test_that("nested references dedupe to one mapping per region (Linux VMAs)", {
+  skip_on_os(c("mac", "windows")) # asserts on /proc/self/maps
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  rei_send(p[["host"]], x)
+  v <- rei_recv(p[["peer"]], 5)
+  nmaps <- function() length(readLines("/proc/self/maps"))
+
+  s <- serialize(rep(list(v), 200), NULL)
+  before <- nmaps()
+  w <- unserialize(s) # 200 resolves over one region
+  after <- nmaps()
+  # one cached split mapping (~2 VMAs), not two fresh mappings per reference
+  expect_lte(after - before, 20L)
+  expect_true(is_view(w[[1L]]))
+  rm(w)
+  invisible(gc())
+  channel_end(p)
+})
+
 test_that("pool task args carry views counted; a returned view echoes by REF", {
   p <- pool_pair()
   t <- rei_submit(p[["ctrl"]], runif(100000))

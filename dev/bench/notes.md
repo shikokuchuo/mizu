@@ -505,3 +505,25 @@ int64 rows: 4 KiB 0.00/0.00, 128 KiB 0.01/0.02, 1 MiB 0.09/0.09, 8 MiB
 their legacy counterparts; the channel path is untouched by d6dd821 —
 layout draw), map int64 x 0.155 s raw (100k) / 0.035 s descriptor (20k).
 47 pass, 0 fail.
+
+## 2026-09-11: wire-resolve mapping dedup (consumer-mapping cache + open hook)
+
+The vendored resolve paths dedupe consumer mappings through a process-global
+name-keyed LRU (REI_VIEW_CACHE_MAX = 16) whose misses open via the embedder's
+open hook (rei registers rei_zc_open: page-0 RW, tail RO); the binding's
+wire-resolve record sheds its per-resolve RW split mapping, and ref_mark's
+RO-branch open+close pair goes with it. Fixes the vm.max_map_count wedge of
+the morning's CI postmortem (100k nested references x ~3 VMAs).
+test-benchmark.R, this host, standalone runs of d5cfa25 (before) and the
+working tree (after): channel rt 1.50/1.50 us, one-way 28.6M/25.0M msg/s,
+pool rt 1.0/1.0 us/task, pipelined 2.0M/1.0M + collect_all 2.0M/2.0M
+tasks/s, rei_map trivial 0.09/0.09 us/element, ALTREP 1:2^27 rt 5.00/5.00
+us, channel 1/8/32 MiB 0.06/0.25-0.50/2.00 ms both, pool 1/8/64 MiB
+0.19/1.25-1.50/11.00 ms both, rei_map 32 MiB template 0.332/0.334s, view
+collect 0.328/0.325s, attributed 579/582 ms, int64 rows identical, map
+int64 x 0.138/0.138 s raw. The touched path is off every hot tier; the
+spread rows (one-way, 8 MiB legs) repeat their usual layout draw. New row:
+nested-view fan-in (2000 refs to one 800 KiB region, in-process) 1.00 ms
+round trip — 0.50 us per reference against the ~7 us resolve the plan
+measured pre-change.
+Full suite 2300 pass, 0 fail (6 expected skips: 3 macOS, 3 pyrei env).
