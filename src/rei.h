@@ -90,8 +90,13 @@ SEXP rei_empty_args(void);
 
 void *rei_vec_ptr(SEXP x);
 void rei_vec_sink(void *ctx, size_t i, void *obj);
-int rei_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len);
+/* The single raw gate: the wire type code (0 = ineligible) and byte length;
+   class-only integer64 reports REI_TYPE_INT64. Callers apply their own size
+   gate. */
 int rei_raw_type(SEXP x, size_t *out_len);
+/* Wire type -> fresh vector: REI_TYPE_INT64 lands as bit64's layout, every
+   other code is a SEXPTYPE. */
+SEXP rei_wire_alloc(int type, R_xlen_t n);
 int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
                     uint32_t inline_max, SEXP x);
 /* The service-form spill checkout, raising rei_error_shm on create
@@ -113,7 +118,7 @@ void rei_r_pin(rei_handle *h, SEXP x) REI_COLD;
 void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, rei_handle *h);
 void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                            size_t n, rei_handle *h);
+                            size_t n, int rawtype, rei_handle *h);
 void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
                               SEXP x, size_t n, rei_handle *h);
 /* The pool framing (no arena tier): REF, RAWVEC, STR1, INLINE, SHM_VEC, or

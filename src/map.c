@@ -93,10 +93,11 @@ enum { REI_MORSEL_IDLE = 0, REI_MORSEL_RUNNING, REI_MORSEL_ABANDONED };
 #define REI_MAP_T_TARGET  200e-6
 #define REI_MAP_BATCH_CAP 64
 
-/* The map-local RAWVEC gate, deliberately looser than rei_raw_eligible:
-   no size cap, and attributes are the R side's to check (names-only is
+/* The map-local RAWVEC gate, deliberately looser than rei_raw_type: no
+   size cap, and attributes are the R side's to check (names-only is
    admissible there — names stay submitter-side for assembly and the chunk
-   loop's [[ drops them anyway). ALTREP still disqualifies — a
+   loop's [[ drops them anyway; class-only integer64 is admitted there and
+   stamped at the section write). ALTREP still disqualifies — a
    mori::share()d x must reduce to its identifier inside the descriptor
    stream via the hooks, not be copied wholesale into a second region — as
    does S4. Returns the section byte length, or -1 when x must ride the
@@ -113,6 +114,17 @@ SEXP rei_map_eligible(SEXP x) {
                        (double) rei_view_sizeof_elt(TYPEOF(x)));
 }
 
+/* The batch element class test: a REALSXP chunk whose class is exactly
+   "integer64" (a raw-section slice, a codec blob slice, or a resolved view)
+   hands f classed integer64 scalars. The interned CHARSXP compare is exact;
+   class-only is not required — per-element scalars drop other attributes
+   either way. */
+static int map_is_int64_classed(SEXP x) {
+  SEXP cls = Rf_getAttrib(x, R_ClassSymbol);
+  return TYPEOF(cls) == STRSXP && XLENGTH(cls) == 1 &&
+    STRING_ELT(cls, 0) == STRING_ELT(rei_view_int64_class, 0);
+}
+
 static const char *map_type_name(int type) {
   switch (type) {
   case LGLSXP:  return "logical";
@@ -120,6 +132,7 @@ static const char *map_type_name(int type) {
   case REALSXP: return "double";
   case CPLXSXP: return "complex";
   case RAWSXP:  return "raw";
+  case REI_TYPE_INT64: return "integer64";
   }
   return "?";
 }
@@ -241,12 +254,15 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   };
   uint64_t off = REI_ALIGN64(sizeof(rei_map_hdr) + desc_len);
   if (x != R_NilValue) {
-    size_t elt = rei_view_sizeof_elt(TYPEOF(x));
+    /* class-only integer64 rides the x section as bare int64 bytes — the
+       wire tag carries the class; slices re-apply it (rei_wire_alloc) */
+    int wtype = rei_view_is_int64(x) ? REI_TYPE_INT64 : (int) TYPEOF(x);
+    size_t elt = rei_view_sizeof_elt(wtype);
     if (elt == 0 || rei_vec_ptr(x) == NULL ||
         (uint64_t) XLENGTH(x) != n)
       Rf_error("rei: x is not eligible for the map raw section");
     h.x_kind = REI_MAP_X_RAWVEC;
-    h.x_sexptype = (uint32_t) TYPEOF(x);
+    h.x_sexptype = (uint32_t) wtype;
     h.x_off = off;
     h.x_len = n * elt;
     off = REI_ALIGN64(off + h.x_len);
@@ -381,7 +397,7 @@ SEXP rei_map_desc(SEXP xp) {
 static SEXP map_slice_copy(rei_map_h *mh, uint64_t lo, uint64_t hi) {
   size_t elt = rei_view_sizeof_elt((int) mh->h.x_sexptype);
   R_xlen_t len = (R_xlen_t) (hi - lo + 1);
-  SEXP out = Rf_allocVector((SEXPTYPE) mh->h.x_sexptype, len);
+  SEXP out = rei_wire_alloc((int) mh->h.x_sexptype, len);
   memcpy(rei_vec_ptr(out),
          (unsigned char *) mh->shm->addr + mh->h.x_off +
          (size_t) (lo - 1) * elt,
@@ -504,6 +520,10 @@ SEXP rei_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     np++;
   }
   const int xt = TYPEOF(x);
+  /* An int64 chunk (raw-section slice, codec blob slice, or resolved int64
+     view) hands f classed integer64 scalars — a bare double element would
+     reinterpret the bit pattern, not convert it */
+  const int xi64 = xt == REALSXP && map_is_int64_classed(x);
   /* Atomic element reads go through one hoisted data pointer: for a
      non-ALTREP x its own block; for an ALTREP with data behind it (a
      rei view, a foreign shared vector, a materialized one) the shared
@@ -555,6 +575,10 @@ SEXP rei_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     default:      Rf_error("rei: unsupported map element type");
     }
     SETCAR(elt_cell, elt);
+    if (xi64) {
+      /* anchored by the SETCAR above: classgets allocates */
+      Rf_classgets(elt, rei_view_int64_class);
+    }
     SEXP v = PROTECT(Rf_eval(call, rho));
     if (tmpl) map_write_value(mh, e, v);
     else SET_VECTOR_ELT(out, i, v);
@@ -979,7 +1003,11 @@ SEXP rei_map_swap_x(SEXP xp, SEXP x) {
   rei_map_h *mh = map_h_get(xp);
   if (mh->h.x_kind != REI_MAP_X_RAWVEC)
     Rf_error("rei: map region has no x section");
-  if ((uint32_t) TYPEOF(x) != mh->h.x_sexptype ||
+  /* the staged code is a wire type: class-only integer64 compares as
+     REI_TYPE_INT64, not REALSXP */
+  uint32_t wtype =
+    (uint32_t) (rei_view_is_int64(x) ? REI_TYPE_INT64 : (int) TYPEOF(x));
+  if (wtype != mh->h.x_sexptype ||
       (uint64_t) XLENGTH(x) != mh->h.n ||
       ALTREP(x) || Rf_isS4(x) || rei_vec_ptr(x) == NULL)
     Rf_error("rei: replacement x must match the staged type and length");

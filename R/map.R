@@ -405,11 +405,33 @@ rei_map_run <- function(
   r
 }
 
+# The x-section attribute gate, mirroring the C raw gate: bare, names-only
+# (names stay submitter-side for assembly), or class-only integer64 (the
+# wire tag carries the class — consumed at stage, re-applied per slice).
+map_x_attrs_ok <- function(x) {
+  attrs <- attributes(x)
+  is.null(attrs) ||
+    identical(names(attrs), "names") ||
+    identical(attrs, list(class = "integer64"))
+}
+
+# The x-section wire type: class-only integer64 stages as int64 (int64 and
+# double share typeof "double", so typeof alone cannot gate a swap).
+map_wire_type <- function(x) {
+  if (
+    typeof(x) == "double" && identical(attributes(x), list(class = "integer64"))
+  ) {
+    "integer64"
+  } else {
+    typeof(x)
+  }
+}
+
 # Replace a prepared map's x: an in-place memcpy over the region's x
 # section when the staged and replacement x are both bare-byte eligible
-# with identical type and length (a RAWVEC x is sliced from the mapping
-# per batch, never cached worker-side, so the swap is invisible to the
-# workers) — anything else drops the staged state, and the next run
+# with identical wire type and length (a RAWVEC x is sliced from the
+# mapping per batch, never cached worker-side, so the swap is invisible to
+# the workers) — anything else drops the staged state, and the next run
 # restages with the new x (descriptor-carried x IS cached worker-side,
 # so shape or type changes must re-key the region).
 map_swap_x <- function(pm, x) {
@@ -417,11 +439,10 @@ map_swap_x <- function(pm, x) {
   swappable <- !is.null(st) &&
     is.null(st[["blob"]]) &&
     isTRUE(st[["xraw"]]) &&
-    typeof(x) == typeof(pm[["x"]]) &&
+    map_wire_type(x) == map_wire_type(pm[["x"]]) &&
     length(x) == length(pm[["x"]]) &&
     .Call(rei_map_eligible, x) >= 0 &&
-    (is.null(attributes(x)) ||
-      identical(names(attributes(x)), "names"))
+    map_x_attrs_ok(x)
   pm[["x"]] <- x
   if (swappable) {
     .Call(rei_map_swap_x, st[["wrap"]], x)
@@ -582,8 +603,14 @@ map_stage <- function(
   if (typeof(f) == "closure") {
     f <- strip_srcref(f)
   }
-  # lapply's coercion rule, so [[ on the workers sees what lapply's would
-  if (!is.vector(x) || is.object(x)) {
+  # lapply's coercion rule, so [[ on the workers sees what lapply's would.
+  # The exception is class-only integer64: it stays a vector and rides the
+  # raw x section, its class re-applied to each slice (and to each element
+  # at batch time) — list-coercing it would forfeit the bare-bytes section
+  if (
+    (!is.vector(x) || is.object(x)) &&
+      !identical(attributes(x), list(class = "integer64"))
+  ) {
     x <- as.list(x)
   }
   n <- length(x)
@@ -618,13 +645,10 @@ map_stage <- function(
   }
 
   # the names-tolerant RAWVEC gate: C checks type / ALTREP / S4, the
-  # attribute condition (none, or names only) is cheaper here
+  # attribute condition (none, names only, or class-only integer64) is
+  # cheaper here
   xlen <- .Call(rei_map_eligible, x)
-  if (
-    xlen >= 0 &&
-      !is.null(attributes(x)) &&
-      !identical(names(attributes(x)), "names")
-  ) {
+  if (xlen >= 0 && !map_x_attrs_ok(x)) {
     xlen <- -1
   }
   st[["xraw"]] <- xlen >= 0

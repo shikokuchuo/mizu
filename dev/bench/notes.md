@@ -472,3 +472,20 @@ the serialize-paying tiers) restores the rows: channel batch 21.0-21.7M,
 streaming 41.8-43.3M msg/s, pipelined and sequential rt flat, full suite
 2232 pass. A ~2.5 us residual on the synthetic cross-process env-echo probe
 is child-side layout draw (the identical in-process round trip is flat).
+
+## 2026-09-11: int64 native wire type (REI_TYPE_INT64)
+
+Class-only integer64 (bit64's layout) stages as bare int64 bytes on the raw
+tiers: the single-probe rei_raw_type gate (rei_raw_eligible deleted), the
+class consumed by the wire tag at stage and re-applied at receive
+(rei_wire_alloc / the rei_view_vec_wrap case), REIH roots stamped 32 with no
+attrs section. rei_map admits class-only integer64 to the raw x section
+(past the as.list coercion, which keeps every other object); the batch loop
+re-classes per-element scalars. librei a96807f (pre-release: the ABI
+version stays 1).
+test-benchmark.R, this host, standalone run: int64 channel round trips raw
+vs legacy tier (codec below the zc floor, SHM_VEC+attrs above) — 4 KiB
+0.00/0.01 ms, 128 KiB 0.01/0.02 ms, 1 MiB 0.06/0.09 ms, 8 MiB 0.25/0.50 ms;
+rei_map 100k-element int64 x on 2 workers 0.145 s raw section vs 3.418 s
+descriptor (the list coercion + per-runner unserialize it replaced, ~24x).
+Full suite 2269 pass, 0 fail (5 expected skips).

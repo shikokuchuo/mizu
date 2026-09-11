@@ -136,13 +136,22 @@ rei_channel <- function(
 #' `NULL` crosses as an immediate: no serialization and no receive-side
 #' allocation. Length-1 character vectors that fit the inline budget cross
 #' with a single byte copy, encoding mark preserved. Attribute-free
-#' non-ALTREP atomic vectors ride a serialization-free fast path with a
+#' non-ALTREP atomic vectors — and `integer64` vectors whose only
+#' attribute is the class — ride a serialization-free fast path with a
 #' byte-identical round-trip — inline within the budget, and past it as
 #' bare bytes in the arena or a spill region (no serialize, no parse).
 #' Other plain values — attributed vectors, strings, lists, calls — cross
 #' as a compact binary stream written and read without R's serializer.
 #' Anything else is R-serialized. Mori-shared objects reduce to identifier
 #' wire forms through the mori hooks.
+#'
+#' Cross-language, a numpy `int64` array (or an Arrow one) from a Python
+#' peer lands as an `integer64` vector — bit64's exact layout, constructed
+#' without bit64: with bit64 loaded the result is fully functional, and
+#' without it the bits round-trip but print as raw doubles. The missing
+#' sentinel is shared both directions: a genuine `INT64_MIN` reads as
+#' `NA_integer64_` in R, and an `NA_integer64_` arrives as `INT64_MIN` in
+#' Python.
 #'
 #' From a non-R peer, only vectors and strings are legal payloads. Anything
 #' else (a pyrei codec stream or a pickle) is declined: the receive raises

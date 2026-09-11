@@ -239,7 +239,9 @@ void rei_zc_stage(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                   size_t total, rei_handle *h) {
   rei_shm *shm = rei_spill_get_raise(h, (size_t) total);
   rei_view_layout_write((unsigned char *) shm->addr, x);
-  int type = TYPEOF(x);
+  /* the aux code must match the layout's root sexptype: class-only
+     integer64 stamped its REIH root REI_VIEW_TYPE_INT64 */
+  int type = rei_view_is_int64(x) ? REI_TYPE_INT64 : (int) TYPEOF(x);
   hdr->kind = REI_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) (type == LISTSXP ? VECSXP : type) |

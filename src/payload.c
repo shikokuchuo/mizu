@@ -13,6 +13,11 @@
 #define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
 #endif
 
+/* The vendored view layer owns the macro spelling (mori renames it); pin it
+   to the core enum here, where both are visible. */
+_Static_assert(REI_VIEW_TYPE_INT64 == REI_TYPE_INT64,
+               "view/core int64 tag drift");
+
 void *rei_vec_ptr(SEXP x) {
   switch (TYPEOF(x)) {
   case LGLSXP:  return LOGICAL(x);
@@ -24,6 +29,10 @@ void *rei_vec_ptr(SEXP x) {
   return NULL;
 }
 
+/* The single raw gate of a stage: the wire type code (0 = ineligible) with
+   the byte length; each caller applies its own size gate. Ordering keeps the
+   hot path free — only an attributed REALSXP pays the rei_view_is_int64
+   probe: a class-only integer64's class is consumed by the wire tag. */
 int rei_raw_type(SEXP x, size_t *out_len) {
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
@@ -34,16 +43,27 @@ int rei_raw_type(SEXP x, size_t *out_len) {
   /* The ALTREP exclusion is the linkage-free gate keeping shared
      vectors on the hook path; the S4 bit is recorded by serialize, so it
      disqualifies alongside attributes. */
-  if (ALTREP(x) || ANY_ATTRIB(x) || Rf_isS4(x)) return 0;
-  *out_len = (size_t) XLENGTH(x) * rei_view_sizeof_elt(TYPEOF(x));
-  return 1;
+  if (ALTREP(x) || Rf_isS4(x)) return 0;
+  int code = TYPEOF(x);
+  if (ANY_ATTRIB(x)) {
+    if (!rei_view_is_int64(x)) return 0;
+    code = REI_TYPE_INT64;
+  }
+  *out_len = (size_t) XLENGTH(x) * rei_view_sizeof_elt(code);
+  return code;
 }
 
-int rei_raw_eligible(SEXP x, uint32_t inline_max, size_t *out_len) {
-  size_t n;
-  if (!rei_raw_type(x, &n) || n > inline_max) return 0;
-  *out_len = n;
-  return 1;
+/* Wire type -> fresh vector for the raw read paths: an int64 payload lands
+   as bit64's exact layout (REALSXP + class "integer64", constructed
+   directly — bit64 stays in Suggests); every other code is a SEXPTYPE. */
+SEXP rei_wire_alloc(int type, R_xlen_t n) {
+  if (type == REI_TYPE_INT64) {
+    SEXP y = PROTECT(Rf_allocVector(REALSXP, n));
+    Rf_classgets(y, rei_view_int64_class);
+    UNPROTECT(1);
+    return y;
+  }
+  return Rf_allocVector((SEXPTYPE) type, n);
 }
 
 int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
@@ -129,12 +149,12 @@ void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
 }
 
 void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                            size_t n, rei_handle *h) {
+                            size_t n, int rawtype, rei_handle *h) {
   rei_shm *shm = rei_spill_get_raise(h, n);
   memcpy(shm->addr, rei_vec_ptr(x), n);
   hdr->kind = REI_KIND_RAWSPILL;
   hdr->len = (uint32_t) n;
-  hdr->aux = (uint64_t) TYPEOF(x) | ((uint64_t) shm->name_len << 8);
+  hdr->aux = (uint64_t) rawtype | ((uint64_t) shm->name_len << 8);
   memcpy(payload, shm->name, shm->name_len);
   rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
 }
@@ -178,11 +198,14 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
     rei_r_pin(h, x);
     return;
   }
-  if (rei_raw_eligible(x, inline_max, &rawlen)) {
+  /* one raw probe per stage: the code drives both the inline RAWVEC stamp
+     and the RAWSPILL spill gate below */
+  int rawtype = rei_raw_type(x, &rawlen);
+  if (rawtype != 0 && rawlen <= inline_max) {
     memcpy(payload, rei_vec_ptr(x), rawlen);
     hdr->kind = REI_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
-    hdr->aux = (uint64_t) TYPEOF(x);
+    hdr->aux = (uint64_t) rawtype;
     return;
   }
   if (rei_str1_stage(hdr, payload, inline_max, x))
@@ -203,16 +226,15 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
      budget — the layout tier above already passed (under the zc floor, or
      churn-gated), and bare bytes skip both the serialize pass here and
      the parse at the far end. */
-  size_t n;
-  if (rei_raw_type(x, &n) && n <= UINT32_MAX) {
-    rei_payload_spill_raw(hdr, payload, x, n, h);
+  if (rawtype != 0 && rawlen <= UINT32_MAX) {
+    rei_payload_spill_raw(hdr, payload, x, rawlen, rawtype, h);
     return;
   }
   /* the compact codec ahead of R_Serialize: no per-call ref-table
      allocation on either side, and a self-contained stream (the writer
      rejects ALTREP, so no view identifier can ride along) that pins
      nothing — the NIL/RAWVEC/STR1 discipline */
-  n = rei_codec_write(payload, inline_max, x);
+  size_t n = rei_codec_write(payload, inline_max, x);
   if (n != 0) {
     if (n <= inline_max) {
       hdr->kind = REI_KIND_INLINE;
@@ -281,7 +303,7 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     size_t elt = rei_view_sizeof_elt(type);
     if (elt == 0 || hdr->len > inline_max || hdr->len % elt != 0)
       Rf_error("rei: corrupt payload slot");
-    SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
+    SEXP y = rei_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
     memcpy(rei_vec_ptr(y), payload, hdr->len);
     return y;
   }
@@ -306,7 +328,7 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     rei_shm *shm = rei_read_region(ctx, payload, name_len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
     if (hdr->len > shm->size) Rf_error("rei: corrupt payload slot");
-    SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
+    SEXP y = rei_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
     memcpy(rei_vec_ptr(y), shm->addr, hdr->len);
     return y;
   }

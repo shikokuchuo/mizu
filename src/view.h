@@ -26,6 +26,11 @@
 #define REI_VIEW_FLAGS_OFF 32
 #define REI_VIEW_FLAG_S4 0x1u
 
+/* int64 wire tag: outside SEXPTYPE space. The core's REI_TYPE_INT64 — the
+   vendored unit cannot name the enum constant (mori carries no rei_type_e);
+   the embedder _Static_asserts the pin. */
+#define REI_VIEW_TYPE_INT64 32
+
 // Types -----------------------------------------------------------------------
 
 typedef struct rei_view_buf_s {
@@ -76,6 +81,7 @@ static inline size_t rei_view_sizeof_elt(int type) {
   case LGLSXP:   return sizeof(int);
   case RAWSXP:   return 1;
   case CPLXSXP:  return sizeof(Rcomplex);
+  case REI_VIEW_TYPE_INT64: return sizeof(int64_t);  /* int64 bit patterns */
   default:       return 0;
   }
 }
@@ -116,6 +122,13 @@ static inline SEXP rei_view_apply_s4(SEXP x, const unsigned char *base) {
 // altrep.c --------------------------------------------------------------------
 
 void rei_view_altrep_init(DllInfo *dll);
+
+/* bit64-compatible int64: the class singleton (constructed and preserved in
+   rei_view_altrep_init; its interned CHARSXP doubles as the probe's
+   comparator) and the class-only gate — a REALSXP whose entire attribute
+   set is class = "integer64". */
+extern SEXP rei_view_int64_class;
+int rei_view_is_int64(SEXP x);
 
 /* SHM extptr finalizers, defined alongside the wrap constructors that
    register them: rei_view_shm_finalizer releases this side's mapping only;

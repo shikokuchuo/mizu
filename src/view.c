@@ -13,6 +13,7 @@ static R_altrep_class_t rei_view_string_class;
 static SEXP rei_view_shm_tag;    /* tag on SHM mapping extptrs (addr is rei_shm *) */
 static SEXP rei_view_host_tag;   /* tag on host-only unlink extptrs (addr is rei_shm *) */
 static SEXP rei_view_owned_tag;  /* tag on every view ALTREP data1 extptr; addr type dispatched via TYPEOF(x) */
+SEXP rei_view_int64_class;       /* STRSXP(1) "integer64" — preserved at init */
 
 /* Embedder wire hooks (view.h): set once at embedder load, read on the
    serialize / unserialize paths. */
@@ -82,6 +83,26 @@ static inline SEXP rei_view_get_attrs_for_serialize(SEXP x) {
   return ANY_ATTRIB(x) ? R_getAttributes(x) : R_NilValue;
 #else
   return ATTRIB(x);
+#endif
+}
+
+/* The raw-tier integer64 gate: a REALSXP whose entire attribute set is
+   class = "integer64" (bit64's exact layout) stages as bare int64 bytes —
+   the wire tag consumes the class at stage and re-applies it at receive, so
+   no attrs section rides the layout. Attribute shape follows
+   rei_view_get_attrs_for_serialize's split (named list on R >= 4.6,
+   pairlist below); the CHARSXP comparator is interned, so the class test is
+   a pointer compare. */
+int rei_view_is_int64(SEXP x) {
+  if (TYPEOF(x) != REALSXP || ALTREP(x) || Rf_isS4(x)) return 0;
+  SEXP cls = Rf_getAttrib(x, R_ClassSymbol);
+  if (TYPEOF(cls) != STRSXP || XLENGTH(cls) != 1 ||
+      STRING_ELT(cls, 0) != STRING_ELT(rei_view_int64_class, 0))
+    return 0;
+#if R_VERSION >= R_Version(4, 6, 0)
+  return XLENGTH(R_getAttributes(x)) == 1;
+#else
+  return XLENGTH(ATTRIB(x)) == 1;
 #endif
 }
 
@@ -352,6 +373,7 @@ SEXP rei_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
   case LGLSXP:   cls = rei_view_logical_class; break;
   case RAWSXP:   cls = rei_view_raw_class;     break;
   case CPLXSXP:  cls = rei_view_complex_class; break;
+  case REI_VIEW_TYPE_INT64: cls = rei_view_real_class; break;
   default:       Rf_error("rei: unsupported ALTREP type %d", sexptype);
   }
 
@@ -366,8 +388,12 @@ SEXP rei_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
   SEXP ptr = PROTECT(R_MakeExternalPtr(v, rei_view_owned_tag, keeper));
   R_RegisterCFinalizerEx(ptr, rei_view_owned_finalizer, TRUE);
 
-  SEXP result = R_new_altrep(cls, ptr, R_NilValue);
-  UNPROTECT(1);
+  SEXP result = PROTECT(R_new_altrep(cls, ptr, R_NilValue));
+  /* the single class-application home: covers the SHM_VEC/REF top-level
+     read, the identifier walk/resolve path, and REIL leaf reads */
+  if (sexptype == REI_VIEW_TYPE_INT64)
+    Rf_classgets(result, rei_view_int64_class);
+  UNPROTECT(2);
   return result;
 }
 
@@ -1018,6 +1044,10 @@ static void rei_view_shm_create_failed(int category, size_t requested) {
 /* REIH layout size: 64-byte header + data + attrs. */
 static size_t reih_size(SEXP x) {
   size_t data_size = (size_t) XLENGTH(x) * rei_view_sizeof_elt(TYPEOF(x));
+  /* class-only integer64: the wire tag carries the class — no attrs
+     section (reih_write gates identically; the two must agree) */
+  if (rei_view_is_int64(x))
+    return REI_HEADER_SIZE + data_size;
   SEXP attrs = PROTECT(rei_view_get_attrs_for_serialize(x));
   size_t attrs_size = (attrs != R_NilValue) ? rei_view_serialize_count(attrs) : 0;
   UNPROTECT(1);
@@ -1028,6 +1058,7 @@ static size_t reih_size(SEXP x) {
    fields are written last, once the counted attr write reports its size. */
 static void reih_write(unsigned char *base, SEXP x) {
 
+  int int64 = rei_view_is_int64(x);
   int type = TYPEOF(x);
   R_xlen_t n = XLENGTH(x);
   size_t data_size = (size_t) n * rei_view_sizeof_elt(type);
@@ -1035,14 +1066,17 @@ static void reih_write(unsigned char *base, SEXP x) {
   memset(base, 0, REI_HEADER_SIZE);
   memcpy(base + REI_HEADER_SIZE, DATAPTR_RO(x), data_size);
 
-  SEXP attrs = PROTECT(rei_view_get_attrs_for_serialize(x));
   size_t attrs_size = 0;
-  if (attrs != R_NilValue)
-    attrs_size = rei_view_serialize_into(base + REI_HEADER_SIZE + data_size,
-                                     attrs);
+  if (!int64) {
+    SEXP attrs = PROTECT(rei_view_get_attrs_for_serialize(x));
+    if (attrs != R_NilValue)
+      attrs_size = rei_view_serialize_into(base + REI_HEADER_SIZE + data_size,
+                                       attrs);
+    UNPROTECT(1);
+  }
 
   uint32_t magic = REI_MAGIC_VEC;
-  int32_t sexptype = (int32_t) type;
+  int32_t sexptype = int64 ? (int32_t) REI_VIEW_TYPE_INT64 : (int32_t) type;
   int64_t length = (int64_t) n;
   int64_t as64 = (int64_t) attrs_size;
   uint32_t flags = Rf_isS4(x) ? REI_VIEW_FLAG_S4 : 0u;
@@ -1051,8 +1085,6 @@ static void reih_write(unsigned char *base, SEXP x) {
   memcpy(base + 8, &length, 8);
   memcpy(base + 16, &as64, 8);
   memcpy(base + REI_VIEW_FLAGS_OFF, &flags, 4);
-
-  UNPROTECT(1);
 }
 
 /* REIS layout size: 64-byte header + offset table + packed strings + attrs. */
@@ -1590,6 +1622,11 @@ void rei_view_altrep_init(DllInfo *dll) {
   rei_view_shm_tag = Rf_install(REI_VIEW_TAG_SHM);
   rei_view_host_tag = Rf_install(REI_VIEW_TAG_HOST);
   rei_view_owned_tag = Rf_install(REI_VIEW_TAG_OWNED);
+
+  /* the integer64 class singleton: a STRSXP does not self-root like an
+     interned tag, so preserve it explicitly (the layer has no fini) */
+  rei_view_int64_class = Rf_mkString("integer64");
+  R_PreserveObject(rei_view_int64_class);
 
   /* ALTLIST class */
   rei_view_list_class = R_make_altlist_class("rei_list", "rei", dll);

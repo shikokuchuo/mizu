@@ -31,6 +31,9 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
   size_t rawlen, total;
   uint64_t off;
   unsigned char *chunk;
+  /* one raw probe per stage: the returned code drives the inline RAWVEC and
+     arena RAWSPILL stamps below (0 on the NIL / REF / STR1 / codec paths) */
+  int rawtype = rei_raw_type(x, &rawlen);
 
   /* NULL is the immediate kind — no serialize pass, no receive alloc */
   if (x == R_NilValue) {
@@ -43,15 +46,14 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
        uncounted, and the producer could recycle under the far side's view;
        the pin is the view itself */
     rei_r_pin(h, x);
-  } else if (rei_raw_eligible(x, inline_max, &rawlen)) {
+  } else if (rawtype != 0 && rawlen <= inline_max) {
     memcpy(payload, rei_vec_ptr(x), rawlen);
     hdr->kind = REI_KIND_RAWVEC;
     hdr->len = (uint32_t) rawlen;
-    hdr->aux = (uint64_t) TYPEOF(x);
+    hdr->aux = (uint64_t) rawtype;
   } else if (rei_str1_stage(hdr, payload, inline_max, x)) {
     /* a length-1 string's bytes are self-contained: pin nothing */
-  } else if (rei_raw_type(x, &rawlen) && rawlen > inline_max &&
-             rawlen <= UINT32_MAX &&
+  } else if (rawtype != 0 && rawlen <= UINT32_MAX &&
              (rawlen <= REI_ZC_FLOOR_RAW || rei_handle_churn(h)) &&
              (chunk = rei_stage_arena_alloc(h, REI_ALIGN64(rawlen),
                                             &off)) != NULL) {
@@ -65,7 +67,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
     memcpy(chunk, rei_vec_ptr(x), rawlen);
     hdr->kind = REI_KIND_RAWSPILL;
     hdr->len = (uint32_t) rawlen;
-    hdr->aux = (uint64_t) TYPEOF(x);
+    hdr->aux = (uint64_t) rawtype;
     memcpy(payload, &off, sizeof(off));
   } else if (rei_zc_eligible(x, inline_max, &total) &&
              !rei_handle_churn(h)) {
@@ -160,7 +162,7 @@ void *rei_r_read_channel(const rei_slot_hdr *hdr,
     size_t elt = rei_view_sizeof_elt(type);
     if (elt == 0 || hdr->len % elt != 0)
       Rf_error("rei: corrupt payload slot");
-    SEXP y = Rf_allocVector((SEXPTYPE) type, (R_xlen_t) (hdr->len / elt));
+    SEXP y = rei_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
     memcpy(rei_vec_ptr(y), payload, hdr->len);
     return (void *) y;
   }

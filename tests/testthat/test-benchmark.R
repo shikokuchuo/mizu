@@ -394,3 +394,69 @@ test_that("guard: attributed large vector reports the attrs-parse share", {
   ))
   expect_true(rei_close(ch, timeout = 10))
 })
+
+test_that("int64 reports the raw tiers against the legacy paths", {
+  skip_on_cran()
+  skip_if_no_child_rei()
+  skip_if_not_installed("bit64")
+  ch <- rei_channel(echo_expr, capacity = 64L)
+
+  rt <- function(x, n) {
+    rei_send(ch, x)
+    expect_identical(rei_recv(ch, 60), x) # correctness on the warm-up
+    best <- Inf
+    for (r in 1:3) {
+      gc() # views free their spill regions only via finalizers
+      t0 <- proc.time()[[3]]
+      for (i in seq_len(n)) {
+        rei_send(ch, x)
+        rei_recv(ch, 60)
+      }
+      best <- min(best, proc.time()[[3]] - t0)
+    }
+    best / n
+  }
+  # class-only integer64 takes the raw memcpy tiers; one extra attribute
+  # reproduces the pre-change tier per size (the "legacy" column): the codec
+  # stream below the zc floor (4 KiB), SHM_VEC with an attrs section above
+  # it. The raw tiers: arena RAWSPILL up to 256 KiB, SHM_VEC past it. Lent
+  # views pile up per phase as in the large-vector rows above
+  for (kb in c(4, 128, 1024, 8192)) {
+    n <- kb * 128L
+    x <- bit64::as.integer64(seq_len(n))
+    xa <- structure(x, note = "attr") # attributed: the pre-change tier
+    reps <- max(4L, 32768L %/% kb) # enough iterations to smooth clock quantum
+    s <- rt(x, reps)
+    sa <- rt(xa, reps)
+    cat(sprintf(
+      "\nint64 channel %d KiB round trip: %.2f ms raw, %.2f ms legacy\n",
+      kb,
+      s * 1e3,
+      sa * 1e3
+    ))
+  }
+  gc()
+  expect_true(rei_close(ch, timeout = 10))
+
+  # rei_map: the raw x section against the descriptor path (names force the
+  # list coercion and the per-runner descriptor unserialize it replaced)
+  p <- rei_pool(2L)
+  n <- 100000L
+  x <- bit64::as.integer64(seq_len(n))
+  f <- function(xi) xi
+  t0 <- proc.time()[[3]]
+  r1 <- rei_map(p, x, f, .timeout = 60)
+  raw_s <- proc.time()[[3]] - t0
+  xn <- setNames(x, paste0("e", seq_len(n)))
+  t0 <- proc.time()[[3]]
+  r2 <- rei_map(p, xn, f, .timeout = 60)
+  desc_s <- proc.time()[[3]] - t0
+  expect_identical(r1, unname(r2))
+  cat(sprintf(
+    "rei_map int64 x (%d elements, 2 workers): %.3f s raw section, %.3f s descriptor\n",
+    n,
+    raw_s,
+    desc_s
+  ))
+  expect_true(rei_pool_stop(p))
+})
