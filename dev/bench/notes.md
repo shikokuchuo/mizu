@@ -489,3 +489,19 @@ vs legacy tier (codec below the zc floor, SHM_VEC+attrs above) — 4 KiB
 rei_map 100k-element int64 x on 2 workers 0.145 s raw section vs 3.418 s
 descriptor (the list coercion + per-runner unserialize it replaced, ~24x).
 Full suite 2269 pass, 0 fail (5 expected skips).
+
+## 2026-09-11: integer64 map templates (regression check)
+
+d6dd821 stamps REI_TYPE_INT64 output areas for an integer64 .template
+(exact-type writes, classed value/view collects) — a no-op for the
+existing tiers. test-benchmark.R, this host, standalone run: channel rt
+1.50 us, one-way 22.2M msg/s, pool rt 1.0 us/task, pipelined 1.0M /
+collect_all 2.0M tasks/s, ALTREP 1:2^27 rt 5.00 us, channel 1/8/32 MiB
+0.06/0.50/1.50 ms, pool 1/8/64 MiB 0.22/1.25/10.00 ms, rei_map 32 MiB
+template 0.320s / view 0.325s, attributed 569 ms — the template rows
+exercise the edited map_write_value / rei_map_gather directly and hold.
+int64 rows: 4 KiB 0.00/0.00, 128 KiB 0.01/0.02, 1 MiB 0.09/0.09, 8 MiB
+0.50/0.50 ms (raw 1/8 MiB soft against the morning record but matching
+their legacy counterparts; the channel path is untouched by d6dd821 —
+layout draw), map int64 x 0.139 s raw / 3.158 s descriptor. 47 pass,
+0 fail.
