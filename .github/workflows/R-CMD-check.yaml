@@ -47,6 +47,19 @@ jobs:
           extra-packages: any::rcmdcheck
           needs: check
 
+      # The cross-language tests need a python3 with pyrei and NumPy (they
+      # probe-skip otherwise). Skipped on Windows: the helper probes
+      # `python3`, which setup-python does not provide there, and pyrei's
+      # build forces clang-cl.
+      - uses: actions/setup-python@v7
+        if: runner.os != 'Windows'
+        with:
+          python-version: "3.13"
+
+      - name: Install pyrei (cross-language tests)
+        if: runner.os != 'Windows'
+        run: pip install git+https://github.com/shikokuchuo/pyrei.git numpy
+
       - uses: r-lib/actions/check-r-package@v2
         with:
           upload-snapshots: true
