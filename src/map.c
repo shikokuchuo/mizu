@@ -273,13 +273,19 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   h.state_off = off;
   off = REI_ALIGN64(off + REI_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4);
   if (template_sexp != R_NilValue) {
-    size_t elt = rei_view_sizeof_elt(TYPEOF(template_sexp));
+    /* an integer64 template stamps the output area int64 — the wire tag
+       carries the class; collect re-applies it (rei_wire_alloc / the vec
+       wrap) */
+    int ot = TYPEOF(template_sexp) == REALSXP &&
+      map_is_int64_classed(template_sexp) ?
+      REI_TYPE_INT64 : (int) TYPEOF(template_sexp);
+    size_t elt = rei_view_sizeof_elt(ot);
     uint64_t m = (uint64_t) XLENGTH(template_sexp);
     if (elt == 0 || m == 0)
       Rf_error("rei: invalid map template");
     if (n > (((uint64_t) 1 << 46) - off) / (m * elt))
       Rf_error("rei: map region too large");
-    h.out_sexptype = (uint32_t) TYPEOF(template_sexp);
+    h.out_sexptype = (uint32_t) ot;
     h.out_elt_size = (uint32_t) elt;
     h.out_m = m;
     h.out_off = off;
@@ -425,7 +431,12 @@ static void map_write_value(rei_map_h *mh, double e, SEXP value) {
   if (!(e >= 1) || e > (double) mh->h.n)
     Rf_error("rei: map element index out of range");
   int vt = TYPEOF(value), ot = (int) mh->h.out_sexptype;
-  int widens = vt == ot ||
+  /* int64 joins no coercion lattice: the value must be integer64 already,
+     and the write stays a memcpy (a coerceVector to tag 32 is not a
+     thing) */
+  int widens = ot == REI_TYPE_INT64 ?
+    (vt == REALSXP && map_is_int64_classed(value)) :
+    vt == ot ||
     (ot == INTSXP  && vt == LGLSXP) ||
     (ot == REALSXP && (vt == LGLSXP || vt == INTSXP)) ||
     (ot == CPLXSXP && (vt == LGLSXP || vt == INTSXP || vt == REALSXP));
@@ -435,7 +446,7 @@ static void map_write_value(rei_map_h *mh, double e, SEXP value) {
   unsigned char *dst = (unsigned char *) mh->shm->addr + mh->h.out_off +
     (size_t) (e - 1) * (mh->h.out_m * mh->h.out_elt_size);
   size_t nbytes = (size_t) (mh->h.out_m * mh->h.out_elt_size);
-  if (vt != ot) {
+  if (vt != ot && ot != REI_TYPE_INT64) {
     PROTECT(value);
     value = PROTECT(Rf_coerceVector(value, (SEXPTYPE) ot));
     memcpy(dst, rei_vec_ptr(value), nbytes);
@@ -589,14 +600,14 @@ SEXP rei_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
 }
 
 /* Submitter-side assembly: n × m results move cross-process exactly once,
-   unserialized — one allocVector + one memcpy. Names and dim are the R
-   side's. */
+   unserialized — one rei_wire_alloc + one memcpy (an int64 area arrives
+   classed). Names and dim are the R side's. */
 SEXP rei_map_gather(SEXP xp) {
   rei_map_h *mh = map_h_get(xp);
   if (mh->h.out_sexptype == 0)
     Rf_error("rei: map region has no output area");
   R_xlen_t len = (R_xlen_t) (mh->h.n * mh->h.out_m);
-  SEXP out = Rf_allocVector((SEXPTYPE) mh->h.out_sexptype, len);
+  SEXP out = rei_wire_alloc((int) mh->h.out_sexptype, len);
   memcpy(rei_vec_ptr(out), (unsigned char *) mh->shm->addr + mh->h.out_off,
          (size_t) len * mh->h.out_elt_size);
   return out;

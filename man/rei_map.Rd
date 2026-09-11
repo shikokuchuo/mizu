@@ -110,7 +110,10 @@ subrange of the submitter is fully occupied by outstanding tasks,
 
 \code{.template} gives \code{vapply()} semantics: every result must match its
 type and length exactly, or coerce upward (logical -> integer ->
-double -> complex, checked on the workers per element). Results are
+double -> complex, checked on the workers per element). A classed
+\code{integer64} template (bit64's layout) is also supported: results must
+be \code{integer64} of the template's length — int64 joins no widening
+lattice — and the gathered vector or view keeps the class. Results are
 written directly into a shared output area and gathered in one copy:
 zero result serializations. With \code{.collect = "view"}, the gather copy
 is skipped as well: the result is a copy-on-write view over the shared

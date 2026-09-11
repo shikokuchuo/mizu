@@ -166,3 +166,82 @@ test_that("a prepared-map x swap respects the int64 wire type", {
   expect_null(pm[["st"]])
   pool_end(p)
 })
+
+test_that("an integer64 template gathers classed results", {
+  skip_if_not_installed("bit64")
+  p <- pool_pair()
+  res <- run_map(
+    p,
+    1:6,
+    function(i) {
+      bit64::as.integer64(i) * bit64::as.integer64("9007199254740993")
+    },
+    template = bit64::integer64(1)
+  )
+  expect_identical(
+    res,
+    bit64::as.integer64(1:6) * bit64::as.integer64("9007199254740993")
+  )
+  # m > 1: a classed m x n matrix with the template's names as rownames
+  res <- run_map(
+    p,
+    1:6,
+    function(i) bit64::as.integer64(c(i, -i)),
+    template = structure(numeric(2), class = "integer64", names = c("a", "b"))
+  )
+  expected <- bit64::as.integer64(c(1L, -1L) * rep(1:6, each = 2L))
+  dim(expected) <- c(2L, 6L)
+  dimnames(expected) <- list(c("a", "b"), NULL)
+  expect_identical(res, expected)
+  # an empty map short-circuits before any region exists, still classed
+  expect_identical(
+    rei_map(p[["ctrl"]], integer(0), identity, .template = bit64::integer64(1)),
+    bit64::integer64(0)
+  )
+  pool_end(p)
+})
+
+test_that(".collect = \"view\" on an integer64 template keeps the class", {
+  skip_if_not_installed("bit64")
+  p <- pool_pair()
+  st <- rei:::map_stage(
+    p[["ctrl"]],
+    1:10,
+    function(i) bit64::as.integer64(i) * bit64::as.integer64(1000003),
+    list(),
+    template = bit64::integer64(1)
+  )
+  rei:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  v <- rei:::map_collect(st, rei:::mono_time() + 30, "view")
+  expect_identical(class(v), "integer64")
+  expect_identical(
+    v,
+    bit64::as.integer64(1:10) * bit64::as.integer64(1000003)
+  )
+  pool_end(p)
+})
+
+test_that("an integer64 template rejects non-integer64 results", {
+  skip_if_not_installed("bit64")
+  p <- pool_pair()
+  st <- rei:::map_stage(
+    p[["ctrl"]],
+    1:4,
+    function(i) i * 1.5,
+    list(),
+    template = bit64::integer64(1)
+  )
+  rei:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  e <- tryCatch(
+    rei:::map_collect(st, rei:::mono_time() + 30),
+    error = identity
+  )
+  expect_match(conditionMessage(e), "type 'integer64'")
+  pool_end(p)
+})

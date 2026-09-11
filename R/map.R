@@ -114,7 +114,10 @@ mono_time <- function() .Call(rei_now_call)
 #' @section Templates:
 #' `.template` gives `vapply()` semantics: every result must match its
 #' type and length exactly, or coerce upward (logical -> integer ->
-#' double -> complex, checked on the workers per element). Results are
+#' double -> complex, checked on the workers per element). A classed
+#' `integer64` template (bit64's layout) is also supported: results must
+#' be `integer64` of the template's length — int64 joins no widening
+#' lattice — and the gathered vector or view keeps the class. Results are
 #' written directly into a shared output area and gathered in one copy:
 #' zero result serializations. With `.collect = "view"`, the gather copy
 #' is skipped as well: the result is a copy-on-write view over the shared
@@ -571,6 +574,9 @@ map_empty <- function(x, template) {
     return(out)
   }
   out <- vector(typeof(template), 0L)
+  if (typeof(template) == "double" && identical(class(template), "integer64")) {
+    class(out) <- "integer64"
+  }
   m <- length(template)
   if (m > 1L) {
     dim(out) <- c(m, 0L)
