@@ -102,7 +102,9 @@ int rei_view_is_int64(SEXP x) {
 #if R_VERSION >= R_Version(4, 6, 0)
   return XLENGTH(R_getAttributes(x)) == 1;
 #else
-  return XLENGTH(ATTRIB(x)) == 1;
+  /* ATTRIB is a pairlist here, and XLENGTH errors on pairlists: the
+     class-only test is exactly one node, the class */
+  return TAG(ATTRIB(x)) == R_ClassSymbol && CDR(ATTRIB(x)) == R_NilValue;
 #endif
 }
 
