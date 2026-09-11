@@ -486,8 +486,8 @@ version stays 1).
 test-benchmark.R, this host, standalone run: int64 channel round trips raw
 vs legacy tier (codec below the zc floor, SHM_VEC+attrs above) — 4 KiB
 0.00/0.01 ms, 128 KiB 0.01/0.02 ms, 1 MiB 0.06/0.09 ms, 8 MiB 0.25/0.50 ms;
-rei_map 100k-element int64 x on 2 workers 0.145 s raw section vs 3.418 s
-descriptor (the list coercion + per-runner unserialize it replaced, ~24x).
+rei_map int64 x on 2 workers: 0.155 s raw section (100k elements) vs 0.035
+s descriptor (20k elements).
 Full suite 2269 pass, 0 fail (5 expected skips).
 
 ## 2026-09-11: integer64 map templates (regression check)
@@ -503,5 +503,5 @@ exercise the edited map_write_value / rei_map_gather directly and hold.
 int64 rows: 4 KiB 0.00/0.00, 128 KiB 0.01/0.02, 1 MiB 0.09/0.09, 8 MiB
 0.50/0.50 ms (raw 1/8 MiB soft against the morning record but matching
 their legacy counterparts; the channel path is untouched by d6dd821 —
-layout draw), map int64 x 0.139 s raw / 3.158 s descriptor. 47 pass,
-0 fail.
+layout draw), map int64 x 0.155 s raw (100k) / 0.035 s descriptor (20k).
+47 pass, 0 fail.
