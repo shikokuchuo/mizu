@@ -58,7 +58,7 @@ test_that("attach validates each corrupted map header field", {
   corrupt(32, 0, "element count out of range") # n -> 0
   corrupt(40, 0, "descriptor lies outside") # desc_off -> 0
   corrupt(88, 0, "morsel geometry is inconsistent") # morsel_size -> 0
-  corrupt(112, 0, "morsel state section") # claim_n -> 0
+  corrupt(28, 0, "morsel state section") # claim_n -> 0
   corrupt(64, 1, "x section lies outside") # x_len mismatch
   corrupt(12, 7, "unknown x section kind")
   corrupt(80, 0, "output area lies outside") # out_m -> 0

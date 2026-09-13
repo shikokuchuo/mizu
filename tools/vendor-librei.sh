@@ -62,7 +62,7 @@ for f in "$src_root"/src/*.c; do
 done
 
 # The gate: the core is language-agnostic — no binding-side remnants.
-if grep -rnE 'sora|SORA|mori_|MORI_|MORH|MORS|MORL' "$DEST"; then
+if grep -rnE 'sora|SORA|mori_|MORI_|MORH|MORS[^E]|MORL' "$DEST"; then
   echo "vendor-librei: FAIL — stray sora/mori remnants above" >&2
   exit 1
 fi

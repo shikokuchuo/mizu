@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include "rei.h"
 
-#define REI_MAP_MAGIC 0x534F524Du   /* "SORM" */
+#define REI_MAP_MAGIC 0x534F524Du   /* "SORM" — this binding's morsel tag */
 
 static SEXP rei_map_tag;
 static SEXP rei_rs_sym;
@@ -32,66 +32,12 @@ void rei_map_init(void) {
   rei_function_sym = Rf_install("function");
 }
 
-enum { REI_MAP_X_DESC = 0, REI_MAP_X_RAWVEC };
-
-/* Map-descriptor region header. Not pool wire format — it rides its own
-   region, keyed by the same ABI version — but the same rules apply: the
-   struct is the layout, 64-byte-aligned sections follow it. */
-typedef struct rei_map_hdr_s {
-  uint32_t magic;
-  uint32_t version;
-  uint32_t flags;            /* reserved, 0 */
-  uint32_t x_kind;           /* REI_MAP_X_DESC / REI_MAP_X_RAWVEC */
-  uint32_t x_sexptype;       /* RAWVEC section element type */
-  uint32_t out_sexptype;     /* template element type; 0 = no output area */
-  uint32_t out_elt_size;
-  uint32_t pad0;
-  uint64_t n;                /* map elements */
-  uint64_t desc_off, desc_len;
-  uint64_t x_off, x_len;
-  uint64_t out_off;
-  uint64_t out_m;            /* template length: values per element */
-  uint64_t morsel_size;      /* elements per morsel */
-  uint64_t n_morsels;        /* ceiling(n / morsel_size) */
-  uint64_t state_off;        /* morsel state section offset */
-  uint32_t claim_n;          /* CLAIM word count (runner ordinal bound) */
-  uint8_t  pad[12];
-} rei_map_hdr;
-
-typedef char rei_map_hdr_assert[(sizeof(rei_map_hdr) == 128) ? 1 : -1];
-
-/* Morsel state section: one cache line for the cancel word and run
-   generation counter (read-mostly), one for the shared cursor (the ticket
-   dispenser, alone so runner RMW traffic never touches the cancel line),
-   then the CLAIM array — one word per runner *ordinal*, packing
-   (generation << 2) | state so the lane claim and the generation fence are
-   one atomic: a check-then-CAS would leave a TOCTOU window against
-   rei_map_reset's CLAIM re-arm. Generation comparisons mask to the word's
-   30 bits (wrap takes 2^30 resets of one handle: harmless). Issue is a
-   plain relaxed fetch_add — atomicity is all the shared state provides;
-   ordering rides the task claim/publish chain. Completion is never
-   recorded here: runners publish their batch histories through their
-   ordinary results, and the lost set on death is arithmetic over them. */
-#define REI_MAP_CANCEL_OFF ((uint64_t) 0)
-#define REI_MAP_GEN_OFF    ((uint64_t) 4)
-#define REI_MAP_CURSOR_OFF ((uint64_t) 64)
-#define REI_MAP_CLAIM_OFF  ((uint64_t) 128)
-#define REI_MAP_GEN_MASK   ((uint32_t) 0x3FFFFFFF)
-
-enum { REI_MORSEL_IDLE = 0, REI_MORSEL_RUNNING, REI_MORSEL_ABANDONED };
-
-/* Batch sizing policy constants (see rei_map_next): k targets a batch
-   duration, growing at most 2x per step and shrinking immediately on
-   overshoot, clamped to the cap — which bounds lost-set coarseness and
-   the ramp worst case (a cost jump right after a ramp runs one cap-sized
-   batch to completion). Frozen by the gate sweep (2026-08-04, M4 Pro,
-   W = 4): T_target from {25, 50, 100, 200} us — trivial-f overhead falls
-   monotonically with T (0.343 -> 0.296 us/elt generic, 0.482 -> 0.409
-   seeded) while cancellation latency stays ~0.1 ms at every setting, so
-   the largest candidate wins; the cap from {64, 256} — within noise on
-   every overhead row, so the tighter ramp / lost-set bound wins. */
-#define REI_MAP_T_TARGET  200e-6
-#define REI_MAP_BATCH_CAP 64
+/* The map region's protocol half — the 128-byte header, the morsel-state
+   words, the claim CAS, the AIMD batch sizing, reset/trim, and the lost-set
+   scan — is the core's morsel module (vendor/librei/morsel.c,
+   rei_morsel_*): the struct is the layout. This file keeps the language-
+   coupled half: the descriptor stream, the x-section slices, the batch
+   eval loop, and the result assembly. */
 
 /* The map-local RAWVEC gate, deliberately looser than rei_raw_type: no
    size cap, and attributes are the R side's to check (names-only is
@@ -148,19 +94,13 @@ static const char *map_type_name(int type) {
    wrap, so the mapping outlives the handle. */
 typedef struct rei_map_h_s {
   rei_shm *shm;
-  rei_map_hdr h;
-  /* Batch sizing state (rei_map_next), process-private and never wire
+  rei_morsel_hdr h;
+  /* Batch sizing state (rei_morsel_next), process-private and never wire
      state, reset at each run's first-call CLAIM CAS. A doorbell help
      that claims a queued runner of the *same* map through this ctx
      aliases it; the cost is a mis-sized batch or a re-ramp on resume —
      harmless. */
-  int32_t  run_r;            /* ordinal whose ramp this is (-1 = none) */
-  uint32_t run_gen;
-  uint64_t k;                /* current batch size, morsels */
-  uint64_t k_last;           /* morsels issued last transition */
-  double   t_last;           /* rei_now() at the last issue */
-  double   cost;             /* est. seconds per morsel (0 = unknown) */
-  int      skip;             /* last interval contained a help: no update */
+  rei_morsel_sizer sizer;
 } rei_map_h;
 
 static void map_h_finalizer(SEXP xp) {
@@ -168,13 +108,12 @@ static void map_h_finalizer(SEXP xp) {
   R_ClearExternalPtr(xp);
 }
 
-static SEXP map_h_make(rei_shm *shm, const rei_map_hdr *h, SEXP wrap) {
+static SEXP map_h_make(rei_shm *shm, const rei_morsel_hdr *h, SEXP wrap) {
   rei_map_h *mh = calloc(1, sizeof(*mh));
   if (mh == NULL) Rf_error("rei: allocation failure");
   mh->shm = shm;
   mh->h = *h;
-  mh->run_r = -1;
-  mh->k = 1;
+  rei_morsel_sizer_init(&mh->sizer);
   SEXP xp = PROTECT(R_MakeExternalPtr(mh, rei_map_tag, wrap));
   R_RegisterCFinalizerEx(xp, map_h_finalizer, TRUE);
   UNPROTECT(1);
@@ -187,27 +126,6 @@ static rei_map_h *map_h_get(SEXP xp) {
   rei_map_h *mh = (rei_map_h *) R_ExternalPtrAddr(xp);
   if (mh == NULL) Rf_error("rei: map handle is closed");
   return mh;
-}
-
-static _Atomic uint32_t *map_cancel_word(rei_map_h *mh) {
-  return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_CANCEL_OFF);
-}
-
-static _Atomic uint32_t *map_gen_word(rei_map_h *mh) {
-  return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_GEN_OFF);
-}
-
-static _Atomic uint64_t *map_cursor_word(rei_map_h *mh) {
-  return (_Atomic uint64_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_CURSOR_OFF);
-}
-
-static _Atomic uint32_t *map_claim_word(rei_map_h *mh, uint32_t r) {
-  return (_Atomic uint32_t *)
-    ((unsigned char *) mh->shm->addr + mh->h.state_off + REI_MAP_CLAIM_OFF +
-     (uint64_t) r * 4);
 }
 
 static uint32_t map_ordinal(rei_map_h *mh, SEXP r_sexp) {
@@ -242,17 +160,8 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   if (desc_len == 0)
     Rf_error("rei: invalid map descriptor size");
 
-  rei_map_hdr h = {
-    .magic = REI_MAP_MAGIC,
-    .version = REI_ABI_VERSION,
-    .n = n,
-    .desc_off = sizeof(rei_map_hdr),
-    .desc_len = desc_len,
-    .morsel_size = morsel_size,
-    .n_morsels = (n + morsel_size - 1) / morsel_size,
-    .claim_n = REI_MAX_WORKERS,
-  };
-  uint64_t off = REI_ALIGN64(sizeof(rei_map_hdr) + desc_len);
+  uint32_t x_type = 0, out_type = 0;
+  uint64_t x_len = 0, out_m = 0;
   if (x != R_NilValue) {
     /* class-only integer64 rides the x section as bare int64 bytes — the
        wire tag carries the class; slices re-apply it (rei_wire_alloc) */
@@ -261,17 +170,9 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
     if (elt == 0 || rei_vec_ptr(x) == NULL ||
         (uint64_t) XLENGTH(x) != n)
       Rf_error("rei: x is not eligible for the map raw section");
-    h.x_kind = REI_MAP_X_RAWVEC;
-    h.x_sexptype = (uint32_t) wtype;
-    h.x_off = off;
-    h.x_len = n * elt;
-    off = REI_ALIGN64(off + h.x_len);
+    x_type = (uint32_t) wtype;
+    x_len = n * elt;
   }
-  /* morsel state between the descriptor / x sections and the output area;
-     a fresh region is zero-filled, so cancel, generation, cursor and every
-     CLAIM word ((0 << 2) | IDLE) start armed for generation 0 */
-  h.state_off = off;
-  off = REI_ALIGN64(off + REI_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4);
   if (template_sexp != R_NilValue) {
     /* an integer64 template stamps the output area int64 — the wire tag
        carries the class; collect re-applies it (rei_wire_alloc / the vec
@@ -279,28 +180,28 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
     int ot = TYPEOF(template_sexp) == REALSXP &&
       map_is_int64_classed(template_sexp) ?
       REI_TYPE_INT64 : (int) TYPEOF(template_sexp);
-    size_t elt = rei_view_sizeof_elt(ot);
-    uint64_t m = (uint64_t) XLENGTH(template_sexp);
-    if (elt == 0 || m == 0)
+    out_m = (uint64_t) XLENGTH(template_sexp);
+    if (rei_view_sizeof_elt(ot) == 0 || out_m == 0)
       Rf_error("rei: invalid map template");
-    if (n > (((uint64_t) 1 << 46) - off) / (m * elt))
-      Rf_error("rei: map region too large");
-    h.out_sexptype = (uint32_t) ot;
-    h.out_elt_size = (uint32_t) elt;
-    h.out_m = m;
-    h.out_off = off;
-    off += n * m * elt;
+    out_type = (uint32_t) ot;
   }
-  if (off > ((uint64_t) 1 << 46))
+
+  rei_morsel_hdr h;
+  uint64_t size = rei_morsel_layout(&h, REI_MAP_MAGIC, n, morsel_size,
+                                    desc_len, x_type, x_len, out_type, out_m,
+                                    REI_MAX_WORKERS);
+  /* the R-facing checks above pre-validate the geometry, so a layout
+     refusal is always a size overflow (incl. n past the header's 2^48) */
+  if (size == 0)
     Rf_error("rei: map region too large");
 
   rei_shm *shm;
-  if (rei_shm_create(&shm, (size_t) off) != REI_OK) {
+  if (rei_shm_create(&shm, (size_t) size) != REI_OK) {
     const char *summary, *hint;
     rei_err_describe(rei_last_error_category(), &summary, &hint);
-    rei_stop_shm((double) off,
+    rei_stop_shm((double) size,
                  "rei: cannot create map region (%llu bytes): %s%s%s",
-                 (unsigned long long) off, summary,
+                 (unsigned long long) size, summary,
                  hint[0] != '\0' ? ". " : "", hint);
   }
   SEXP wrap = PROTECT(rei_shm_wrap_producer(shm));
@@ -318,48 +219,6 @@ SEXP rei_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
 }
 
 // Worker-side context -----------------------------------------------------------
-
-static const char *map_hdr_validate(const rei_shm *shm, rei_map_hdr *out) {
-  if (shm->size < sizeof(rei_map_hdr))
-    return "region is smaller than a map header";
-  rei_map_hdr h;
-  memcpy(&h, shm->addr, sizeof(h));
-  if (h.magic != REI_MAP_MAGIC)
-    return "bad magic: not a rei map region";
-  if (h.version != REI_ABI_VERSION)
-    return "ABI version mismatch: worker and submitter were built against "
-           "different rei wire formats";
-  if (h.n == 0 || h.n > ((uint64_t) 1 << 48))
-    return "element count out of range";
-  if (h.desc_off < sizeof(rei_map_hdr) || h.desc_off > shm->size ||
-      h.desc_len == 0 || h.desc_len > shm->size - h.desc_off)
-    return "descriptor lies outside the region";
-  if (h.morsel_size == 0 ||
-      h.n_morsels != (h.n + h.morsel_size - 1) / h.morsel_size)
-    return "morsel geometry is inconsistent";
-  if (h.claim_n == 0 || h.claim_n > (1u << 16) ||
-      h.state_off < sizeof(rei_map_hdr) || (h.state_off & 63) != 0 ||
-      h.state_off > shm->size ||
-      REI_MAP_CLAIM_OFF + (uint64_t) h.claim_n * 4 > shm->size - h.state_off)
-    return "morsel state section lies outside the region";
-  if (h.x_kind == REI_MAP_X_RAWVEC) {
-    size_t elt = rei_view_sizeof_elt((int) h.x_sexptype);
-    if (elt == 0 || h.x_off > shm->size || h.x_len > shm->size - h.x_off ||
-        h.x_len != h.n * elt)
-      return "x section lies outside the region";
-  } else if (h.x_kind != REI_MAP_X_DESC) {
-    return "unknown x section kind";
-  }
-  if (h.out_sexptype != 0) {
-    size_t elt = rei_view_sizeof_elt((int) h.out_sexptype);
-    if (elt == 0 || elt != h.out_elt_size || h.out_m == 0 ||
-        h.out_m > ((uint64_t) 1 << 32) || h.out_off > shm->size ||
-        h.n > (shm->size - h.out_off) / (h.out_m * elt))
-      return "output area lies outside the region";
-  }
-  if (out != NULL) *out = h;
-  return NULL;
-}
 
 /* Attach a map region. Runners attach writable — every runner CASes the
    shared morsel state, not just the template path's output-area stores —
@@ -379,8 +238,9 @@ SEXP rei_map_open(SEXP name_sexp, SEXP writable_sexp) {
   if (st != REI_OK)
     rei_stop_shm(NA_REAL, "rei: cannot open map region '%s' — its "
                  "submitter died or the map ended", name);
-  rei_map_hdr h;
-  const char *err = map_hdr_validate(shm, &h);
+  rei_morsel_hdr h;
+  const char *err = rei_morsel_hdr_check(shm->addr, shm->size,
+                                         REI_MAP_MAGIC, &h);
   if (err != NULL) {
     rei_shm_close(shm, 0);
     Rf_error("rei: invalid map region: %s", err);
@@ -401,9 +261,9 @@ SEXP rei_map_desc(SEXP xp) {
    mapping — per chunk, not per map, so a worker never holds more than a
    chunk of a huge x. */
 static SEXP map_slice_copy(rei_map_h *mh, uint64_t lo, uint64_t hi) {
-  size_t elt = rei_view_sizeof_elt((int) mh->h.x_sexptype);
+  size_t elt = rei_view_sizeof_elt((int) mh->h.x_type);
   R_xlen_t len = (R_xlen_t) (hi - lo + 1);
-  SEXP out = rei_wire_alloc((int) mh->h.x_sexptype, len);
+  SEXP out = rei_wire_alloc((int) mh->h.x_type, len);
   memcpy(rei_vec_ptr(out),
          (unsigned char *) mh->shm->addr + mh->h.x_off +
          (size_t) (lo - 1) * elt,
@@ -413,7 +273,7 @@ static SEXP map_slice_copy(rei_map_h *mh, uint64_t lo, uint64_t hi) {
 
 SEXP rei_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
   rei_map_h *mh = map_h_get(xp);
-  if (mh->h.x_kind != REI_MAP_X_RAWVEC)
+  if (mh->h.x_kind != REI_MORSEL_X_RAW)
     Rf_error("rei: map region has no x section");
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
   if (!(lo >= 1) || !(hi >= lo) || hi > (double) mh->h.n)
@@ -430,7 +290,7 @@ SEXP rei_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
 static void map_write_value(rei_map_h *mh, double e, SEXP value) {
   if (!(e >= 1) || e > (double) mh->h.n)
     Rf_error("rei: map element index out of range");
-  int vt = TYPEOF(value), ot = (int) mh->h.out_sexptype;
+  int vt = TYPEOF(value), ot = (int) mh->h.out_type;
   /* int64 joins no coercion lattice: the value must be integer64 already,
      and the write stays a memcpy (a coerceVector to tag 32 is not a
      thing) */
@@ -444,8 +304,8 @@ static void map_write_value(rei_map_h *mh, double e, SEXP value) {
     Rf_error("rei: map values must be type '%s' and length %llu",
              map_type_name(ot), (unsigned long long) mh->h.out_m);
   unsigned char *dst = (unsigned char *) mh->shm->addr + mh->h.out_off +
-    (size_t) (e - 1) * (mh->h.out_m * mh->h.out_elt_size);
-  size_t nbytes = (size_t) (mh->h.out_m * mh->h.out_elt_size);
+    (size_t) (e - 1) * (mh->h.out_m * mh->h.out_elt);
+  size_t nbytes = (size_t) (mh->h.out_m * mh->h.out_elt);
   if (vt != ot && ot != REI_TYPE_INT64) {
     PROTECT(value);
     value = PROTECT(Rf_coerceVector(value, (SEXPTYPE) ot));
@@ -458,7 +318,7 @@ static void map_write_value(rei_map_h *mh, double e, SEXP value) {
 
 SEXP rei_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
   rei_map_h *mh = map_h_get(xp);
-  if (mh->h.out_sexptype == 0)
+  if (mh->h.out_type == 0)
     Rf_error("rei: map region has no output area");
   map_write_value(mh, Rf_asReal(e_sexp), value);
   return R_NilValue;
@@ -483,7 +343,7 @@ SEXP rei_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
                    SEXP lo_sexp, SEXP hi_sexp, SEXP sr, SEXP ei_sexp,
                    SEXP rho) {
   rei_map_h *mh = xp == R_NilValue ? NULL : map_h_get(xp);
-  int tmpl = mh != NULL && mh->h.out_sexptype != 0;
+  int tmpl = mh != NULL && mh->h.out_type != 0;
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
   double base = Rf_asReal(base_sexp);
   if (!(lo >= 1) || !(hi >= lo) || !(base >= 0) ||
@@ -604,12 +464,12 @@ SEXP rei_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
    classed). Names and dim are the R side's. */
 SEXP rei_map_gather(SEXP xp) {
   rei_map_h *mh = map_h_get(xp);
-  if (mh->h.out_sexptype == 0)
+  if (mh->h.out_type == 0)
     Rf_error("rei: map region has no output area");
   R_xlen_t len = (R_xlen_t) (mh->h.n * mh->h.out_m);
-  SEXP out = rei_wire_alloc((int) mh->h.out_sexptype, len);
+  SEXP out = rei_wire_alloc((int) mh->h.out_type, len);
   memcpy(rei_vec_ptr(out), (unsigned char *) mh->shm->addr + mh->h.out_off,
-         (size_t) len * mh->h.out_elt_size);
+         (size_t) len * mh->h.out_elt);
   return out;
 }
 
@@ -626,12 +486,12 @@ SEXP rei_map_gather(SEXP xp) {
    layout and REF resolution would misread it. */
 SEXP rei_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
   rei_map_h *mh = map_h_get(xp);
-  if (mh->h.out_sexptype == 0)
+  if (mh->h.out_type == 0)
     Rf_error("rei: map region has no output area");
   uint64_t n = mh->h.n, m = mh->h.out_m;
   SEXP view = PROTECT(rei_view_vec_wrap(
     (unsigned char *) mh->shm->addr + mh->h.out_off, (R_xlen_t) (n * m),
-    (int) mh->h.out_sexptype, xp, NULL, NULL));
+    (int) mh->h.out_type, xp, NULL, NULL));
   if (m == 1) {
     if (nms != R_NilValue) Rf_setAttrib(view, R_NamesSymbol, nms);
     UNPROTECT(1);
@@ -713,19 +573,12 @@ SEXP rei_map_splice(SEXP out, SEXP results, SEXP ms_sexp) {
    elements of each (batch starts, batch sizes, in morsels) are read.
    Returns the lost element ranges as a two-column double matrix of
    inclusive 1-based [lo, hi]. */
-typedef struct rei_mbatch_s { uint64_t m, k; } rei_mbatch;
-
-static int rei_mbatch_cmp(const void *a, const void *b) {
-  uint64_t x = ((const rei_mbatch *) a)->m;
-  uint64_t y = ((const rei_mbatch *) b)->m;
-  return (x > y) - (x < y);
-}
-
 SEXP rei_map_lost(SEXP xp, SEXP runs) {
   rei_map_h *mh = map_h_get(xp);
-  uint64_t cur = atomic_load_explicit(map_cursor_word(mh),
-                                      memory_order_acquire);
-  if (cur > mh->h.n_morsels) cur = mh->h.n_morsels;
+  const uint64_t msz = mh->h.morsel_size, n = mh->h.n;
+  /* the issued bound, in elements */
+  uint64_t bound = rei_morsel_cursor(mh->shm->addr, &mh->h) * msz;
+  if (bound > n) bound = n;
   if (TYPEOF(runs) != VECSXP)
     Rf_error("rei: invalid map batch history");
   R_xlen_t nh = XLENGTH(runs), total = 0;
@@ -738,9 +591,10 @@ SEXP rei_map_lost(SEXP xp, SEXP runs) {
       Rf_error("rei: invalid map batch history");
     total += XLENGTH(VECTOR_ELT(pr, 0));
   }
-  rei_mbatch *b =
-    (rei_mbatch *) R_alloc((size_t) (total > 0 ? total : 1),
-                            sizeof(*b));
+  /* marshal the (morsel start, morsel count) histories into element spans */
+  rei_morsel_span *b =
+    (rei_morsel_span *) R_alloc((size_t) (total > 0 ? total : 1),
+                                 sizeof(*b));
   R_xlen_t at = 0;
   for (R_xlen_t i = 0; i < nh; i++) {
     SEXP pr = VECTOR_ELT(runs, i);
@@ -751,36 +605,20 @@ SEXP rei_map_lost(SEXP xp, SEXP runs) {
           m[j] > (double) mh->h.n_morsels ||
           k[j] > (double) mh->h.n_morsels)
         Rf_error("rei: invalid map batch history");
-      b[at].m = (uint64_t) m[j];
-      b[at].k = (uint64_t) k[j];
+      uint64_t lo = (uint64_t) m[j] * msz;
+      uint64_t hi = ((uint64_t) m[j] + (uint64_t) k[j]) * msz;
+      b[at].lo = lo > n ? n : lo;
+      b[at].hi = hi > n ? n : hi;
     }
   }
-  qsort(b, (size_t) total, sizeof(*b), rei_mbatch_cmp);
-  const uint64_t msz = mh->h.morsel_size, n = mh->h.n;
-  uint64_t pos = 0, ngap = 0;
-  for (R_xlen_t i = 0; i < total; i++) {
-    if (b[i].m > pos) ngap++;
-    if (b[i].m + b[i].k > pos) pos = b[i].m + b[i].k;
-  }
-  if (pos < cur) ngap++;
+  rei_morsel_span *gaps =
+    (rei_morsel_span *) R_alloc((size_t) total + 1, sizeof(*gaps));
+  size_t ngap = rei_morsel_lost(b, (size_t) total, bound, gaps);
   SEXP out = PROTECT(Rf_allocMatrix(REALSXP, (R_xlen_t) ngap, 2));
   double *lo = REAL(out), *hi = lo + ngap;
-  pos = 0;
-  uint64_t g = 0;
-  for (R_xlen_t i = 0; i < total; i++) {
-    if (b[i].m > pos) {
-      uint64_t e = b[i].m * msz;
-      lo[g] = (double) (pos * msz) + 1;
-      hi[g] = (double) (e > n ? n : e);
-      g++;
-    }
-    if (b[i].m + b[i].k > pos) pos = b[i].m + b[i].k;
-  }
-  if (pos < cur) {
-    uint64_t e = cur * msz;
-    lo[g] = (double) (pos * msz) + 1;
-    hi[g] = (double) (e > n ? n : e);
-    g++;
+  for (size_t g = 0; g < ngap; g++) {
+    lo[g] = (double) gaps[g].lo + 1;   /* 0-based half-open -> 1-based incl. */
+    hi[g] = (double) gaps[g].hi;
   }
   SEXP cn = PROTECT(Rf_allocVector(STRSXP, 2));
   SET_STRING_ELT(cn, 0, Rf_mkChar("lo"));
@@ -811,96 +649,33 @@ SEXP rei_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
                   SEXP pin_sexp, SEXP now_sexp) {
   rei_map_h *mh = map_h_get(xp);
   uint32_t r = map_ordinal(mh, r_sexp);
-  uint32_t gen = ((uint32_t) Rf_asReal(gen_sexp)) & REI_MAP_GEN_MASK;
-
-  /* first transition: CAS (gen << 2)|IDLE -> RUNNING — the one atomic
-     that both claims the lane and fences the generation. It fails alike
-     against ABANDONED (lost to the trim) and against a word re-armed
-     with a newer generation; RUNNING at our generation means this very
-     task already claimed it (each ordinal rides exactly one payload per
-     generation), so later transitions — and a run resumed through an
-     aliased ctx — fall straight through. */
-  _Atomic uint32_t *cw = map_claim_word(mh, r);
-  uint32_t running = (gen << 2) | REI_MORSEL_RUNNING;
-  uint32_t w = atomic_load_explicit(cw, memory_order_acquire);
-  if (w == ((gen << 2) | REI_MORSEL_IDLE) &&
-      atomic_compare_exchange_strong_explicit(cw, &w, running,
-                                              memory_order_seq_cst,
-                                              memory_order_acquire))
-    w = running;
-  if (w != running) return R_NilValue;
-
-  if (mh->run_r != (int32_t) r || mh->run_gen != gen) {
-    /* run boundary through this ctx: relearn over a fresh ramp */
-    mh->run_r = (int32_t) r;
-    mh->run_gen = gen;
-    mh->k = 1;
-    mh->k_last = 0;
-    mh->cost = 0;
-    mh->skip = 0;
-  }
-
-  if (atomic_load_explicit(map_cancel_word(mh), memory_order_acquire) != 0)
-    return R_NilValue;
-
-  int help = 0;
-  if (sig != R_NilValue) {
-    rei_pool_sig *s = rei_pool_sig_get(sig);
-    /* a runner is the one place a worker sits for a whole map without
-       touching its step loop, where these words are consumed: NULL
-       unwinds it there within ~a batch instead of at cursor exhaustion */
-    if (atomic_load_explicit(s->shutdown, memory_order_relaxed) != 0 ||
-        atomic_load_explicit(s->owner_dead, memory_order_relaxed) != 0)
-      return R_NilValue;
-    help = atomic_load_explicit(s->help_wanted, memory_order_relaxed) != 0;
-  }
-
-  double now = now_sexp == R_NilValue ? rei_now() : Rf_asReal(now_sexp);
-  uint64_t k;
+  uint32_t gen = (uint32_t) Rf_asReal(gen_sexp);
+  rei_pool_sig *s = sig == R_NilValue ? NULL : rei_pool_sig_get(sig);
+  uint64_t pin_k = 0;
   if (pin_sexp != R_NilValue) {
     double pk = Rf_asReal(pin_sexp);
     if (!(pk >= 1)) Rf_error("rei: invalid pinned batch size");
-    k = (uint64_t) pk;
-  } else {
-    if (mh->k_last > 0) {
-      if (mh->skip) {
-        mh->skip = 0;   /* interval contained a helped foreign task */
-      } else {
-        double per = (now - mh->t_last) / (double) mh->k_last;
-        mh->cost = per > 1e-9 ? per : 1e-9;   /* clock-floor trivial f */
-      }
-      if (mh->cost > 0) {
-        double want = REI_MAP_T_TARGET / mh->cost;
-        uint64_t wk = want >= 1 ? (uint64_t) want : 1;
-        /* grow at most 2x per step toward the target; shrink immediately
-           on overshoot; clamp to the batch cap */
-        mh->k = wk >= mh->k * 2 ? mh->k * 2 : wk;
-        if (mh->k > REI_MAP_BATCH_CAP) mh->k = REI_MAP_BATCH_CAP;
-      }
-    }
-    k = mh->k;
+    pin_k = (uint64_t) pk;
   }
+  double now = now_sexp == R_NilValue ? rei_now() : Rf_asReal(now_sexp);
 
-  /* relaxed issue: atomicity (unique claim) is all the shared state
-     provides; ordering rides the task claim/publish chain. Overshoot of
-     up to k is harmless — a runner stops at its first exhausted issue. */
-  uint64_t m = atomic_fetch_add_explicit(map_cursor_word(mh), k,
-                                         memory_order_relaxed);
-  if (m >= mh->h.n_morsels) return R_NilValue;
-  if (k > mh->h.n_morsels - m) k = mh->h.n_morsels - m;   /* final grant */
-  mh->k_last = k;
-  mh->t_last = now;
-  if (help) mh->skip = 1;
+  /* the core's batch transition: generation-fenced lane claim, cancel and
+     pool-signal checks, AIMD sizing, cursor issue */
+  uint64_t m, k;
+  int help;
+  if (!rei_morsel_next(mh->shm->addr, &mh->h, &mh->sizer, r, gen, s, pin_k,
+                       now, &m, &k, &help))
+    return R_NilValue;
 
-  uint64_t lo = m * mh->h.morsel_size + 1;
-  uint64_t hi = (m + k) * mh->h.morsel_size;
-  if (hi > mh->h.n) hi = mh->h.n;
+  uint64_t lo, hi;
+  rei_morsel_span_of(&mh->h, m, k, &lo, &hi);
+  lo++;   /* 0-based half-open to 1-based inclusive */
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 6));
   SET_VECTOR_ELT(out, 0, Rf_ScalarReal((double) m));
   SET_VECTOR_ELT(out, 1, Rf_ScalarReal((double) k));
   SET_VECTOR_ELT(out, 2, Rf_ScalarReal((double) lo));
   SET_VECTOR_ELT(out, 3, Rf_ScalarReal((double) hi));
-  if (mh->h.x_kind == REI_MAP_X_RAWVEC)
+  if (mh->h.x_kind == REI_MORSEL_X_RAW)
     SET_VECTOR_ELT(out, 4, map_slice_copy(mh, lo, hi));
   SET_VECTOR_ELT(out, 5, Rf_ScalarLogical(help));
   UNPROTECT(1);
@@ -920,22 +695,9 @@ SEXP rei_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
 SEXP rei_map_abandon(SEXP xp, SEXP r_sexp) {
   rei_map_h *mh = map_h_get(xp);
   uint32_t r = map_ordinal(mh, r_sexp);
-  _Atomic uint32_t *cw = map_claim_word(mh, r);
-  uint32_t gen = atomic_load_explicit(map_gen_word(mh),
-                                      memory_order_acquire) &
-    REI_MAP_GEN_MASK;
-  int armed =
-    atomic_load_explicit(map_cursor_word(mh), memory_order_acquire) >=
-      mh->h.n_morsels ||
-    atomic_load_explicit(map_cancel_word(mh), memory_order_acquire) != 0;
-  uint32_t w = atomic_load_explicit(cw, memory_order_acquire);
-  if (armed)
-    while (w == ((gen << 2) | REI_MORSEL_IDLE))
-      if (atomic_compare_exchange_strong_explicit(
-            cw, &w, (gen << 2) | REI_MORSEL_ABANDONED,
-            memory_order_seq_cst, memory_order_acquire))
-        return Rf_ScalarInteger(REI_MORSEL_ABANDONED);
-  return Rf_ScalarInteger((int) (w & 3u));
+  uint32_t gen = rei_morsel_generation(mh->shm->addr, &mh->h);
+  return Rf_ScalarInteger(
+    rei_morsel_abandon(mh->shm->addr, &mh->h, r, gen));
 }
 
 /* The cancel word: set by the submitter on timeout / cancel / death, and
@@ -948,14 +710,13 @@ SEXP rei_map_cancel_set(SEXP xp) {
     return R_NilValue;
   rei_map_h *mh = (rei_map_h *) R_ExternalPtrAddr(xp);
   if (mh == NULL) return R_NilValue;
-  atomic_store_explicit(map_cancel_word(mh), 1u, memory_order_seq_cst);
+  rei_morsel_cancel_set(mh->shm->addr, &mh->h);
   return R_NilValue;
 }
 
 SEXP rei_map_cancel_get(SEXP xp) {
-  return Rf_ScalarLogical(
-    atomic_load_explicit(map_cancel_word(map_h_get(xp)),
-                         memory_order_acquire) != 0);
+  rei_map_h *mh = map_h_get(xp);
+  return Rf_ScalarLogical(rei_morsel_cancel_get(mh->shm->addr, &mh->h));
 }
 
 /* Prepared-run re-arm, O(1) in n (no per-morsel state exists to clear):
@@ -967,16 +728,7 @@ SEXP rei_map_cancel_get(SEXP xp) {
    generation — the value the next run's payloads must carry. */
 SEXP rei_map_reset(SEXP xp) {
   rei_map_h *mh = map_h_get(xp);
-  uint32_t gen = (atomic_fetch_add_explicit(map_gen_word(mh), 1u,
-                                            memory_order_seq_cst) + 1) &
-    REI_MAP_GEN_MASK;
-  for (uint32_t r = 0; r < mh->h.claim_n; r++)
-    atomic_store_explicit(map_claim_word(mh, r),
-                          (gen << 2) | REI_MORSEL_IDLE,
-                          memory_order_seq_cst);
-  atomic_store_explicit(map_cursor_word(mh), 0, memory_order_seq_cst);
-  atomic_store_explicit(map_cancel_word(mh), 0u, memory_order_seq_cst);
-  return Rf_ScalarReal((double) gen);
+  return Rf_ScalarReal((double) rei_morsel_reset(mh->shm->addr, &mh->h));
 }
 
 /* Geometry and state snapshot: the stage-time constants plus single reads
@@ -993,14 +745,11 @@ SEXP rei_map_info(SEXP xp) {
   SET_VECTOR_ELT(out, 2, Rf_ScalarReal((double) mh->h.n_morsels));
   SET_VECTOR_ELT(out, 3, Rf_ScalarInteger((int) mh->h.claim_n));
   SET_VECTOR_ELT(out, 4, Rf_ScalarReal((double)
-    (atomic_load_explicit(map_gen_word(mh), memory_order_acquire) &
-     REI_MAP_GEN_MASK)));
-  uint64_t cur = atomic_load_explicit(map_cursor_word(mh),
-                                      memory_order_acquire);
-  if (cur > mh->h.n_morsels) cur = mh->h.n_morsels;
-  SET_VECTOR_ELT(out, 5, Rf_ScalarReal((double) cur));
+    rei_morsel_generation(mh->shm->addr, &mh->h)));
+  SET_VECTOR_ELT(out, 5, Rf_ScalarReal((double)
+    rei_morsel_cursor(mh->shm->addr, &mh->h)));
   SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(
-    atomic_load_explicit(map_cancel_word(mh), memory_order_acquire) != 0));
+    rei_morsel_cancel_get(mh->shm->addr, &mh->h)));
   UNPROTECT(1);
   return out;
 }
@@ -1012,13 +761,13 @@ SEXP rei_map_info(SEXP xp) {
    mismatch — the R side restages instead of swapping. */
 SEXP rei_map_swap_x(SEXP xp, SEXP x) {
   rei_map_h *mh = map_h_get(xp);
-  if (mh->h.x_kind != REI_MAP_X_RAWVEC)
+  if (mh->h.x_kind != REI_MORSEL_X_RAW)
     Rf_error("rei: map region has no x section");
   /* the staged code is a wire type: class-only integer64 compares as
      REI_TYPE_INT64, not REALSXP */
   uint32_t wtype =
     (uint32_t) (rei_view_is_int64(x) ? REI_TYPE_INT64 : (int) TYPEOF(x));
-  if (wtype != mh->h.x_sexptype ||
+  if (wtype != mh->h.x_type ||
       (uint64_t) XLENGTH(x) != mh->h.n ||
       ALTREP(x) || Rf_isS4(x) || rei_vec_ptr(x) == NULL)
     Rf_error("rei: replacement x must match the staged type and length");
@@ -1031,8 +780,7 @@ SEXP rei_map_swap_x(SEXP xp, SEXP x) {
 SEXP rei_map_claim_state(SEXP xp, SEXP r_sexp) {
   rei_map_h *mh = map_h_get(xp);
   uint32_t r = map_ordinal(mh, r_sexp);
-  uint32_t w = atomic_load_explicit(map_claim_word(mh, r),
-                                    memory_order_acquire);
+  uint32_t w = rei_morsel_claim(mh->shm->addr, &mh->h, r);
   const char *names[] = {"state", "generation", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(

@@ -6,6 +6,7 @@ OBJECTS = bounded.o codec.o condition.o entity.o init.o liveness.o map.o \
           payload.o preamble.o rng.o serialize.o stage_r.o verbs_channel.o \
           verbs_pool.o view.o wrap.o zc.o \
           vendor/librei/api.o vendor/librei/bytes.o vendor/librei/channel.o \
+          vendor/librei/morsel.o vendor/librei/stage_raw.o \
           vendor/librei/err.o vendor/librei/err_tls.o vendor/librei/ext.o \
           vendor/librei/liveness.o \
           vendor/librei/parker.o vendor/librei/pool.o vendor/librei/preamble.o \

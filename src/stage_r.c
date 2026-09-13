@@ -28,11 +28,12 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
                          unsigned char *payload, uint32_t inline_max,
                          rei_handle *h, void *ctx) {
   SEXP x = (SEXP) obj;
-  size_t rawlen, total;
+  size_t total;
   uint64_t off;
   unsigned char *chunk;
-  /* one raw probe per stage: the returned code drives the inline RAWVEC and
-     arena RAWSPILL stamps below (0 on the NIL / REF / STR1 / codec paths) */
+  /* one raw probe per stage: the returned code drives the core's raw-tier
+     reservation below (0 on the NIL / REF / STR1 / codec paths) */
+  size_t rawlen;
   int rawtype = rei_raw_type(x, &rawlen);
 
   /* NULL is the immediate kind — no serialize pass, no receive alloc */
@@ -40,35 +41,31 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
     hdr->kind = REI_KIND_NIL;
     hdr->len = 0;
     hdr->aux = 0;
-  } else if (rei_zc_ref_stage(hdr, payload, inline_max, x)) {
+    return 0;
+  }
+  if (rei_zc_ref_stage(hdr, payload, inline_max, x)) {
     /* a rei-native view crosses by reference (REF) at any size — required
        once SHM_VEC views exist: the serialize-hook fallback resolves
        uncounted, and the producer could recycle under the far side's view;
        the pin is the view itself */
     rei_r_pin(h, ctx, x);
-  } else if (rawtype != 0 && rawlen <= inline_max) {
-    memcpy(payload, rei_vec_ptr(x), rawlen);
-    hdr->kind = REI_KIND_RAWVEC;
-    hdr->len = (uint32_t) rawlen;
-    hdr->aux = (uint64_t) rawtype;
+    return 0;
+  }
+  if (rawtype != 0) {
+    /* the raw tiers (rei_stage_raw, the core's policy): RAWVEC inline, the
+       arena copy, or the flat SHM_VEC layout. Bare bytes skip the serialize
+       pass here and the parse at the far end, and nothing is pinned (no
+       identifier can ride along). A NULL reservation falls to the
+       serialized tiers below. */
+    unsigned char *dst = rei_stage_raw(h, rawlen, rawtype, hdr, payload,
+                                       inline_max);
+    if (dst != NULL) {
+      memcpy(dst, rei_vec_ptr(x), rawlen);
+      return 0;
+    }
   } else if (rei_str1_stage(hdr, payload, inline_max, x)) {
     /* a length-1 string's bytes are self-contained: pin nothing */
-  } else if (rawtype != 0 && rawlen <= UINT32_MAX &&
-             (rawlen <= REI_ZC_FLOOR_RAW || rei_handle_churn(h)) &&
-             (chunk = rei_stage_arena_alloc(h, REI_ALIGN64(rawlen),
-                                            &off)) != NULL) {
-    /* Raw-bytes arena spill: the vectors RAWVEC takes inline, past the
-       inline budget. Bare bytes skip the serialize pass here and the
-       parse at the far end; the chunk's lifetime tracks ring advance like
-       any arena payload, and nothing is pinned (no identifier can ride
-       along). Sits ahead of the zc tier up to REI_ZC_FLOOR_RAW (the
-       arena copy beats the view there) and serves as the churn-immune
-       fallback past it; an arena miss falls through to zc/serialize. */
-    memcpy(chunk, rei_vec_ptr(x), rawlen);
-    hdr->kind = REI_KIND_RAWSPILL;
-    hdr->len = (uint32_t) rawlen;
-    hdr->aux = (uint64_t) rawtype;
-    memcpy(payload, &off, sizeof(off));
+    return 0;
   } else if (rei_zc_eligible(x, inline_max, &total) &&
              !rei_handle_churn(h)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
@@ -80,44 +77,44 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
        per message would pile up in the ledger */
     rei_stage_reap(h);
     rei_zc_stage(hdr, payload, x, total, h, ctx);
-  } else {
-    /* the compact codec ahead of R_Serialize (payload.c): a codec stream
-       is self-contained — the writer rejects ALTREP, so no hook-emitted
-       view identifier can ride along — and pins nothing */
-    size_t n = rei_codec_write(payload, inline_max, x);
-    int self_contained = n != 0;
+    return 0;
+  }
+  /* the compact codec ahead of R_Serialize (payload.c): a codec stream
+     is self-contained — the writer rejects ALTREP, so no hook-emitted
+     view identifier can ride along — and pins nothing */
+  size_t n = rei_codec_write(payload, inline_max, x);
+  int self_contained = n != 0;
+  if (!self_contained)
+    n = rei_serialize_bounded(payload, inline_max, x);
+  if (n <= inline_max) {
+    hdr->kind = REI_KIND_INLINE;
+    hdr->len = (uint32_t) n;
+    hdr->aux = 0;
     if (!self_contained)
-      n = rei_serialize_bounded(payload, inline_max, x);
-    if (n <= inline_max) {
-      hdr->kind = REI_KIND_INLINE;
-      hdr->len = (uint32_t) n;
-      hdr->aux = 0;
+      rei_r_pin(h, ctx, x);
+  } else {
+    if ((chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off)) != NULL) {
+      if (self_contained) {
+        if (rei_codec_write(chunk, n, x) != n)
+          Rf_error("rei: codec write mismatch");
+      } else {
+        rei_view_serialize_into(chunk, x);
+      }
+      hdr->kind = REI_KIND_ARENA;
+      hdr->len = 0;
+      hdr->aux = off;
+      uint64_t n64 = (uint64_t) n;
+      memcpy(payload, &n64, sizeof(n64));
       if (!self_contained)
         rei_r_pin(h, ctx, x);
     } else {
-      if ((chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off)) != NULL) {
-        if (self_contained) {
-          if (rei_codec_write(chunk, n, x) != n)
-            Rf_error("rei: codec write mismatch");
-        } else {
-          rei_view_serialize_into(chunk, x);
-        }
-        hdr->kind = REI_KIND_ARENA;
-        hdr->len = 0;
-        hdr->aux = off;
-        uint64_t n64 = (uint64_t) n;
-        memcpy(payload, &n64, sizeof(n64));
-        if (!self_contained)
-          rei_r_pin(h, ctx, x);
-      } else {
-        /* reap before staging: the consumer's latest head publish may
-           have released a fitting region for this very spill to pop */
-        rei_stage_reap(h);
-        if (self_contained)
-          rei_payload_spill_codec(hdr, payload, x, n, h);
-        else
-          rei_payload_spill_shm(hdr, payload, x, n, h, ctx);
-      }
+      /* reap before staging: the consumer's latest head publish may
+         have released a fitting region for this very spill to pop */
+      rei_stage_reap(h);
+      if (self_contained)
+        rei_payload_spill_codec(hdr, payload, x, n, h);
+      else
+        rei_payload_spill_shm(hdr, payload, x, n, h, ctx);
     }
   }
   return 0;

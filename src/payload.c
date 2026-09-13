@@ -148,17 +148,6 @@ void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
   rei_stage_retain(h, shm);
 }
 
-void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                            size_t n, int rawtype, rei_handle *h) {
-  rei_shm *shm = rei_spill_get_raise(h, n);
-  memcpy(shm->addr, rei_vec_ptr(x), n);
-  hdr->kind = REI_KIND_RAWSPILL;
-  hdr->len = (uint32_t) n;
-  hdr->aux = rei_aux_rawspill_pool(rawtype, shm->name_len);
-  memcpy(payload, shm->name, shm->name_len);
-  rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
-}
-
 /* The SHM_RAW spill of a codec stream (n from the counting first pass):
    the region alone is retained — the writer rejected ALTREP, so no
    hook-emitted identifier can ride along. */
@@ -199,36 +188,33 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
     rei_r_pin(h, ctx, x);
     return;
   }
-  /* one raw probe per stage: the code drives both the inline RAWVEC stamp
-     and the RAWSPILL spill gate below */
+  /* one raw probe per stage: the code drives the core's raw-tier
+     reservation below (0 on the STR1 / SHM_VEC-layout / codec paths) */
   int rawtype = rei_raw_type(x, &rawlen);
-  if (rawtype != 0 && rawlen <= inline_max) {
-    memcpy(payload, rei_vec_ptr(x), rawlen);
-    hdr->kind = REI_KIND_RAWVEC;
-    hdr->len = (uint32_t) rawlen;
-    hdr->aux = (uint64_t) rawtype;
+  if (rawtype != 0) {
+    /* the raw tiers (rei_stage_raw, the core's policy): RAWVEC inline, the
+       flat SHM_VEC layout past the zc floor, else a RAWSPILL region — bare
+       bytes skip both the serialize pass here and the parse at the far
+       end, and nothing is pinned (no identifier can ride along). A NULL
+       reservation falls to the serialized tiers below. */
+    unsigned char *dst = rei_stage_raw(h, rawlen, rawtype, hdr, payload,
+                                       inline_max);
+    if (dst != NULL) {
+      memcpy(dst, rei_vec_ptr(x), rawlen);
+      return;
+    }
+  } else if (rei_str1_stage(hdr, payload, inline_max, x)) {
     return;
-  }
-  if (rei_str1_stage(hdr, payload, inline_max, x))
-    return;
-  /* SHM_VEC: view-layout-eligible objects (atomic vectors, strings, list
-     trees) past the budget and the zc floor — cheap probes keep the
-     layout-size walk off the inline path (zc.c). Under churn (the last
-     spill miss swept the lent ledger and reclaimed nothing — a Linux-
-     only signal) the fresh region per SHM_VEC payload is dearer than the
-     serialize copy: fall to SHM_RAW, whose region surrenders
-     deterministically at consumer-done. */
-  if (rei_zc_eligible(x, inline_max, &total) &&
-      !rei_handle_churn(h)) {
+  } else if (rei_zc_eligible(x, inline_max, &total) &&
+             !rei_handle_churn(h)) {
+    /* SHM_VEC: view-layout-eligible objects (strings, list trees) past
+       the budget and the zc floor — cheap probes keep the layout-size
+       walk off the inline path (zc.c). Under churn (the last spill miss
+       swept the lent ledger and reclaimed nothing — a Linux-only signal)
+       the fresh region per SHM_VEC payload is dearer than the serialize
+       copy: fall to SHM_RAW, whose region surrenders deterministically at
+       consumer-done. */
     rei_zc_stage(hdr, payload, x, total, h, ctx);
-    return;
-  }
-  /* Raw-bytes spill: the vectors RAWVEC takes inline, past the inline
-     budget — the layout tier above already passed (under the zc floor, or
-     churn-gated), and bare bytes skip both the serialize pass here and
-     the parse at the far end. */
-  if (rawtype != 0 && rawlen <= UINT32_MAX) {
-    rei_payload_spill_raw(hdr, payload, x, rawlen, rawtype, h);
     return;
   }
   /* the compact codec ahead of R_Serialize: no per-call ref-table

@@ -113,8 +113,6 @@ void rei_r_pin(rei_handle *h, void *ctx, SEXP x) REI_COLD;
    identifiers (the codec stream is ALTREP-free and pins nothing). */
 void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, rei_handle *h, void *ctx);
-void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                            size_t n, int rawtype, rei_handle *h);
 void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
                               SEXP x, size_t n, rei_handle *h);
 /* The pool framing (no arena tier): REF, RAWVEC, STR1, INLINE, SHM_VEC, or
