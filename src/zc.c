@@ -30,14 +30,6 @@
 #include <stdlib.h>
 #include "rei.h"
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <sys/mman.h>
-#include <unistd.h>
-#endif
-
 static SEXP rei_rel_tag;      /* the release-record extptr */
 static SEXP rei_shm_tag_sym;  /* installed REI_VIEW_TAG_SHM: the chain terminus */
 
@@ -59,11 +51,11 @@ void rei_zc_init(void) {
    (a longjmp between wrap and add must not sub a count it never added).
    pid is the fork guard (the view layer's host-finalizer pattern): views are
    ordinary R objects that cross mclapply forks, and a child-side GC must
-   not sub a count it never added. base points into the view's mapping —
+   not sub a count it never added. shm is the view's mapping handle —
    the prep path's own, or the vendored resolve cache's shared one (pinned
    by the view's keeper chain there, never by the record). */
 typedef struct rei_zc_rel_s {
-  unsigned char *base;
+  rei_shm *shm;
   long pid;
   int armed;
 } rei_zc_rel;
@@ -72,7 +64,7 @@ static void rei_rel_finalizer(SEXP ptr) {
   rei_zc_rel *rel = (rei_zc_rel *) R_ExternalPtrAddr(ptr);
   if (rel != NULL) {
     if (rel->armed && rel->pid == rei_self_pid())
-      atomic_fetch_sub_explicit(rei_zc_rc(rel->base), 1, memory_order_acq_rel);
+      rei_zc_unref(rel->shm);
     free(rel);
     R_ClearExternalPtr(ptr);
   }
@@ -87,42 +79,20 @@ static void rei_zc_rel_fire(void *arg) {
 
 // Consumer open: split mapping ---------------------------------------------------
 
-/* Page 0 read-write (the refcount word needs it), remaining pages
-   read-only (the view layer's RO discipline). Lazy everywhere — a view is touched
+/* The core's flags-form view open: page 0 read-write (the refcount word
+   needs it), remaining pages read-only, lazy everywhere — a view is touched
    on demand, so eager PTE install would prefault never-read pages on the
    recv hot path (the SHM_RAW cache's populated open exists because a
-   stream is unserialized in full immediately; a view is not).
+   stream is unserialized in full immediately; a view is not). NOCOUNT:
+   an ALTREP wrap can longjmp between map and count, so the counted add
+   lands at the wrap (before the consumer-done signal), not here.
    Two call paths: registered as the view layer's embedder open hook
    (rei_zc_init) — the wire-resolve cache's misses — and called directly by
    the prep path below (the per-handle cache). */
 rei_shm *rei_zc_open(const char *name) {
   rei_shm *shm;
-  if (rei_shm_open_rw(&shm, name, 0) != REI_OK) return NULL;
-  size_t size = shm->size;
-#ifdef _WIN32
-  /* MapViewOfFile offsets must be 64 KiB allocation-granularity aligned,
-     so a second view starting at page 1 fails: one RW view, then protect
-     the tail. */
-  static DWORD pagesz = 0;
-  if (pagesz == 0) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    pagesz = si.dwPageSize;
-  }
-  if (size > pagesz) {
-    DWORD old;
-    VirtualProtect((unsigned char *) shm->addr + pagesz, size - pagesz,
-                   PAGE_READONLY, &old);
-  }
-#else
-  static long pagesz = 0;
-  if (pagesz == 0) pagesz = sysconf(_SC_PAGESIZE);
-  /* Best-effort: if mprotect fails the mapping stays fully RW — the
-     refcount still works, only the defense-in-depth degrades. */
-  if (size > (size_t) pagesz)
-    (void) mprotect((unsigned char *) shm->addr + pagesz, size - pagesz,
-                    PROT_READ);
-#endif
+  if (rei_shm_open_view_flags(&shm, name, REI_OPEN_VIEW_NOCOUNT) != REI_OK)
+    return NULL;
   return shm;
 }
 
@@ -235,9 +205,10 @@ int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
    store 1 (the producer's loan — both the field's only initialization and
    its own reference; a recycled region carries a stale count), and the
    name as the payload. Fills the retain entry: the region, the pin of x,
-   and the consumer key cell (-1) the release point may re-stamp. */
+   and the consumer key cell (-1) the release point may re-stamp. ctx is
+   the stage hook's binding ctx. */
 void rei_zc_stage(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                  size_t total, rei_handle *h) {
+                  size_t total, rei_handle *h, void *ctx) {
   rei_shm *shm = rei_spill_get_raise(h, (size_t) total);
   rei_view_layout_write((unsigned char *) shm->addr, x);
   /* the aux code must match the layout's root sexptype: class-only
@@ -245,10 +216,10 @@ void rei_zc_stage(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
   int type = rei_view_is_int64(x) ? REI_TYPE_INT64 : (int) TYPEOF(x);
   hdr->kind = REI_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = (uint64_t) (type == LISTSXP ? VECSXP : type) |
-    ((uint64_t) total << 8);
+  hdr->aux = rei_aux_shm_vec(type == LISTSXP ? VECSXP : type,
+                             (uint64_t) total);
   memcpy(payload, shm->name, shm->name_len);
-  rei_r_pin(h, x);
+  rei_r_pin(h, ctx, x);
   /* the producer-loan refcount store (rc = 1, flags = 0) rides the retain */
   rei_stage_retain_zc(h, shm);
 }
@@ -327,7 +298,7 @@ static SEXP rei_zc_prep(const char *name, uint32_t name_len, int *gone,
     UNPROTECT(1);
     Rf_error("rei: allocation failure");
   }
-  rel->base = (unsigned char *) shm->addr;
+  rel->shm = shm;
   rel->pid = rei_self_pid();
   rel->armed = 0;
   SEXP rel_xp = PROTECT(R_MakeExternalPtr(rel, rei_rel_tag, map_wrap));
@@ -431,7 +402,7 @@ SEXP rei_zc_read(const rei_slot_hdr *hdr, const unsigned char *payload,
   PROTECT(name_xp);
   SEXP rel_xp = PROTECT(R_ExternalPtrProtected(name_xp));
   SEXP view = PROTECT(rei_zc_wrap0(shm, name_xp, rel_xp, hdr->aux));
-  atomic_fetch_add_explicit(rei_zc_rc(shm->addr), 1, memory_order_acq_rel);
+  rei_zc_ref(shm);
   ((rei_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
   UNPROTECT(3);
   return view;
@@ -508,7 +479,7 @@ SEXP rei_zc_ref_read(const rei_slot_hdr *hdr, const unsigned char *payload,
   SEXP view;
   if (path_len == 0) {
     view = PROTECT(rei_zc_wrap0(shm, name_xp, rel_xp, 0));
-    atomic_fetch_add_explicit(rei_zc_rc(shm->addr), 1, memory_order_acq_rel);
+    rei_zc_ref(shm);
     ((rei_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
   } else {
     view = PROTECT(rei_view_walk_path((unsigned char *) shm->addr,
@@ -521,7 +492,7 @@ SEXP rei_zc_ref_read(const rei_slot_hdr *hdr, const unsigned char *payload,
       if (o != NULL && o->release == NULL) {
         o->release = rei_zc_rel_fire;
         o->release_arg = (void *) rel_xp;
-        atomic_fetch_add_explicit(rei_zc_rc(shm->addr), 1, memory_order_acq_rel);
+        rei_zc_ref(shm);
         ((rei_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
       }
     }
@@ -544,7 +515,7 @@ SEXP rei_zc_ref_read(const rei_slot_hdr *hdr, const unsigned char *payload,
 static void rei_zc_wire_rel(void *arg) {
   rei_zc_rel *rel = (rei_zc_rel *) arg;
   if (rel->armed && rel->pid == rei_self_pid())
-    atomic_fetch_sub_explicit(rei_zc_rc(rel->base), 1, memory_order_acq_rel);
+    rei_zc_unref(rel->shm);
   free(rel);
 }
 
@@ -563,12 +534,12 @@ static void rei_zc_wire_resolve(SEXP view, rei_shm *shm) {
   rei_zc_rel *rel = malloc(sizeof(rei_zc_rel));
   if (rel == NULL)
     Rf_error("rei: allocation failure");
-  rel->base = (unsigned char *) shm->addr;
+  rel->shm = shm;
   rel->pid = rei_self_pid();
   rel->armed = 0;
   o->release = rei_zc_wire_rel;
   o->release_arg = rel;
-  atomic_fetch_add_explicit(rei_zc_rc(shm->addr), 1, memory_order_acq_rel);
+  rei_zc_ref(shm);
   rel->armed = 1;
 }
 
@@ -590,10 +561,8 @@ SEXP rei_zc_refcount_call(SEXP x) {
     (rei_shm *) R_ExternalPtrAddr(terminus);
   if (shm == NULL || shm->addr == NULL) return Rf_allocVector(INTSXP, 0);
   SEXP out = Rf_allocVector(INTSXP, 2);
-  INTEGER(out)[0] =
-    (int) atomic_load_explicit(rei_zc_rc(shm->addr), memory_order_acquire);
-  INTEGER(out)[1] =
-    (int) atomic_load_explicit(rei_zc_flags_(shm->addr), memory_order_acquire);
+  INTEGER(out)[0] = (int) rei_zc_refcount(shm);
+  INTEGER(out)[1] = (int) rei_zc_flags(shm);
   return out;
 }
 

@@ -12,7 +12,6 @@
 static SEXP rei_chan_tag;
 static SEXP rei_class_channel;
 SEXP rei_sent_full, rei_sent_timeout, rei_sent_closed, rei_sent_gone;
-SEXP rei_mark_foreign;
 
 static SEXP rei_make_sentinel(const char *value, const char *cls) {
   SEXP s = PROTECT(Rf_mkString(value));
@@ -27,18 +26,6 @@ static SEXP rei_make_sentinel(const char *value, const char *cls) {
 
 static void rei_chan_finalizer(SEXP xp);
 
-/* The foreign-payload marker: interned like the sentinels but not one of
-   them (no "rei_sentinel" class) — it is an in-band signal from the read
-   hook to the recv veneer, never a terminal state and never user-visible. */
-static SEXP rei_make_foreign_mark(void) {
-  SEXP s = PROTECT(Rf_mkString("python_payload"));
-  SEXP klass = PROTECT(Rf_mkString("rei_foreign_payload"));
-  Rf_setAttrib(s, R_ClassSymbol, klass);
-  R_PreserveObject(s);
-  UNPROTECT(2);
-  return s;
-}
-
 void rei_channel_init(void) {
   rei_chan_tag = Rf_install("rei_channel");
   rei_class_channel = Rf_mkString("rei_channel");
@@ -47,11 +34,9 @@ void rei_channel_init(void) {
   rei_sent_timeout = rei_make_sentinel("timeout", "rei_timeout");
   rei_sent_closed = rei_make_sentinel("closed", "rei_closed");
   rei_sent_gone = rei_make_sentinel("peer_gone", "rei_peer_gone");
-  rei_mark_foreign = rei_make_foreign_mark();
 }
 
 void rei_channel_fini(void) {
-  R_ReleaseObject(rei_mark_foreign);
   R_ReleaseObject(rei_sent_gone);
   R_ReleaseObject(rei_sent_closed);
   R_ReleaseObject(rei_sent_timeout);
@@ -131,14 +116,6 @@ static void rei_chan_finalizer(SEXP xp) {
    wait loops park against. */
 SEXP rei_now_call(void) {
   return Rf_ScalarReal(rei_now());
-}
-
-/* seconds (the R convention; <= 0 polls, non-finite waits indefinitely) to
-   the core's timeout_ms (0 polls, < 0 indefinite). */
-static double timeout_ms_of(SEXP timeout) {
-  double t = Rf_asReal(timeout);
-  if (!R_FINITE(t)) return -1;
-  return t <= 0 ? 0 : t * 1000;
 }
 
 static SEXP status_sentinel(rei_status st) {
@@ -260,7 +237,7 @@ SEXP rei_channel_suffix(SEXP xp) {
    FALSE on deadline expiry — the caller walks the channel back. */
 SEXP rei_channel_ready_wait_call(SEXP xp, SEXP timeout) {
   rei_channel *c = chan_core(xp);
-  rei_status st = rei_channel_ready_wait(c, timeout_ms_of(timeout));
+  rei_status st = rei_channel_ready_wait(c, rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_ERR) chan_raise(c);
   return Rf_ScalarLogical(st == REI_OK);
 }
@@ -354,13 +331,15 @@ SEXP rei_channel_recv_call(SEXP xp, SEXP timeout) {
   rei_channel *c = (rei_channel *) h->core;
   h->saw_foreign = 0;
   void *obj = NULL;
-  rei_status st = rei_channel_recv(c, &obj, timeout_ms_of(timeout));
-  if (st == REI_ERR) chan_raise(c);
+  rei_status st = rei_channel_recv(c, &obj, rei_timeout_ms(Rf_asReal(timeout)));
+  /* the read hook flags a foreign payload on the handle and fails the read
+     with REI_READ_CONSUME: the slot is already consumed, so the informative
+     error costs the message, not the channel */
+  if (st == REI_ERR) {
+    if (h->saw_foreign) rei_stop_python_payload();
+    chan_raise(c);
+  }
   if (st != REI_OK) return status_sentinel(st);
-  /* the read hook flags a foreign payload on the handle: the slot is
-     already consumed, so the informative error costs the message, not the
-     channel */
-  if (h->saw_foreign) rei_stop_python_payload();
   return (SEXP) obj;
 }
 
@@ -378,18 +357,20 @@ SEXP rei_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   h->saw_foreign = 0;
   rei_status st = rei_channel_recv_batch_fn(c, (size_t) n, &count,
                                             rei_vec_sink, out,
-                                            timeout_ms_of(timeout));
-  if (st == REI_ERR) chan_raise(c);
+                                            rei_timeout_ms(Rf_asReal(timeout)));
+  /* a foreign payload in the batch: the read hook flags the handle and its
+     slot is consumed (REI_READ_CONSUME), so the informative error costs the
+     message, not the channel */
+  if (st == REI_ERR) {
+    if (h->saw_foreign) {
+      UNPROTECT(1);
+      rei_stop_python_payload();
+    }
+    chan_raise(c);
+  }
   if (st != REI_OK) {
     UNPROTECT(1);
     return status_sentinel(st);
-  }
-  /* a foreign payload in the batch: the read hook flags the handle and
-     every drained message is consumed, so the informative error costs the
-     messages, not the channel */
-  if (h->saw_foreign) {
-    UNPROTECT(1);
-    rei_stop_python_payload();
   }
   if (count < (size_t) n) {
     SEXP res = PROTECT(Rf_lengthgets(out, (R_xlen_t) count));
@@ -415,7 +396,7 @@ SEXP rei_channel_close_call(SEXP xp, SEXP timeout) {
   rei_r_handle *h = chan_peek(xp);
   if (h == NULL) return Rf_ScalarLogical(TRUE);   /* close is idempotent */
   rei_channel *c = (rei_channel *) h->core;
-  rei_status st = rei_channel_close(c, timeout_ms_of(timeout));
+  rei_status st = rei_channel_close(c, rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_ERR) chan_raise(c);
   if (st == REI_OK) {
     /* rendezvoused: the handle is dead — destroy releases it */

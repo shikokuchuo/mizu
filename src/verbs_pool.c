@@ -152,12 +152,6 @@ static rei_task task_get(SEXP xp, rei_r_handle **h_out) {
 
 // Small helpers -------------------------------------------------------------------
 
-static double timeout_ms_of(SEXP timeout) {
-  double t = Rf_asReal(timeout);
-  if (!R_FINITE(t)) return -1;
-  return t <= 0 ? 0 : t * 1000;
-}
-
 /* Raise a pool verb's REI_ERR as a classed error with the handle's recorded
    message (the core's messages are the R contract's). */
 NORET static void pool_raise(rei_pool *p) {
@@ -265,7 +259,7 @@ SEXP rei_pool_ready_wait_call(SEXP xp, SEXP slots_sexp, SEXP timeout) {
   for (R_xlen_t i = 0; i < n; i++)
     slots[i] = (uint32_t) INTEGER(slots_sexp)[i];
   rei_status st = rei_pool_ready_wait(p, slots, (size_t) n,
-                                      timeout_ms_of(timeout));
+                                      rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_ERR) pool_raise(p);
   return Rf_ScalarLogical(st == REI_OK);
 }
@@ -411,7 +405,7 @@ static SEXP pool_submit(SEXP xp, SEXP payload, SEXP timeout, int flags,
   rei_task t;
   rei_status st = rei_pool_submit_flags(p, (void *) payload,
                                        (uint16_t) flags, &t,
-                                       timeout_ms_of(timeout));
+                                       rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_OK) return rei_task_wrap(xp, &t);
   if (st == REI_FULL) {
     if (tryflag) return rei_sent_timeout;
@@ -480,7 +474,7 @@ SEXP rei_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   size_t done = 0;
   rei_status st = rei_pool_submit_batch_fn(p, rei_batch_supply_next, &supply,
                                            (size_t) n, ts, &done,
-                                           timeout_ms_of(timeout));
+                                           rei_timeout_ms(Rf_asReal(timeout)));
   UNPROTECT(1);
   if (st == REI_ERR) pool_raise(p);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) done));
@@ -506,7 +500,7 @@ SEXP rei_pool_step_call(SEXP xp, SEXP timeout) {
   if (TYPEOF(VECTOR_ELT(h->prot, 0)) != ENVSXP)
     Rf_error("rei: no evaluator registered on this worker handle");
   rei_pool *p = (rei_pool *) h->core;
-  int rc = rei_pool_step(p, timeout_ms_of(timeout));
+  int rc = rei_pool_step(p, rei_timeout_ms(Rf_asReal(timeout)));
   if (rc == REI_STEP_SHUTDOWN && rei_pool_errcat(p) != REI_ERRCAT_NONE)
     pool_raise(p);   /* an exec infrastructure failure, not a real shutdown */
   return Rf_ScalarInteger(rc);
@@ -563,7 +557,7 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   rei_task t = task_get(xp, &h);
   void *v = NULL;
   rei_status st =
-    rei_pool_collect((rei_pool *) h->core, &t, &v, timeout_ms_of(timeout));
+    rei_pool_collect((rei_pool *) h->core, &t, &v, rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_TIMEOUT) return rei_sent_timeout;
   if (st == REI_ERR) pool_raise((rei_pool *) h->core);
   SEXP val = (SEXP) v;
@@ -614,7 +608,7 @@ SEXP rei_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   void *v = NULL;
   size_t idx = 0;
   rei_status st = rei_pool_collect_any(p, ts, (size_t) n, &idx, &v,
-                                       timeout_ms_of(timeout));
+                                       rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_TIMEOUT) return rei_sent_timeout;
   if (st == REI_ERR) pool_raise(p);
   SEXP val = PROTECT((SEXP) v);
@@ -650,7 +644,7 @@ SEXP rei_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   size_t err_idx = 0;
   rei_status st = rei_pool_collect_all_fn(p, ts, (size_t) n, rei_vec_sink,
                                           out, &err_idx,
-                                          timeout_ms_of(timeout));
+                                          rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_TIMEOUT) {
     UNPROTECT(1);
     return rei_sent_timeout;
@@ -723,7 +717,7 @@ SEXP rei_pool_stop_call(SEXP xp, SEXP timeout) {
   if (h->role != REI_ROLE_CONTROLLER)
     Rf_error("rei: only the controller can stop a pool");
   rei_pool *p = (rei_pool *) h->core;
-  rei_status st = rei_pool_stop(p, timeout_ms_of(timeout));
+  rei_status st = rei_pool_stop(p, rei_timeout_ms(Rf_asReal(timeout)));
   if (st == REI_ERR) pool_raise(p);
   /* REI_TIMEOUT: the workers still exit on their own */
   return Rf_ScalarLogical(st == REI_OK);

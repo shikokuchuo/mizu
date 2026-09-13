@@ -26,7 +26,7 @@
    nonzero. */
 int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
                          unsigned char *payload, uint32_t inline_max,
-                         rei_handle *h) {
+                         rei_handle *h, void *ctx) {
   SEXP x = (SEXP) obj;
   size_t rawlen, total;
   uint64_t off;
@@ -45,7 +45,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
        once SHM_VEC views exist: the serialize-hook fallback resolves
        uncounted, and the producer could recycle under the far side's view;
        the pin is the view itself */
-    rei_r_pin(h, x);
+    rei_r_pin(h, ctx, x);
   } else if (rawtype != 0 && rawlen <= inline_max) {
     memcpy(payload, rei_vec_ptr(x), rawlen);
     hdr->kind = REI_KIND_RAWVEC;
@@ -79,7 +79,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
        SHM_RAW surrender deterministically, where a fresh SHM_VEC region
        per message would pile up in the ledger */
     rei_stage_reap(h);
-    rei_zc_stage(hdr, payload, x, total, h);
+    rei_zc_stage(hdr, payload, x, total, h, ctx);
   } else {
     /* the compact codec ahead of R_Serialize (payload.c): a codec stream
        is self-contained — the writer rejects ALTREP, so no hook-emitted
@@ -93,7 +93,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
       hdr->len = (uint32_t) n;
       hdr->aux = 0;
       if (!self_contained)
-        rei_r_pin(h, x);
+        rei_r_pin(h, ctx, x);
     } else {
       if ((chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off)) != NULL) {
         if (self_contained) {
@@ -108,7 +108,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
         uint64_t n64 = (uint64_t) n;
         memcpy(payload, &n64, sizeof(n64));
         if (!self_contained)
-          rei_r_pin(h, x);
+          rei_r_pin(h, ctx, x);
       } else {
         /* reap before staging: the consumer's latest head publish may
            have released a fitting region for this very spill to pop */
@@ -116,7 +116,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
         if (self_contained)
           rei_payload_spill_codec(hdr, payload, x, n, h);
         else
-          rei_payload_spill_shm(hdr, payload, x, n, h);
+          rei_payload_spill_shm(hdr, payload, x, n, h, ctx);
       }
     }
   }
@@ -139,9 +139,10 @@ void rei_vec_sink(void *ctx, size_t i, void *obj) {
    else defers to the shared payload reader (ctx carries the handle's open
    cache and the R-side view cache). Returns the object, or NULL with
    ctx->gone set on a vanished out-of-line region. A foreign (Python) stream
-   comes back as rei_mark_foreign with the handle's saw_foreign set, so the
-   core consumes the slot before the recv veneer raises on the flag — a
-   raise here would leave the slot in place and wedge the ring behind it. */
+   sets the handle's saw_foreign and fails the read with REI_READ_CONSUME,
+   so the core consumes the slot before the recv veneer raises on the flag —
+   a plain failure here would leave the slot in place and wedge the ring
+   behind it. */
 void *rei_r_read_channel(const rei_slot_hdr *hdr,
                           const unsigned char *payload, size_t limit,
                           rei_read_ctx *ctx) {
@@ -151,7 +152,8 @@ void *rei_r_read_channel(const rei_slot_hdr *hdr,
       return (void *) rei_codec_read(payload, limit);
     if (rei_is_python_payload(payload, limit)) {
       ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-      return (void *) rei_mark_foreign;
+      ctx->flags |= REI_READ_CONSUME;
+      return NULL;
     }
     return (void *) rei_view_unserialize_from((unsigned char *) payload, limit);
   }
@@ -166,8 +168,7 @@ void *rei_r_read_channel(const rei_slot_hdr *hdr,
     memcpy(rei_vec_ptr(y), payload, hdr->len);
     return (void *) y;
   }
-  return rei_payload_read(hdr, payload, (uint32_t) limit, ctx,
-                          rei_mark_foreign);
+  return rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 1);
 }
 
 // Pool stage --------------------------------------------------------------------
@@ -178,8 +179,8 @@ void *rei_r_read_channel(const rei_slot_hdr *hdr,
    are always named regions. Raises on failure, never returns nonzero. */
 int rei_r_stage_pool(void *obj, rei_slot_hdr *hdr,
                       unsigned char *payload, uint32_t inline_max,
-                      rei_handle *h) {
-  rei_payload_stage(hdr, payload, inline_max, (SEXP) obj, h);
+                      rei_handle *h, void *ctx) {
+  rei_payload_stage(hdr, payload, inline_max, (SEXP) obj, h, ctx);
   return 0;
 }
 
@@ -196,11 +197,11 @@ void *rei_r_read_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
                        size_t limit, rei_read_ctx *ctx) {
   switch (ctx->outcome) {
   case REI_RS_OK:
-    /* NULL foreign: a pool is R-only, so a foreign stream is corruption —
-       raise in place rather than consume */
-    return rei_payload_read(hdr, payload, (uint32_t) limit, ctx, NULL);
+    /* no consume_foreign: a pool is R-only, so a foreign stream is
+       corruption — raise in place rather than consume */
+    return rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
   case REI_RS_ERR: {
-    SEXP cond = rei_payload_read(hdr, payload, (uint32_t) limit, ctx, NULL);
+    SEXP cond = rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
     if (cond == NULL) return NULL;              /* ctx->gone set */
     return rei_caught(cond);
   }
@@ -299,12 +300,12 @@ void rei_r_publish_err(rei_result_sink *sink, SEXP cond) {
 /* The worker's task: decode the frame, evaluate, publish through the sink.
    An INLINE codec task frame stream-decodes in place — no list(expr, args)
    materialization, so a constant task allocates nothing on the worker.
-   Anything else takes the generic read and its shape check, over a read_ctx
-   fabricated here (exec_fn receives none): the handle's open cache and the
-   R-side view cache ride it. Both paths end with expr and args PROTECTed. */
+   Anything else takes the generic read and its shape check over the exec's
+   read ctx: the handle's open cache and the R-side view cache ride it.
+   Both paths end with expr and args PROTECTed. */
 int rei_r_exec_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
                      size_t limit, rei_result_sink *sink, int catching,
-                     void *ctx) {
+                     rei_read_ctx *ctx) {
   rei_pool *p = sink->p;
   SEXP expr = R_NilValue, args = R_NilValue;
   if (hdr->kind == REI_KIND_INLINE && hdr->len <= limit &&
@@ -312,15 +313,8 @@ int rei_r_exec_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
     PROTECT(expr);
     PROTECT(args);
   } else {
-    rei_read_ctx rctx;
-    memset(&rctx, 0, sizeof(rctx));
-    rctx.size = (uint32_t) sizeof(rctx);
-    rctx.outcome = REI_RS_OK;
-    rctx.died_slot = -1;
-    rctx.handle = (rei_handle *) p;
-    rctx.binding_ctx = ctx;
-    SEXP pl = rei_payload_read(hdr, payload, (uint32_t) limit, &rctx, NULL);
-    if (rctx.gone) {
+    SEXP pl = rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
+    if (ctx->gone) {
       /* the enqueuer died and its region went along: the task can never
          run anywhere — it fails as DIED, and the drain continues */
       rei_result_publish_died(sink);
@@ -334,8 +328,8 @@ int rei_r_exec_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
   }
   int ok = 1;
   SEXP value =
-    PROTECT(pool_eval_expr(p, ((rei_r_handle *) ctx)->prot, expr, args,
-                           catching, &ok));
+    PROTECT(pool_eval_expr(p, ((rei_r_handle *) ctx->binding_ctx)->prot,
+                           expr, args, catching, &ok));
   if (ok) {
     rei_result_publish(sink, (void *) value);
   } else {
@@ -407,9 +401,10 @@ static void pins_splice(rei_r_handle *rh) {
    exactly one drop. The fresh cell is stored into the anchored prot slot
    with no allocation between creation and store. The splice gate (at least
    REI_SPLICE_MIN dead, and dead at least half the chain) bounds the chain
-   to ~2x live pins between splices. */
-void rei_r_pin(rei_handle *h, SEXP x) {
-  rei_r_handle *rh = (rei_r_handle *) rei_handle_binding_ctx(h);
+   to ~2x live pins between splices. ctx is the stage hook's binding ctx
+   (the rei_r_handle — no per-stage handle query needed). */
+void rei_r_pin(rei_handle *h, void *ctx, SEXP x) {
+  rei_r_handle *rh = (rei_r_handle *) ctx;
   if (rh->pins_dead >= REI_SPLICE_MIN &&
       rh->pins_dead >= rh->pins_total / 2)
     pins_splice(rh);

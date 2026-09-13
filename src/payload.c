@@ -137,14 +137,14 @@ rei_shm *rei_spill_get_raise(rei_handle *h, size_t n) {
    an uncommitted checkout rolls back with nothing pinned. */
 
 void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                            size_t n, rei_handle *h) {
+                            size_t n, rei_handle *h, void *ctx) {
   rei_shm *shm = rei_spill_get_raise(h, n);
   rei_view_serialize_into((unsigned char *) shm->addr, x);
   hdr->kind = REI_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
   memcpy(payload, shm->name, shm->name_len);
-  rei_r_pin(h, x);
+  rei_r_pin(h, ctx, x);
   rei_stage_retain(h, shm);
 }
 
@@ -154,7 +154,7 @@ void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
   memcpy(shm->addr, rei_vec_ptr(x), n);
   hdr->kind = REI_KIND_RAWSPILL;
   hdr->len = (uint32_t) n;
-  hdr->aux = (uint64_t) rawtype | ((uint64_t) shm->name_len << 8);
+  hdr->aux = rei_aux_rawspill_pool(rawtype, shm->name_len);
   memcpy(payload, shm->name, shm->name_len);
   rei_stage_retain(h, shm);   /* bare bytes carry no identifier: no pin */
 }
@@ -178,9 +178,10 @@ void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
    self-contained (RAWVEC and STR1 exclude ALTREP, attributes, and S4, so
    no hook-emitted identifier can ride along), unlike the serialize tiers,
    where a stream may carry view identifiers whose views the pin keeps
-   alive until consumer-done. */
+   alive until consumer-done. ctx is the stage hook's binding ctx. */
 void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
-                        uint32_t inline_max, SEXP x, rei_handle *h) {
+                        uint32_t inline_max, SEXP x, rei_handle *h,
+                        void *ctx) {
   size_t rawlen, total;
   /* NULL stages as the immediate kind: the canonical empty result / ACK
      pays no serialize pass and no receive-side allocation */
@@ -195,7 +196,7 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
      uncounted, and the producer could recycle under the far side's view.
      The pin keeps the view (and with it the region) until consumer-done. */
   if (rei_zc_ref_stage(hdr, payload, inline_max, x)) {
-    rei_r_pin(h, x);
+    rei_r_pin(h, ctx, x);
     return;
   }
   /* one raw probe per stage: the code drives both the inline RAWVEC stamp
@@ -219,7 +220,7 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
      deterministically at consumer-done. */
   if (rei_zc_eligible(x, inline_max, &total) &&
       !rei_handle_churn(h)) {
-    rei_zc_stage(hdr, payload, x, total, h);
+    rei_zc_stage(hdr, payload, x, total, h, ctx);
     return;
   }
   /* Raw-bytes spill: the vectors RAWVEC takes inline, past the inline
@@ -250,10 +251,10 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
     hdr->kind = REI_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = 0;
-    rei_r_pin(h, x);
+    rei_r_pin(h, ctx, x);
     return;
   }
-  rei_payload_spill_shm(hdr, payload, x, n, h);
+  rei_payload_spill_shm(hdr, payload, x, n, h, ctx);
 }
 
 // Read -----------------------------------------------------------------------
@@ -262,9 +263,14 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
    payload as an ALTREP view. Region opens ride the handle's open cache
    through rei_read_region (which sets ctx->gone on a vanished region — the
    read_fn then propagates by returning NULL); the view tiers open their own
-   split mappings through the R-side cache zoc (ctx->binding_ctx). */
+   split mappings through the R-side cache zoc (ctx->binding_ctx). A foreign
+   (Python) stream on a serialize tier: with consume_foreign (the channel)
+   set saw_foreign and fail the read with REI_READ_CONSUME, so the slot is
+   consumed before the veneer raises; without it (the pool) raise in place —
+   a pool is R-only, so a foreign stream there is corruption. */
 SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
-                       uint32_t inline_max, rei_read_ctx *ctx, SEXP foreign) {
+                       uint32_t inline_max, rei_read_ctx *ctx,
+                       int consume_foreign) {
   rei_zc_cache *zoc = &((rei_r_handle *) ctx->binding_ctx)->zoc;
   switch (hdr->kind) {
   case REI_KIND_NIL:
@@ -291,9 +297,10 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     if (payload[0] == REI_CODEC_MAGIC)
       return rei_codec_read(payload, hdr->len);
     if (rei_is_python_payload(payload, hdr->len)) {
-      if (foreign != NULL) {
+      if (consume_foreign) {
         ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-        return foreign;
+        ctx->flags |= REI_READ_CONSUME;
+        return NULL;
       }
       rei_stop_python_payload();
     }
@@ -345,9 +352,10 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     if (stream[0] == REI_CODEC_MAGIC)
       return rei_codec_read(stream, len);
     if (rei_is_python_payload(stream, len)) {
-      if (foreign != NULL) {
+      if (consume_foreign) {
         ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-        return foreign;
+        ctx->flags |= REI_READ_CONSUME;
+        return NULL;
       }
       rei_stop_python_payload();
     }

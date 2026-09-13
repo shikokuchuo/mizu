@@ -63,11 +63,6 @@ typedef struct rei_r_handle_s {
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */
 extern SEXP rei_sent_full, rei_sent_timeout, rei_sent_closed, rei_sent_gone;
-/* The channel's interned foreign-payload marker: the read hook returns it
-   for a Python stream and sets the handle's saw_foreign, so the ring slot
-   is consumed and the recv veneers raise rei_stop_python_payload() on the
-   flag — one predicted branch per verb, no scan. Never escapes to R. */
-extern SEXP rei_mark_foreign;
 
 // Bounded single-pass serialize (bounded.c) ---------------------------------------
 
@@ -106,34 +101,37 @@ rei_shm *rei_spill_get_raise(rei_handle *h, size_t n);
 /* The per-handle pin (stage_r.c): one cons cell pushed on the prot-anchored
    pin chain and registered as the core's opaque token via rei_stage_pin;
    the drop hook tombstones the cell. The cons precedes rei_stage_pin, so a
-   failed allocation abandons the stage with nothing pinned. Cold: called
+   failed allocation abandons the stage with nothing pinned. ctx is the
+   stage hook's binding ctx (the rei_r_handle). Cold: called
    only on the pinned tiers (which already pay the serialize pass) — the
    annotation keeps it out of the hot verbs' code layout (the 2026-08-23
    cold-recorder record in dev/bench/notes.md). */
-void rei_r_pin(rei_handle *h, SEXP x) REI_COLD;
+void rei_r_pin(rei_handle *h, void *ctx, SEXP x) REI_COLD;
 /* The spill tiers, staged through the handle's services (rei_stage_spill_get
    / rei_stage_retain / rei_stage_pin): the region checkout is the handle's,
    the pin is the staged object where a stream may carry hook-emitted view
    identifiers (the codec stream is ALTREP-free and pins nothing). */
 void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                            size_t n, rei_handle *h);
+                            size_t n, rei_handle *h, void *ctx);
 void rei_payload_spill_raw(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, int rawtype, rei_handle *h);
 void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
                               SEXP x, size_t n, rei_handle *h);
 /* The pool framing (no arena tier): REF, RAWVEC, STR1, INLINE, SHM_VEC, or
-   SHM_RAW. */
+   SHM_RAW. ctx is the stage hook's binding ctx. */
 void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
-                        uint32_t inline_max, SEXP x, rei_handle *h);
+                        uint32_t inline_max, SEXP x, rei_handle *h,
+                        void *ctx);
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload, or wrap a SHM_VEC / REF
    payload as an ALTREP view. ctx carries the handle's open cache (via
    rei_read_region) and the R-side view cache; a vanished out-of-line region
    sets ctx->gone and the read returns NULL. A foreign (Python) stream on a
-   serialize tier returns `foreign` when non-NULL — the channel's marker, so
-   the slot is consumed before the veneer raises — and raises otherwise (the
-   pool's discipline). */
+   serialize tier: with consume_foreign (the channel), sets the handle's
+   saw_foreign and fails the read with REI_READ_CONSUME, so the slot is
+   consumed before the veneer raises; without it (the pool), raises. */
 SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
-                       uint32_t inline_max, rei_read_ctx *ctx, SEXP foreign);
+                       uint32_t inline_max, rei_read_ctx *ctx,
+                       int consume_foreign);
 /* Foreign-stream detection on the serialize tiers: a pyrei compact-codec
    stream opens with 'P' (DESIGN.md's codec registry allocates 'R' to rei
    and 'P' to pyrei), and anything past its subset rides pickle (0x80 then a
@@ -156,9 +154,9 @@ rei_shm *rei_zc_open(const char *name);
 int rei_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total);
 /* Stage x as SHM_VEC through the handle's services: the region checkout, the
    zc producer-loan retain (rei_stage_retain_zc performs the refcount store),
-   and the pin of x. */
+   and the pin of x. ctx is the stage hook's binding ctx. */
 void rei_zc_stage(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                   size_t total, rei_handle *h);
+                   size_t total, rei_handle *h, void *ctx);
 int rei_zc_ref_stage(rei_slot_hdr *hdr, unsigned char *payload,
                       uint32_t inline_max, SEXP x);
 SEXP rei_zc_read(const rei_slot_hdr *hdr, const unsigned char *payload,
@@ -203,18 +201,18 @@ SEXP rei_condition_flatten(SEXP cond, size_t budget);
    at idle/depart. */
 int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
                          unsigned char *payload, uint32_t inline_max,
-                         rei_handle *h);
+                         rei_handle *h, void *ctx);
 void *rei_r_read_channel(const rei_slot_hdr *hdr,
                           const unsigned char *payload, size_t limit,
                           rei_read_ctx *ctx);
 int rei_r_stage_pool(void *obj, rei_slot_hdr *hdr,
                       unsigned char *payload, uint32_t inline_max,
-                      rei_handle *h);
+                      rei_handle *h, void *ctx);
 void *rei_r_read_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
                        size_t limit, rei_read_ctx *ctx);
 int rei_r_exec_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
                      size_t limit, rei_result_sink *sink, int catching,
-                     void *ctx);
+                     rei_read_ctx *ctx);
 void rei_r_publish_err(rei_result_sink *sink, SEXP cond);
 void rei_r_trace(rei_trace_event event, uint64_t task_id, void *ctx);
 int rei_r_check(void *ctx);
