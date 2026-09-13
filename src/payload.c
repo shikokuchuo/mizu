@@ -312,8 +312,8 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     /* pool framing: the region name in the payload, its length and the
        SEXPTYPE packed in aux (the channel's arena framing of the same
        kind is resolved by the transport, never reaching here) */
-    int type = (int) (hdr->aux & 0xff);
-    uint32_t name_len = (uint32_t) (hdr->aux >> 8);
+    int type = rei_aux_type(hdr->aux);
+    uint32_t name_len = (uint32_t) rei_aux_hi(hdr->aux);
     size_t elt = rei_view_sizeof_elt(type);
     if (elt == 0 || hdr->len % elt != 0 ||
         name_len == 0 || name_len >= REI_NAME_MAX)

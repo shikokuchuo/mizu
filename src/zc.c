@@ -338,10 +338,10 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
           region_size - (int64_t) REI_HEADER_SIZE - length * (int64_t) elt)
       Rf_error("rei: corrupt payload slot");
     if (aux != 0 &&
-        ((uint32_t) (aux & 0xff) != (uint32_t) type ||
-         (aux >> 8) != (uint64_t) ((size_t) REI_HEADER_SIZE +
-                                   (size_t) length * elt +
-                                   (size_t) attrs_size)))
+        ((uint32_t) rei_aux_type(aux) != (uint32_t) type ||
+         rei_aux_hi(aux) != (uint64_t) ((size_t) REI_HEADER_SIZE +
+                                        (size_t) length * elt +
+                                        (size_t) attrs_size)))
       Rf_error("rei: corrupt payload slot");
     SEXP view = PROTECT(rei_view_vec_wrap(base + REI_HEADER_SIZE,
                                       (R_xlen_t) length, type, name_xp,
@@ -365,10 +365,10 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
         attrs_size > region_size - (int64_t) REI_HEADER_SIZE - str_size)
       Rf_error("rei: corrupt payload slot");
     if (aux != 0 &&
-        ((uint32_t) (aux & 0xff) != (uint32_t) STRSXP ||
-         (aux >> 8) != (uint64_t) ((size_t) REI_HEADER_SIZE +
-                                   (size_t) str_size +
-                                   (size_t) attrs_size)))
+        ((uint32_t) rei_aux_type(aux) != (uint32_t) STRSXP ||
+         rei_aux_hi(aux) != (uint64_t) ((size_t) REI_HEADER_SIZE +
+                                        (size_t) str_size +
+                                        (size_t) attrs_size)))
       Rf_error("rei: corrupt payload slot");
     SEXP view = PROTECT(rei_view_str_wrap(base + REI_HEADER_SIZE, (R_xlen_t) n,
                                       str_size, name_xp, rei_zc_rel_fire,
@@ -383,7 +383,7 @@ static SEXP rei_zc_wrap0(rei_shm *shm, SEXP name_xp, SEXP rel_xp,
   case REI_MAGIC_LIST:
     /* the list wrap validates the header and directory internally; the
        layout size isn't header-derivable, so aux cross-checks the type */
-    if (aux != 0 && (uint32_t) (aux & 0xff) != (uint32_t) VECSXP)
+    if (aux != 0 && (uint32_t) rei_aux_type(aux) != (uint32_t) VECSXP)
       Rf_error("rei: corrupt payload slot");
     return rei_view_list_wrap(base, region_size, -1, name_xp, rei_zc_rel_fire,
                           rel_xp);

@@ -543,3 +543,17 @@ tick luck (a ~12 ms rep snapping to 10/11/12/13 ms = 1.0M/909k/833k/769k);
 that row stays at the recorded 833k / 9.7k / 86x, k-cycles the candidate
 fix. Payload 8 MB and map ~10us rows held: this run's 433 us / 18.5 ms and
 6.0 / 216 ms read below the recorded 46x / 44x.
+
+## 2026-09-13: binding unification A/B + aux decode pair (regression check)
+
+librei d0e31ff/c35b9c4/f1296a7 (widened seam, rei_stage_raw, the morsel
+module) adopted as 401a4fd/63f49d9, then 1cedd42 (rei_handle_binding_ctx
+drop) + 5d1b54c (rei_aux_type/rei_aux_hi decode pair) adopted as e23cbbe.
+test-benchmark.R, this host, two runs: channel rt 1.50 us, one-way 25.0M
+msg/s, pool rt 1.0 us, pipelined 1.0M + collect_all 2.0M tasks/s, ALTREP
+rt 4.00 us, channel 1/8/32 MiB 0.06/0.50/1.50 ms, pool 1/8/64 MiB
+0.19/1.25/11.00-12.00 ms, rei_map 32 MiB template 0.333s, view collect
+0.331s, attributed 576 ms, nested-view fan-in 1.00 ms, int64 rows
+identical — all inside the recorded bands. Both spread draws reproduced:
+rei_map trivial 0.10 then 0.09 us/element; pool 64 MiB 12.00 then 11.00
+ms. Full suite 2314 pass (3 macOS skips).
