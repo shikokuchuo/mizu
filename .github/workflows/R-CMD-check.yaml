@@ -48,20 +48,20 @@ jobs:
           extra-packages: any::rcmdcheck
           needs: check
 
-      # The cross-language tests need a python3 with pyrei and NumPy (they
-      # probe-skip otherwise). pyrei is a private repo, so these steps
-      # need the CROSSLANG_PAT secret (a PAT with read access to pyrei);
+      # The cross-language tests need a python3 with pymizu and NumPy (they
+      # probe-skip otherwise). pymizu is a private repo, so these steps
+      # need the CROSSLANG_PAT secret (a PAT with read access to pymizu);
       # without it they skip and the tests probe-skip. Skipped on Windows:
       # the helper probes `python3`, which setup-python does not provide
-      # there, and pyrei's build forces clang-cl.
+      # there, and pymizu's build forces clang-cl.
       - uses: actions/setup-python@v7
         if: runner.os != 'Windows' && env.CROSSLANG_PAT != ''
         with:
           python-version: "3.13"
 
-      - name: Install pyrei (cross-language tests)
+      - name: Install pymizu (cross-language tests)
         if: runner.os != 'Windows' && env.CROSSLANG_PAT != ''
-        run: pip install git+https://x-access-token:${CROSSLANG_PAT}@github.com/shikokuchuo/pyrei.git numpy
+        run: pip install git+https://x-access-token:${CROSSLANG_PAT}@github.com/shikokuchuo/pymizu.git numpy
 
       - uses: r-lib/actions/check-r-package@v2
         with:

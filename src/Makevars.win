@@ -1,27 +1,27 @@
 
 # The R-side sources (including the first-class view layer: view.o and
-# serialize.o) plus the vendored librei core (the transport + region layer).
-# Vendored files come from tools/vendor-librei.sh — never edited in place.
+# serialize.o) plus the vendored libmizu core (the transport + region layer).
+# Vendored files come from tools/vendor-libmizu.sh — never edited in place.
 OBJECTS = bounded.o codec.o condition.o entity.o init.o liveness.o map.o \
           payload.o preamble.o rng.o serialize.o stage_r.o verbs_channel.o \
           verbs_pool.o view.o wrap.o zc.o \
-          vendor/librei/api.o vendor/librei/bytes.o vendor/librei/channel.o \
-          vendor/librei/morsel.o vendor/librei/stage_raw.o \
-          vendor/librei/err.o vendor/librei/err_tls.o vendor/librei/ext.o \
-          vendor/librei/liveness.o \
-          vendor/librei/parker.o vendor/librei/pool.o vendor/librei/preamble.o \
-          vendor/librei/rng_jump.o vendor/librei/shm.o vendor/librei/shm_rw.o \
-          vendor/librei/spill.o vendor/librei/tune.o vendor/librei/wait_linux.o \
-          vendor/librei/wait_macos.o vendor/librei/wait_win32.o
+          vendor/libmizu/api.o vendor/libmizu/bytes.o vendor/libmizu/channel.o \
+          vendor/libmizu/morsel.o vendor/libmizu/stage_raw.o \
+          vendor/libmizu/err.o vendor/libmizu/err_tls.o vendor/libmizu/ext.o \
+          vendor/libmizu/liveness.o \
+          vendor/libmizu/parker.o vendor/libmizu/pool.o vendor/libmizu/preamble.o \
+          vendor/libmizu/rng_jump.o vendor/libmizu/shm.o vendor/libmizu/shm_rw.o \
+          vendor/libmizu/spill.o vendor/libmizu/tune.o vendor/libmizu/wait_linux.o \
+          vendor/libmizu/wait_macos.o vendor/libmizu/wait_win32.o
 
 .PHONY: all clean
 
 all: $(SHLIB)
 
 # R's makefiles track no header dependencies: without this, editing a header
-# recompiles nothing and one rei.so links objects built from two headers.
-$(OBJECTS): rei.h view.h vendor/librei/rei.h vendor/librei/rei_ext.h \
-            vendor/librei/internal.h
+# recompiles nothing and one mizu.so links objects built from two headers.
+$(OBJECTS): mizu.h view.h vendor/libmizu/mizu.h vendor/libmizu/mizu_ext.h \
+            vendor/libmizu/internal.h
 
 clean:
 	@rm -f $(OBJECTS) $(SHLIB)

@@ -1,108 +1,108 @@
 /* The channel's .Call veneer (Part I): thin R entry points over the vendored
-   core's rei_channel_* verbs (vendor/librei). Arg validation, the extptr
-   handle (a rei_r_handle wrapping the opaque core handle), the drop's
-   REI_DROP_R tagging, and the rei_status -> sentinel / classed-error mapping
+   core's mizu_channel_* verbs (vendor/libmizu). Arg validation, the extptr
+   handle (a mizu_r_handle wrapping the opaque core handle), the drop's
+   MIZU_DROP_R tagging, and the mizu_status -> sentinel / classed-error mapping
    live here; the transport (ring, arena, wakes, close rendezvous, peer-death
    verdict) is all core-side. */
 
 #include <stdlib.h>
 #include <string.h>
-#include "rei.h"
+#include "mizu.h"
 
-static SEXP rei_chan_tag;
-static SEXP rei_class_channel;
-SEXP rei_sent_full, rei_sent_timeout, rei_sent_closed, rei_sent_gone;
+static SEXP mizu_chan_tag;
+static SEXP mizu_class_channel;
+SEXP mizu_sent_full, mizu_sent_timeout, mizu_sent_closed, mizu_sent_gone;
 
-static SEXP rei_make_sentinel(const char *value, const char *cls) {
+static SEXP mizu_make_sentinel(const char *value, const char *cls) {
   SEXP s = PROTECT(Rf_mkString(value));
   SEXP klass = PROTECT(Rf_allocVector(STRSXP, 2));
   SET_STRING_ELT(klass, 0, Rf_mkChar(cls));
-  SET_STRING_ELT(klass, 1, Rf_mkChar("rei_sentinel"));
+  SET_STRING_ELT(klass, 1, Rf_mkChar("mizu_sentinel"));
   Rf_setAttrib(s, R_ClassSymbol, klass);
   R_PreserveObject(s);
   UNPROTECT(2);
   return s;
 }
 
-static void rei_chan_finalizer(SEXP xp);
+static void mizu_chan_finalizer(SEXP xp);
 
-void rei_channel_init(void) {
-  rei_chan_tag = Rf_install("rei_channel");
-  rei_class_channel = Rf_mkString("rei_channel");
-  R_PreserveObject(rei_class_channel);
-  rei_sent_full = rei_make_sentinel("full", "rei_full");
-  rei_sent_timeout = rei_make_sentinel("timeout", "rei_timeout");
-  rei_sent_closed = rei_make_sentinel("closed", "rei_closed");
-  rei_sent_gone = rei_make_sentinel("peer_gone", "rei_peer_gone");
+void mizu_channel_init(void) {
+  mizu_chan_tag = Rf_install("mizu_channel");
+  mizu_class_channel = Rf_mkString("mizu_channel");
+  R_PreserveObject(mizu_class_channel);
+  mizu_sent_full = mizu_make_sentinel("full", "mizu_full");
+  mizu_sent_timeout = mizu_make_sentinel("timeout", "mizu_timeout");
+  mizu_sent_closed = mizu_make_sentinel("closed", "mizu_closed");
+  mizu_sent_gone = mizu_make_sentinel("peer_gone", "mizu_peer_gone");
 }
 
-void rei_channel_fini(void) {
-  R_ReleaseObject(rei_sent_gone);
-  R_ReleaseObject(rei_sent_closed);
-  R_ReleaseObject(rei_sent_timeout);
-  R_ReleaseObject(rei_sent_full);
-  R_ReleaseObject(rei_class_channel);
+void mizu_channel_fini(void) {
+  R_ReleaseObject(mizu_sent_gone);
+  R_ReleaseObject(mizu_sent_closed);
+  R_ReleaseObject(mizu_sent_timeout);
+  R_ReleaseObject(mizu_sent_full);
+  R_ReleaseObject(mizu_class_channel);
 }
 
 // Handle access -------------------------------------------------------------------
 
 /* NULL when the handle has already been released (closed / destroyed). */
-static rei_r_handle *chan_peek(SEXP xp) {
-  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != rei_chan_tag)
-    Rf_error("rei: not a channel handle");
-  rei_r_handle *h = (rei_r_handle *) R_ExternalPtrAddr(xp);
+static mizu_r_handle *chan_peek(SEXP xp) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mizu_chan_tag)
+    Rf_error("mizu: not a channel handle");
+  mizu_r_handle *h = (mizu_r_handle *) R_ExternalPtrAddr(xp);
   if (h == NULL || h->core == NULL) return NULL;
-  if (h->self_pid != rei_self_pid())
-    Rf_error("rei: channel handles do not survive fork()");
+  if (h->self_pid != mizu_self_pid())
+    Rf_error("mizu: channel handles do not survive fork()");
   return h;
 }
 
-static rei_r_handle *chan_get(SEXP xp) {
-  rei_r_handle *h = chan_peek(xp);
-  if (h == NULL) Rf_error("rei: channel handle is closed");
+static mizu_r_handle *chan_get(SEXP xp) {
+  mizu_r_handle *h = chan_peek(xp);
+  if (h == NULL) Rf_error("mizu: channel handle is closed");
   return h;
 }
 
-static rei_channel *chan_core(SEXP xp) {
-  return (rei_channel *) chan_get(xp)->core;
+static mizu_channel *chan_core(SEXP xp) {
+  return (mizu_channel *) chan_get(xp)->core;
 }
 
 /* The R binding registered on every channel handle: the tier dispatch, the
    materialize, the interrupt poll, and the pin release. exec/park/sweep are
    NULL (a channel never evals; R has no global lock to bracket parks; no
    per-handle cache to sweep). */
-static void chan_binding(rei_r_handle *h, rei_binding *b) {
-  rei_binding_init(b);
-  b->stage = rei_r_stage_channel;
-  b->read = rei_r_read_channel;
-  b->check = rei_r_check;
-  b->drop = rei_r_drop;
+static void chan_binding(mizu_r_handle *h, mizu_binding *b) {
+  mizu_binding_init(b);
+  b->stage = mizu_r_stage_channel;
+  b->read = mizu_r_read_channel;
+  b->check = mizu_r_check;
+  b->drop = mizu_r_drop;
   b->ctx = h;
 }
 
 /* Build the extptr around a created/attached core handle: the prot chain
    ([0] the zc view cache's wrap table, [1] the pin chain) and the
    finalizer. */
-static SEXP chan_wrap(rei_r_handle *h) {
+static SEXP chan_wrap(mizu_r_handle *h) {
   SEXP prot = PROTECT(Rf_allocVector(VECSXP, 2));
-  SET_VECTOR_ELT(prot, 0, Rf_allocVector(VECSXP, REI_OPEN_CACHE_MAX));
+  SET_VECTOR_ELT(prot, 0, Rf_allocVector(VECSXP, MIZU_OPEN_CACHE_MAX));
   h->zoc.wraps = VECTOR_ELT(prot, 0);
   h->prot = prot;
   h->pin_slot = 1;
-  SEXP xp = PROTECT(R_MakeExternalPtr(h, rei_chan_tag, prot));
-  R_RegisterCFinalizerEx(xp, rei_chan_finalizer, TRUE);
-  Rf_setAttrib(xp, R_ClassSymbol, rei_class_channel);
+  SEXP xp = PROTECT(R_MakeExternalPtr(h, mizu_chan_tag, prot));
+  R_RegisterCFinalizerEx(xp, mizu_chan_finalizer, TRUE);
+  Rf_setAttrib(xp, R_ClassSymbol, mizu_class_channel);
   UNPROTECT(2);
   return xp;
 }
 
-static void rei_chan_finalizer(SEXP xp) {
-  rei_r_handle *h = (rei_r_handle *) R_ExternalPtrAddr(xp);
+static void mizu_chan_finalizer(SEXP xp) {
+  mizu_r_handle *h = (mizu_r_handle *) R_ExternalPtrAddr(xp);
   if (h == NULL) return;
   if (h->core != NULL) {
     /* destroy signals close and runs the non-blocking rendezvous check —
        unlink only on the peer's bit or its confirmed death */
-    rei_channel_destroy((rei_channel *) h->core);
+    mizu_channel_destroy((mizu_channel *) h->core);
     h->core = NULL;
   }
   free(h);
@@ -114,177 +114,177 @@ static void rei_chan_finalizer(SEXP xp) {
 /* R-visible read of the shared clock: the map deadline R threads through
    the pool's _try entries is computed against the same timescale the C
    wait loops park against. */
-SEXP rei_now_call(void) {
-  return Rf_ScalarReal(rei_now());
+SEXP mizu_now_call(void) {
+  return Rf_ScalarReal(mizu_now());
 }
 
-static SEXP status_sentinel(rei_status st) {
+static SEXP status_sentinel(mizu_status st) {
   switch (st) {
-  case REI_FULL:      return rei_sent_full;
-  case REI_CLOSED:    return rei_sent_closed;
-  case REI_PEER_GONE: return rei_sent_gone;
-  case REI_TIMEOUT:   return rei_sent_timeout;
+  case MIZU_FULL:      return mizu_sent_full;
+  case MIZU_CLOSED:    return mizu_sent_closed;
+  case MIZU_PEER_GONE: return mizu_sent_gone;
+  case MIZU_TIMEOUT:   return mizu_sent_timeout;
   default:            return R_NilValue;
   }
 }
 
-/* Raise a REI_ERR from a handle verb as a classed error with the handle's
+/* Raise a MIZU_ERR from a handle verb as a classed error with the handle's
    recorded message. */
-NORET static void chan_raise(rei_channel *c) {
-  rei_stop("rei_error", "rei: %s", rei_channel_error(c));
+NORET static void chan_raise(mizu_channel *c) {
+  mizu_stop("mizu_error", "mizu: %s", mizu_channel_error(c));
 }
 
 /* Raise a create/attach failure off the thread-local slot, where the core
    composes the full message (size + hint included). Space/existence
    failures carry the shm class; everything else is a plain error. */
 NORET static void chan_raise_tls(void) {
-  rei_errcat cat = rei_last_error_category();
-  const char *msg = rei_last_error_message();
+  mizu_errcat cat = mizu_last_error_category();
+  const char *msg = mizu_last_error_message();
   switch (cat) {
-  case REI_ERRCAT_NOSPACE:
-  case REI_ERRCAT_NOMEMORY:
-  case REI_ERRCAT_EXISTS:
-    rei_stop_shm(NA_REAL, "rei: %s", msg);
+  case MIZU_ERRCAT_NOSPACE:
+  case MIZU_ERRCAT_NOMEMORY:
+  case MIZU_ERRCAT_EXISTS:
+    mizu_stop_shm(NA_REAL, "mizu: %s", msg);
   default:
-    Rf_error("rei: %s", msg);
+    Rf_error("mizu: %s", msg);
   }
 }
 
 /* Provenance, not class: TRUE only for the interned singletons themselves,
    so a payload merely carrying the class never passes. */
-SEXP rei_sentinel_check(SEXP x) {
-  return Rf_ScalarLogical(x == rei_sent_full || x == rei_sent_timeout ||
-                          x == rei_sent_closed || x == rei_sent_gone);
+SEXP mizu_sentinel_check(SEXP x) {
+  return Rf_ScalarLogical(x == mizu_sent_full || x == mizu_sent_timeout ||
+                          x == mizu_sent_closed || x == mizu_sent_gone);
 }
 
 // Create (host) -------------------------------------------------------------------
 
-static int rei_pow2(uint64_t v) {
+static int mizu_pow2(uint64_t v) {
   return v != 0 && (v & (v - 1)) == 0;
 }
 
-SEXP rei_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
+SEXP mizu_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
                          SEXP arena_sexp, SEXP spin) {
   uint64_t cap = (uint64_t) Rf_asInteger(cap_sexp);
   uint64_t slot = (uint64_t) Rf_asInteger(slot_sexp);
   double arena_in = Rf_asReal(arena_sexp);
-  if (!rei_pow2(cap) || cap < 2 || cap > (1u << 24))
-    Rf_error("rei: capacity must be a power of two between 2 and 2^24");
-  if (!rei_pow2(slot) || slot < 64 || slot > (1u << 20))
-    Rf_error("rei: slot_size must be a power of two between 64 and 2^20");
+  if (!mizu_pow2(cap) || cap < 2 || cap > (1u << 24))
+    Rf_error("mizu: capacity must be a power of two between 2 and 2^24");
+  if (!mizu_pow2(slot) || slot < 64 || slot > (1u << 20))
+    Rf_error("mizu: slot_size must be a power of two between 64 and 2^20");
   if (!(arena_in >= 0) || arena_in > 1.1e12 ||
       (uint64_t) arena_in % 64 != 0)
-    Rf_error("rei: arena_size must be a non-negative multiple of 64");
+    Rf_error("mizu: arena_size must be a non-negative multiple of 64");
 
   /* the drop: the peer's bootstrap, copied into the region at create. A
-     quoted expression rides as an REI_DROP_R-tagged serialize stream; a
+     quoted expression rides as an MIZU_DROP_R-tagged serialize stream; a
      character scalar is UTF-8 source text in the peer's language, tagged
-     REI_DROP_SOURCE (the cross-language lingua franca). */
+     MIZU_DROP_SOURCE (the cross-language lingua franca). */
   int source = TYPEOF(expr) == STRSXP;
   size_t expr_size;
   unsigned char *drop;
   if (source) {
     if (XLENGTH(expr) != 1 || STRING_ELT(expr, 0) == NA_STRING)
-      Rf_error("rei: a source drop must be a single non-NA string");
+      Rf_error("mizu: a source drop must be a single non-NA string");
     const char *src = Rf_translateCharUTF8(STRING_ELT(expr, 0));
     expr_size = strlen(src);
     drop = malloc(expr_size + 1);
-    if (drop == NULL) Rf_error("rei: allocation failure");
-    drop[0] = REI_DROP_SOURCE;
+    if (drop == NULL) Rf_error("mizu: allocation failure");
+    drop[0] = MIZU_DROP_SOURCE;
     memcpy(drop + 1, src, expr_size);
   } else {
-    expr_size = rei_view_serialize_count(expr);
+    expr_size = mizu_view_serialize_count(expr);
     drop = malloc(expr_size + 1);
-    if (drop == NULL) Rf_error("rei: allocation failure");
-    drop[0] = REI_DROP_R;
-    rei_view_serialize_into(drop + 1, expr);
+    if (drop == NULL) Rf_error("mizu: allocation failure");
+    drop[0] = MIZU_DROP_R;
+    mizu_view_serialize_into(drop + 1, expr);
   }
 
-  rei_r_handle *h = calloc(1, sizeof(*h));
-  if (h == NULL) { free(drop); Rf_error("rei: allocation failure"); }
-  rei_channel_opts opts;
-  rei_channel_opts_init(&opts);
+  mizu_r_handle *h = calloc(1, sizeof(*h));
+  if (h == NULL) { free(drop); Rf_error("mizu: allocation failure"); }
+  mizu_channel_opts opts;
+  mizu_channel_opts_init(&opts);
   opts.capacity = (uint32_t) cap;
   opts.slot_size = (uint32_t) slot;
   opts.arena_size = (uint64_t) arena_in;
-  opts.flags = Rf_asLogical(spin) == TRUE ? REI_FLAG_SPIN : 0;
+  opts.flags = Rf_asLogical(spin) == TRUE ? MIZU_FLAG_SPIN : 0;
   opts.drop = drop;
   opts.drop_size = (uint64_t) expr_size + 1;
-  rei_binding b;
+  mizu_binding b;
   chan_binding(h, &b);
 
-  rei_channel *c;
-  rei_status st = rei_channel_create(&c, &opts, &b);
+  mizu_channel *c;
+  mizu_status st = mizu_channel_create(&c, &opts, &b);
   free(drop);
-  if (st != REI_OK) {
+  if (st != MIZU_OK) {
     free(h);
     chan_raise_tls();
   }
-  h->core = (rei_handle *) c;
-  h->self_pid = rei_self_pid();
+  h->core = (mizu_handle *) c;
+  h->self_pid = mizu_self_pid();
   return chan_wrap(h);
 }
 
-SEXP rei_channel_suffix(SEXP xp) {
-  rei_channel *c = chan_core(xp);
+SEXP mizu_channel_suffix(SEXP xp) {
+  mizu_channel *c = chan_core(xp);
   char buf[64];
-  if (rei_channel_token(c, buf, sizeof(buf)) != REI_OK)
+  if (mizu_channel_token(c, buf, sizeof(buf)) != MIZU_OK)
     chan_raise(c);
   return Rf_mkString(buf);
 }
 
 /* Startup rendezvous: the host waits for the peer's ready word. Returns
    FALSE on deadline expiry — the caller walks the channel back. */
-SEXP rei_channel_ready_wait_call(SEXP xp, SEXP timeout) {
-  rei_channel *c = chan_core(xp);
-  rei_status st = rei_channel_ready_wait(c, rei_timeout_ms(Rf_asReal(timeout)));
-  if (st == REI_ERR) chan_raise(c);
-  return Rf_ScalarLogical(st == REI_OK);
+SEXP mizu_channel_ready_wait_call(SEXP xp, SEXP timeout) {
+  mizu_channel *c = chan_core(xp);
+  mizu_status st = mizu_channel_ready_wait(c, mizu_timeout_ms(Rf_asReal(timeout)));
+  if (st == MIZU_ERR) chan_raise(c);
+  return Rf_ScalarLogical(st == MIZU_OK);
 }
 
 /* Startup walk-back: signal close so a late-attaching peer exits instead of
    parking against a host that gave up, then unlink everything. */
-SEXP rei_channel_destroy_call(SEXP xp) {
-  rei_r_handle *h = chan_get(xp);
-  rei_channel_destroy((rei_channel *) h->core);
+SEXP mizu_channel_destroy_call(SEXP xp) {
+  mizu_r_handle *h = chan_get(xp);
+  mizu_channel_destroy((mizu_channel *) h->core);
   h->core = NULL;
   return R_NilValue;
 }
 
 // Attach (peer) -------------------------------------------------------------------
 
-SEXP rei_channel_attach_call(SEXP suffix_sexp) {
+SEXP mizu_channel_attach_call(SEXP suffix_sexp) {
   if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
-    Rf_error("rei: expected a region-name suffix");
+    Rf_error("mizu: expected a region-name suffix");
   const char *suffix = CHAR(STRING_ELT(suffix_sexp, 0));
 
-  rei_r_handle *h = calloc(1, sizeof(*h));
-  if (h == NULL) Rf_error("rei: allocation failure");
-  rei_binding b;
+  mizu_r_handle *h = calloc(1, sizeof(*h));
+  if (h == NULL) Rf_error("mizu: allocation failure");
+  mizu_binding b;
   chan_binding(h, &b);
-  rei_channel *c;
-  if (rei_channel_attach(&c, suffix, &b) != REI_OK) {
+  mizu_channel *c;
+  if (mizu_channel_attach(&c, suffix, &b) != MIZU_OK) {
     free(h);
     chan_raise_tls();
   }
-  h->core = (rei_handle *) c;
-  h->self_pid = rei_self_pid();
+  h->core = (mizu_handle *) c;
+  h->self_pid = mizu_self_pid();
 
   SEXP xp = PROTECT(chan_wrap(h));
 
   /* materialize-before-ready: the host's frame keeps the expression — and
      through the view layer's keeper chains every region its identifiers name — alive
-     exactly until ready is observed. An REI_DROP_R drop unserializes to
-     the expression; an REI_DROP_SOURCE drop is UTF-8 source text, returned
+     exactly until ready is observed. An MIZU_DROP_R drop unserializes to
+     the expression; an MIZU_DROP_SOURCE drop is UTF-8 source text, returned
      as a string for the caller to parse (kept opaque here so the tag
      dispatch is explicit at both ends). */
   const uint8_t *bytes;
   uint64_t n;
-  rei_channel_drop(c, &bytes, &n);
-  if (n == 0 || (bytes[0] != REI_DROP_R && bytes[0] != REI_DROP_SOURCE))
-    Rf_error("rei: foreign channel drop (not an R bootstrap)");
-  SEXP drop = bytes[0] == REI_DROP_R ?
-    PROTECT(rei_view_unserialize_from((unsigned char *) (bytes + 1),
+  mizu_channel_drop(c, &bytes, &n);
+  if (n == 0 || (bytes[0] != MIZU_DROP_R && bytes[0] != MIZU_DROP_SOURCE))
+    Rf_error("mizu: foreign channel drop (not an R bootstrap)");
+  SEXP drop = bytes[0] == MIZU_DROP_R ?
+    PROTECT(mizu_view_unserialize_from((unsigned char *) (bytes + 1),
                                   (size_t) n - 1)) :
     PROTECT(Rf_ScalarString(Rf_mkCharLenCE((const char *) (bytes + 1),
                                            (int) (n - 1), CE_UTF8)));
@@ -295,51 +295,51 @@ SEXP rei_channel_attach_call(SEXP suffix_sexp) {
   return out;
 }
 
-SEXP rei_channel_ready_set_call(SEXP xp) {
-  rei_channel *c = chan_core(xp);
-  if (rei_channel_ready_set(c) != REI_OK) chan_raise(c);
+SEXP mizu_channel_ready_set_call(SEXP xp) {
+  mizu_channel *c = chan_core(xp);
+  if (mizu_channel_ready_set(c) != MIZU_OK) chan_raise(c);
   return R_NilValue;
 }
 
 // Verbs ---------------------------------------------------------------------------
 
-SEXP rei_channel_send_call(SEXP xp, SEXP x) {
-  rei_channel *c = chan_core(xp);
-  rei_status st = rei_channel_send(c, (void *) x);
-  if (st == REI_ERR) chan_raise(c);
-  return st == REI_OK ? Rf_ScalarLogical(TRUE) : status_sentinel(st);
+SEXP mizu_channel_send_call(SEXP xp, SEXP x) {
+  mizu_channel *c = chan_core(xp);
+  mizu_status st = mizu_channel_send(c, (void *) x);
+  if (st == MIZU_ERR) chan_raise(c);
+  return st == MIZU_OK ? Rf_ScalarLogical(TRUE) : status_sentinel(st);
 }
 
 /* One .Call; the core batches the tail store and the wake. Returns the count
-   accepted (short on ring-full or close midway — probe why with rei_send). */
-SEXP rei_channel_send_batch_call(SEXP xp, SEXP xs) {
-  rei_channel *c = chan_core(xp);
+   accepted (short on ring-full or close midway — probe why with mizu_send). */
+SEXP mizu_channel_send_batch_call(SEXP xp, SEXP xs) {
+  mizu_channel *c = chan_core(xp);
   if (TYPEOF(xs) != VECSXP)
-    Rf_error("rei: expected a list of payloads");
+    Rf_error("mizu: expected a list of payloads");
   R_xlen_t n = XLENGTH(xs);
   void **objs = (void **) R_alloc(n, sizeof(void *));
   for (R_xlen_t i = 0; i < n; i++)
     objs[i] = (void *) VECTOR_ELT(xs, i);
   size_t accepted = 0;
-  rei_status st = rei_channel_send_batch(c, objs, (size_t) n, &accepted);
-  if (st == REI_ERR) chan_raise(c);
+  mizu_status st = mizu_channel_send_batch(c, objs, (size_t) n, &accepted);
+  if (st == MIZU_ERR) chan_raise(c);
   return Rf_ScalarInteger((int) accepted);
 }
 
-SEXP rei_channel_recv_call(SEXP xp, SEXP timeout) {
-  rei_r_handle *h = chan_get(xp);
-  rei_channel *c = (rei_channel *) h->core;
+SEXP mizu_channel_recv_call(SEXP xp, SEXP timeout) {
+  mizu_r_handle *h = chan_get(xp);
+  mizu_channel *c = (mizu_channel *) h->core;
   h->saw_foreign = 0;
   void *obj = NULL;
-  rei_status st = rei_channel_recv(c, &obj, rei_timeout_ms(Rf_asReal(timeout)));
+  mizu_status st = mizu_channel_recv(c, &obj, mizu_timeout_ms(Rf_asReal(timeout)));
   /* the read hook flags a foreign payload on the handle and fails the read
-     with REI_READ_CONSUME: the slot is already consumed, so the informative
+     with MIZU_READ_CONSUME: the slot is already consumed, so the informative
      error costs the message, not the channel */
-  if (st == REI_ERR) {
-    if (h->saw_foreign) rei_stop_python_payload();
+  if (st == MIZU_ERR) {
+    if (h->saw_foreign) mizu_stop_python_payload();
     chan_raise(c);
   }
-  if (st != REI_OK) return status_sentinel(st);
+  if (st != MIZU_OK) return status_sentinel(st);
   return (SEXP) obj;
 }
 
@@ -347,28 +347,28 @@ SEXP rei_channel_recv_call(SEXP xp, SEXP timeout) {
    ones without waiting further. The sentinel discipline matches recv. The
    sink form anchors each message in out as it is read — the array form
    would hold n unprotected SEXPs across the remaining reads. */
-SEXP rei_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
-  rei_r_handle *h = chan_get(xp);
-  rei_channel *c = (rei_channel *) h->core;
+SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
+  mizu_r_handle *h = chan_get(xp);
+  mizu_channel *c = (mizu_channel *) h->core;
   int n = Rf_asInteger(n_sexp);
-  if (n < 1) Rf_error("rei: n must be at least 1");
+  if (n < 1) Rf_error("mizu: n must be at least 1");
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
   size_t count = 0;
   h->saw_foreign = 0;
-  rei_status st = rei_channel_recv_batch_fn(c, (size_t) n, &count,
-                                            rei_vec_sink, out,
-                                            rei_timeout_ms(Rf_asReal(timeout)));
+  mizu_status st = mizu_channel_recv_batch_fn(c, (size_t) n, &count,
+                                            mizu_vec_sink, out,
+                                            mizu_timeout_ms(Rf_asReal(timeout)));
   /* a foreign payload in the batch: the read hook flags the handle and its
-     slot is consumed (REI_READ_CONSUME), so the informative error costs the
+     slot is consumed (MIZU_READ_CONSUME), so the informative error costs the
      message, not the channel */
-  if (st == REI_ERR) {
+  if (st == MIZU_ERR) {
     if (h->saw_foreign) {
       UNPROTECT(1);
-      rei_stop_python_payload();
+      mizu_stop_python_payload();
     }
     chan_raise(c);
   }
-  if (st != REI_OK) {
+  if (st != MIZU_OK) {
     UNPROTECT(1);
     return status_sentinel(st);
   }
@@ -385,43 +385,43 @@ SEXP rei_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
 
 /* The peer half of the protocol, run by peer_main's epilogue: set our bit,
    wake the host. No rendezvous — process exit releases everything else. */
-SEXP rei_channel_close_signal_call(SEXP xp) {
-  rei_r_handle *h = chan_peek(xp);
+SEXP mizu_channel_close_signal_call(SEXP xp) {
+  mizu_r_handle *h = chan_peek(xp);
   if (h == NULL) return R_NilValue;
-  rei_channel_close_signal((rei_channel *) h->core);
+  mizu_channel_close_signal((mizu_channel *) h->core);
   return R_NilValue;
 }
 
-SEXP rei_channel_close_call(SEXP xp, SEXP timeout) {
-  rei_r_handle *h = chan_peek(xp);
+SEXP mizu_channel_close_call(SEXP xp, SEXP timeout) {
+  mizu_r_handle *h = chan_peek(xp);
   if (h == NULL) return Rf_ScalarLogical(TRUE);   /* close is idempotent */
-  rei_channel *c = (rei_channel *) h->core;
-  rei_status st = rei_channel_close(c, rei_timeout_ms(Rf_asReal(timeout)));
-  if (st == REI_ERR) chan_raise(c);
-  if (st == REI_OK) {
+  mizu_channel *c = (mizu_channel *) h->core;
+  mizu_status st = mizu_channel_close(c, mizu_timeout_ms(Rf_asReal(timeout)));
+  if (st == MIZU_ERR) chan_raise(c);
+  if (st == MIZU_OK) {
     /* rendezvoused: the handle is dead — destroy releases it */
-    rei_channel_destroy(c);
+    mizu_channel_destroy(c);
     h->core = NULL;
     return Rf_ScalarLogical(TRUE);
   }
-  return Rf_ScalarLogical(FALSE);   /* REI_TIMEOUT: destroy retries it */
+  return Rf_ScalarLogical(FALSE);   /* MIZU_TIMEOUT: destroy retries it */
 }
 
 // Introspection -------------------------------------------------------------------
 
 /* Reports peer *process* liveness (the fd-scoped lock verdict): an orderly
    close with the process still running is alive; a released handle is not. */
-SEXP rei_channel_alive_call(SEXP xp) {
-  rei_r_handle *h = chan_peek(xp);
+SEXP mizu_channel_alive_call(SEXP xp) {
+  mizu_r_handle *h = chan_peek(xp);
   if (h == NULL) return Rf_ScalarLogical(FALSE);
-  return Rf_ScalarLogical(rei_channel_alive((rei_channel *) h->core));
+  return Rf_ScalarLogical(mizu_channel_alive((mizu_channel *) h->core));
 }
 
-SEXP rei_channel_stat(SEXP xp) {
-  rei_r_handle *h = chan_get(xp);
-  rei_channel *c = (rei_channel *) h->core;
-  rei_channel_info info;
-  if (rei_channel_info_get(c, &info) != REI_OK) chan_raise(c);
+SEXP mizu_channel_stat(SEXP xp) {
+  mizu_r_handle *h = chan_get(xp);
+  mizu_channel *c = (mizu_channel *) h->core;
+  mizu_channel_info info;
+  if (mizu_channel_info_get(c, &info) != MIZU_OK) chan_raise(c);
   const char *names[] = {"name", "side", "capacity", "slot_size",
                          "arena_size", "inline_max", "spin", "ready",
                          "closed", "peer_pid", "tx_sent", "tx_published",
@@ -431,7 +431,7 @@ SEXP rei_channel_stat(SEXP xp) {
                          "zc_open_misses", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(info.name));
-  SET_VECTOR_ELT(out, 1, Rf_mkString(info.side == REI_ENTITY_HOST ?
+  SET_VECTOR_ELT(out, 1, Rf_mkString(info.side == MIZU_ENTITY_HOST ?
                                      "host" : "peer"));
   SET_VECTOR_ELT(out, 2, Rf_ScalarReal((double) info.capacity));
   SET_VECTOR_ELT(out, 3, Rf_ScalarReal((double) info.slot_size));

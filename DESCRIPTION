@@ -1,4 +1,4 @@
-Package: rei
+Package: mizu
 Title: Lock-Free Shared-Memory Channels and Task Pools
 Version: 0.0.0.9000
 Authors@R: c(
@@ -17,8 +17,8 @@ Description: Parallel computation and data exchange between R processes on
     usually reserved for threads. A complement to 'mirai'; payload
     contents interoperate transparently with 'mori' shared objects.
 License: MIT + file LICENSE
-URL: https://github.com/shikokuchuo/rei
-BugReports: https://github.com/shikokuchuo/rei/issues
+URL: https://github.com/shikokuchuo/mizu
+BugReports: https://github.com/shikokuchuo/mizu/issues
 Depends:
     R (>= 4.3)
 Suggests:

@@ -1,7 +1,7 @@
 /* The .Call test surface over the core's preamble write/validate
-   (vendor/librei/preamble.c): the wire format itself is librei's. */
+   (vendor/libmizu/preamble.c): the wire format itself is libmizu's. */
 
-#include "rei.h"
+#include "mizu.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -12,20 +12,20 @@
 
 // .Call test surface -----------------------------------------------------------
 
-rei_shm *rei_region(SEXP xp);   /* wrap.c */
+mizu_shm *mizu_region(SEXP xp);   /* wrap.c */
 
-SEXP rei_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
+SEXP mizu_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
                              SEXP drop, SEXP livedir) {
-  rei_shm *shm = rei_region(xp);
-  if (shm->size < REI_FIXED_LAYOUT_SIZE)
-    Rf_error("rei: region too small for a channel preamble");
+  mizu_shm *shm = mizu_region(xp);
+  if (shm->size < MIZU_FIXED_LAYOUT_SIZE)
+    Rf_error("mizu: region too small for a channel preamble");
   if (TYPEOF(drop) != REALSXP || XLENGTH(drop) < 2 ||
       TYPEOF(livedir) != REALSXP || XLENGTH(livedir) < 2)
-    Rf_error("rei: drop and livedir must be numeric vectors of length 2");
+    Rf_error("mizu: drop and livedir must be numeric vectors of length 2");
 
-  rei_preamble p = {
-    .magic = REI_MAGIC,
-    .version = REI_ABI_VERSION,
+  mizu_preamble p = {
+    .magic = MIZU_MAGIC,
+    .version = MIZU_ABI_VERSION,
     .cap = (uint32_t) Rf_asInteger(cap),
     .slot = (uint32_t) Rf_asInteger(slot),
 #ifdef _WIN32
@@ -39,16 +39,16 @@ SEXP rei_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
     .livedir_offset = (uint64_t) REAL(livedir)[0],
     .livedir_size = (uint64_t) REAL(livedir)[1],
   };
-  rei_preamble_write(shm->addr, &p);
+  mizu_preamble_write(shm->addr, &p);
   return R_NilValue;
 }
 
-SEXP rei_preamble_validate_call(SEXP xp) {
-  rei_shm *shm = rei_region(xp);
+SEXP mizu_preamble_validate_call(SEXP xp) {
+  mizu_shm *shm = mizu_region(xp);
 
-  rei_preamble p;
-  const char *err = rei_preamble_validate(shm->addr, shm->size, &p);
-  if (err != NULL) Rf_error("rei: invalid channel region: %s", err);
+  mizu_preamble p;
+  const char *err = mizu_preamble_validate(shm->addr, shm->size, &p);
+  if (err != NULL) Rf_error("mizu: invalid channel region: %s", err);
 
   const char *names[] = {"version", "cap", "slot", "host_pid", "arena_size",
                          "drop_offset", "drop_size", "livedir_offset",

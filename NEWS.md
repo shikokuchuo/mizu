@@ -1,5 +1,5 @@
-# rei (development version)
+# mizu (development version)
 
-# rei 0.0.0
+# mizu 0.0.0
 
 * Initial release.

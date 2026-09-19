@@ -8,10 +8,10 @@
 #' as a command-line argument.
 #'
 #' `expr` is a quoted expression, not a closure. It captures nothing, and
-#' unlike [rei_submit()] rei does not capture it for you: pass it
+#' unlike [mizu_submit()] mizu does not capture it for you: pass it
 #' pre-quoted. The peer evaluates it in a fresh environment whose parent is
 #' the global environment of the child. `ch` (the peer-side channel handle)
-#' is the only binding that rei provides. Data crosses the ring, and the
+#' is the only binding that mizu provides. Data crosses the ring, and the
 #' expression itself loads any packages it needs. When the expression
 #' returns or errors, the peer signals an orderly close and exits. An error
 #' message goes to the stderr of the child.
@@ -24,7 +24,7 @@
 #' live in a per-platform directory chosen at create time. This is
 #' `/dev/shm` on Linux, and the per-user temporary directory on macOS and
 #' Windows. The chosen path is recorded in the region, so both sides use
-#' the same files. The environment variable `REI_LIVENESS_DIR`, read in
+#' the same files. The environment variable `MIZU_LIVENESS_DIR`, read in
 #' the creating process, overrides the default.
 #'
 #' @param expr a quoted expression (for example `quote({ ... })`), evaluated
@@ -45,42 +45,42 @@
 #'   consumer never yields. If a spin-mode consumer parks, the producer
 #'   never wakes it.
 #' @param launcher a `function(token)` that spawns the peer process. For an
-#'   R peer, it arranges for a process to call `rei:::peer_main(token)`. The
-#'   default [rei_launcher()] spawns `Rscript` and propagates the
+#'   R peer, it arranges for a process to call `mizu:::peer_main(token)`. The
+#'   default [mizu_launcher()] spawns `Rscript` and propagates the
 #'   `.libPaths()` of the host. Its `stdout` and `stderr` arguments direct
 #'   the peer output, including the error epilogue. A custom launcher must
 #'   arrange the library paths itself. For a peer in another language (a
 #'   source-string `expr`), it spawns a program that attaches with `token`
-#'   and speaks the wire protocol, such as `python3 -m pyrei.child` for a
-#'   Python peer — [rei_py_launcher()] is the ready-made launcher for
+#'   and speaks the wire protocol, such as `python3 -m pymizu.child` for a
+#'   Python peer — [mizu_py_launcher()] is the ready-made launcher for
 #'   that case.
 #' @param startup_timeout seconds to wait for the peer to attach and signal
-#'   ready. On expiry, rei releases the channel and raises
-#'   `rei_error_startup` (see [rei_error]).
+#'   ready. On expiry, mizu releases the channel and raises
+#'   `mizu_error_startup` (see [mizu_error]).
 #'
-#' @return A channel handle (class `"rei_channel"`). Handles are
+#' @return A channel handle (class `"mizu_channel"`). Handles are
 #'   process-private and do not survive `fork()`.
 #'
 #' @examples
-#' ch <- rei_channel(quote(
+#' ch <- mizu_channel(quote(
 #'   repeat {
-#'     x <- rei_recv(ch, timeout = 30)
-#'     if (inherits(x, "rei_sentinel")) break
-#'     rei_send(ch, x)
+#'     x <- mizu_recv(ch, timeout = 30)
+#'     if (inherits(x, "mizu_sentinel")) break
+#'     mizu_send(ch, x)
 #'   }
 #' ))
-#' rei_send(ch, 42L)
-#' rei_recv(ch, timeout = 5)
-#' rei_close(ch)
+#' mizu_send(ch, 42L)
+#' mizu_recv(ch, timeout = 5)
+#' mizu_close(ch)
 #'
 #' @export
-rei_channel <- function(
+mizu_channel <- function(
   expr,
   capacity = 16384L,
   slot_size = 256L,
   arena_size = 4194304,
   spin = FALSE,
-  launcher = rei_launcher(),
+  launcher = mizu_launcher(),
   startup_timeout = 30
 ) {
   if (
@@ -88,20 +88,20 @@ rei_channel <- function(
       !(is.character(expr) && length(expr) == 1L && !is.na(expr))
   ) {
     stop(
-      "rei: expr must be a quoted expression (wrap it in quote()) or a ",
+      "mizu: expr must be a quoted expression (wrap it in quote()) or a ",
       "single source string (for a peer in another language)",
       call. = FALSE
     )
   }
-  ch <- .Call(rei_channel_create, expr, capacity, slot_size, arena_size, spin)
-  token <- .Call(rei_channel_suffix, ch)
+  ch <- .Call(mizu_channel_create, expr, capacity, slot_size, arena_size, spin)
+  token <- .Call(mizu_channel_suffix, ch)
   launcher(token)
-  if (!.Call(rei_channel_ready_wait, ch, startup_timeout)) {
-    .Call(rei_channel_destroy, ch)
-    stop_rei(
-      "rei_error_startup",
+  if (!.Call(mizu_channel_ready_wait, ch, startup_timeout)) {
+    .Call(mizu_channel_destroy, ch)
+    stop_mizu(
+      "mizu_error_startup",
       paste0(
-        "rei: child failed to attach within ",
+        "mizu: child failed to attach within ",
         format(startup_timeout),
         " seconds"
       )
@@ -112,26 +112,26 @@ rei_channel <- function(
 
 #' Send and Receive over a Channel
 #'
-#' `rei_send()` publishes a message to the peer. The message is visible the
-#' moment the call returns, with no separate flush step. `rei_recv()`
+#' `mizu_send()` publishes a message to the peer. The message is visible the
+#' moment the call returns, with no separate flush step. `mizu_recv()`
 #' returns the next message, and waits up to `timeout` seconds for it.
 #'
 #' Sends never block for ring space. Receives surface every terminal state
 #' as a class-tagged sentinel, not an error. Dispatch with
-#' `inherits(x, "rei_sentinel")`, or on the specific classes:
+#' `inherits(x, "mizu_sentinel")`, or on the specific classes:
 #'
-#' * `rei_full` — the ring is full (send). Back off until the peer drains,
+#' * `mizu_full` — the ring is full (send). Back off until the peer drains,
 #'   or drop the message.
-#' * `rei_timeout` — no message arrived within `timeout` (recv).
-#' * `rei_closed` — the other side closed the channel. A receive drains all
+#' * `mizu_timeout` — no message arrived within `timeout` (recv).
+#' * `mizu_closed` — the other side closed the channel. A receive drains all
 #'   published messages before it reports this.
-#' * `rei_peer_gone` — the peer died without closing. The verdict comes
+#' * `mizu_peer_gone` — the peer died without closing. The verdict comes
 #'   from the kernel-released liveness lock, at OS death-notification
 #'   latency. A receive drains first here too: the published messages of a
 #'   dead peer are complete and valid. Sticky once returned.
 #'
 #' `NULL` is a legal payload. Sentinels are ordinary values, identifiable
-#' by class alone, and never signalled conditions. [rei_is_sentinel()]
+#' by class alone, and never signalled conditions. [mizu_is_sentinel()]
 #' checks identity where payloads are untrusted.
 #' `NULL` crosses as an immediate: no serialization and no receive-side
 #' allocation. Length-1 character vectors that fit the inline budget cross
@@ -154,68 +154,68 @@ rei_channel <- function(
 #' Python.
 #'
 #' From a non-R peer, only vectors and strings are legal payloads. Anything
-#' else (a pyrei codec stream or a pickle) is declined: the receive raises
+#' else (a pymizu codec stream or a pickle) is declined: the receive raises
 #' a "Python payload" error. The declined message is consumed, so the
 #' channel keeps flowing.
 #'
-#' @param ch a channel handle from [rei_channel()] (or the `ch` binding
+#' @param ch a channel handle from [mizu_channel()] (or the `ch` binding
 #'   inside a peer expression).
 #' @param x the payload: any R object.
-#' @param timeout seconds to wait before the call returns the `rei_timeout`
+#' @param timeout seconds to wait before the call returns the `mizu_timeout`
 #'   sentinel. `Inf` (the default) waits indefinitely, and `0` polls.
 #'   Ctrl-C stays responsive during the wait.
 #'
-#' @return `rei_send()` returns `TRUE` (invisibly) on success, or a
-#'   sentinel otherwise. `rei_recv()` returns the received payload or a
+#' @return `mizu_send()` returns `TRUE` (invisibly) on success, or a
+#'   sentinel otherwise. `mizu_recv()` returns the received payload or a
 #'   sentinel.
 #'
 #' @examples
-#' ch <- rei_channel(quote(rei_send(ch, rei_recv(ch))))
-#' rei_send(ch, list(1, "a"))
-#' rei_recv(ch, timeout = 5)
-#' rei_close(ch)
+#' ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
+#' mizu_send(ch, list(1, "a"))
+#' mizu_recv(ch, timeout = 5)
+#' mizu_close(ch)
 #'
 #' @export
-rei_send <- function(ch, x) invisible(.Call(rei_channel_send, ch, x))
+mizu_send <- function(ch, x) invisible(.Call(mizu_channel_send, ch, x))
 
-#' @rdname rei_send
+#' @rdname mizu_send
 #' @export
-rei_recv <- function(ch, timeout = Inf) .Call(rei_channel_recv, ch, timeout)
+mizu_recv <- function(ch, timeout = Inf) .Call(mizu_channel_recv, ch, timeout)
 
 #' Batched Send and Receive
 #'
 #' At target rates the R call boundary is a first-order cost.
-#' `rei_send_batch()` moves a list of payloads in a single `.Call` and
+#' `mizu_send_batch()` moves a list of payloads in a single `.Call` and
 #' publishes them to the peer in one batched tail store.
-#' `rei_recv_batch()` drains up to `n` messages in a single park cycle and
+#' `mizu_recv_batch()` drains up to `n` messages in a single park cycle and
 #' a single batched head publication.
 #'
-#' @inheritParams rei_send
+#' @inheritParams mizu_send
 #' @param xs a list of payloads.
 #' @param n maximum number of messages to return.
 #'
-#' @return `rei_send_batch()` returns the number of messages accepted. This
+#' @return `mizu_send_batch()` returns the number of messages accepted. This
 #'   is less than `length(xs)` when the ring filled or the channel closed
-#'   midway. Send the next element with [rei_send()] to learn which.
-#'   `rei_recv_batch()` waits for the first message like [rei_recv()] and
+#'   midway. Send the next element with [mizu_send()] to learn which.
+#'   `mizu_recv_batch()` waits for the first message like [mizu_recv()] and
 #'   returns its sentinels on timeout, close, or peer death. It then
 #'   returns a list of 1 to `n` already-published messages without waiting
-#'   further. On a foreign (Python) payload it raises like [rei_recv()];
+#'   further. On a foreign (Python) payload it raises like [mizu_recv()];
 #'   the messages drained alongside it in the same batch are consumed.
 #'
 #' @examples
-#' ch <- rei_channel(quote(rei_send_batch(ch, rei_recv_batch(ch, 3L))))
-#' rei_send_batch(ch, list(1, 2, 3))
-#' rei_recv_batch(ch, 3L, timeout = 5)
-#' rei_close(ch)
+#' ch <- mizu_channel(quote(mizu_send_batch(ch, mizu_recv_batch(ch, 3L))))
+#' mizu_send_batch(ch, list(1, 2, 3))
+#' mizu_recv_batch(ch, 3L, timeout = 5)
+#' mizu_close(ch)
 #'
 #' @export
-rei_send_batch <- function(ch, xs) .Call(rei_channel_send_batch, ch, xs)
+mizu_send_batch <- function(ch, xs) .Call(mizu_channel_send_batch, ch, xs)
 
-#' @rdname rei_send_batch
+#' @rdname mizu_send_batch
 #' @export
-rei_recv_batch <- function(ch, n = 256L, timeout = Inf) {
-  .Call(rei_channel_recv_batch, ch, n, timeout)
+mizu_recv_batch <- function(ch, n = 256L, timeout = Inf) {
+  .Call(mizu_channel_recv_batch, ch, n, timeout)
 }
 
 #' Close a Channel
@@ -230,26 +230,26 @@ rei_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 #' check again.
 #'
 #' After either side signals close, sends on both sides return the
-#' `rei_closed` sentinel, and receives drain the remaining messages before
+#' `mizu_closed` sentinel, and receives drain the remaining messages before
 #' they return the same.
 #'
-#' @inheritParams rei_send
+#' @inheritParams mizu_send
 #' @param timeout seconds to wait for the close of the peer.
 #'
 #' @return Invisibly, `TRUE` on rendezvous, `FALSE` on timeout (with a
 #'   warning).
 #'
 #' @examples
-#' ch <- rei_channel(quote(rei_send(ch, "done")))
-#' rei_recv(ch, timeout = 5)
-#' rei_close(ch)
+#' ch <- mizu_channel(quote(mizu_send(ch, "done")))
+#' mizu_recv(ch, timeout = 5)
+#' mizu_close(ch)
 #'
 #' @export
-rei_close <- function(ch, timeout = 5) {
-  ok <- .Call(rei_channel_close, ch, timeout)
+mizu_close <- function(ch, timeout = 5) {
+  ok <- .Call(mizu_channel_close, ch, timeout)
   if (!ok) {
     warning(
-      "rei: close timed out waiting for the peer; resources release ",
+      "mizu: close timed out waiting for the peer; resources release ",
       "when the handle is garbage collected",
       call. = FALSE
     )
@@ -261,49 +261,49 @@ rei_close <- function(ch, timeout = 5) {
 #'
 #' An explicit probe for supervisors. Reports whether the peer process
 #' holds its liveness lock, in about 1 microsecond with no waiting.
-#' [rei_recv()] and [rei_send()] surface peer death automatically as
-#' `rei_peer_gone`. Use this probe to ask without touching the rings. A
+#' [mizu_recv()] and [mizu_send()] surface peer death automatically as
+#' `mizu_peer_gone`. Use this probe to ask without touching the rings. A
 #' peer that closed the channel but still runs reads as alive.
 #'
-#' @inheritParams rei_send
+#' @inheritParams mizu_send
 #'
 #' @return `TRUE` while the peer process is alive, `FALSE` after it dies.
 #'   At that point the survivor unlinked the names of the channel.
 #'
 #' @examples
-#' ch <- rei_channel(quote(rei_recv(ch)))
-#' rei_alive(ch)
-#' rei_close(ch)
+#' ch <- mizu_channel(quote(mizu_recv(ch)))
+#' mizu_alive(ch)
+#' mizu_close(ch)
 #'
 #' @export
-rei_alive <- function(ch) .Call(rei_channel_alive, ch)
+mizu_alive <- function(ch) .Call(mizu_channel_alive, ch)
 
 # Peer entry point: invoked through the Rscript child runner by the launcher.
 # Rebuilds the region name from the compiled-in prefix plus the token (the
 # name's suffix), attaches writable, validates the preamble, takes its liveness
 # lock, points its death listener at the host, and materializes the staged
-# expression *before* signalling ready — the host's rei_channel frame holds
+# expression *before* signalling ready — the host's mizu_channel frame holds
 # the expression (and every region its identifiers name) alive exactly until
 # then. The epilogue is the peer half of the close protocol.
 peer_main <- function(token) {
-  if (!any(search() == "package:rei")) {
-    attachNamespace("rei")
+  if (!any(search() == "package:mizu")) {
+    attachNamespace("mizu")
   }
-  .Call(rei_tune_malloc)
-  att <- .Call(rei_channel_attach, token)
+  .Call(mizu_tune_malloc)
+  att <- .Call(mizu_channel_attach, token)
   ch <- att[[1L]]
   expr <- att[[2L]]
-  .Call(rei_channel_ready_set, ch)
+  .Call(mizu_channel_ready_set, ch)
   env <- new.env(parent = globalenv())
   env[["ch"]] <- ch
   status <- 0L
   tryCatch(
-    # a character drop is UTF-8 source text (REI_DROP_SOURCE); parse errors
+    # a character drop is UTF-8 source text (MIZU_DROP_SOURCE); parse errors
     # are peer errors, an orderly close like an eval error
     eval(if (is.character(expr)) parse(text = expr) else expr, envir = env),
     error = function(e) {
       cat(
-        "rei peer error: ",
+        "mizu peer error: ",
         conditionMessage(e),
         "\n",
         sep = "",
@@ -313,6 +313,6 @@ peer_main <- function(token) {
     },
     interrupt = function(e) status <<- 2L
   )
-  .Call(rei_channel_close_signal, ch)
+  .Call(mizu_channel_close_signal, ch)
   quit(save = "no", status = status)
 }

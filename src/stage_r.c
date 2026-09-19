@@ -1,32 +1,32 @@
-/* The R binding's half of the language seam (rei.h's rei_binding). For the
+/* The R binding's half of the language seam (mizu.h's mizu_binding). For the
    channel: the SEXP <-> framed-bytes tier dispatch for sends
-   (rei_r_stage_channel) and the materialize for receives
-   (rei_r_read_channel). For the pool: the stage_fn every handle registers
-   (rei_r_stage_pool), the collect read_fn (rei_r_read_pool), the exec_fn a
-   worker handle registers (rei_r_exec_pool — task frame decode, the eval,
+   (mizu_r_stage_channel) and the materialize for receives
+   (mizu_r_read_channel). For the pool: the stage_fn every handle registers
+   (mizu_r_stage_pool), the collect read_fn (mizu_r_read_pool), the exec_fn a
+   worker handle registers (mizu_r_exec_pool — task frame decode, the eval,
    and the result publish through the sink), the ERR envelope framing shared
-   by exec and the unwind path (rei_r_publish_err), and the trace thunk
-   (rei_r_trace). The core owns the ring/deque mechanics, the wakes, and the
+   by exec and the unwind path (mizu_r_publish_err), and the trace thunk
+   (mizu_r_trace). The core owns the ring/deque mechanics, the wakes, and the
    retain-table commits; this file owns the payload framing policy and the
    task evaluation. The check/drop/sweep hooks bridge R's interrupt, GC, and
    per-worker cache lifecycle. */
 
 #include <stdio.h>
 #include <string.h>
-#include "rei.h"
+#include "mizu.h"
 #include <R_ext/Utils.h>
 
 // Channel stage -------------------------------------------------------------------
 
 /* The channel's tier dispatch: frame x as (hdr, payload) — payload capacity
    inline_max — retaining through the handle's services (the core commits the
-   staging entry on success). Arena chunks come from rei_stage_arena_alloc,
+   staging entry on success). Arena chunks come from mizu_stage_arena_alloc,
    the arena base staying core-private; region checkouts ride the spill
    helpers on the handle's free list. Raises on failure, never returns
    nonzero. */
-int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
+int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
                          unsigned char *payload, uint32_t inline_max,
-                         rei_handle *h, void *ctx) {
+                         mizu_handle *h, void *ctx) {
   SEXP x = (SEXP) obj;
   size_t total;
   uint64_t off;
@@ -34,40 +34,40 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
   /* one raw probe per stage: the returned code drives the core's raw-tier
      reservation below (0 on the NIL / REF / STR1 / codec paths) */
   size_t rawlen;
-  int rawtype = rei_raw_type(x, &rawlen);
+  int rawtype = mizu_raw_type(x, &rawlen);
 
   /* NULL is the immediate kind — no serialize pass, no receive alloc */
   if (x == R_NilValue) {
-    hdr->kind = REI_KIND_NIL;
+    hdr->kind = MIZU_KIND_NIL;
     hdr->len = 0;
     hdr->aux = 0;
     return 0;
   }
-  if (rei_zc_ref_stage(hdr, payload, inline_max, x)) {
-    /* a rei-native view crosses by reference (REF) at any size — required
+  if (mizu_zc_ref_stage(hdr, payload, inline_max, x)) {
+    /* a mizu-native view crosses by reference (REF) at any size — required
        once SHM_VEC views exist: the serialize-hook fallback resolves
        uncounted, and the producer could recycle under the far side's view;
        the pin is the view itself */
-    rei_r_pin(h, ctx, x);
+    mizu_r_pin(h, ctx, x);
     return 0;
   }
   if (rawtype != 0) {
-    /* the raw tiers (rei_stage_raw, the core's policy): RAWVEC inline, the
+    /* the raw tiers (mizu_stage_raw, the core's policy): RAWVEC inline, the
        arena copy, or the flat SHM_VEC layout. Bare bytes skip the serialize
        pass here and the parse at the far end, and nothing is pinned (no
        identifier can ride along). A NULL reservation falls to the
        serialized tiers below. */
-    unsigned char *dst = rei_stage_raw(h, rawlen, rawtype, hdr, payload,
+    unsigned char *dst = mizu_stage_raw(h, rawlen, rawtype, hdr, payload,
                                        inline_max);
     if (dst != NULL) {
-      memcpy(dst, rei_vec_ptr(x), rawlen);
+      memcpy(dst, mizu_vec_ptr(x), rawlen);
       return 0;
     }
-  } else if (rei_str1_stage(hdr, payload, inline_max, x)) {
+  } else if (mizu_str1_stage(hdr, payload, inline_max, x)) {
     /* a length-1 string's bytes are self-contained: pin nothing */
     return 0;
-  } else if (rei_zc_eligible(x, inline_max, &total) &&
-             !rei_handle_churn(h)) {
+  } else if (mizu_zc_eligible(x, inline_max, &total) &&
+             !mizu_handle_churn(h)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
        never hold a view (chunk lifetime tracks ring advance). The churn
@@ -75,46 +75,46 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
        their traffic, the copy tiers below are cheaper — the arena and
        SHM_RAW surrender deterministically, where a fresh SHM_VEC region
        per message would pile up in the ledger */
-    rei_stage_reap(h);
-    rei_zc_stage(hdr, payload, x, total, h, ctx);
+    mizu_stage_reap(h);
+    mizu_zc_stage(hdr, payload, x, total, h, ctx);
     return 0;
   }
   /* the compact codec ahead of R_Serialize (payload.c): a codec stream
      is self-contained — the writer rejects ALTREP, so no hook-emitted
      view identifier can ride along — and pins nothing */
-  size_t n = rei_codec_write(payload, inline_max, x);
+  size_t n = mizu_codec_write(payload, inline_max, x);
   int self_contained = n != 0;
   if (!self_contained)
-    n = rei_serialize_bounded(payload, inline_max, x);
+    n = mizu_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {
-    hdr->kind = REI_KIND_INLINE;
+    hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = 0;
     if (!self_contained)
-      rei_r_pin(h, ctx, x);
+      mizu_r_pin(h, ctx, x);
   } else {
-    if ((chunk = rei_stage_arena_alloc(h, REI_ALIGN64(n), &off)) != NULL) {
+    if ((chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off)) != NULL) {
       if (self_contained) {
-        if (rei_codec_write(chunk, n, x) != n)
-          Rf_error("rei: codec write mismatch");
+        if (mizu_codec_write(chunk, n, x) != n)
+          Rf_error("mizu: codec write mismatch");
       } else {
-        rei_view_serialize_into(chunk, x);
+        mizu_view_serialize_into(chunk, x);
       }
-      hdr->kind = REI_KIND_ARENA;
+      hdr->kind = MIZU_KIND_ARENA;
       hdr->len = 0;
       hdr->aux = off;
       uint64_t n64 = (uint64_t) n;
       memcpy(payload, &n64, sizeof(n64));
       if (!self_contained)
-        rei_r_pin(h, ctx, x);
+        mizu_r_pin(h, ctx, x);
     } else {
       /* reap before staging: the consumer's latest head publish may
          have released a fitting region for this very spill to pop */
-      rei_stage_reap(h);
+      mizu_stage_reap(h);
       if (self_contained)
-        rei_payload_spill_codec(hdr, payload, x, n, h);
+        mizu_payload_spill_codec(hdr, payload, x, n, h);
       else
-        rei_payload_spill_shm(hdr, payload, x, n, h, ctx);
+        mizu_payload_spill_shm(hdr, payload, x, n, h, ctx);
     }
   }
   return 0;
@@ -124,7 +124,7 @@ int rei_r_stage_channel(void *obj, rei_slot_hdr *hdr,
    product in a pre-PROTECTed VECSXP as it is delivered, so no SEXP sits
    unprotected across the next read's allocations. SET_VECTOR_ELT does
    not allocate. */
-void rei_vec_sink(void *ctx, size_t i, void *obj) {
+void mizu_vec_sink(void *ctx, size_t i, void *obj) {
   SET_VECTOR_ELT((SEXP) ctx, (R_xlen_t) i, (SEXP) obj);
 }
 
@@ -136,36 +136,36 @@ void rei_vec_sink(void *ctx, size_t i, void *obj) {
    else defers to the shared payload reader (ctx carries the handle's open
    cache and the R-side view cache). Returns the object, or NULL with
    ctx->gone set on a vanished out-of-line region. A foreign (Python) stream
-   sets the handle's saw_foreign and fails the read with REI_READ_CONSUME,
+   sets the handle's saw_foreign and fails the read with MIZU_READ_CONSUME,
    so the core consumes the slot before the recv veneer raises on the flag —
    a plain failure here would leave the slot in place and wedge the ring
    behind it. */
-void *rei_r_read_channel(const rei_slot_hdr *hdr,
+void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
                           const unsigned char *payload, size_t limit,
-                          rei_read_ctx *ctx) {
-  if (hdr->kind == REI_KIND_ARENA) {
+                          mizu_read_ctx *ctx) {
+  if (hdr->kind == MIZU_KIND_ARENA) {
     /* resolved stream bytes; limit is the arena-validated length */
-    if (payload[0] == REI_CODEC_MAGIC)
-      return (void *) rei_codec_read(payload, limit);
-    if (rei_is_python_payload(payload, limit)) {
-      ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-      ctx->flags |= REI_READ_CONSUME;
+    if (payload[0] == MIZU_CODEC_MAGIC)
+      return (void *) mizu_codec_read(payload, limit);
+    if (mizu_is_python_payload(payload, limit)) {
+      ((mizu_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
+      ctx->flags |= MIZU_READ_CONSUME;
       return NULL;
     }
-    return (void *) rei_view_unserialize_from((unsigned char *) payload, limit);
+    return (void *) mizu_view_unserialize_from((unsigned char *) payload, limit);
   }
-  if (hdr->kind == REI_KIND_RAWSPILL) {
+  if (hdr->kind == MIZU_KIND_RAWSPILL) {
     /* resolved RAWVEC bytes (the pool's region framing of this kind is
-       read in rei_payload_read) */
+       read in mizu_payload_read) */
     int type = (int) hdr->aux;
-    size_t elt = rei_view_sizeof_elt(type);
+    size_t elt = mizu_view_sizeof_elt(type);
     if (elt == 0 || hdr->len % elt != 0)
-      Rf_error("rei: corrupt payload slot");
-    SEXP y = rei_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
-    memcpy(rei_vec_ptr(y), payload, hdr->len);
+      Rf_error("mizu: corrupt payload slot");
+    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
+    memcpy(mizu_vec_ptr(y), payload, hdr->len);
     return (void *) y;
   }
-  return rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 1);
+  return mizu_payload_read(hdr, payload, (uint32_t) limit, ctx, 1);
 }
 
 // Pool stage --------------------------------------------------------------------
@@ -174,10 +174,10 @@ void *rei_r_read_channel(const rei_slot_hdr *hdr,
    registered at create/join/attach. Serves task payloads at submit and
    result payloads at publish — a pool has no arena, so out-of-line frames
    are always named regions. Raises on failure, never returns nonzero. */
-int rei_r_stage_pool(void *obj, rei_slot_hdr *hdr,
+int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
                       unsigned char *payload, uint32_t inline_max,
-                      rei_handle *h, void *ctx) {
-  rei_payload_stage(hdr, payload, inline_max, (SEXP) obj, h, ctx);
+                      mizu_handle *h, void *ctx) {
+  mizu_payload_stage(hdr, payload, inline_max, (SEXP) obj, h, ctx);
   return 0;
 }
 
@@ -187,27 +187,27 @@ int rei_r_stage_pool(void *obj, rei_slot_hdr *hdr,
    the terminal state: OK/ERR read the payload frame (ERR's is the flattened
    transport condition), CANCEL/DIED carry no payload and build the binding's
    error object from the claimant record. Non-OK outcomes come back boxed in
-   a rei_caught list — the marker the collect veneer branches on (a task
+   a mizu_caught list — the marker the collect veneer branches on (a task
    value that is itself a condition stays bare). The product is unprotected:
    the core's claim tail allocates nothing before the verb returns it. */
-void *rei_r_read_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
-                       size_t limit, rei_read_ctx *ctx) {
+void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
+                       size_t limit, mizu_read_ctx *ctx) {
   switch (ctx->outcome) {
-  case REI_RS_OK:
+  case MIZU_RS_OK:
     /* no consume_foreign: a pool is R-only, so a foreign stream is
        corruption — raise in place rather than consume */
-    return rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
-  case REI_RS_ERR: {
-    SEXP cond = rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
+    return mizu_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
+  case MIZU_RS_ERR: {
+    SEXP cond = mizu_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
     if (cond == NULL) return NULL;              /* ctx->gone set */
-    return rei_caught(cond);
+    return mizu_caught(cond);
   }
-  case REI_RS_DIED:
-    return rei_caught_died((int) ctx->died_slot, (double) ctx->died_pid,
-                            "rei: worker died while executing this task");
-  case REI_RS_CANCEL:
-    return rei_caught_cond("rei_error_cancelled",
-                            "rei: task cancelled or pool stopped");
+  case MIZU_RS_DIED:
+    return mizu_caught_died((int) ctx->died_slot, (double) ctx->died_pid,
+                            "mizu: worker died while executing this task");
+  case MIZU_RS_CANCEL:
+    return mizu_caught_cond("mizu_error_cancelled",
+                            "mizu: task cancelled or pool stopped");
   }
   return NULL;
 }
@@ -216,33 +216,33 @@ void *rei_r_read_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
 
 /* The task evaluator: one wire payload — list(expr, named args) — with the
    arguments bound into a fresh unhashed frame under the base environment
-   (prot[0], set by rei_pool_set_eval). Two error disciplines, chosen by the
+   (prot[0], set by mizu_pool_set_eval). Two error disciplines, chosen by the
    caller. The worker loop's hot path (catching = 0) arms no handler at all:
-   a user error longjmps out of rei_pool_step and worker_main publishes the
-   caught condition as this task's ERR result through rei_pool_run_outcome —
-   the eval marker (rei_pool_eval_mark) is what separates those errors from
+   a user error longjmps out of mizu_pool_step and worker_main publishes the
+   caught condition as this task's ERR result through mizu_pool_run_outcome —
+   the eval marker (mizu_pool_eval_mark) is what separates those errors from
    infrastructure failure, which stays fatal. Help mode and nested submit's
    inline execute (catching = 1) run inside a task's own evaluation, where an
    escaping error would land in the wrong task's frames: they contain it with
    R_tryCatchError and pay its R-closure trampoline. */
-struct rei_eval_ctx { SEXP expr; SEXP env; int ok; };
+struct mizu_eval_ctx { SEXP expr; SEXP env; int ok; };
 
 static SEXP pool_eval_body(void *data) {
-  struct rei_eval_ctx *c = (struct rei_eval_ctx *) data;
+  struct mizu_eval_ctx *c = (struct mizu_eval_ctx *) data;
   return Rf_eval(c->expr, c->env);
 }
 
 static SEXP pool_eval_handler(SEXP cond, void *data) {
-  ((struct rei_eval_ctx *) data)->ok = 0;
+  ((struct mizu_eval_ctx *) data)->ok = 0;
   return cond;
 }
 
-static SEXP pool_eval_expr(rei_pool *p, SEXP prot, SEXP expr, SEXP args,
+static SEXP pool_eval_expr(mizu_pool *p, SEXP prot, SEXP expr, SEXP args,
                            int catching, int *ok) {
   SEXP names = PROTECT(Rf_getAttrib(args, R_NamesSymbol));
   R_xlen_t n = Rf_xlength(args);
   if (n > 0 && TYPEOF(names) != STRSXP)
-    Rf_error("rei: corrupt task payload");
+    Rf_error("mizu: corrupt task payload");
   /* eval is the identity on value types: a constant task (the canonical
      trivial task, and every constant result of a nested computation) binds
      no arguments and needs no fresh environment — the per-task R_NewEnv is
@@ -256,19 +256,19 @@ static SEXP pool_eval_expr(rei_pool *p, SEXP prot, SEXP expr, SEXP args,
   }
   SEXP base = VECTOR_ELT(prot, 0);   /* the eval env */
   if (TYPEOF(base) != ENVSXP)
-    Rf_error("rei: no evaluator registered on this worker handle");
+    Rf_error("mizu: no evaluator registered on this worker handle");
   SEXP env = PROTECT(R_NewEnv(base, 0, 0));
   for (R_xlen_t i = 0; i < n; i++)
     Rf_defineVar(Rf_installTrChar(STRING_ELT(names, i)),
                  VECTOR_ELT(args, i), env);
-  struct rei_eval_ctx c = { expr, env, 1 };
+  struct mizu_eval_ctx c = { expr, env, 1 };
   SEXP value;
   if (catching) {
     value = R_tryCatchError(pool_eval_body, &c, pool_eval_handler, &c);
   } else {
-    rei_pool_eval_mark(p, 1);
+    mizu_pool_eval_mark(p, 1);
     value = Rf_eval(c.expr, c.env);
-    rei_pool_eval_mark(p, 0);
+    mizu_pool_eval_mark(p, 0);
   }
   *ok = c.ok;
   UNPROTECT(2);                    /* names, env */
@@ -282,13 +282,13 @@ static SEXP pool_eval_expr(rei_pool *p, SEXP prot, SEXP expr, SEXP args,
    verification pass already guarantees the fit. Below it (a tiny slot holds
    no classed condition inline) the tiered stage carries the terminal
    fallback out of line. Shared by exec's catching paths and the unwind path
-   (rei_pool_run_outcome). */
-void rei_r_publish_err(rei_result_sink *sink, SEXP cond) {
+   (mizu_pool_run_outcome). */
+void mizu_r_publish_err(mizu_result_sink *sink, SEXP cond) {
   SEXP flat =
-    PROTECT(rei_condition_flatten(cond, (size_t) sink->inline_max));
+    PROTECT(mizu_condition_flatten(cond, (size_t) sink->inline_max));
   size_t n =
-    rei_codec_write(sink->payload, (size_t) sink->inline_max, flat);
-  rei_result_publish_err(sink, (void *) flat,
+    mizu_codec_write(sink->payload, (size_t) sink->inline_max, flat);
+  mizu_result_publish_err(sink, (void *) flat,
                          n != 0 && n <= (size_t) sink->inline_max ?
                          (uint32_t) n : 0);
   UNPROTECT(1);
@@ -300,37 +300,37 @@ void rei_r_publish_err(rei_result_sink *sink, SEXP cond) {
    Anything else takes the generic read and its shape check over the exec's
    read ctx: the handle's open cache and the R-side view cache ride it.
    Both paths end with expr and args PROTECTed. */
-int rei_r_exec_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
-                     size_t limit, rei_result_sink *sink, int catching,
-                     rei_read_ctx *ctx) {
-  rei_pool *p = sink->p;
+int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
+                     size_t limit, mizu_result_sink *sink, int catching,
+                     mizu_read_ctx *ctx) {
+  mizu_pool *p = sink->p;
   SEXP expr = R_NilValue, args = R_NilValue;
-  if (hdr->kind == REI_KIND_INLINE && hdr->len <= limit &&
-      rei_codec_read_task(payload, (size_t) hdr->len, &expr, &args)) {
+  if (hdr->kind == MIZU_KIND_INLINE && hdr->len <= limit &&
+      mizu_codec_read_task(payload, (size_t) hdr->len, &expr, &args)) {
     PROTECT(expr);
     PROTECT(args);
   } else {
-    SEXP pl = rei_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
+    SEXP pl = mizu_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
     if (ctx->gone) {
       /* the enqueuer died and its region went along: the task can never
          run anywhere — it fails as DIED, and the drain continues */
-      rei_result_publish_died(sink);
+      mizu_result_publish_died(sink);
       return 0;
     }
     if (pl == NULL || TYPEOF(pl) != VECSXP || Rf_xlength(pl) != 2 ||
         TYPEOF(VECTOR_ELT(pl, 1)) != VECSXP)
-      Rf_error("rei: corrupt task payload");
+      Rf_error("mizu: corrupt task payload");
     expr = PROTECT(VECTOR_ELT(pl, 0));
     args = PROTECT(VECTOR_ELT(pl, 1));
   }
   int ok = 1;
   SEXP value =
-    PROTECT(pool_eval_expr(p, ((rei_r_handle *) ctx->binding_ctx)->prot,
+    PROTECT(pool_eval_expr(p, ((mizu_r_handle *) ctx->binding_ctx)->prot,
                            expr, args, catching, &ok));
   if (ok) {
-    rei_result_publish(sink, (void *) value);
+    mizu_result_publish(sink, (void *) value);
   } else {
-    rei_r_publish_err(sink, value);
+    mizu_r_publish_err(sink, value);
   }
   UNPROTECT(3);                    /* expr, args, value */
   return 0;
@@ -341,11 +341,11 @@ int rei_r_exec_pool(const rei_slot_hdr *hdr, const unsigned char *payload,
 /* The trace thunk: the core's emit sites call through the handle's
    registration; the R closure rides prot[1]. An error raised here longjmps
    like any infrastructure error at the emit site. */
-void rei_r_trace(rei_trace_event event, uint64_t task_id, void *ctx) {
+void mizu_r_trace(mizu_trace_event event, uint64_t task_id, void *ctx) {
   static const char *const events[] = {
     "submit", "start", "done", "error", "drop", "rehome"
   };
-  SEXP fn = VECTOR_ELT(((rei_r_handle *) ctx)->prot, 1);
+  SEXP fn = VECTOR_ELT(((mizu_r_handle *) ctx)->prot, 1);
   if (TYPEOF(fn) != CLOSXP) return;
   char buf[32];
   snprintf(buf, sizeof(buf), "%u:%llu", (unsigned) (task_id >> 48),
@@ -364,13 +364,13 @@ void rei_r_trace(rei_trace_event event, uint64_t task_id, void *ctx) {
    cells are spliced lazily at stage time. The cell is the core's opaque
    pin token. Invariant: pinned objects are never R_NilValue (the NIL tier
    pins nothing), so CAR == R_NilValue marks a dead cell. */
-#define REI_SPLICE_MIN 64   /* dead cells before a splice is considered */
+#define MIZU_SPLICE_MIN 64   /* dead cells before a splice is considered */
 
 /* Unlink the tombstoned cells and recount. Live cells keep their addresses,
    so outstanding tokens never dangle. Runs only at stage time — never in
    the drop hook, which mutates no chain linkage. */
-static void pins_splice(rei_r_handle *rh) REI_COLD;
-static void pins_splice(rei_r_handle *rh) {
+static void pins_splice(mizu_r_handle *rh) MIZU_COLD;
+static void pins_splice(mizu_r_handle *rh) {
   SEXP prev = R_NilValue;   /* R_NilValue while no live head cell is seen */
   SEXP cell = VECTOR_ELT(rh->prot, rh->pin_slot);
   uint32_t live = 0;
@@ -393,22 +393,22 @@ static void pins_splice(rei_r_handle *rh) {
 
 /* Pin the staged object: push a fresh cons cell onto the handle's chain and
    register the cell as the core's opaque pin token. The cons precedes
-   rei_stage_pin, preserving the longjmp ordering — a failed cons abandons
+   mizu_stage_pin, preserving the longjmp ordering — a failed cons abandons
    the stage with nothing pinned, and rollback pairs each committed pin with
    exactly one drop. The fresh cell is stored into the anchored prot slot
    with no allocation between creation and store. The splice gate (at least
-   REI_SPLICE_MIN dead, and dead at least half the chain) bounds the chain
+   MIZU_SPLICE_MIN dead, and dead at least half the chain) bounds the chain
    to ~2x live pins between splices. ctx is the stage hook's binding ctx
-   (the rei_r_handle — no per-stage handle query needed). */
-void rei_r_pin(rei_handle *h, void *ctx, SEXP x) {
-  rei_r_handle *rh = (rei_r_handle *) ctx;
-  if (rh->pins_dead >= REI_SPLICE_MIN &&
+   (the mizu_r_handle — no per-stage handle query needed). */
+void mizu_r_pin(mizu_handle *h, void *ctx, SEXP x) {
+  mizu_r_handle *rh = (mizu_r_handle *) ctx;
+  if (rh->pins_dead >= MIZU_SPLICE_MIN &&
       rh->pins_dead >= rh->pins_total / 2)
     pins_splice(rh);
   SEXP cell = CONS(x, VECTOR_ELT(rh->prot, rh->pin_slot));
   SET_VECTOR_ELT(rh->prot, rh->pin_slot, cell);
   rh->pins_total++;
-  rei_stage_pin(h, (void *) cell);
+  mizu_stage_pin(h, (void *) cell);
 }
 
 // Interrupt / GC / cache hooks ----------------------------------------------------
@@ -416,26 +416,26 @@ void rei_r_pin(rei_handle *h, void *ctx, SEXP x) {
 /* The check hook: R_CheckUserInterrupt longjmps (never returns nonzero), so
    the abandon-safe-point contract is what makes the call legal through core
    frames. */
-int rei_r_check(void *ctx) {
+int mizu_r_check(void *ctx) {
   (void) ctx;
   R_CheckUserInterrupt();
   return 0;
 }
 
 /* The drop hook: tombstone the pin's chain cell, releasing the staged
-   object to the GC. Balanced against the stager's rei_r_pin at every
+   object to the GC. Balanced against the stager's mizu_r_pin at every
    release point (collect, slot reuse, the worker keeper sweep, a cancelled
    publish, a rollback, teardown). No allocation and no chain mutation, so
    safe from extptr finalizers; fires only on the handle-owning thread. Dead
    cells the splice never reached die with the extptr's prot at GC. */
-void rei_r_drop(void *ctx, void *pin) {
+void mizu_r_drop(void *ctx, void *pin) {
   SETCAR((SEXP) pin, R_NilValue);
-  ((rei_r_handle *) ctx)->pins_dead++;
+  ((mizu_r_handle *) ctx)->pins_dead++;
 }
 
 /* The sweep hook: a pool worker going idle or departing drops its map
    cache (prot[2]) — the per-worker context env, re-created lazily by
-   rei_pool_map_cache on the next map. */
-void rei_r_sweep(void *ctx) {
-  SET_VECTOR_ELT(((rei_r_handle *) ctx)->prot, 2, R_NilValue);
+   mizu_pool_map_cache on the next map. */
+void mizu_r_sweep(void *ctx) {
+  SET_VECTOR_ELT(((mizu_r_handle *) ctx)->prot, 2, R_NilValue);
 }

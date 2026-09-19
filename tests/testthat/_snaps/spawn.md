@@ -1,15 +1,15 @@
-# rei_py_launcher probes the interpreter for pyrei
+# mizu_py_launcher probes the interpreter for pymizu
 
     Code
-      rei_py_launcher(python = "/nonexistent/python3")
+      mizu_py_launcher(python = "/nonexistent/python3")
     Condition
       Error:
-      ! rei: rei_py_launcher() needs the Python package 'pyrei' installed for /nonexistent/python3
+      ! mizu: mizu_py_launcher() needs the Python package 'pymizu' installed for /nonexistent/python3
 
-# rei_py_launcher needs a python3 on the PATH by default
+# mizu_py_launcher needs a python3 on the PATH by default
 
     Code
       out
     Output
-      [1] "rei: rei_py_launcher() needs python3 on the PATH (or pass python)"
+      [1] "mizu: mizu_py_launcher() needs python3 on the PATH (or pass python)"
 

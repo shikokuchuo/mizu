@@ -1,19 +1,19 @@
 /* Classed error conditions. Terminal failures a dependent can act on
    programmatically are signalled as structured R conditions — class
-   c(<subclass>, "rei_error", "error", "condition"), NULL call, fields over
+   c(<subclass>, "mizu_error", "error", "condition"), NULL call, fields over
    message parsing — via base::stop(cond), which longjmps out of the
-   Rf_eval. R-level errors join the hierarchy through stop_rei() in
+   Rf_eval. R-level errors join the hierarchy through stop_mizu() in
    R/conditions.R; the class vectors are API. */
 
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-#include "rei.h"
+#include "mizu.h"
 
 /* Returns the condition with nf field slots after message / call left
    NULL for the caller to fill, UNPROTECTED — the caller PROTECTs at the
    call site (nothing allocates between). */
-static SEXP rei_cond(const char *subclass, const char **fnames, int nf,
+static SEXP mizu_cond(const char *subclass, const char **fnames, int nf,
                      const char *fmt, va_list ap) {
   char msg[1024];
   vsnprintf(msg, sizeof(msg), fmt, ap);
@@ -27,7 +27,7 @@ static SEXP rei_cond(const char *subclass, const char **fnames, int nf,
   Rf_setAttrib(cond, R_NamesSymbol, names);
   SEXP klass = PROTECT(Rf_allocVector(STRSXP, 4));
   SET_STRING_ELT(klass, 0, Rf_mkChar(subclass));
-  SET_STRING_ELT(klass, 1, Rf_mkChar("rei_error"));
+  SET_STRING_ELT(klass, 1, Rf_mkChar("mizu_error"));
   SET_STRING_ELT(klass, 2, Rf_mkChar("error"));
   SET_STRING_ELT(klass, 3, Rf_mkChar("condition"));
   Rf_setAttrib(cond, R_ClassSymbol, klass);
@@ -35,17 +35,17 @@ static SEXP rei_cond(const char *subclass, const char **fnames, int nf,
   return cond;
 }
 
-NORET void rei_cond_signal(SEXP cond) {
+NORET void mizu_cond_signal(SEXP cond) {
   SEXP call = PROTECT(Rf_lang2(Rf_install("stop"), cond));
   Rf_eval(call, R_BaseEnv);        /* no return */
-  Rf_error("rei: condition not signalled");
+  Rf_error("mizu: condition not signalled");
 }
 
 /* Set the "index" field on a condition list with `$<-` semantics: replace
    in place when the name is present, else append one element (attributes,
    class included, carried over). Returns the condition UNPROTECTED — the
    caller PROTECTs at the call site (nothing allocates between). */
-SEXP rei_cond_set_index(SEXP cond, int index) {
+SEXP mizu_cond_set_index(SEXP cond, int index) {
   PROTECT(cond);
   SEXP names = Rf_getAttrib(cond, R_NamesSymbol);
   R_xlen_t n = XLENGTH(cond);
@@ -74,53 +74,53 @@ SEXP rei_cond_set_index(SEXP cond, int index) {
   return out;
 }
 
-NORET void rei_stop(const char *subclass, const char *fmt, ...) {
+NORET void mizu_stop(const char *subclass, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = PROTECT(rei_cond(subclass, NULL, 0, fmt, ap));
+  SEXP cond = PROTECT(mizu_cond(subclass, NULL, 0, fmt, ap));
   va_end(ap);
-  rei_cond_signal(cond);
-  UNPROTECT(1);                  /* unreachable: rei_cond_signal is NORET */
+  mizu_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
 }
 
 /* Sentinel-mode wrap: the condition boxed in a length-1 list of class
-   "rei_caught", so a collect loop branches on class instead of arming a
+   "mizu_caught", so a collect loop branches on class instead of arming a
    tryCatch handler. Only C wraps — a task value that is itself a
    condition comes back bare and is never mistaken for one. */
-SEXP rei_caught(SEXP cond) {
+SEXP mizu_caught(SEXP cond) {
   PROTECT(cond);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 1));
   SET_VECTOR_ELT(out, 0, cond);
-  Rf_setAttrib(out, R_ClassSymbol, Rf_mkString("rei_caught"));
+  Rf_setAttrib(out, R_ClassSymbol, Rf_mkString("mizu_caught"));
   UNPROTECT(2);
   return out;
 }
 
-SEXP rei_caught_cond(const char *subclass, const char *fmt, ...) {
+SEXP mizu_caught_cond(const char *subclass, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = PROTECT(rei_cond(subclass, NULL, 0, fmt, ap));
+  SEXP cond = PROTECT(mizu_cond(subclass, NULL, 0, fmt, ap));
   va_end(ap);
-  SEXP out = rei_caught(cond);
+  SEXP out = mizu_caught(cond);
   UNPROTECT(1);
   return out;
 }
 
-NORET void rei_stop_shm(double bytes, const char *fmt, ...) {
+NORET void mizu_stop_shm(double bytes, const char *fmt, ...) {
   static const char *fnames[] = { "bytes" };
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = PROTECT(rei_cond("rei_error_shm", fnames, 1, fmt, ap));
+  SEXP cond = PROTECT(mizu_cond("mizu_error_shm", fnames, 1, fmt, ap));
   va_end(ap);
   SET_VECTOR_ELT(cond, 2, Rf_ScalarReal(bytes));
-  rei_cond_signal(cond);
-  UNPROTECT(1);                  /* unreachable: rei_cond_signal is NORET */
+  mizu_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
 }
 
-static SEXP rei_cond_died(int slot, double pid, const char *fmt,
+static SEXP mizu_cond_died(int slot, double pid, const char *fmt,
                           va_list ap) {
   static const char *fnames[] = { "slot", "pid" };
-  SEXP cond = PROTECT(rei_cond("rei_error_worker_died", fnames, 2, fmt,
+  SEXP cond = PROTECT(mizu_cond("mizu_error_worker_died", fnames, 2, fmt,
                                 ap));
   SET_VECTOR_ELT(cond, 2, Rf_ScalarInteger(slot < 0 ? NA_INTEGER : slot));
   SET_VECTOR_ELT(cond, 3, Rf_ScalarReal(pid <= 0 ? NA_REAL : pid));
@@ -128,29 +128,29 @@ static SEXP rei_cond_died(int slot, double pid, const char *fmt,
   return cond;   /* UNPROTECTED: the caller PROTECTs at the call site */
 }
 
-NORET void rei_stop_died(int slot, double pid, const char *fmt, ...) {
+NORET void mizu_stop_died(int slot, double pid, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = PROTECT(rei_cond_died(slot, pid, fmt, ap));
+  SEXP cond = PROTECT(mizu_cond_died(slot, pid, fmt, ap));
   va_end(ap);
-  rei_cond_signal(cond);
-  UNPROTECT(1);                  /* unreachable: rei_cond_signal is NORET */
+  mizu_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
 }
 
 /* A plain error, not a classed one: a foreign payload is misuse of the
    channel, not a transport state. */
-NORET void rei_stop_python_payload(void) {
+NORET void mizu_stop_python_payload(void) {
   Rf_error(
-    "rei: Python payload (no codec interop) - send R values from an rei peer"
+    "mizu: Python payload (no codec interop) - send R values from an mizu peer"
   );
 }
 
-SEXP rei_caught_died(int slot, double pid, const char *fmt, ...) {
+SEXP mizu_caught_died(int slot, double pid, const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
-  SEXP cond = PROTECT(rei_cond_died(slot, pid, fmt, ap));
+  SEXP cond = PROTECT(mizu_cond_died(slot, pid, fmt, ap));
   va_end(ap);
-  SEXP out = rei_caught(cond);
+  SEXP out = mizu_caught(cond);
   UNPROTECT(1);
   return out;
 }
@@ -160,7 +160,7 @@ SEXP rei_caught_died(int slot, double pid, const char *fmt, ...) {
    graph holds a connection, an external pointer, a pathologically deep
    tree — would raise or zombie inside staging, and a raise at publish is
    infrastructure failure (the worker exits; the collector misattributes
-   the cause as rei_error_worker_died). Flatten instead, into a condition
+   the cause as mizu_error_worker_died). Flatten instead, into a condition
    that is safe by construction:
 
    - Fields are read directly off the condition: message, call, the named
@@ -187,13 +187,13 @@ SEXP rei_caught_died(int slot, double pid, const char *fmt, ...) {
      dropped_fields retained) is a handful of bytes and fits wherever a
      classed condition fits at all. */
 
-#define REI_COND_FALLBACK "rei: task error (untransportable condition)"
+#define MIZU_COND_FALLBACK "mizu: task error (untransportable condition)"
 
 /* The message element: the condition's own message field when it is a
    length-1 string (translated to UTF-8 and truncated at a character
    boundary past share bytes), else the fixed fallback. Returns a
    CHARSXP. */
-static SEXP rei_cond_message(SEXP cond, size_t share) {
+static SEXP mizu_cond_message(SEXP cond, size_t share) {
   SEXP msg = R_NilValue;
   if (TYPEOF(cond) == VECSXP) {
     SEXP names = Rf_getAttrib(cond, R_NamesSymbol);
@@ -212,7 +212,7 @@ static SEXP rei_cond_message(SEXP cond, size_t share) {
       }
     }
   }
-  if (msg == R_NilValue) return Rf_mkChar(REI_COND_FALLBACK);
+  if (msg == R_NilValue) return Rf_mkChar(MIZU_COND_FALLBACK);
   cetype_t ce = Rf_getCharCE(msg);
   if (ce != CE_BYTES) {
     /* translate to UTF-8 so the boundary truncation below is valid; the
@@ -235,7 +235,7 @@ static SEXP rei_cond_message(SEXP cond, size_t share) {
    dropped_fields?) with class carried verbatim. mark[i] == 2 selects a
    kept field. Returns the condition UNPROTECTED — the caller PROTECTs at
    the call site (nothing allocates between). */
-static SEXP rei_cond_build(SEXP msg, SEXP cond, SEXP names,
+static SEXP mizu_cond_build(SEXP msg, SEXP cond, SEXP names,
                             const unsigned char *mark, R_xlen_t n,
                             R_xlen_t call_idx, SEXP dropped, R_xlen_t ndrop,
                             SEXP klass) {
@@ -280,8 +280,8 @@ static SEXP rei_cond_build(SEXP msg, SEXP cond, SEXP names,
    target result slot's inline budget. Returns the transport condition
    UNPROTECTED — nothing allocates between the last internal allocation
    and return, so the caller's immediate PROTECT is safe. */
-SEXP rei_condition_flatten(SEXP cond, size_t budget) {
-  SEXP msg = PROTECT(rei_cond_message(cond, budget / 2));
+SEXP mizu_condition_flatten(SEXP cond, size_t budget) {
+  SEXP msg = PROTECT(mizu_cond_message(cond, budget / 2));
   SEXP klass = Rf_getAttrib(cond, R_ClassSymbol);
   if (TYPEOF(klass) != STRSXP || XLENGTH(klass) == 0) {
     klass = PROTECT(Rf_allocVector(STRSXP, 2));
@@ -337,7 +337,7 @@ SEXP rei_condition_flatten(SEXP cond, size_t budget) {
 
   int have_call = 0;
   if (call_idx >= 0) {
-    size_t ns = rei_codec_write(NULL, 0, VECTOR_ELT(cond, call_idx));
+    size_t ns = mizu_codec_write(NULL, 0, VECTOR_ELT(cond, call_idx));
     size_t cost = (8 + 4) + (ns != 0 ? ns - 1 : 0);
     if (ns != 0 && spent + cost <= budget) {
       spent += cost;
@@ -349,7 +349,7 @@ SEXP rei_condition_flatten(SEXP cond, size_t budget) {
   for (R_xlen_t i = 0; i < n; i++) {
     if (mk[i] != 1) continue;
     SEXP nm = STRING_ELT(names, i);
-    size_t ns = rei_codec_write(NULL, 0, VECTOR_ELT(cond, i));
+    size_t ns = mizu_codec_write(NULL, 0, VECTOR_ELT(cond, i));
     size_t cost = (8 + (size_t) LENGTH(nm)) + (ns != 0 ? ns - 1 : 0);
     if (ns != 0 && spent + cost <= budget) {
       spent += cost;
@@ -369,7 +369,7 @@ SEXP rei_condition_flatten(SEXP cond, size_t budget) {
     dfit++;
   }
 
-  SEXP flat = PROTECT(rei_cond_build(msg, cond, names, mk, n,
+  SEXP flat = PROTECT(mizu_cond_build(msg, cond, names, mk, n,
                                       have_call ? call_idx : (R_xlen_t) -1,
                                       dropped, dfit, klass));
 
@@ -377,10 +377,10 @@ SEXP rei_condition_flatten(SEXP cond, size_t budget) {
      budget. On overflow the terminal fallback — fallback message, no
      call, no fields, dropped_fields retained — a handful of bytes that
      fits wherever a classed condition fits at all. */
-  size_t total = rei_codec_write(NULL, 0, flat);
+  size_t total = mizu_codec_write(NULL, 0, flat);
   if (total == 0 || total > budget) {
     UNPROTECT(1);                /* flat */
-    SEXP fmsg = PROTECT(Rf_mkChar(REI_COND_FALLBACK));
+    SEXP fmsg = PROTECT(Rf_mkChar(MIZU_COND_FALLBACK));
     size_t fspent = 14 + 22 + 22;
     for (R_xlen_t i = 0; i < XLENGTH(klass); i++)
       fspent += 8 + (size_t) LENGTH(STRING_ELT(klass, i));
@@ -393,7 +393,7 @@ SEXP rei_condition_flatten(SEXP cond, size_t budget) {
       fdcost += c;
       fdfit++;
     }
-    flat = PROTECT(rei_cond_build(fmsg, cond, names, mk, 0, -1, dropped,
+    flat = PROTECT(mizu_cond_build(fmsg, cond, names, mk, 0, -1, dropped,
                                    fdfit, klass));
     UNPROTECT(6);                /* msg, klass, mark, dropped, fmsg, flat */
     return flat;

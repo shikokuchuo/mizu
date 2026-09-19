@@ -1,11 +1,11 @@
-/* Shared payload framing over the rei_slot_hdr wire form — the staging and
+/* Shared payload framing over the mizu_slot_hdr wire form — the staging and
    materializing code common to Part I channel slots and Part II pool entries
    / result slots. The channel adds its arena tier around these; the pool has
    no arena (its payloads release at collect or slot reuse — unordered — so a
    producer-local FIFO allocator does not apply) and stages through
-   rei_payload_stage directly. */
+   mizu_payload_stage directly. */
 
-#include "rei.h"
+#include "mizu.h"
 
 /* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
    R, where ATTRIB() was still the sanctioned spelling. */
@@ -15,10 +15,10 @@
 
 /* The vendored view layer owns the macro spelling (mori renames it); pin it
    to the core enum here, where both are visible. */
-_Static_assert(REI_VIEW_TYPE_INT64 == REI_TYPE_INT64,
+_Static_assert(MIZU_VIEW_TYPE_INT64 == MIZU_TYPE_INT64,
                "view/core int64 tag drift");
 
-void *rei_vec_ptr(SEXP x) {
+void *mizu_vec_ptr(SEXP x) {
   switch (TYPEOF(x)) {
   case LGLSXP:  return LOGICAL(x);
   case INTSXP:  return INTEGER(x);
@@ -31,9 +31,9 @@ void *rei_vec_ptr(SEXP x) {
 
 /* The single raw gate of a stage: the wire type code (0 = ineligible) with
    the byte length; each caller applies its own size gate. Ordering keeps the
-   hot path free — only an attributed REALSXP pays the rei_view_is_int64
+   hot path free — only an attributed REALSXP pays the mizu_view_is_int64
    probe: a class-only integer64's class is consumed by the wire tag. */
-int rei_raw_type(SEXP x, size_t *out_len) {
+int mizu_raw_type(SEXP x, size_t *out_len) {
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
     break;
@@ -46,44 +46,44 @@ int rei_raw_type(SEXP x, size_t *out_len) {
   if (ALTREP(x) || Rf_isS4(x)) return 0;
   int code = TYPEOF(x);
   if (ANY_ATTRIB(x)) {
-    if (!rei_view_is_int64(x)) return 0;
-    code = REI_TYPE_INT64;
+    if (!mizu_view_is_int64(x)) return 0;
+    code = MIZU_TYPE_INT64;
   }
-  *out_len = (size_t) XLENGTH(x) * rei_view_sizeof_elt(code);
+  *out_len = (size_t) XLENGTH(x) * mizu_view_sizeof_elt(code);
   return code;
 }
 
 /* Wire type -> fresh vector for the raw read paths: an int64 payload lands
    as bit64's exact layout (REALSXP + class "integer64", constructed
    directly — bit64 stays in Suggests); every other code is a SEXPTYPE. */
-SEXP rei_wire_alloc(int type, R_xlen_t n) {
-  if (type == REI_TYPE_INT64) {
+SEXP mizu_wire_alloc(int type, R_xlen_t n) {
+  if (type == MIZU_TYPE_INT64) {
     SEXP y = PROTECT(Rf_allocVector(REALSXP, n));
-    Rf_classgets(y, rei_view_int64_class);
+    Rf_classgets(y, mizu_view_int64_class);
     UNPROTECT(1);
     return y;
   }
   return Rf_allocVector((SEXPTYPE) type, n);
 }
 
-int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
+int mizu_str1_stage(mizu_slot_hdr *hdr, unsigned char *payload,
                    uint32_t inline_max, SEXP x) {
   /* The ALTREP exclusion keeps foreign ALTSTRINGs on the serialize path
-     (their Elt may materialize); rei's own string views never reach here
+     (their Elt may materialize); mizu's own string views never reach here
      (the REF check upstream claims them first) */
   if (TYPEOF(x) != STRSXP || XLENGTH(x) != 1 || ALTREP(x) ||
       ANY_ATTRIB(x) || Rf_isS4(x))
     return 0;
   SEXP s = STRING_ELT(x, 0);
   if (s == NA_STRING) {
-    hdr->kind = REI_KIND_STR1;
+    hdr->kind = MIZU_KIND_STR1;
     hdr->len = 0;
-    hdr->aux = REI_STR1_NA;
+    hdr->aux = MIZU_STR1_NA;
     return 1;
   }
   size_t n = (size_t) LENGTH(s);
   if (n > (size_t) inline_max) return 0;
-  hdr->kind = REI_KIND_STR1;
+  hdr->kind = MIZU_KIND_STR1;
   hdr->len = (uint32_t) n;
   hdr->aux = (uint64_t) Rf_getCharCE(s);
   memcpy(payload, CHAR(s), n);
@@ -91,17 +91,17 @@ int rei_str1_stage(rei_slot_hdr *hdr, unsigned char *payload,
 }
 
 /* The shared empty args list of a no-argument task: one preserved vector
-   serves both the submitter (rei_submit's capture) and the worker (the
+   serves both the submitter (mizu_submit's capture) and the worker (the
    task-frame read), so a constant task allocates no VECSXP(0) on either
    side. Read-only everywhere it appears — marked not-mutable, so a stray
    write fails loudly instead of corrupting every task. */
 static SEXP empty_args;
 
-SEXP rei_empty_args(void) {
+SEXP mizu_empty_args(void) {
   return empty_args;
 }
 
-void rei_payload_init(void) {
+void mizu_payload_init(void) {
   empty_args = Rf_allocVector(VECSXP, 0);
   R_PreserveObject(empty_args);
 #if R_VERSION >= R_Version(4, 5, 0)
@@ -109,21 +109,21 @@ void rei_payload_init(void) {
 #endif
 }
 
-void rei_payload_fini(void) {
+void mizu_payload_fini(void) {
   R_ReleaseObject(empty_args);
 }
 
 // Spill staging ------------------------------------------------------------
 
-/* The service-form checkout: rei_stage_spill_get, raising rei_error_shm on
+/* The service-form checkout: mizu_stage_spill_get, raising mizu_error_shm on
    create failure (the stager's raise-on-failure discipline). */
-rei_shm *rei_spill_get_raise(rei_handle *h, size_t n) {
-  rei_shm *shm;
-  if (rei_stage_spill_get(h, n, &shm) != REI_OK) {
+mizu_shm *mizu_spill_get_raise(mizu_handle *h, size_t n) {
+  mizu_shm *shm;
+  if (mizu_stage_spill_get(h, n, &shm) != MIZU_OK) {
     const char *summary, *hint;
-    rei_err_describe(rei_last_error_category(), &summary, &hint);
-    rei_stop_shm((double) n,
-                 "rei: cannot create payload region (%llu bytes): %s%s%s",
+    mizu_err_describe(mizu_last_error_category(), &summary, &hint);
+    mizu_stop_shm((double) n,
+                 "mizu: cannot create payload region (%llu bytes): %s%s%s",
                  (unsigned long long) n, summary,
                  hint[0] != '\0' ? ". " : "", hint);
   }
@@ -131,36 +131,36 @@ rei_shm *rei_spill_get_raise(rei_handle *h, size_t n) {
 }
 
 /* Each stages through the handle's services: the region checkout
-   (rei_stage_spill_get), the retain (rei_stage_retain), and for the
-   serialize stream the pin of x (rei_r_pin, released through the binding's
+   (mizu_stage_spill_get), the retain (mizu_stage_retain), and for the
+   serialize stream the pin of x (mizu_r_pin, released through the binding's
    drop hook). The pin precedes retain: its cons-cell push can longjmp, and
    an uncommitted checkout rolls back with nothing pinned. */
 
-void rei_payload_spill_shm(rei_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                            size_t n, rei_handle *h, void *ctx) {
-  rei_shm *shm = rei_spill_get_raise(h, n);
-  rei_view_serialize_into((unsigned char *) shm->addr, x);
-  hdr->kind = REI_KIND_SHM_RAW;
+void mizu_payload_spill_shm(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
+                            size_t n, mizu_handle *h, void *ctx) {
+  mizu_shm *shm = mizu_spill_get_raise(h, n);
+  mizu_view_serialize_into((unsigned char *) shm->addr, x);
+  hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
   memcpy(payload, shm->name, shm->name_len);
-  rei_r_pin(h, ctx, x);
-  rei_stage_retain(h, shm);
+  mizu_r_pin(h, ctx, x);
+  mizu_stage_retain(h, shm);
 }
 
 /* The SHM_RAW spill of a codec stream (n from the counting first pass):
    the region alone is retained — the writer rejected ALTREP, so no
    hook-emitted identifier can ride along. */
-void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
-                              SEXP x, size_t n, rei_handle *h) {
-  rei_shm *shm = rei_spill_get_raise(h, n);
-  if (rei_codec_write((unsigned char *) shm->addr, shm->size, x) != n)
-    Rf_error("rei: codec write mismatch");   /* the walk is deterministic */
-  hdr->kind = REI_KIND_SHM_RAW;
+void mizu_payload_spill_codec(mizu_slot_hdr *hdr, unsigned char *payload,
+                              SEXP x, size_t n, mizu_handle *h) {
+  mizu_shm *shm = mizu_spill_get_raise(h, n);
+  if (mizu_codec_write((unsigned char *) shm->addr, shm->size, x) != n)
+    Rf_error("mizu: codec write mismatch");   /* the walk is deterministic */
+  hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
   memcpy(payload, shm->name, shm->name_len);
-  rei_stage_retain(h, shm);
+  mizu_stage_retain(h, shm);
 }
 
 /* The NIL, RAWVEC, and STR1 kinds retain nothing: their slot bytes are
@@ -168,45 +168,45 @@ void rei_payload_spill_codec(rei_slot_hdr *hdr, unsigned char *payload,
    no hook-emitted identifier can ride along), unlike the serialize tiers,
    where a stream may carry view identifiers whose views the pin keeps
    alive until consumer-done. ctx is the stage hook's binding ctx. */
-void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
-                        uint32_t inline_max, SEXP x, rei_handle *h,
+void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
+                        uint32_t inline_max, SEXP x, mizu_handle *h,
                         void *ctx) {
   size_t rawlen, total;
   /* NULL stages as the immediate kind: the canonical empty result / ACK
      pays no serialize pass and no receive-side allocation */
   if (x == R_NilValue) {
-    hdr->kind = REI_KIND_NIL;
+    hdr->kind = MIZU_KIND_NIL;
     hdr->len = 0;
     hdr->aux = 0;
     return;
   }
-  /* a rei-native view crosses by reference (REF) at any size — required
+  /* a mizu-native view crosses by reference (REF) at any size — required
      once SHM_VEC views exist: the serialize-hook fallback resolves
      uncounted, and the producer could recycle under the far side's view.
      The pin keeps the view (and with it the region) until consumer-done. */
-  if (rei_zc_ref_stage(hdr, payload, inline_max, x)) {
-    rei_r_pin(h, ctx, x);
+  if (mizu_zc_ref_stage(hdr, payload, inline_max, x)) {
+    mizu_r_pin(h, ctx, x);
     return;
   }
   /* one raw probe per stage: the code drives the core's raw-tier
      reservation below (0 on the STR1 / SHM_VEC-layout / codec paths) */
-  int rawtype = rei_raw_type(x, &rawlen);
+  int rawtype = mizu_raw_type(x, &rawlen);
   if (rawtype != 0) {
-    /* the raw tiers (rei_stage_raw, the core's policy): RAWVEC inline, the
+    /* the raw tiers (mizu_stage_raw, the core's policy): RAWVEC inline, the
        flat SHM_VEC layout past the zc floor, else a RAWSPILL region — bare
        bytes skip both the serialize pass here and the parse at the far
        end, and nothing is pinned (no identifier can ride along). A NULL
        reservation falls to the serialized tiers below. */
-    unsigned char *dst = rei_stage_raw(h, rawlen, rawtype, hdr, payload,
+    unsigned char *dst = mizu_stage_raw(h, rawlen, rawtype, hdr, payload,
                                        inline_max);
     if (dst != NULL) {
-      memcpy(dst, rei_vec_ptr(x), rawlen);
+      memcpy(dst, mizu_vec_ptr(x), rawlen);
       return;
     }
-  } else if (rei_str1_stage(hdr, payload, inline_max, x)) {
+  } else if (mizu_str1_stage(hdr, payload, inline_max, x)) {
     return;
-  } else if (rei_zc_eligible(x, inline_max, &total) &&
-             !rei_handle_churn(h)) {
+  } else if (mizu_zc_eligible(x, inline_max, &total) &&
+             !mizu_handle_churn(h)) {
     /* SHM_VEC: view-layout-eligible objects (strings, list trees) past
        the budget and the zc floor — cheap probes keep the layout-size
        walk off the inline path (zc.c). Under churn (the last spill miss
@@ -214,62 +214,62 @@ void rei_payload_stage(rei_slot_hdr *hdr, unsigned char *payload,
        the fresh region per SHM_VEC payload is dearer than the serialize
        copy: fall to SHM_RAW, whose region surrenders deterministically at
        consumer-done. */
-    rei_zc_stage(hdr, payload, x, total, h, ctx);
+    mizu_zc_stage(hdr, payload, x, total, h, ctx);
     return;
   }
   /* the compact codec ahead of R_Serialize: no per-call ref-table
      allocation on either side, and a self-contained stream (the writer
      rejects ALTREP, so no view identifier can ride along) that pins
      nothing — the NIL/RAWVEC/STR1 discipline */
-  size_t n = rei_codec_write(payload, inline_max, x);
+  size_t n = mizu_codec_write(payload, inline_max, x);
   if (n != 0) {
     if (n <= inline_max) {
-      hdr->kind = REI_KIND_INLINE;
+      hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
       hdr->aux = 0;
       return;
     }
-    rei_payload_spill_codec(hdr, payload, x, n, h);
+    mizu_payload_spill_codec(hdr, payload, x, n, h);
     return;
   }
-  n = rei_serialize_bounded(payload, inline_max, x);
+  n = mizu_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {
-    hdr->kind = REI_KIND_INLINE;
+    hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = 0;
-    rei_r_pin(h, ctx, x);
+    mizu_r_pin(h, ctx, x);
     return;
   }
-  rei_payload_spill_shm(hdr, payload, x, n, h, ctx);
+  mizu_payload_spill_shm(hdr, payload, x, n, h, ctx);
 }
 
 // Read -----------------------------------------------------------------------
 
 /* Materialize an INLINE / RAWVEC / SHM_RAW payload, or wrap a SHM_VEC / REF
    payload as an ALTREP view. Region opens ride the handle's open cache
-   through rei_read_region (which sets ctx->gone on a vanished region — the
+   through mizu_read_region (which sets ctx->gone on a vanished region — the
    read_fn then propagates by returning NULL); the view tiers open their own
    split mappings through the R-side cache zoc (ctx->binding_ctx). A foreign
    (Python) stream on a serialize tier: with consume_foreign (the channel)
-   set saw_foreign and fail the read with REI_READ_CONSUME, so the slot is
+   set saw_foreign and fail the read with MIZU_READ_CONSUME, so the slot is
    consumed before the veneer raises; without it (the pool) raise in place —
    a pool is R-only, so a foreign stream there is corruption. */
-SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
-                       uint32_t inline_max, rei_read_ctx *ctx,
+SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
+                       uint32_t inline_max, mizu_read_ctx *ctx,
                        int consume_foreign) {
-  rei_zc_cache *zoc = &((rei_r_handle *) ctx->binding_ctx)->zoc;
+  mizu_zc_cache *zoc = &((mizu_r_handle *) ctx->binding_ctx)->zoc;
   switch (hdr->kind) {
-  case REI_KIND_NIL:
+  case MIZU_KIND_NIL:
     return R_NilValue;
-  case REI_KIND_STR1: {
-    if (hdr->aux == REI_STR1_NA) {
-      if (hdr->len != 0) Rf_error("rei: corrupt payload slot");
+  case MIZU_KIND_STR1: {
+    if (hdr->aux == MIZU_STR1_NA) {
+      if (hdr->len != 0) Rf_error("mizu: corrupt payload slot");
       SEXP y = Rf_allocVector(STRSXP, 1);
       SET_STRING_ELT(y, 0, NA_STRING);
       return y;
     }
     if (hdr->len > inline_max || hdr->aux > CE_BYTES)
-      Rf_error("rei: corrupt payload slot");
+      Rf_error("mizu: corrupt payload slot");
     SEXP y = PROTECT(Rf_allocVector(STRSXP, 1));
     SET_STRING_ELT(y, 0, Rf_mkCharLenCE((const char *) payload,
                                         (int) hdr->len,
@@ -277,76 +277,76 @@ SEXP rei_payload_read(const rei_slot_hdr *hdr, const unsigned char *payload,
     UNPROTECT(1);
     return y;
   }
-  case REI_KIND_INLINE:
+  case MIZU_KIND_INLINE:
     if (hdr->len > inline_max || hdr->len == 0)
-      Rf_error("rei: corrupt payload slot");
-    if (payload[0] == REI_CODEC_MAGIC)
-      return rei_codec_read(payload, hdr->len);
-    if (rei_is_python_payload(payload, hdr->len)) {
+      Rf_error("mizu: corrupt payload slot");
+    if (payload[0] == MIZU_CODEC_MAGIC)
+      return mizu_codec_read(payload, hdr->len);
+    if (mizu_is_python_payload(payload, hdr->len)) {
       if (consume_foreign) {
-        ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-        ctx->flags |= REI_READ_CONSUME;
+        ((mizu_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
+        ctx->flags |= MIZU_READ_CONSUME;
         return NULL;
       }
-      rei_stop_python_payload();
+      mizu_stop_python_payload();
     }
-    return rei_view_unserialize_from((unsigned char *) payload, hdr->len);
-  case REI_KIND_RAWVEC: {
+    return mizu_view_unserialize_from((unsigned char *) payload, hdr->len);
+  case MIZU_KIND_RAWVEC: {
     int type = (int) hdr->aux;
-    size_t elt = rei_view_sizeof_elt(type);
+    size_t elt = mizu_view_sizeof_elt(type);
     if (elt == 0 || hdr->len > inline_max || hdr->len % elt != 0)
-      Rf_error("rei: corrupt payload slot");
-    SEXP y = rei_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
-    memcpy(rei_vec_ptr(y), payload, hdr->len);
+      Rf_error("mizu: corrupt payload slot");
+    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
+    memcpy(mizu_vec_ptr(y), payload, hdr->len);
     return y;
   }
-  case REI_KIND_SHM_VEC: {
-    SEXP v = rei_zc_read(hdr, payload, &ctx->gone, zoc);
+  case MIZU_KIND_SHM_VEC: {
+    SEXP v = mizu_zc_read(hdr, payload, &ctx->gone, zoc);
     return ctx->gone ? NULL : v;
   }
-  case REI_KIND_REF: {
-    SEXP v = rei_zc_ref_read(hdr, payload, &ctx->gone, zoc);
+  case MIZU_KIND_REF: {
+    SEXP v = mizu_zc_ref_read(hdr, payload, &ctx->gone, zoc);
     return ctx->gone ? NULL : v;
   }
-  case REI_KIND_RAWSPILL: {
+  case MIZU_KIND_RAWSPILL: {
     /* pool framing: the region name in the payload, its length and the
        SEXPTYPE packed in aux (the channel's arena framing of the same
        kind is resolved by the transport, never reaching here) */
-    int type = rei_aux_type(hdr->aux);
-    uint32_t name_len = (uint32_t) rei_aux_hi(hdr->aux);
-    size_t elt = rei_view_sizeof_elt(type);
+    int type = mizu_aux_type(hdr->aux);
+    uint32_t name_len = (uint32_t) mizu_aux_hi(hdr->aux);
+    size_t elt = mizu_view_sizeof_elt(type);
     if (elt == 0 || hdr->len % elt != 0 ||
-        name_len == 0 || name_len >= REI_NAME_MAX)
-      Rf_error("rei: corrupt payload slot");
-    rei_shm *shm = rei_read_region(ctx, payload, name_len);
+        name_len == 0 || name_len >= MIZU_NAME_MAX)
+      Rf_error("mizu: corrupt payload slot");
+    mizu_shm *shm = mizu_read_region(ctx, payload, name_len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
-    if (hdr->len > shm->size) Rf_error("rei: corrupt payload slot");
-    SEXP y = rei_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
-    memcpy(rei_vec_ptr(y), shm->addr, hdr->len);
+    if (hdr->len > shm->size) Rf_error("mizu: corrupt payload slot");
+    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
+    memcpy(mizu_vec_ptr(y), shm->addr, hdr->len);
     return y;
   }
-  case REI_KIND_SHM_RAW: {
-    if (hdr->len == 0 || hdr->len >= REI_NAME_MAX)
-      Rf_error("rei: corrupt payload slot");
-    rei_shm *shm = rei_read_region(ctx, payload, hdr->len);
+  case MIZU_KIND_SHM_RAW: {
+    if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX)
+      Rf_error("mizu: corrupt payload slot");
+    mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
     /* aux is the exact stream length: a recycled region is larger than the
        stream it carries, and the slack bytes are a previous payload's */
     size_t len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
       (size_t) hdr->aux : shm->size;
     unsigned char *stream = (unsigned char *) shm->addr;
-    if (stream[0] == REI_CODEC_MAGIC)
-      return rei_codec_read(stream, len);
-    if (rei_is_python_payload(stream, len)) {
+    if (stream[0] == MIZU_CODEC_MAGIC)
+      return mizu_codec_read(stream, len);
+    if (mizu_is_python_payload(stream, len)) {
       if (consume_foreign) {
-        ((rei_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-        ctx->flags |= REI_READ_CONSUME;
+        ((mizu_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
+        ctx->flags |= MIZU_READ_CONSUME;
         return NULL;
       }
-      rei_stop_python_payload();
+      mizu_stop_python_payload();
     }
-    return rei_view_unserialize_from(stream, len);
+    return mizu_view_unserialize_from(stream, len);
   }
   }
-  Rf_error("rei: corrupt payload slot");
+  Rf_error("mizu: corrupt payload slot");
 }

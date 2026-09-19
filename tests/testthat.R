@@ -1,4 +1,4 @@
 library(testthat)
-library(rei)
+library(mizu)
 
-test_check("rei")
+test_check("mizu")

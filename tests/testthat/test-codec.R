@@ -4,11 +4,11 @@
 # and falls back to R_Serialize at the staging call sites.
 
 codec_rt <- function(x) {
-  b <- .Call(rei:::rei_codec_write_call, x)
+  b <- .Call(mizu:::mizu_codec_write_call, x)
   if (is.null(b)) {
     return(b)
   }
-  .Call(rei:::rei_codec_read_call, b)
+  .Call(mizu:::mizu_codec_read_call, b)
 }
 
 test_that("atomic vectors round-trip byte-exactly", {
@@ -183,77 +183,77 @@ test_that("keep.source language trees cross with srcrefs dropped", {
 })
 
 test_that("the subset declines cleanly: NULL from the write surface", {
-  expect_null(.Call(rei:::rei_codec_write_call, 1:5)) # ALTREP
-  expect_null(.Call(rei:::rei_codec_write_call, globalenv())) # environment
+  expect_null(.Call(mizu:::mizu_codec_write_call, 1:5)) # ALTREP
+  expect_null(.Call(mizu:::mizu_codec_write_call, globalenv())) # environment
   # a closure over a local environment (the function-factory case)
   loc <- local({
     y <- 1
     eval(quote(function(x) x + y))
   })
-  expect_null(.Call(rei:::rei_codec_write_call, loc))
+  expect_null(.Call(mizu:::mizu_codec_write_call, loc))
   # a byte-compiled closure body
   expect_null(.Call(
-    rei:::rei_codec_write_call,
+    mizu:::mizu_codec_write_call,
     compiler::cmpfun(eval(quote(function(x) x + 1)))
   ))
   # an attributed language node in the body (a non-srcref attribute
   # survives the strip, and attributed pairlist nodes decline)
   src <- eval(quote(function(x) f(x)), globalenv())
   body(src) <- structure(body(src), note = 1)
-  expect_null(.Call(rei:::rei_codec_write_call, src))
+  expect_null(.Call(mizu:::mizu_codec_write_call, src))
   # a data.frame's row.names are an ALTREP compact sequence
-  expect_null(.Call(rei:::rei_codec_write_call, data.frame(x = 1:3)))
+  expect_null(.Call(mizu:::mizu_codec_write_call, data.frame(x = 1:3)))
   # a language node with a non-srcref attribute still declines
   expect_null(.Call(
-    rei:::rei_codec_write_call,
+    mizu:::mizu_codec_write_call,
     structure(quote(f(x)), note = 1)
   ))
   # an S4 object with an out-of-subset slot declines with it
   methods::setClass("reiEnv", representation(e = "environment"))
   on.exit(methods::removeClass("reiEnv"), add = TRUE)
   expect_null(.Call(
-    rei:::rei_codec_write_call,
+    mizu:::mizu_codec_write_call,
     methods::new("reiEnv", e = new.env())
   ))
   # an S4 object with an ALTREP slot
   methods::setClass("reiAlt", representation(x = "integer"))
   on.exit(methods::removeClass("reiAlt"), add = TRUE)
   expect_null(.Call(
-    rei:::rei_codec_write_call,
+    mizu:::mizu_codec_write_call,
     methods::new("reiAlt", x = 1:3)
   ))
 })
 
 test_that("the reader rejects malformed streams", {
-  expect_error(.Call(rei:::rei_codec_read_call, raw(0)), "corrupt")
-  expect_error(.Call(rei:::rei_codec_read_call, as.raw(0x42)), "corrupt")
-  b <- .Call(rei:::rei_codec_write_call, list(a = 1L, b = "x"))
+  expect_error(.Call(mizu:::mizu_codec_read_call, raw(0)), "corrupt")
+  expect_error(.Call(mizu:::mizu_codec_read_call, as.raw(0x42)), "corrupt")
+  b <- .Call(mizu:::mizu_codec_write_call, list(a = 1L, b = "x"))
   expect_error(
-    .Call(rei:::rei_codec_read_call, b[seq_len(length(b) - 1)]),
+    .Call(mizu:::mizu_codec_read_call, b[seq_len(length(b) - 1)]),
     "corrupt"
   )
-  expect_error(.Call(rei:::rei_codec_read_call, c(b, raw(1))), "corrupt")
+  expect_error(.Call(mizu:::mizu_codec_read_call, c(b, raw(1))), "corrupt")
   bad <- b
   bad[2] <- as.raw(0x7f)
-  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
   # a corrupt closure environment kind byte
   cf <- .Call(
-    rei:::rei_codec_write_call,
+    mizu:::mizu_codec_write_call,
     eval(quote(function(x) x), globalenv())
   )
   bad <- cf
   bad[3] <- as.raw(0xff)
-  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
   # the S4 flag on a symbol, a type that never carries it
-  bad <- .Call(rei:::rei_codec_write_call, quote(x))
+  bad <- .Call(mizu:::mizu_codec_write_call, quote(x))
   bad[2] <- as.raw(0x41)
-  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
   # the primitive flag on a non-symbol
-  bad <- .Call(rei:::rei_codec_write_call, 1L)
+  bad <- .Call(mizu:::mizu_codec_write_call, 1L)
   bad[2] <- as.raw(0x83)
-  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
   # a primitive name that resolves to no primitive
-  bad <- .Call(rei:::rei_codec_write_call, quote(x))
+  bad <- .Call(mizu:::mizu_codec_write_call, quote(x))
   bad[2] <- as.raw(0x81)
-  expect_error(.Call(rei:::rei_codec_read_call, bad), "corrupt")
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
 })

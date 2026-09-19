@@ -1,43 +1,43 @@
-#ifndef REI_VIEW_H
-#define REI_VIEW_H
+#ifndef MIZU_VIEW_H
+#define MIZU_VIEW_H
 
 #include <Rversion.h>
 #include <Rinternals.h>
 #include <R_ext/Altrep.h>
 #include <string.h>
 
-#include "vendor/librei/internal.h"
+#include "vendor/libmizu/internal.h"
 
 // Identifier grammar constants ------------------------------------------------
 
-#define REI_VIEW_MAX_PATH        64                /* max indices in a path */
-#define REI_VIEW_IDENTIFIER_MAX  1024              /* parser input length cap */
-#define REI_VIEW_FORMAT_BUFLEN   1024              /* formatter stack buffer */
+#define MIZU_VIEW_MAX_PATH        64                /* max indices in a path */
+#define MIZU_VIEW_IDENTIFIER_MAX  1024              /* parser input length cap */
+#define MIZU_VIEW_FORMAT_BUFLEN   1024              /* formatter stack buffer */
 
 /* External-pointer tag strings (installed once at init). */
-#define REI_VIEW_TAG_SHM   "rei_view_shm"
-#define REI_VIEW_TAG_HOST  "rei_view_host"
-#define REI_VIEW_TAG_OWNED "rei_view_owned"
+#define MIZU_VIEW_TAG_SHM   "mizu_view_shm"
+#define MIZU_VIEW_TAG_HOST  "mizu_view_host"
+#define MIZU_VIEW_TAG_OWNED "mizu_view_owned"
 
 /* Region header flags word at byte offset 32 of the 64-byte header —
    bytes [24-31] remain embedder cross-process state, [36-63] reserved.
    Bit 0 records the S4 object bit, which the layouts otherwise cannot
    carry. */
-#define REI_VIEW_FLAGS_OFF 32
-#define REI_VIEW_FLAG_S4 0x1u
+#define MIZU_VIEW_FLAGS_OFF 32
+#define MIZU_VIEW_FLAG_S4 0x1u
 
-/* int64 wire tag: outside SEXPTYPE space. The core's REI_TYPE_INT64 — the
-   vendored unit cannot name the enum constant (mori carries no rei_type_e);
+/* int64 wire tag: outside SEXPTYPE space. The core's MIZU_TYPE_INT64 — the
+   vendored unit cannot name the enum constant (mori carries no mizu_type_e);
    the embedder _Static_asserts the pin. */
-#define REI_VIEW_TYPE_INT64 32
+#define MIZU_VIEW_TYPE_INT64 32
 
 // Types -----------------------------------------------------------------------
 
-typedef struct rei_view_buf_s {
+typedef struct mizu_view_buf_s {
   unsigned char *buf;
   size_t len;
   size_t cur;
-} rei_view_buf;
+} mizu_view_buf;
 
 /* Embedder release callback, fired exactly once per view — at COW
    materialization or at the view finalizer, whichever comes first. Embedded
@@ -46,42 +46,42 @@ typedef struct rei_view_buf_s {
    converted, points to its initial member). ALTLIST views fire at the
    finalizer only: extracted element views keep referencing the region, so a
    list is never fully detached before the whole view tree is finalized. */
-typedef void (*rei_view_release_fn)(void *);
+typedef void (*mizu_view_release_fn)(void *);
 
-typedef struct rei_view_owned_s {
-  rei_view_release_fn release;
+typedef struct mizu_view_owned_s {
+  mizu_view_release_fn release;
   void *release_arg;
-} rei_view_owned;
+} mizu_view_owned;
 
-typedef struct rei_view_vec_s {
-  rei_view_owned owned;
+typedef struct mizu_view_vec_s {
+  mizu_view_owned owned;
   const void *data;
   R_xlen_t length;
   int32_t index;   /* -1 = standalone, >= 0 = element of ALTLIST */
-} rei_view_vec;
+} mizu_view_vec;
 
-typedef struct rei_view_list_s {
-  rei_view_owned owned;
-  unsigned char *base;       /* points to child REIL start */
+typedef struct mizu_view_list_s {
+  mizu_view_owned owned;
+  unsigned char *base;       /* points to child MIZL start */
   int64_t region_size;       /* bounds all reads within this region */
   int32_t n_elements;
   int32_t index;             /* -1 = root, >= 0 = sub-list */
-} rei_view_list;
+} mizu_view_list;
 
 // serialize.c -----------------------------------------------------------------
 
-size_t rei_view_serialize_count(SEXP object);
-size_t rei_view_serialize_into(unsigned char *dst, SEXP object);
-SEXP rei_view_unserialize_from(unsigned char *src, size_t size);
+size_t mizu_view_serialize_count(SEXP object);
+size_t mizu_view_serialize_into(unsigned char *dst, SEXP object);
+SEXP mizu_view_unserialize_from(unsigned char *src, size_t size);
 
-static inline size_t rei_view_sizeof_elt(int type) {
+static inline size_t mizu_view_sizeof_elt(int type) {
   switch (type) {
   case REALSXP:  return sizeof(double);
   case INTSXP:   return sizeof(int);
   case LGLSXP:   return sizeof(int);
   case RAWSXP:   return 1;
   case CPLXSXP:  return sizeof(Rcomplex);
-  case REI_VIEW_TYPE_INT64: return sizeof(int64_t);  /* int64 bit patterns */
+  case MIZU_VIEW_TYPE_INT64: return sizeof(int64_t);  /* int64 bit patterns */
   default:       return 0;
   }
 }
@@ -96,7 +96,7 @@ static inline size_t rei_view_sizeof_elt(int type) {
    wrapper's data-pointer request consolidates a shared data part in
    place (duplicate + swap into data1), so take the wrapper's pointer
    first, then re-read data1. */
-static inline int rei_view_altrep_readable(SEXP x) {
+static inline int mizu_view_altrep_readable(SEXP x) {
   SEXP inner = R_altrep_data1(x);
   if (ALTREP(inner) || TYPEOF(inner) != TYPEOF(x)) return 0;
   const void *px = DATAPTR_OR_NULL(x);
@@ -110,63 +110,63 @@ static inline int rei_view_altrep_readable(SEXP x) {
 /* Apply a region header's S4 flag to a freshly wrapped view — after
    attributes land, so a read never consults a class definition
    (Rf_asS4 with complete = 0 sets the bit in place on a fresh object).
-   Call on a validated region (>= REI_HEADER_SIZE bytes); embedders
-   wrapping REIH / REIS roots through the raw constructors call this
+   Call on a validated region (>= MIZU_HEADER_SIZE bytes); embedders
+   wrapping MIZH / MIZS roots through the raw constructors call this
    last. */
-static inline SEXP rei_view_apply_s4(SEXP x, const unsigned char *base) {
+static inline SEXP mizu_view_apply_s4(SEXP x, const unsigned char *base) {
   uint32_t flags;
-  memcpy(&flags, base + REI_VIEW_FLAGS_OFF, 4);
-  return (flags & REI_VIEW_FLAG_S4) ? Rf_asS4(x, TRUE, 0) : x;
+  memcpy(&flags, base + MIZU_VIEW_FLAGS_OFF, 4);
+  return (flags & MIZU_VIEW_FLAG_S4) ? Rf_asS4(x, TRUE, 0) : x;
 }
 
 // altrep.c --------------------------------------------------------------------
 
-void rei_view_altrep_init(DllInfo *dll);
+void mizu_view_altrep_init(DllInfo *dll);
 
 /* bit64-compatible int64: the class singleton (constructed and preserved in
-   rei_view_altrep_init; its interned CHARSXP doubles as the probe's
+   mizu_view_altrep_init; its interned CHARSXP doubles as the probe's
    comparator) and the class-only gate — a REALSXP whose entire attribute
    set is class = "integer64". */
-extern SEXP rei_view_int64_class;
-int rei_view_is_int64(SEXP x);
+extern SEXP mizu_view_int64_class;
+int mizu_view_is_int64(SEXP x);
 
 /* SHM extptr finalizers, defined alongside the wrap constructors that
-   register them: rei_view_shm_finalizer releases this side's mapping only;
-   rei_view_host_finalizer releases the SHM name/handle via
-   rei_shm_host_release. */
-void rei_view_shm_finalizer(SEXP ptr);
-void rei_view_host_finalizer(SEXP ptr);
+   register them: mizu_view_shm_finalizer releases this side's mapping only;
+   mizu_view_host_finalizer releases the SHM name/handle via
+   mizu_shm_host_release. */
+void mizu_view_shm_finalizer(SEXP ptr);
+void mizu_view_host_finalizer(SEXP ptr);
 
 /* Wrap constructors: the returned view's data1 pins `keeper` through its
    protected slot; release/release_arg ride the owned metadata and fire
    once (materialize or finalizer). Internal callers pass NULL, NULL. */
-SEXP rei_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
-                   SEXP keeper, rei_view_release_fn release, void *release_arg);
-SEXP rei_view_str_wrap(const unsigned char *region_base, R_xlen_t n,
+SEXP mizu_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
+                   SEXP keeper, mizu_view_release_fn release, void *release_arg);
+SEXP mizu_view_str_wrap(const unsigned char *region_base, R_xlen_t n,
                    int64_t data_size, SEXP keeper,
-                   rei_view_release_fn release, void *release_arg);
-SEXP rei_view_list_wrap(unsigned char *base, int64_t region_size, int32_t index,
-                    SEXP keeper, rei_view_release_fn release, void *release_arg);
-void rei_view_restore_attrs(SEXP result, unsigned char *buf, size_t size);
+                   mizu_view_release_fn release, void *release_arg);
+SEXP mizu_view_list_wrap(unsigned char *base, int64_t region_size, int32_t index,
+                    SEXP keeper, mizu_view_release_fn release, void *release_arg);
+void mizu_view_restore_attrs(SEXP result, unsigned char *buf, size_t size);
 
 /* Layout oracle and writer for embedder-managed regions: the size pass
    walks the tree and returns 0 for anything the layout writer must not
    take: an ALTREP node is rejected unless it is a view (rides the
-   wire hooks) or rei_view_altrep_readable (R's S4 data-part wrappers
+   wire hooks) or mizu_view_altrep_readable (R's S4 data-part wrappers
    qualify; a compact 1:1e8 would materialize through DATAPTR_RO at
-   write). The write emits exactly rei_view_layout_size bytes and zeroes
+   write). The write emits exactly mizu_view_layout_size bytes and zeroes
    header reserved bytes. */
-size_t rei_view_layout_size(SEXP x);
-void rei_view_layout_write(unsigned char *base, SEXP x);
+size_t mizu_view_layout_size(SEXP x);
+void mizu_view_layout_write(unsigned char *base, SEXP x);
 
 /* View introspection: C-level is_shared, the identifier formatter, the
    identifier parser, and a path walk over an already-open region (keeper
    flows to the returned view's chain). */
-int rei_view_check(SEXP x);
-SEXP rei_view_shm_name(SEXP x);
-int rei_view_parse_id(const char *s, char *name_out, size_t name_out_size,
+int mizu_view_check(SEXP x);
+SEXP mizu_view_shm_name(SEXP x);
+int mizu_view_parse_id(const char *s, char *name_out, size_t name_out_size,
                   int32_t *path_out, int *path_len);
-SEXP rei_view_walk_path(unsigned char *base, int64_t region_size,
+SEXP mizu_view_walk_path(unsigned char *base, int64_t region_size,
                     const int32_t *path, int path_len, SEXP keeper);
 
 /* Embedder wire hooks (optional; set once at embedder load): `emit` fires
@@ -176,26 +176,26 @@ SEXP rei_view_walk_path(unsigned char *base, int64_t region_size,
    paths after the wrap, with the freshly opened consumer mapping. An
    embedder running a cross-process lifetime protocol uses the pair to
    flag regions on escape and to count remote references on arrival. */
-typedef void (*rei_view_emit_hook_fn)(SEXP view);
-typedef void (*rei_view_resolve_hook_fn)(SEXP view, rei_shm *shm);
-void rei_view_set_wire_hooks(rei_view_emit_hook_fn emit, rei_view_resolve_hook_fn resolve);
+typedef void (*mizu_view_emit_hook_fn)(SEXP view);
+typedef void (*mizu_view_resolve_hook_fn)(SEXP view, mizu_shm *shm);
+void mizu_view_set_wire_hooks(mizu_view_emit_hook_fn emit, mizu_view_resolve_hook_fn resolve);
 
 /* Embedder open hook (optional; set once at embedder load): the identifier
    resolve paths dedupe consumer mappings through a process-global
    name-keyed cache whose miss branch opens through this hook instead of the
-   default fully-RO rei_shm_open_heap. An embedder whose cross-process
+   default fully-RO mizu_shm_open_heap. An embedder whose cross-process
    protocol writes the region header (a refcount word on page 0) installs a
-   page-0-RW open here; the hook returns a heap rei_shm * the layer wraps
+   page-0-RW open here; the hook returns a heap mizu_shm * the layer wraps
    and owns, same as the default open. The cache size is a view-layer
-   constant on purpose: a bare REI_OPEN_CACHE_MAX would survive vendoring
+   constant on purpose: a bare MIZU_OPEN_CACHE_MAX would survive vendoring
    verbatim into mori, whose region layer defines only MORI_OPEN_CACHE_MAX —
-   the REI_VIEW_ prefix renames to MORI_CACHE_MAX and cannot collide. */
-#define REI_VIEW_CACHE_MAX 16
-typedef rei_shm *(*rei_view_open_hook_fn)(const char *name);
-void rei_view_set_open_hook(rei_view_open_hook_fn hook);
+   the MIZU_VIEW_ prefix renames to MORI_CACHE_MAX and cannot collide. */
+#define MIZU_VIEW_CACHE_MAX 16
+typedef mizu_shm *(*mizu_view_open_hook_fn)(const char *name);
+void mizu_view_set_open_hook(mizu_view_open_hook_fn hook);
 
 // Alignment macro -------------------------------------------------------------
 
-#define REI_VIEW_ALIGN64(x) (((x) + 63) & ~(size_t)63)
+#define MIZU_VIEW_ALIGN64(x) (((x) + 63) & ~(size_t)63)
 
-#endif /* REI_VIEW_H */
+#endif /* MIZU_VIEW_H */
