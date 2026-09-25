@@ -23,14 +23,15 @@ are serialized. \code{mori::share()}d objects reduce to identifiers and map
 zero-copy on the worker.}
 
 \item{.timeout}{seconds to wait for injection-ring space before the
-call errors. \code{Inf} (the default) waits indefinitely. Ctrl-C stays
-responsive.}
+call raises \code{mizu_error_submit_timeout}. Submission blocks only
+when the ring is full (back-pressure) and returns immediately
+otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
 
 \item{task}{a task handle from \code{mizu_submit()}.}
 
 \item{timeout}{seconds to wait for the result before the call returns
-the \code{mizu_timeout} sentinel. \code{Inf} (the default) waits indefinitely,
-and \code{0} polls.}
+the \code{mizu_timeout} sentinel. \code{Inf} (the default) waits indefinitely;
+\code{0} does not wait.}
 }
 \value{
 \code{mizu_submit()} returns a task handle (class \code{"mizu_task"}).

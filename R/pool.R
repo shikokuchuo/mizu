@@ -287,12 +287,13 @@ mizu_pool_attach <- function(name) {
 #'   are serialized. `mori::share()`d objects reduce to identifiers and map
 #'   zero-copy on the worker.
 #' @param .timeout seconds to wait for injection-ring space before the
-#'   call errors. `Inf` (the default) waits indefinitely. Ctrl-C stays
-#'   responsive.
+#'   call raises `mizu_error_submit_timeout`. Submission blocks only
+#'   when the ring is full (back-pressure) and returns immediately
+#'   otherwise. `Inf` (the default) waits indefinitely; `0` does not wait.
 #' @param task a task handle from `mizu_submit()`.
 #' @param timeout seconds to wait for the result before the call returns
-#'   the `mizu_timeout` sentinel. `Inf` (the default) waits indefinitely,
-#'   and `0` polls.
+#'   the `mizu_timeout` sentinel. `Inf` (the default) waits indefinitely;
+#'   `0` does not wait.
 #'
 #' @return `mizu_submit()` returns a task handle (class `"mizu_task"`).
 #'   `mizu_collect()` returns the value of the task, or the `mizu_timeout`

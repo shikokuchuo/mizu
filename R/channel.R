@@ -161,9 +161,9 @@ mizu_channel <- function(
 #' @param ch a channel handle from [mizu_channel()] (or the `ch` binding
 #'   inside a peer expression).
 #' @param x the payload: any R object.
-#' @param timeout seconds to wait before the call returns the `mizu_timeout`
-#'   sentinel. `Inf` (the default) waits indefinitely, and `0` polls.
-#'   Ctrl-C stays responsive during the wait.
+#' @param timeout seconds to wait for a message before returning the
+#'   `mizu_timeout` sentinel. `Inf` (the default) waits indefinitely;
+#'   `0` does not wait.
 #'
 #' @return `mizu_send()` returns `TRUE` (invisibly) on success, or a
 #'   sentinel otherwise. `mizu_recv()` returns the received payload or a

@@ -17,9 +17,9 @@ inside a peer expression).}
 
 \item{n}{maximum number of messages to return.}
 
-\item{timeout}{seconds to wait before the call returns the \code{mizu_timeout}
-sentinel. \code{Inf} (the default) waits indefinitely, and \code{0} polls.
-Ctrl-C stays responsive during the wait.}
+\item{timeout}{seconds to wait for a message before returning the
+\code{mizu_timeout} sentinel. \code{Inf} (the default) waits indefinitely;
+\code{0} does not wait.}
 }
 \value{
 \code{mizu_send_batch()} returns the number of messages accepted. This

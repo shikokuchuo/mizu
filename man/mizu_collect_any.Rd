@@ -11,8 +11,9 @@ mizu_collect_any(tasks, timeout = Inf)
 the same pool handle.}
 
 \item{timeout}{seconds to wait for injection-ring space before the
-call errors. \code{Inf} (the default) waits indefinitely. Ctrl-C stays
-responsive.}
+call raises \code{mizu_error_submit_timeout}. Submission blocks only
+when the ring is full (back-pressure) and returns immediately
+otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
 }
 \value{
 For a published result, \code{list(index = i, value = v)}: the
