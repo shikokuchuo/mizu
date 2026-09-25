@@ -87,7 +87,7 @@ A task still queued is skipped.
 A task already running completes, and its result is discarded.
 Cancellation never interrupts executing code.
 
-Inside a task, the handle of the evaluating worker is available as `pool`, so a task can split itself into subtasks.
+Inside a task, `mizu_current_pool()` returns the handle of the evaluating worker, so a task can split itself into subtasks.
 A nested submit pushes straight onto the own work-stealing deque of the worker — no ring, no wake.
 A worker that waits on a nested result executes other work instead of sleeping.
 Divide-and-conquer runs at fork/join cost and never deadlocks the pool:
@@ -96,7 +96,7 @@ Divide-and-conquer runs at fork/join cost and never deadlocks the pool:
 t <- mizu_submit(
   p,
   {
-    subtasks <- lapply(parts, \(part) mizu_submit(pool, sum(x), x = part))
+    subtasks <- lapply(parts, \(part) mizu_submit(mizu_current_pool(), sum(x), x = part))
     do.call(sum, lapply(subtasks, mizu_collect))
   },
   parts = split(1:1000, rep(1:4, each = 250))

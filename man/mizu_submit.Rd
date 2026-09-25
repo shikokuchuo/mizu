@@ -10,8 +10,9 @@ mizu_submit(pool, expr, ..., .timeout = Inf)
 mizu_collect(task, timeout = Inf)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}, or —
-inside a task — the own handle of the worker, bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+inside a task, the evaluating worker's own handle from
+\code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
 \item{expr}{an expression, captured unevaluated. This differs from
 \code{\link[=mizu_channel]{mizu_channel()}}, which requires its expression pre-quoted. The
@@ -85,15 +86,16 @@ payload codec can carry within the result slot's inline budget, with
 anything untransportable dropped and named in a \code{dropped_fields}
 field. See the Task error transport section of \link{mizu_error}.
 
-A task expression sees the handle of its evaluating worker as \code{pool}
-(beneath the arguments in \code{...}), so a task can submit nested subtasks.
-\code{mizu_submit(pool, ...)} inside a task pushes onto the work-stealing
-deque of the worker itself: no ring, no wait. A full deque runs the
-subtask inline instead. A worker blocked in \code{mizu_collect()} on a nested
-handle helps instead of sleeping. It executes work from its own deque
-(and steals from peers) until the awaited result is published. So
-nested fan-outs run at fork/join cost and never deadlock the pool. A
-nested submission claims a submitter slot for the worker on first use.
+Inside a task, \code{\link[=mizu_current_pool]{mizu_current_pool()}} returns the handle of the
+evaluating worker, so a task can submit nested subtasks.
+\code{mizu_submit(mizu_current_pool(), ...)} inside a task pushes onto the
+work-stealing deque of the worker itself: no ring, no wait. A full
+deque runs the subtask inline instead. A worker blocked in
+\code{mizu_collect()} on a nested handle helps instead of sleeping. It
+executes work from its own deque (and steals from peers) until the
+awaited result is published. So nested fan-outs run at fork/join cost
+and never deadlock the pool. A nested submission claims a submitter
+slot for the worker on first use.
 
 A handle can be collected exactly once: the result slot is released to
 the pool as the value is returned. If an uncollected handle goes to the

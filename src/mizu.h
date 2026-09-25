@@ -51,6 +51,8 @@ typedef struct mizu_zc_cache_s {
 typedef struct mizu_r_handle_s {
   mizu_handle *core;         /* the core handle; NULL after destroy */
   SEXP prot;                /* the extptr's prot chain */
+  SEXP xp;                  /* pool: weak back-ref to the own extptr, read by
+                               the current-pool accessor; NULL on channels */
   long self_pid;            /* fork guard */
   int role;                 /* pool: MIZU_ROLE_*; channel: -1 */
   int saw_foreign;          /* channel: a read flagged a foreign payload */
@@ -63,6 +65,13 @@ typedef struct mizu_r_handle_s {
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */
 extern SEXP mizu_sent_full, mizu_sent_timeout, mizu_sent_closed, mizu_sent_gone;
+
+/* The evaluating worker's own pool extptr (stage_r.c): save/restored around
+   each task eval by the exec hook and cleared by the pool finalizer —
+   borrowed, never precious-listed; between tasks on a live worker the
+   extptr is anchored by worker_main's handle. mizu_current_pool() reads
+   it. */
+extern SEXP mizu_curpool_xp;
 
 // Bounded single-pass serialize (bounded.c) ---------------------------------------
 

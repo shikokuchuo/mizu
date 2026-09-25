@@ -291,7 +291,9 @@ test_that("a lone worker's death reports the whole issued range as lost", {
   mizu:::map_submit(p, st)
   # kill only once the runner has claimed off the cursor, so the issued
   # range is non-empty and the kill lands mid-map
-  expect_true(wait_until(.Call(mizu:::mizu_map_info, st[["wrap"]])[["cursor"]] > 0))
+  expect_true(wait_until(
+    .Call(mizu:::mizu_map_info, st[["wrap"]])[["cursor"]] > 0
+  ))
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
   kill_hard(pid)
   cur <- .Call(mizu:::mizu_map_info, st[["wrap"]])[["cursor"]] # frozen by the kill
@@ -330,12 +332,16 @@ test_that("a runner's announce lost to a help beat still fails as died", {
     list()
   )
   mizu:::map_submit(p, st)
-  expect_true(wait_until(.Call(mizu:::mizu_map_info, st[["wrap"]])[["cursor"]] > 0))
+  expect_true(wait_until(
+    .Call(mizu:::mizu_map_info, st[["wrap"]])[["cursor"]] > 0
+  ))
   # the lone worker is inside the runner, so this task can only complete
   # through a doorbell help beat — its result proves one ran
   expect_identical(mizu_collect(mizu_submit(p, "quick"), timeout = 5), "quick")
   # the announce is gone: the kill below lands in the lost-announce state
-  expect_true(wait_until(mizu_pool_dump(p)[["workers"]][["in_flight"]][1L] == -1L))
+  expect_true(wait_until(
+    mizu_pool_dump(p)[["workers"]][["in_flight"]][1L] == -1L
+  ))
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
   kill_hard(pid)
   e <- tryCatch(
@@ -387,7 +393,7 @@ test_that("a nested map fans out over the deque and peers steal it", {
   t <- mizu_submit(
     p,
     mizu_map(
-      pool,
+      mizu_current_pool(),
       1:16,
       function(i, rdv) {
         file.create(file.path(rdv, Sys.getpid()))

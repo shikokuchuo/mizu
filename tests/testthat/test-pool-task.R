@@ -265,7 +265,12 @@ test_that("codec-ineligible fields are dropped and named, not zombied", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], {
     stop(structure(
-      list(message = "typed", call = NULL, ptr = pool, seq = 1:100000),
+      list(
+        message = "typed",
+        call = NULL,
+        ptr = mizu_current_pool(),
+        seq = 1:100000
+      ),
       class = c("mizu_test_error", "error", "condition")
     ))
   })

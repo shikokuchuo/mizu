@@ -294,6 +294,13 @@ void mizu_r_publish_err(mizu_result_sink *sink, SEXP cond) {
   UNPROTECT(1);
 }
 
+/* The evaluating worker's own pool extptr: set per task by the exec hook
+   below (multi-handle processes stay correct), restored on return, cleared
+   by the pool finalizer. Borrowed — no allocation, no precious-list entry
+   (R_NilValue at load, set in mizu_pool_init: no constant initializer
+   exists for a file-scope SEXP). */
+SEXP mizu_curpool_xp;
+
 /* The worker's task: decode the frame, evaluate, publish through the sink.
    An INLINE codec task frame stream-decodes in place — no list(expr, args)
    materialization, so a constant task allocates nothing on the worker.
@@ -323,10 +330,15 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
     expr = PROTECT(VECTOR_ELT(pl, 0));
     args = PROTECT(VECTOR_ELT(pl, 1));
   }
+  /* the current-pool global rides the eval only: the catching = 0 unwind
+     may longjmp past the restore (the worker is unwinding; accepted) */
+  mizu_r_handle *rh = (mizu_r_handle *) ctx->binding_ctx;
+  SEXP old_pool = mizu_curpool_xp;
+  mizu_curpool_xp = rh->xp;
   int ok = 1;
   SEXP value =
-    PROTECT(pool_eval_expr(p, ((mizu_r_handle *) ctx->binding_ctx)->prot,
-                           expr, args, catching, &ok));
+    PROTECT(pool_eval_expr(p, rh->prot, expr, args, catching, &ok));
+  mizu_curpool_xp = old_pool;
   if (ok) {
     mizu_result_publish(sink, (void *) value);
   } else {

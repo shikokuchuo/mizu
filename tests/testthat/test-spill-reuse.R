@@ -86,8 +86,14 @@ test_that("nested submits recycle through the worker handle's own list", {
   t <- mizu_submit(
     p[["ctrl"]],
     {
-      r1 <- mizu_collect(mizu_submit(pool, sum(v[[1]]), v = w), timeout = 5)
-      r2 <- mizu_collect(mizu_submit(pool, sum(v[[1]]), v = w), timeout = 5)
+      r1 <- mizu_collect(
+        mizu_submit(mizu_current_pool(), sum(v[[1]]), v = w),
+        timeout = 5
+      )
+      r2 <- mizu_collect(
+        mizu_submit(mizu_current_pool(), sum(v[[1]]), v = w),
+        timeout = 5
+      )
       c(r1, r2)
     },
     w = big_obj(100000)

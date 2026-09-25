@@ -10,8 +10,9 @@ mizu_map_prepare(pool, x, f, ..., .template = NULL, .chunks = NULL)
 mizu_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}, or —
-inside a task — the own handle of the worker, bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+inside a task, the evaluating worker's own handle from
+\code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
 \item{x}{a vector (atomic or list) to map over. Anything else is
 coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}

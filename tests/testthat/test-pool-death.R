@@ -48,7 +48,7 @@ test_that("death inside a nested help-collect fails outer and inner", {
   # fails the outer, which otherwise stayed PENDING forever
   p <- mizu_pool(n_workers = 1L)
   t <- mizu_submit(p, {
-    s <- mizu_submit(pool, Sys.sleep(30))
+    s <- mizu_submit(mizu_current_pool(), Sys.sleep(30))
     mizu_collect(s, timeout = 60)
   })
   # both slots stamped by worker 0: help mode has claimed the inner off
@@ -127,7 +127,7 @@ test_that("a dead worker's queued deque work is consumed in place", {
     p,
     {
       for (i in 1:3) {
-        mizu_submit(pool, file.create(f), f = file.path(d, i))
+        mizu_submit(mizu_current_pool(), file.create(f), f = file.path(d, i))
       }
       Sys.sleep(30)
     },
@@ -182,7 +182,7 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
     {
       for (i in 1:3) {
         mizu_submit(
-          pool,
+          mizu_current_pool(),
           {
             length(x)
             file.create(f)

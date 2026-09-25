@@ -56,7 +56,7 @@ test_that("steals and helps are counted against the claiming worker", {
   # helps: a worker blocked in a nested collect executes its own subtask
   t <- mizu_submit(
     p[["ctrl"]],
-    mizu_collect(mizu_submit(pool, 2 + 2), timeout = 5)
+    mizu_collect(mizu_submit(mizu_current_pool(), 2 + 2), timeout = 5)
   )
   expect_identical(pool_step(p), 1L)
   expect_identical(mizu_collect(t, 5), 4)
@@ -189,7 +189,7 @@ test_that("nested submits trace under the worker's own submitter identity", {
   })
   t <- mizu_submit(
     p[["ctrl"]],
-    mizu_collect(mizu_submit(pool, 2 + 2), timeout = 5)
+    mizu_collect(mizu_submit(mizu_current_pool(), 2 + 2), timeout = 5)
   )
   expect_identical(pool_step(p), 1L)
   expect_identical(mizu_collect(t, 5), 4)

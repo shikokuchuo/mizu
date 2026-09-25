@@ -675,7 +675,7 @@ test_that("a worker re-submits a received view by reference (nested composition)
   t2 <- mizu_submit(
     p[["ctrl"]],
     {
-      s <- mizu_submit(pool, identity(x), x = x)
+      s <- mizu_submit(mizu_current_pool(), identity(x), x = x)
       mizu_collect(s, timeout = 5)
     },
     x = v

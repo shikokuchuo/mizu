@@ -271,7 +271,7 @@ test_that("nested fan-out runs with help mode and stealing live", {
   t <- mizu_submit(p, {
     subs <- lapply(1:8, function(i) {
       mizu_submit(
-        pool,
+        mizu_current_pool(),
         {
           Sys.sleep(0.05)
           i * 2L
@@ -291,7 +291,7 @@ test_that("a trace-hook error takes the worker down as infrastructure", {
   p <- mizu_pool(launcher = mizu_launcher(stderr = errfile))
   t <- mizu_submit(
     p,
-    mizu_pool_trace(pool, function(event, id) {
+    mizu_pool_trace(mizu_current_pool(), function(event, id) {
       if (event == "done") stop("hook boom")
     })
   )

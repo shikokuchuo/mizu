@@ -260,15 +260,16 @@ mizu_pool_attach <- function(name) {
 #' anything untransportable dropped and named in a `dropped_fields`
 #' field. See the Task error transport section of [mizu_error].
 #'
-#' A task expression sees the handle of its evaluating worker as `pool`
-#' (beneath the arguments in `...`), so a task can submit nested subtasks.
-#' `mizu_submit(pool, ...)` inside a task pushes onto the work-stealing
-#' deque of the worker itself: no ring, no wait. A full deque runs the
-#' subtask inline instead. A worker blocked in `mizu_collect()` on a nested
-#' handle helps instead of sleeping. It executes work from its own deque
-#' (and steals from peers) until the awaited result is published. So
-#' nested fan-outs run at fork/join cost and never deadlock the pool. A
-#' nested submission claims a submitter slot for the worker on first use.
+#' Inside a task, [mizu_current_pool()] returns the handle of the
+#' evaluating worker, so a task can submit nested subtasks.
+#' `mizu_submit(mizu_current_pool(), ...)` inside a task pushes onto the
+#' work-stealing deque of the worker itself: no ring, no wait. A full
+#' deque runs the subtask inline instead. A worker blocked in
+#' `mizu_collect()` on a nested handle helps instead of sleeping. It
+#' executes work from its own deque (and steals from peers) until the
+#' awaited result is published. So nested fan-outs run at fork/join cost
+#' and never deadlock the pool. A nested submission claims a submitter
+#' slot for the worker on first use.
 #'
 #' A handle can be collected exactly once: the result slot is released to
 #' the pool as the value is returned. If an uncollected handle goes to the
@@ -277,8 +278,9 @@ mizu_pool_attach <- function(name) {
 #' [mizu_collect_any()] reports the first terminal task and
 #' [mizu_collect_all()] returns every result in input order.
 #'
-#' @param pool a pool handle from [mizu_pool()] or [mizu_pool_attach()], or —
-#'   inside a task — the own handle of the worker, bound as `pool`.
+#' @param pool a pool handle from [mizu_pool()] or [mizu_pool_attach()];
+#'   inside a task, the evaluating worker's own handle from
+#'   [mizu_current_pool()].
 #' @param expr an expression, captured unevaluated. This differs from
 #'   [mizu_channel()], which requires its expression pre-quoted. The
 #'   expression sees only the arguments in `...` and the global environment
@@ -314,6 +316,35 @@ mizu_submit <- function(pool, expr, ..., .timeout = Inf) {
 #' @export
 mizu_collect <- function(task, timeout = Inf) {
   .Call(mizu_pool_collect, task, timeout)
+}
+
+#' The Evaluating Worker's Own Pool Handle
+#'
+#' Inside a pool task, `mizu_current_pool()` returns the pool handle of
+#' the worker evaluating the task — the handle to pass to [mizu_submit()]
+#' for nested submission (subtasks push onto the worker's own
+#' work-stealing deque, and a worker blocked collecting them helps instead
+#' of sleeping). Outside a task, it returns `NULL`.
+#'
+#' The handle is runtime-owned: the pool sets it around each task
+#' evaluation, so unlike a variable binding it cannot be shadowed by a
+#' task argument or a local assignment.
+#'
+#' @return A pool handle (class `"mizu_pool"`) inside a pool task;
+#'   otherwise `NULL`.
+#'
+#' @examples
+#' p <- mizu_pool()
+#' t <- mizu_submit(p, {
+#'   s <- mizu_submit(mizu_current_pool(), x * 2L, x = x)
+#'   mizu_collect(s, timeout = 30)
+#' }, x = 21L)
+#' mizu_collect(t, timeout = 30)
+#' mizu_pool_stop(p)
+#'
+#' @export
+mizu_current_pool <- function() {
+  .Call(mizu_current_pool_call)
 }
 
 #' Submit a Batch of Tasks
@@ -683,10 +714,11 @@ mizu_pool_stats <- function(pool) {
 #'
 #' Registration is per-handle and per-process. A submitter that traces its
 #' own handle sees only `"submit"`. Execution events happen on the
-#' workers. To trace a worker, install the hook from a task, on the own
-#' handle of the worker bound as `pool`:
-#' `mizu_submit(p, mizu_pool_trace(pool, fn))`. The disabled hook costs one
-#' pointer check per event site, and no event sites exist on the channel
+#' workers. To trace a worker, install the hook from a task on the
+#' worker's own handle:
+#' `mizu_submit(p, mizu_pool_trace(mizu_current_pool(), fn))`. The
+#' disabled hook costs one pointer check per event site, and no event
+#' sites exist on the channel
 #' hot path. An error raised by the hook propagates as an infrastructure
 #' failure at its site. On a worker, it takes the worker down. This
 #' differs from the own error of a task, which is published as the ERR

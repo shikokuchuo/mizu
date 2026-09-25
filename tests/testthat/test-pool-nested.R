@@ -1,9 +1,9 @@
 # Worker-side nested submit and collect-time help mode over the in-process
-# harness. Tasks see their worker's handle bound as `pool`; nested submits
-# land on the worker's own deque (or run inline when it is full) and
-# allocate result slots from a lazily claimed submitter slot. A worker
-# blocked in collect helps — pops its own bottom, steals — instead of
-# parking, which is what makes every wait here deterministic and
+# harness. Tasks read their worker's handle from mizu_current_pool();
+# nested submits land on the worker's own deque (or run inline when it is
+# full) and allocate result slots from a lazily claimed submitter slot. A
+# worker blocked in collect helps — pops its own bottom, steals — instead
+# of parking, which is what makes every wait here deterministic and
 # single-stepped.
 
 test_that("a direct nested submit lands on the deque and help-collects", {
@@ -34,7 +34,7 @@ test_that("a task submits and collects a nested subtask in one step", {
   t <- mizu_submit(
     p[["ctrl"]],
     {
-      s <- mizu_submit(pool, x + 1L, x = x)
+      s <- mizu_submit(mizu_current_pool(), x + 1L, x = x)
       mizu_collect(s, timeout = 5) * 2L
     },
     x = 20L
@@ -49,7 +49,11 @@ test_that("a task batch-submits nested subtasks in one step", {
   t <- mizu_submit(
     p[["ctrl"]],
     {
-      ts <- mizu_submit_batch(pool, list(quote(x + 1L), quote(x * 2L)), x = x)
+      ts <- mizu_submit_batch(
+        mizu_current_pool(),
+        list(quote(x + 1L), quote(x * 2L)),
+        x = x
+      )
       unlist(mizu_collect_all(ts, timeout = 5))
     },
     x = 10L
@@ -62,7 +66,9 @@ test_that("a task batch-submits nested subtasks in one step", {
 test_that("a full deque runs nested subtasks inline (work-first)", {
   p <- pool_pair(per_worker_cap = 2L, max_submitters = 2L, result_slots = 64L)
   t <- mizu_submit(p[["ctrl"]], {
-    subs <- lapply(1:4, function(i) mizu_submit(pool, i * 10L, i = i))
+    subs <- lapply(1:4, function(i) {
+      mizu_submit(mizu_current_pool(), i * 10L, i = i)
+    })
     sum(vapply(subs, function(s) mizu_collect(s, timeout = 5), integer(1)))
   })
   expect_identical(pool_step(p), 1L)
@@ -80,7 +86,7 @@ test_that("help mode contains an erroring subtask at its own boundary", {
   # re-signal at the nested collect — never escape into the outer task's
   # frames, whose own result stays OK
   t <- mizu_submit(p[["ctrl"]], {
-    s <- mizu_submit(pool, stop("sub boom"))
+    s <- mizu_submit(mizu_current_pool(), stop("sub boom"))
     paste(
       "caught:",
       tryCatch(mizu_collect(s, timeout = 5), error = conditionMessage)
@@ -100,7 +106,10 @@ test_that("a full deque's inline execution contains subtask errors", {
   # the first two subtasks queue, the rest run inline at submit: both
   # execution paths contain the error at the subtask boundary
   t <- mizu_submit(p[["ctrl"]], {
-    subs <- lapply(1:4, function(i) mizu_submit(pool, stop("boom ", i), i = i))
+    subs <- lapply(
+      1:4,
+      function(i) mizu_submit(mizu_current_pool(), stop("boom ", i), i = i)
+    )
     vapply(
       subs,
       function(s) {
@@ -123,7 +132,7 @@ test_that("a task error after nested activity publishes to its own slot", {
   # the inner execute retires the worker's shm announce: the unwind path
   # must publish from the process-local claim identity, not the announce
   t <- mizu_submit(p[["ctrl"]], {
-    s <- mizu_submit(pool, "inner ok")
+    s <- mizu_submit(mizu_current_pool(), "inner ok")
     if (!identical(mizu_collect(s, timeout = 5), "inner ok")) {
       stop("inner collect mismatch")
     }
@@ -151,7 +160,7 @@ test_that("classed conditions survive help-mode containment", {
   t <- mizu_submit(
     p[["ctrl"]],
     {
-      s <- mizu_submit(pool, stop(cond), cond = cond)
+      s <- mizu_submit(mizu_current_pool(), stop(cond), cond = cond)
       tryCatch(mizu_collect(s, timeout = 5), mizu_test_error = function(e) {
         paste("typed:", conditionMessage(e))
       })
@@ -169,7 +178,7 @@ test_that("help mode flattens a hostile condition at the in-band publish", {
   # executed by the outer task's own collect in help mode, its ERR publish
   # is the in-band site — the field is dropped and named, never staged
   t <- mizu_submit(p[["ctrl"]], {
-    s <- mizu_submit(pool, {
+    s <- mizu_submit(mizu_current_pool(), {
       stop(structure(
         list(message = "typed sub", call = NULL, payload = new.env()),
         class = c("mizu_test_error", "error", "condition")
@@ -196,11 +205,16 @@ test_that("nested collect helps through recursion past the depth limit", {
     if (m <= 0L) {
       return(0L)
     }
-    s <- mizu_submit(p, f(m, f, pool), m = m - 1L, f = f)
+    s <- mizu_submit(p, f(m, f, mizu_current_pool()), m = m - 1L, f = f)
     mizu_collect(s, timeout = 5) + 1L
   }
   environment(countdown) <- globalenv()
-  t <- mizu_submit(p[["ctrl"]], f(m, f, pool), m = 40L, f = countdown)
+  t <- mizu_submit(
+    p[["ctrl"]],
+    f(m, f, mizu_current_pool()),
+    m = 40L,
+    f = countdown
+  )
   expect_identical(pool_step(p), 1L)
   expect_identical(mizu_collect(t, timeout = 5), 40L)
   pool_end(p)
@@ -209,7 +223,7 @@ test_that("nested collect helps through recursion past the depth limit", {
 test_that("a cancelled nested entry frees at its later pop", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], {
-    s <- mizu_submit(pool, "never runs")
+    s <- mizu_submit(mizu_current_pool(), "never runs")
     mizu_cancel(s)
     tryCatch(mizu_collect(s, timeout = 5), error = conditionMessage)
   })
@@ -231,7 +245,7 @@ test_that("a cancelled nested entry frees at its later pop", {
 test_that("a full submitter registry surfaces as the nested task's error", {
   p <- pool_pair(max_submitters = 1L) # the controller holds the only slot
   t <- mizu_submit(p[["ctrl"]], {
-    s <- mizu_submit(pool, 1L)
+    s <- mizu_submit(mizu_current_pool(), 1L)
     mizu_collect(s, timeout = 5)
   })
   expect_identical(pool_step(p), 1L)

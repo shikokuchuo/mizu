@@ -20,22 +20,22 @@
 # Arguments ride as positional literals embedded in the call itself, with
 # an empty task-args list: vectors self-evaluate, and skipping the
 # named-argument bindings keeps the serialized wrapper inside a
-# slot_size = 256 pool's 224-byte entry inline budget (`pool` stays a
-# symbol — it must resolve to the evaluating worker's own handle).
+# slot_size = 256 pool's 224-byte entry inline budget (the runner's pool
+# is self-resolved: mizu_current_pool() as its first body line).
 map_chunk_ref <- str2lang("mizu:::map_chunk")
 map_runner_ref <- str2lang("mizu:::map_runner")
 
-# One blob-path chunk task's wire payload: map_chunk(pool, r, b[, s]).
+# One blob-path chunk task's wire payload: map_chunk(r, b[, s]).
 map_payload <- function(st, r) {
   seeded <- !is.null(st[["seed_state"]])
   expr <- as.call(c(
-    list(map_chunk_ref, quote(pool), r, st[["blob"]]),
+    list(map_chunk_ref, r, st[["blob"]]),
     if (seeded) list(st[["seed_state"]])
   ))
   list(expr, list())
 }
 
-# One runner task's wire payload: map_runner(pool, n, a[, s]) — a packs
+# One runner task's wire payload: map_runner(n, a[, s]) — a packs
 # c(ordinal, generation) as doubles, with a third element flagging the
 # template path (one vector, not three scalars: the difference between
 # fitting a slot_size = 256 entry budget and not).
@@ -44,7 +44,6 @@ runner_payload <- function(st, r) {
   expr <- as.call(c(
     list(
       map_runner_ref,
-      quote(pool),
       st[["name"]],
       c(r, st[["gen"]], if (st[["direct"]]) 1)
     ),
@@ -172,9 +171,9 @@ mono_time <- function() .Call(mizu_now_call)
 #' processes reproduces the streams of one uninterrupted run.
 #'
 #' @section Nested maps:
-#' `mizu_map(pool, ...)` inside a task expression uses the own handle of
-#' the evaluating worker (bound as `pool`). Runner submissions push onto
-#' the own deque of the worker. The blocked collect executes its own
+#' `mizu_map(mizu_current_pool(), ...)` inside a task expression uses the
+#' evaluating worker's own handle. Runner submissions push onto the own
+#' deque of the worker. The blocked collect executes its own
 #' runners while idle peers steal the rest: fork/join-shaped recursive
 #' parallelism at deque cost. The first nested map of a worker claims a
 #' submitter slot. So at the default `max_submitters = 8` (one held by the
@@ -185,7 +184,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' The serialized runner wrapper needs a little over 200 bytes of entry
 #' inline budget, so pools created with `slot_size = 256L` (224-byte
 #' budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
-#' the wrapper to about 250 bytes. Seeded maps on such pools work but
+#' the wrapper to about 270 bytes. Seeded maps on such pools work but
 #' spill a region per runner, so keep the default `slot_size` on pools
 #' meant for seeded maps. For a very large `x`, sharing it first is the
 #' recommended path: a zero-copy view received from a channel or a pool
@@ -1021,12 +1020,11 @@ map_cancel <- function(st) {
 }
 
 # Worker-side blob-path chunk evaluator, riding each chunk task as
-# mizu:::map_chunk(pool, r, b[, s]): `pool` resolves to the evaluating
-# worker's own handle via the base-env binding (as nested submit), `r`
-# packs c(lo, hi) as doubles, `b` is the inline descriptor blob — the
-# sizes this path admits make a per-chunk unserialize negligible, so
-# there is no cache — and `s` the 6-word RNG base state when seeded.
-map_chunk <- function(pool, r, b, s = NULL) {
+# mizu:::map_chunk(r, b[, s]): `r` packs c(lo, hi) as doubles, `b` is the
+# inline descriptor blob — the sizes this path admits make a per-chunk
+# unserialize negligible, so there is no cache — and `s` the 6-word RNG
+# base state when seeded.
+map_chunk <- function(r, b, s = NULL) {
   lo <- r[[1L]]
   hi <- r[[2L]]
   d <- .Call(mizu_unserialize_call, b)
@@ -1078,7 +1076,7 @@ map_chunk <- function(pool, r, b, s = NULL) {
 }
 
 # Worker-side morsel runner, riding each runner task as
-# mizu:::map_runner(pool, n, a[, s]): `n` names the map region, `a`
+# mizu:::map_runner(n, a[, s]): `n` names the map region, `a`
 # packs the runner's ordinal into the CLAIM array, the run generation its
 # payload carries, and the template flag. The whole batch transition is
 # one .Call: mizu_map_next claims the runner's CLAIM lane on its first
@@ -1094,7 +1092,8 @@ map_chunk <- function(pool, r, b, s = NULL) {
 # value lists | NULL on the template path). Template histories merge
 # contiguous batches (no values to keep aligned), so they usually
 # collapse to one range and stay inside any slot's inline budget.
-map_runner <- function(pool, n, a, s = NULL) {
+map_runner <- function(n, a, s = NULL) {
+  pool <- mizu_current_pool()
   r <- a[[1L]]
   g <- a[[2L]]
   tmpl <- length(a) > 2L

@@ -694,7 +694,7 @@ test_that("collect trims never-claimed runners once the cursor exhausts", {
 })
 
 test_that("n = 0, n = 1, and n < chunks all behave", {
-  p <- pool_pair()
+  p <- pool_pair(slot_size = 256L) # under the blob budget: the region path
   # empty maps return immediately: no region, no tasks
   expect_identical(mizu_map(p[["ctrl"]], list(), sqrt), list())
   expect_identical(
@@ -726,7 +726,7 @@ test_that("n = 0, n = 1, and n < chunks all behave", {
 })
 
 test_that("the runner count clamps to live workers and free slots", {
-  p <- pool_pair(workers = 4L) # 64 result slots / 8 submitters = 8 free
+  p <- pool_pair(workers = 4L, slot_size = 256L) # 64 slots / 8 submitters
   st <- mizu:::map_stage(p[["ctrl"]], 1:100, identity, list())
   expect_identical(st[["R"]], 4L) # min(n_morsels, 4 live, 8 free, 64)
   # occupy five slots: the runner count clamps to the 3 free
@@ -894,7 +894,7 @@ test_that("two submitters' maps hold two contexts on one worker", {
 })
 
 test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
-  p <- pool_pair(workers = 2L, injection_cap = 2L)
+  p <- pool_pair(workers = 2L, injection_cap = 2L, slot_size = 256L)
   filler <- mizu_submit(p[["ctrl"]], "filler") # ring holds 2: one slot left
   st <- mizu:::map_stage(p[["ctrl"]], 1:4, identity, list(), chunks = 2)
   expect_identical(st[["R"]], 2L) # runner 2 will block on the full ring
@@ -1039,7 +1039,7 @@ test_that("a nested map runs on the worker's own deque, help-collected", {
   p <- pool_pair()
   t <- mizu_submit(
     p[["ctrl"]],
-    mizu_map(pool, 1:6, function(i) i + 1L, .chunks = 3L)
+    mizu_map(mizu_current_pool(), 1:6, function(i) i + 1L, .chunks = 3L)
   )
   expect_identical(pool_step(p), 1L) # one step: chunks push + help-collect
   expect_identical(mizu_collect(t, timeout = 5), as.list(2:7))
@@ -1169,7 +1169,7 @@ test_that("seeded blob-path chunks draw the same per-element streams", {
 })
 
 test_that("a ninth resident map context clears the worker cache whole", {
-  p <- pool_pair()
+  p <- pool_pair(slot_size = 256L) # region path: the blob path has no cache
   # nine maps with no empty step in between: no idle sweep runs, so the
   # ninth miss finds eight resident contexts and drops them all first
   for (k in 1:9) {
@@ -1186,7 +1186,7 @@ test_that("a ninth resident map context clears the worker cache whole", {
 })
 
 test_that("a runner failure outside f is fatal to the collect", {
-  p <- pool_pair()
+  p <- pool_pair(slot_size = 256L) # region path: st[["name"]] must exist
   st <- mizu:::map_stage(p[["ctrl"]], 1:8, identity, list())
   rw <- .Call(mizu:::mizu_region_open, st[["name"]], TRUE)
   .Call(mizu:::mizu_poke, rw, 0, as.raw(0)) # corrupt the region magic

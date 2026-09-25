@@ -161,7 +161,7 @@ test_that("phase B: a same-shape x swaps in place; changes restage", {
 })
 
 test_that("mizu_map_run validates .seed and surfaces rearm slot exhaustion", {
-  p <- pool_pair()
+  p <- pool_pair(slot_size = 256L) # region path: st survives for the retry
   pm <- mizu_map_prepare(p[["ctrl"]], 1:4, identity)
   expect_error(mizu_map_run(pm, .seed = "x"), ".seed must be")
   held <- lapply(1:8, function(i) mizu_submit(p[["ctrl"]], v, v = i))

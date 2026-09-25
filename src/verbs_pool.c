@@ -21,6 +21,7 @@ static void mizu_pool_finalizer(SEXP xp);
 static void mizu_task_finalizer(SEXP xp);
 
 void mizu_pool_init(void) {
+  mizu_curpool_xp = R_NilValue;
   mizu_pool_tag = Rf_install("mizu_pool");
   mizu_task_tag = Rf_install("mizu_task");
   mizu_sig_tag = Rf_install("mizu_sig");
@@ -90,6 +91,7 @@ static SEXP pool_wrap(mizu_r_handle *h) {
   SEXP xp = PROTECT(R_MakeExternalPtr(h, mizu_pool_tag, prot));
   R_RegisterCFinalizerEx(xp, mizu_pool_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, mizu_class_pool);
+  h->xp = xp;      /* the current-pool back-ref (weak: freed together) */
   UNPROTECT(2);
   return xp;
 }
@@ -103,6 +105,7 @@ static void mizu_pool_finalizer(SEXP xp) {
     mizu_pool_destroy((mizu_pool *) h->core);
     h->core = NULL;
   }
+  if (mizu_curpool_xp == xp) mizu_curpool_xp = R_NilValue;
   free(h);
   R_ClearExternalPtr(xp);
 }
@@ -349,17 +352,24 @@ SEXP mizu_pool_lame_duck_call(SEXP xp) {
 
 // Eval / trace registration ---------------------------------------------------------
 
-/* Arms a worker handle for evaluation: a base environment under globalenv()
-   binding the handle itself as `pool` — what worker-side nested submit
-   closes over. Stashed at prot[0]; the exec hook itself is registered at
-   worker_join. */
+/* Arms a worker handle for evaluation: a base environment under globalenv(),
+   the parent every per-task eval env closes over. Stashed at prot[0]; the
+   exec hook itself is registered at worker_join. The worker's own handle
+   reaches tasks through the runtime-owned current-pool global (stage_r.c),
+   not a binding here — nothing a task argument or local can shadow. */
 SEXP mizu_pool_set_eval(SEXP xp) {
   mizu_r_handle *h = pool_get_worker(xp);
   SEXP base = PROTECT(R_NewEnv(R_GlobalEnv, 0, 0));
-  Rf_defineVar(Rf_install("pool"), xp, base);
   SET_VECTOR_ELT(h->prot, 0, base);
   UNPROTECT(1);
   return R_NilValue;
+}
+
+/* The evaluating worker's own pool handle, or NULL off-worker: reads the
+   borrowed global the exec hook save/restores around each task eval
+   (stage_r.c). Returns an existing SEXP — no allocation, rchk-neutral. */
+SEXP mizu_current_pool_call(void) {
+  return mizu_curpool_xp;
 }
 
 /* Per-handle, per-process trace hook: fn(event, id). The R closure rides

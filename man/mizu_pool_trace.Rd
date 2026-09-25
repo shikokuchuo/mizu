@@ -7,8 +7,9 @@
 mizu_pool_trace(pool, fn = NULL)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}, or —
-inside a task — the own handle of the worker, bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+inside a task, the evaluating worker's own handle from
+\code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
 \item{fn}{a \verb{function(event, id)}, or \code{NULL} to remove a registered
 hook.}
@@ -39,10 +40,11 @@ correlated.
 
 Registration is per-handle and per-process. A submitter that traces its
 own handle sees only \code{"submit"}. Execution events happen on the
-workers. To trace a worker, install the hook from a task, on the own
-handle of the worker bound as \code{pool}:
-\code{mizu_submit(p, mizu_pool_trace(pool, fn))}. The disabled hook costs one
-pointer check per event site, and no event sites exist on the channel
+workers. To trace a worker, install the hook from a task on the
+worker's own handle:
+\code{mizu_submit(p, mizu_pool_trace(mizu_current_pool(), fn))}. The
+disabled hook costs one pointer check per event site, and no event
+sites exist on the channel
 hot path. An error raised by the hook propagates as an infrastructure
 failure at its site. On a worker, it takes the worker down. This
 differs from the own error of a task, which is published as the ERR

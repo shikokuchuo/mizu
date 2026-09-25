@@ -7,8 +7,9 @@
 mizu_submit_batch(pool, exprs, ..., .timeout = Inf)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}, or —
-inside a task — the own handle of the worker, bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+inside a task, the evaluating worker's own handle from
+\code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
 \item{exprs}{a list of expressions, one per task. Quote them
 yourself: elements of a list cannot be captured unevaluated.}

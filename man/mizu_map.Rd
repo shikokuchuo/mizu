@@ -17,8 +17,9 @@ mizu_map(
 )
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}, or —
-inside a task — the own handle of the worker, bound as \code{pool}.}
+\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+inside a task, the evaluating worker's own handle from
+\code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
 \item{x}{a vector (atomic or list) to map over. Anything else is
 coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
@@ -174,9 +175,9 @@ processes reproduces the streams of one uninterrupted run.
 
 \section{Nested maps}{
 
-\code{mizu_map(pool, ...)} inside a task expression uses the own handle of
-the evaluating worker (bound as \code{pool}). Runner submissions push onto
-the own deque of the worker. The blocked collect executes its own
+\code{mizu_map(mizu_current_pool(), ...)} inside a task expression uses the
+evaluating worker's own handle. Runner submissions push onto the own
+deque of the worker. The blocked collect executes its own
 runners while idle peers steal the rest: fork/join-shaped recursive
 parallelism at deque cost. The first nested map of a worker claims a
 submitter slot. So at the default \code{max_submitters = 8} (one held by the
@@ -189,7 +190,7 @@ controller) at most 7 workers can nest concurrently. Raise
 The serialized runner wrapper needs a little over 200 bytes of entry
 inline budget, so pools created with \code{slot_size = 256L} (224-byte
 budget) fit it. The exception is \code{.seed}: its 6-word RNG state pushes
-the wrapper to about 250 bytes. Seeded maps on such pools work but
+the wrapper to about 270 bytes. Seeded maps on such pools work but
 spill a region per runner, so keep the default \code{slot_size} on pools
 meant for seeded maps. For a very large \code{x}, sharing it first is the
 recommended path: a zero-copy view received from a channel or a pool
