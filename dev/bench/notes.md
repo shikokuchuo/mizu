@@ -578,3 +578,28 @@ tasks/s (batch 2.7M), payload 8 KB/800 KB/8 MB 3.4/75.5/415.6 us, fan-out
 363k tasks/s (in-process 110k), streaming 35.1M msg/s, map trivial f 0.1
 us/elt across the variants, map ~10us 5.4 ms wall (serial 21.3), skewed
 11.3 ms.
+
+## 2026-09-26: keeperless wire flag landed (after-measurement)
+
+The flag change on the working tree over 0974a74 (libmizu
+MIZU_AUX_F_KEEPERLESS: the stager claims "no retain-table entry" on bit 0
+of the INLINE aux word; the core's mizu_keeperless reads the header claim
+instead of probing payload codec magics; the R binding's serialize-tier
+pin is now conditional on the serialize wire hook firing — zc.c's
+REF-used flag). Full mizu-bench.R run, this host, R 4.6.1: serialize
+result 3.6 us/task (before-record 3.9), codec result 2.2 (2.8) — both
+inside this host's ~1 us run-to-run band (six further scenario-7 draws:
+serialize 3.5-5.9, codec 2.2-3.7). Anchors held across the board:
+sequential rt channel 1.2 us / pool 1.7 us, pipelined channel 946k rt/s
+(batch 18.4M) / pool 593k tasks/s (batch 3.3M), payload 8 KB/800 KB/8 MB
+3.1/85.5/459.0 us, fan-out 378k tasks/s (in-process 95k), streaming 41.1M
+msg/s, map rows unchanged (trivial f 0.1 us/elt, ~10us 5.5 ms, skewed
+11.4 ms).
+Collect phase isolated (4k results staged, the worker drained and parked,
+then collects timed alone): serialize 0.75-2.0 us/collect against codec
+1.5-2.5 — parity, consistent with the keeper-sweep wake being skipped.
+The deterministic half (no pin at stage; the worker's task env finalizing
+with no sweep) is asserted by the new test-pool.R case, and the
+before-record's byte-cost share (serialize vs codec on a local-env
+closure) is what the remaining scenario-7 gap measures.
+Full suite 2310 pass, 0 fail (6 expected skips: 3 macOS, 3 pymizu env).

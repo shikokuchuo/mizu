@@ -81,17 +81,23 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
   }
   /* the compact codec ahead of R_Serialize (payload.c): a codec stream
      is self-contained — the writer rejects ALTREP, so no hook-emitted
-     view identifier can ride along — and pins nothing */
+     view identifier can ride along — and pins nothing. A serialize stream
+     pins only when the emit hook fired during the pass (a nested view
+     rides by reference); unpinned, it claims keeperless inline. */
   size_t n = mizu_codec_write(payload, inline_max, x);
   int self_contained = n != 0;
-  if (!self_contained)
+  if (!self_contained) {
+    mizu_zc_ref_reset();
     n = mizu_serialize_bounded(payload, inline_max, x);
+  }
   if (n <= inline_max) {
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
-    hdr->aux = 0;
-    if (!self_contained)
+    hdr->aux = MIZU_AUX_F_KEEPERLESS;
+    if (!self_contained && mizu_zc_ref_fired()) {
+      hdr->aux = 0;
       mizu_r_pin(h, ctx, x);
+    }
   } else {
     if ((chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off)) != NULL) {
       if (self_contained) {
@@ -105,7 +111,7 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
       hdr->aux = off;
       uint64_t n64 = (uint64_t) n;
       memcpy(payload, &n64, sizeof(n64));
-      if (!self_contained)
+      if (!self_contained && mizu_zc_ref_fired())
         mizu_r_pin(h, ctx, x);
     } else {
       /* reap before staging: the consumer's latest head publish may

@@ -33,6 +33,19 @@
 static SEXP mizu_rel_tag;      /* the release-record extptr */
 static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminus */
 
+/* Set when the emit hook marks a view REFHELD during a serialize pass: the
+   payload carries a reference, so the stage must pin and cannot claim
+   keeperless. Process-global — the hook signature carries no ctx; safe
+   because R staging is single-threaded per process (pool workers are
+   separate processes). Set-only between resets: a stage that serializes
+   twice (the bounded pass, then the spill's mizu_view_serialize_into)
+   accumulates, and conservative (pin when unsure) is the correct failure
+   direction. */
+static int mizu_zc_ref_used;
+
+void mizu_zc_ref_reset(void) { mizu_zc_ref_used = 0; }
+int mizu_zc_ref_fired(void) { return mizu_zc_ref_used; }
+
 static void mizu_zc_ref_mark(SEXP x);
 static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm);
 
@@ -428,6 +441,7 @@ static SEXP mizu_view_terminus(SEXP x) {
    prep path's split open and the vendored cache's hook open alike — so the
    flag store goes straight through the chain terminus. */
 static void mizu_zc_ref_mark(SEXP x) {
+  mizu_zc_ref_used = 1;
   SEXP terminus = mizu_view_terminus(x);
   if (terminus == R_NilValue) return;
   mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(terminus);

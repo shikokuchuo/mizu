@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="8bdf2f7bcbbc4bf8e03669701a1914024de6774d"  # libmizu: Rename librei to libmizu
+PIN="c53f149abadc1569bf6fbd171e5ade8349187acb"  # libmizu: Add MIZU_AUX_F_KEEPERLESS, the stager-authored INLINE keeperless claim
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

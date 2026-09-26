@@ -687,6 +687,22 @@ test_that("a worker re-submits a received view by reference (nested composition)
   pool_end(p)
 })
 
+test_that("a pool result holding a nested view keeps the pin until collect", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], runif(100000))
+  pool_step(p)
+  v <- mizu_collect(t, 5)
+
+  # the result list holds a view: the codec declines and R_Serialize emits
+  # the identifier through the wire hook, so the conditional pin must hold
+  t2 <- mizu_submit(p[["ctrl"]], list(x), x = v)
+  pool_step(p)
+  w <- mizu_collect(t2, 5)
+  expect_true(is_view(w[[1L]]))
+  expect_identical(as.numeric(w[[1L]]), as.numeric(v))
+  pool_end(p)
+})
+
 test_that("foreign mori objects ride the serialize-hook path", {
   skip_if_not_installed("mori")
   p <- channel_pair(arena_size = 0)

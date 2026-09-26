@@ -145,7 +145,6 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
    protocol byte >= 2). No R stream opens with either ('B'/'X'/'A' are
    ASCII, MIZU_CODEC_MAGIC is 'R'). Inline: it sits on the serialize-tier
    read dispatch of both read hooks. */
-#define MIZU_PYMIZU_CODEC_MAGIC 0x50u   /* 'P' */
 static inline int mizu_is_python_payload(const unsigned char *p, size_t n) {
   return n >= 1 &&
     (p[0] == MIZU_PYMIZU_CODEC_MAGIC || (n >= 2 && p[0] == 0x80 && p[1] >= 2));
@@ -154,6 +153,12 @@ static inline int mizu_is_python_payload(const unsigned char *p, size_t n) {
 // Zero-copy payload tiers (zc.c) ---------------------------------------------------
 
 void mizu_zc_init(void);
+/* The REF-used flag: whether the emit hook fired since the last reset — a
+   serialize pass then in flight carried a view by reference, so its stage
+   must pin and cannot claim keeperless (MIZU_AUX_F_KEEPERLESS). Reset
+   before a stage's first serialize pass; read after it. */
+void mizu_zc_ref_reset(void);
+int mizu_zc_ref_fired(void);
 /* The consumer split open (page 0 RW, the tail RO): registered as the view
    layer's embedder open hook, so the wire-resolve cache's mappings carry the
    same protection split as the prep path's, which calls it directly. */

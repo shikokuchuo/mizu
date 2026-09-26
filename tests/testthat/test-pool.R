@@ -259,12 +259,16 @@ test_that("dropping the controller handle shuts the pool down at GC", {
 
 test_that("pool teardown releases outstanding submitter pins", {
   p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], runif(100000))
+  pool_step(p)
+  v <- mizu_collect(t, 5)
   flag <- new.env()
   flag$n <- 0L
   for (i in seq_len(3)) {
     e <- new.env()
     reg.finalizer(e, function(x) flag$n <- flag$n + 1L, onexit = TRUE)
-    mizu_submit(p[["ctrl"]], identity, x = e) # serialize fallback: pins
+    # serialize fallback; the nested view fires the wire hook, so it pins
+    mizu_submit(p[["ctrl"]], identity, x = list(e, v))
   }
   rm(e)
   pool_end(p) # the destroy drops the unclaimed tasks' pins
@@ -279,6 +283,9 @@ test_that("pool teardown releases outstanding submitter pins", {
 
 test_that("a collected result's worker-side pin releases to GC", {
   p <- pool_pair()
+  tv <- mizu_submit(p[["ctrl"]], runif(100000))
+  pool_step(p)
+  v <- mizu_collect(tv, 5)
   f <- tfile()
   on.exit(unlink(f), add = TRUE)
   t <- mizu_submit(
@@ -286,9 +293,10 @@ test_that("a collected result's worker-side pin releases to GC", {
     local({
       e <- new.env()
       reg.finalizer(e, function(x) file.create(path), onexit = TRUE)
-      e
+      list(e, x) # the nested view forces the serialize-hook path: it pins
     }),
-    path = f
+    path = f,
+    x = v
   )
   pool_step(p)
   invisible(mizu_collect(t, 5)) # delivers a finalizer-free copy
@@ -296,6 +304,34 @@ test_that("a collected result's worker-side pin releases to GC", {
   expect_identical(
     wait_until({
       pool_step(p)
+      gc()
+      file.exists(f)
+    }),
+    TRUE
+  )
+  pool_end(p)
+})
+
+test_that("a serialize-tier result with no nested view pins nothing", {
+  p <- pool_pair()
+  f <- tfile()
+  on.exit(unlink(f), add = TRUE)
+  t <- mizu_submit(
+    p[["ctrl"]],
+    local({
+      e <- new.env()
+      reg.finalizer(e, function(x) file.create(path), onexit = TRUE)
+      function(x) x + 1L # a closure over a local env: the codec declines
+    }),
+    path = f
+  )
+  pool_step(p)
+  g <- mizu_collect(t, 5)
+  expect_identical(g(1L), 2L)
+  # no reference rode the result stream, so no pin was taken: the worker's
+  # task env finalizes on a plain GC, no keeper sweep (no pool_step) needed
+  expect_identical(
+    wait_until({
       gc()
       file.exists(f)
     }),

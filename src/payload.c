@@ -133,8 +133,11 @@ mizu_shm *mizu_spill_get_raise(mizu_handle *h, size_t n) {
 /* Each stages through the handle's services: the region checkout
    (mizu_stage_spill_get), the retain (mizu_stage_retain), and for the
    serialize stream the pin of x (mizu_r_pin, released through the binding's
-   drop hook). The pin precedes retain: its cons-cell push can longjmp, and
-   an uncommitted checkout rolls back with nothing pinned. */
+   drop hook) — taken only when the REF-used flag fired during the serialize
+   passes (a view crosses by reference inside the stream; SHM_RAW has no
+   free aux bit, so the skip is the whole win here). The pin precedes
+   retain: its cons-cell push can longjmp, and an uncommitted checkout
+   rolls back with nothing pinned. */
 
 void mizu_payload_spill_shm(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, mizu_handle *h, void *ctx) {
@@ -144,7 +147,8 @@ void mizu_payload_spill_shm(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = (uint64_t) n;
   memcpy(payload, shm->name, shm->name_len);
-  mizu_r_pin(h, ctx, x);
+  if (mizu_zc_ref_fired())
+    mizu_r_pin(h, ctx, x);
   mizu_stage_retain(h, shm);
 }
 
@@ -220,24 +224,33 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
   /* the compact codec ahead of R_Serialize: no per-call ref-table
      allocation on either side, and a self-contained stream (the writer
      rejects ALTREP, so no view identifier can ride along) that pins
-     nothing — the NIL/RAWVEC/STR1 discipline */
+     nothing — the NIL/RAWVEC/STR1 discipline, claimed on the wire */
   size_t n = mizu_codec_write(payload, inline_max, x);
   if (n != 0) {
     if (n <= inline_max) {
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
-      hdr->aux = 0;
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
       return;
     }
     mizu_payload_spill_codec(hdr, payload, x, n, h);
     return;
   }
+  /* R_Serialize: the stream may carry a view by reference, so pin only
+     when the emit hook fired during the pass — an unpinned stream is
+     self-contained and claims keeperless. The flag stays live for the
+     spill path's pin decision below. */
+  mizu_zc_ref_reset();
   n = mizu_serialize_bounded(payload, inline_max, x);
   if (n <= inline_max) {
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
-    hdr->aux = 0;
-    mizu_r_pin(h, ctx, x);
+    if (mizu_zc_ref_fired()) {
+      hdr->aux = 0;
+      mizu_r_pin(h, ctx, x);
+    } else {
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
+    }
     return;
   }
   mizu_payload_spill_shm(hdr, payload, x, n, h, ctx);
