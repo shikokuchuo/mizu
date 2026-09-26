@@ -43,7 +43,10 @@ jobs:
       matrix:
         config: ${{ fromJson(needs.setup.outputs.containers) }}
     container:
-      image: ${{ matrix.config.container }}
+      # rchk:latest (r-hub/containers, 2026-09-26) broke bcheck: it exits 1
+      # ~100ms after start with no output and zero findings. Pin the last
+      # known-good image until upstream fixes it.
+      image: ${{ matrix.config.label == 'rchk' && 'ghcr.io/r-hub/containers/rchk@sha256:2d3bc86120b0902ca1cde617844085d102e5e2a38631c05d5c142603404c9b0d' || matrix.config.container }}
       # Docker's 64MB default /dev/shm is too small for the test suite.
       options: --shm-size=2g
 
