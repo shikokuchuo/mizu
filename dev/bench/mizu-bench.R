@@ -25,6 +25,13 @@
 #                             then ~10 us tasks as one map call (the README
 #                             table's last row), then a skewed-f regime
 #                             exercising the self-scheduled morsel claims
+#   7. serialize-tier results closure results the codec declines (a
+#                             local-env closure rides R_Serialize) against
+#                             one it carries (a global-env closure, the
+#                             kind byte): sequential rt isolates the
+#                             per-result keeper machinery — the stage pin,
+#                             its retain entry, and the collect-time
+#                             keeper-sweep wake on the parked worker
 #
 # Timings are bench::mark medians over its auto-calibrated iteration
 # counts, after warm-up, with GC time kept in (filter_gc = FALSE) — the
@@ -508,6 +515,46 @@ with_pool(4L, function(p) {
     mark_ms(function() mizu_map(p, xs, h)),
     "ms wall"
   )
+})
+
+# 7. serialize-tier results -----------------------------------------------------
+
+cat("\n== 7. serialize-tier results (closure results, 1 worker) ==\n")
+n <- 10000L
+
+# top-level definitions: addg closes over .GlobalEnv and crosses as the
+# codec's by-reference kind byte; mk's results close over mk's execution
+# frame — a local environment the codec declines, so they ride R_Serialize
+addg <- function(x) x + 1.5
+mk <- function() {
+  y <- 1.5
+  function(x) x + y
+}
+
+with_pool(1L, function(p) {
+  call2 <- function(t) mizu_collect(t, timeout = 30)(2)
+  stopifnot(
+    identical(call2(mizu_submit(p, mk(), mk = mk)), 3.5),
+    identical(call2(mizu_submit(p, addg, addg = addg)), 3.5)
+  )
+  # R_Serialize tier: pinned at stage, keeper-ful at collect — the
+  # keeper-drop record and the worker's sweep wake fire per result
+  warmup(function() mizu_collect(mizu_submit(p, mk(), mk = mk), timeout = 30))
+  note_us("serialize result", "mizu pool", n, function() {
+    for (i in seq_len(n)) {
+      mizu_collect(mizu_submit(p, mk(), mk = mk), timeout = 30)
+    }
+  })
+  # codec tier: unpinned, keeperless at collect — the A/B against the row
+  # above is the keeper machinery plus the serialize/codec byte cost
+  warmup(function() {
+    mizu_collect(mizu_submit(p, addg, addg = addg), timeout = 30)
+  })
+  note_us("codec result", "mizu pool", n, function() {
+    for (i in seq_len(n)) {
+      mizu_collect(mizu_submit(p, addg, addg = addg), timeout = 30)
+    }
+  })
 })
 
 # summary ----------------------------------------------------------------------

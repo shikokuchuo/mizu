@@ -557,3 +557,24 @@ rt 4.00 us, channel 1/8/32 MiB 0.06/0.50/1.50 ms, pool 1/8/64 MiB
 identical — all inside the recorded bands. Both spread draws reproduced:
 rei_map trivial 0.10 then 0.09 us/element; pool 64 MiB 12.00 then 11.00
 ms. Full suite 2314 pass (3 macOS skips).
+
+## 2026-09-26: serialize-tier results scenario (keeperless-flag before-measurement)
+
+Pre-change baseline for the keeperless wire flag (a stager-authored INLINE
+aux claim replacing the payload-magic probe in mizu_keeperless; plan:
+.posit/assistant/plans/2026-09-26-keeperless-wire-flag.md). New scenario 7
+in mizu-bench.R A/Bs sequential submit+collect of a closure result the
+codec declines (a local-env closure -> R_Serialize: pinned at stage,
+keeper-ful at collect, the worker's sweep wake fires per result) against
+one it carries (a global-env closure -> the codec's kind byte: unpinned,
+keeperless). HEAD 9df0195, this host, R 4.6.1, full mizu-bench.R run:
+serialize result 3.9 us/task, codec result 2.8 us/task — a 1.1 us/task gap
+over an equally small closure result: the keeper machinery (pin, retain
+entry, keeper-drop record, the cross-process sweep wake) plus the
+serialize/codec byte-cost difference. The flag work recovers the machinery
+share; the byte cost stays. Anchors, same run: sequential rt channel 1.1
+us / pool 1.5 us, pipelined channel 981k rt/s (batch 14.8M) / pool 599k
+tasks/s (batch 2.7M), payload 8 KB/800 KB/8 MB 3.4/75.5/415.6 us, fan-out
+363k tasks/s (in-process 110k), streaming 35.1M msg/s, map trivial f 0.1
+us/elt across the variants, map ~10us 5.4 ms wall (serial 21.3), skewed
+11.3 ms.
