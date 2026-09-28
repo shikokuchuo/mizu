@@ -56,3 +56,21 @@ ch.send(np.array([2.0]))
   expect_identical(mizu_recv(ch, 30), 2.0)
   expect_true(mizu_close(ch, timeout = 10))
 })
+
+test_that("a batch receive keeps messages read before a foreign payload", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+ch.send('a')
+ch.send({1, 2})
+ch.send('c')
+ch.recv(30)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  expect_identical(mizu_recv_batch(ch, 3L, 30), list("a"))
+  expect_error(mizu_recv(ch, 30), class = "mizu_error_python_payload")
+  expect_identical(mizu_recv(ch, 30), "c")
+  mizu_send(ch, 0)
+  expect_true(mizu_close(ch, timeout = 10))
+})

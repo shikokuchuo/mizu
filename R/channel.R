@@ -200,8 +200,10 @@ mizu_recv <- function(ch, timeout = Inf) .Call(mizu_channel_recv, ch, timeout)
 #'   `mizu_recv_batch()` waits for the first message like [mizu_recv()] and
 #'   returns its sentinels on timeout, close, or peer death. It then
 #'   returns a list of 1 to `n` already-published messages without waiting
-#'   further. On a foreign (Python) payload it raises like [mizu_recv()];
-#'   the messages drained alongside it in the same batch are consumed.
+#'   further. A batch that reaches a message it cannot read (a foreign
+#'   Python payload) returns what it read before it, and the failure
+#'   surfaces on the next receive, which raises like [mizu_recv()] — as
+#'   does the batch itself when the first message is the one declined.
 #'
 #' @examples
 #' ch <- mizu_channel(quote(mizu_send_batch(ch, mizu_recv_batch(ch, 3L))))

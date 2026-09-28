@@ -48,10 +48,10 @@ As for \code{\link[=mizu_collect]{mizu_collect()}}, attributed to a handle by po
 
 
 The \code{index} field of a raised condition is the 1-based position in
-\code{tasks} of the first such task. Handles up to and including the
-reported one are consumed; the remaining handles stay valid and
-collectible. A timeout consumes nothing: every handle stays valid and
-collectible.
+\code{tasks} of the first such task. Only the reported handle is consumed;
+every other handle — the results ahead of it included — stays valid
+and collectible. A timeout consumes nothing: every handle stays valid
+and collectible.
 }
 
 \examples{

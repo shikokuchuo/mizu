@@ -283,6 +283,7 @@ static int pool_live_path(mizu_pool *p, char *buf, size_t size,
 
 static void pool_unpark_result_waiter(mizu_pool *p, mizu_rs_hdr *rs);
 static void pool_unpark_one_worker(mizu_pool *p);
+static void pool_fail_in_flight(mizu_pool *p, mizu_wk_slot *w);
 static int pool_reaping_free(mizu_wk_slot *w);
 static int pool_probe_worker(mizu_pool *p, uint32_t slot);
 static void pool_probe_submitter(mizu_pool *p, uint32_t j);
@@ -1016,7 +1017,11 @@ mizu_status mizu_pool_worker_join(mizu_pool **out, const char *token,
   return MIZU_OK;
 }
 
-/* Clean worker exit. A nonempty deque is never drained anywhere: it
+/* Clean worker exit. An announced in-flight claim fails as DIED first:
+   the task can never complete once this worker is gone (the reach here is
+   an exec_fn escape — an infrastructure failure ends run without a
+   publish), and an orderly leave runs no death reaper to deliver the
+   verdict. A nonempty deque is never drained anywhere: it
    becomes an ordinary steal target while the slot reads REAPING, and the
    observer of the drained deque returns the slot to FREE. Kept results are
    abandoned only when the handle releases here — the retiree's lame-duck
@@ -1029,6 +1034,7 @@ mizu_status mizu_pool_leave(mizu_pool *p) {
     return MIZU_ERR;
   }
   mizu_wk_slot *me = &p->wk[p->wk_slot];
+  pool_fail_in_flight(p, me);
   pool_stats_publish(p);   /* final, exact mirror for the departed slot */
   atomic_fetch_and_explicit(p->parked_workers, ~(1ull << p->wk_slot),
                             memory_order_seq_cst);
@@ -2045,12 +2051,12 @@ static int pool_any_work(mizu_pool *p) {
    (a kept-fd flock re-acquire succeeds and re-runs the reap; a LockFileEx
    re-acquire reads HELD and skips — the holding prober's reap suffices). */
 
-/* Fail the dead worker's tasks — the announced claim, then a worker_slot
-   sweep for whatever it was executing — unpark every waiter its orphaned
-   deque names (their help scans then steal from it), and either wake a
-   drainer or free the emptied slot. Read-only walk; resumable. */
-static void pool_orphan_and_finalize(mizu_pool *p, mizu_wk_slot *w,
-                                     uint32_t slot) {
+/* Fail the worker's announced in-flight claim: PENDING -> DIED (the
+   collector's worker-death verdict) with the waiter unparked, CANCEL ->
+   FREE (no collector waits, return the slot). Shared by the death reaper
+   and a clean leave — an orderly exit after an infrastructure failure
+   runs no reaper, and the claim would strand otherwise. */
+static void pool_fail_in_flight(mizu_pool *p, mizu_wk_slot *w) {
   int32_t inf = atomic_load_explicit(&w->in_flight_rs, memory_order_acquire);
   if (inf >= 0 && (uint32_t) inf < p->hdr.result_slots) {
     mizu_rs_hdr *rs = pool_rs(p, (uint32_t) inf);
@@ -2072,6 +2078,15 @@ static void pool_orphan_and_finalize(mizu_pool *p, mizu_wk_slot *w,
     }
     atomic_store_explicit(&w->in_flight_rs, -1, memory_order_relaxed);
   }
+}
+
+/* Fail the dead worker's tasks — the announced claim, then a worker_slot
+   sweep for whatever it was executing — unpark every waiter its orphaned
+   deque names (their help scans then steal from it), and either wake a
+   drainer or free the emptied slot. Read-only walk; resumable. */
+static void pool_orphan_and_finalize(mizu_pool *p, mizu_wk_slot *w,
+                                     uint32_t slot) {
+  pool_fail_in_flight(p, w);
   /* The announce covers claimed-but-not-yet-executing (worker_slot still
      -1); a nested claim overwrites it and its publish clears it, so tasks
      the worker was executing — at any nesting depth — are found by their
@@ -3391,22 +3406,42 @@ static mizu_status pool_collect_all_impl(mizu_pool *p, const mizu_task *tasks,
 
   pool_any_unannounce(rss, n);
 
-  /* every slot terminal: claim in input order */
+  /* Every slot terminal: scan for the first non-OK status before
+     claiming — a status is stable once terminal, so the scan races
+     nothing. With one at k, claim only slot k: the reported handle is
+     consumed, and every other handle — the OK results ahead of it
+     included — stays collectible (symmetric with the timeout case,
+     which consumes nothing). */
   size_t err = n;
-  mizu_status rc = MIZU_OK;
-  for (size_t i = 0; i < n; i++) {
-    int32_t st = atomic_load_explicit(&rss[i]->status, memory_order_acquire);
-    void *v = pool_rs_claim(p, rss[i], mizu_task_rs_index(&tasks[i]), st);
-    if (v == NULL) {
-      err = i;   /* the read failure (slot i unconsumed when retryable) */
-      rc = MIZU_ERR;
-      break;
-    }
-    if (sink != NULL) sink(ctx, i, v);   /* anchored by the binding
-                                            before the next claim reads */
-    if (st != MIZU_RS_OK) {
+  for (size_t i = 0; i < n; i++)
+    if (atomic_load_explicit(&rss[i]->status, memory_order_acquire) !=
+        MIZU_RS_OK) {
       err = i;
       break;
+    }
+  mizu_status rc = MIZU_OK;
+  if (err < n) {
+    int32_t st = atomic_load_explicit(&rss[err]->status,
+                                      memory_order_acquire);
+    void *v = pool_rs_claim(p, rss[err], mizu_task_rs_index(&tasks[err]),
+                            st);
+    if (v == NULL) {
+      rc = MIZU_ERR;   /* the read failure (slot err unconsumed when
+                          retryable) */
+    } else if (sink != NULL) {
+      sink(ctx, err, v);
+    }
+  } else {
+    for (size_t i = 0; i < n; i++) {
+      void *v = pool_rs_claim(p, rss[i], mizu_task_rs_index(&tasks[i]),
+                              MIZU_RS_OK);
+      if (v == NULL) {
+        err = i;   /* the read failure (slot i unconsumed when retryable) */
+        rc = MIZU_ERR;
+        break;
+      }
+      if (sink != NULL) sink(ctx, i, v);   /* anchored by the binding
+                                              before the next claim reads */
     }
   }
   free(rss);

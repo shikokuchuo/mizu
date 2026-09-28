@@ -694,8 +694,9 @@ test_that("collect_all re-raises the first task error with its index", {
   expect_s3_class(err, "simpleError")
   expect_identical(conditionMessage(err), "boom")
   expect_identical(err$index, 2L)
-  # earlier handles are consumed, later ones stay collectible
-  expect_error(mizu_collect(t1, timeout = 0), "already collected")
+  # only the reported handle is consumed: the earlier result still
+  # collects, and later handles stay collectible
+  expect_identical(mizu_collect(t1, timeout = 5), "ok")
   err3 <- tryCatch(mizu_collect(t3, timeout = 5), error = identity)
   expect_identical(conditionMessage(err3), "later boom")
   pool_end(p)

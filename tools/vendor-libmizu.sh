@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="c53f149abadc1569bf6fbd171e5ade8349187acb"  # libmizu: Add MIZU_AUX_F_KEEPERLESS, the stager-authored INLINE keeperless claim
+PIN="151fcae491aadb87f51976ebdb2796ec156ee332"  # libmizu: Leave fails an announced in-flight claim as DIED
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

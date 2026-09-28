@@ -464,10 +464,10 @@ mizu_collect_any <- function(tasks, timeout = Inf) {
 #' | an executing worker died | raised with an `index` field | `mizu_error_worker_died` |
 #'
 #' The `index` field of a raised condition is the 1-based position in
-#' `tasks` of the first such task. Handles up to and including the
-#' reported one are consumed; the remaining handles stay valid and
-#' collectible. A timeout consumes nothing: every handle stays valid and
-#' collectible.
+#' `tasks` of the first such task. Only the reported handle is consumed;
+#' every other handle — the results ahead of it included — stays valid
+#' and collectible. A timeout consumes nothing: every handle stays valid
+#' and collectible.
 #'
 #' @param tasks a non-empty list of task handles from [mizu_submit()] on
 #'   the same pool handle.

@@ -603,3 +603,22 @@ with no sweep) is asserted by the new test-pool.R case, and the
 before-record's byte-cost share (serialize vs codec on a local-env
 closure) is what the remaining scenario-7 gap measures.
 Full suite 2310 pass, 0 fail (6 expected skips: 3 macOS, 3 pymizu env).
+
+## 2026-09-28: decline and batch-receive fixes (after-measurement)
+
+The decline/batch fixes over 0015abd..b03c5b5 (re-vendored libmizu
+151fcae: recv_batch keeps its consumed prefix, collect_all claims only
+the reported handle, leave fails an announced in-flight claim; mizu-side:
+the exec eval mark rides the whole exec, the codec's missing-namespace
+read substitutes .GlobalEnv, the foreign-payload decline is a stashed
+classed condition). All changes touch failure branches only; nothing
+lands on a hot path. Full mizu-bench.R run, this host, R 4.6.1:
+sequential rt channel 1.1 us / pool 1.6 us, pipelined channel 924k rt/s
+(batch 13.8M) / pool 420k tasks/s (batch 2.6M), payload 8 KB/800 KB/8 MB
+3.1/80.0/494.5 us, fan-out 370k tasks/s (in-process 109k), streaming
+32.5M msg/s, map trivial f 0.1 us/elt, ~10us 5.3 ms wall (serial 19.3),
+skewed 11.3 ms, serialize result 4.3 us/task, codec result 2.7. The
+pipelined-pool dip against the 2026-09-26 record (593k) is host noise: a
+targeted re-measure of the same loop (4x500 fire-and-collect) draws
+666k-1M tasks/s across five reps. Everything else inside the historical
+bands. Full suite 2342 pass, 0 fail (3 expected macOS skips).

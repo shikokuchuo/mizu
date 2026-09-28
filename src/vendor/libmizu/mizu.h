@@ -511,7 +511,15 @@ MIZU_API mizu_status mizu_channel_ready_wait(mizu_channel *, double timeout_ms);
    complete and valid — and MIZU_PEER_GONE is sticky once returned.
    recv_batch waits for the first message exactly like recv (*n_out is 0
    on a terminal status), then drains up to cap already-published
-   messages without waiting further.
+   messages without waiting further. A batch returns every message it
+   consumed: a read failure on the first message returns MIZU_ERR as
+   recv does, but a failure after it ends the batch early with MIZU_OK
+   and the messages read so far. The failing slot stays at the head, so
+   the next receive reproduces the failure exactly (and consumes the
+   slot if the binding marks it MIZU_READ_CONSUME). MIZU_READ_CONSUME
+   is therefore honoured on a single receive and on a batch's first
+   message only; past that the consume decision defers to the next
+   receive.
    Callbacks run on the calling thread; the wait parks on the caller's
    entity. */
 MIZU_API mizu_status mizu_channel_send(mizu_channel *, void *obj);
@@ -647,7 +655,10 @@ MIZU_API mizu_status mizu_pool_attach(mizu_pool **out, const char *token,
    the lifetime anchor for its uncollected results: the binding loops
    lame_duck on a plain sleep (no unpark can reach a released slot)
    until it returns nonzero — shutdown or owner death ends the linger.
-   leave is the clean-exit handshake. */
+   leave is the clean-exit handshake: an announced in-flight claim (an
+   exec_fn escape left unpublished) fails as DIED there, so an orderly
+   leave after an infrastructure failure never strands a task — the
+   collector's worker-death verdict, no reaper required. */
 typedef enum mizu_worker_exit_e { MIZU_EXIT_SHUTDOWN = 0,
                                  MIZU_EXIT_OWNER_GONE,
                                  MIZU_EXIT_RETIRED,
@@ -719,10 +730,11 @@ MIZU_API mizu_status mizu_pool_submit_batch_fn(mizu_pool *, mizu_obj_supply,
    ties among already-terminal handles break to the earliest position);
    the reported handle is consumed, the rest stay collectible.
    collect_all fills values_out in input order once every task is
-   terminal. On the first non-OK outcome by position it stops there:
-   *err_index_out is its index, values_out is filled through that index
-   inclusive (the error object rides read_fn like any value), handles
-   past it stay collectible, and *err_index_out == n means all OK.
+   terminal. On the first non-OK outcome by position it reports that
+   handle only: *err_index_out is its index, the reported handle is
+   consumed (its error object rides read_fn like any value into
+   values_out[err]), and every other handle — the OK results ahead of
+   it included — stays collectible. *err_index_out == n means all OK.
    MIZU_TIMEOUT consumes nothing: every handle stays valid. */
 MIZU_API mizu_status mizu_pool_collect(mizu_pool *, const mizu_task *,
                                     void **value_out, double timeout_ms);
@@ -735,10 +747,10 @@ MIZU_API mizu_status mizu_pool_collect_all(mizu_pool *, const mizu_task *,
                                         double timeout_ms);
 
 /* The sink-callback form of collect_all: each value is handed to sink
-   as it is claimed (input order, through the first non-OK outcome
-   inclusive), so a binding can anchor every object before the next
-   claim's read allocates. Same wait and stop-at-error semantics as the
-   array form (which is a thin adapter over this). */
+   as it is claimed (input order when all OK; the first non-OK outcome
+   alone otherwise), so a binding can anchor every object before the
+   next claim's read allocates. Same wait and stop-at-error semantics
+   as the array form (which is a thin adapter over this). */
 MIZU_API mizu_status mizu_pool_collect_all_fn(mizu_pool *, const mizu_task *,
                                            size_t n, mizu_obj_sink,
                                            void *ctx,
