@@ -340,6 +340,24 @@ test_that("a serialize-tier result with no nested view pins nothing", {
   pool_end(p)
 })
 
+test_that("a task returning a closure over a missing namespace collects as globalenv", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], {
+    ns <- new.env()
+    info <- new.env()
+    assign("spec", c(name = "zzmissing", version = "0.0.1"), envir = info)
+    assign(".__NAMESPACE__.", info, envir = ns)
+    f <- function(x) x + 1
+    environment(f) <- ns
+    f
+  })
+  pool_step(p)
+  g <- mizu_collect(t, timeout = 5)
+  expect_identical(environment(g), globalenv())
+  expect_identical(g(1), 2)
+  pool_end(p)
+})
+
 test_that("stop warns and reports FALSE when workers outlive the wait", {
   p <- pool_pair()
   # the in-process worker cannot exit: the bounded wait must expire

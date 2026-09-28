@@ -29,7 +29,11 @@ test_that("mizu_channel_create validates its parameters", {
 test_that("a fresh channel reports its layout and state", {
   p <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
   st <- .Call(mizu:::mizu_channel_stat, p[["host"]])
-  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\mizu_" else "/mizu_"
+  prefix <- if (.Platform[["OS.type"]] == "windows") {
+    "Local\\mizu_"
+  } else {
+    "/mizu_"
+  }
   expect_true(startsWith(st[["name"]], prefix))
   expect_identical(st[["side"]], "host")
   expect_identical(st[["capacity"]], 128)
@@ -61,7 +65,11 @@ test_that("attach validates the region: absent, malformed, or not a channel", {
   # a raw mizu region is not a channel: zeroed bytes fail the magic check
   xp <- .Call(mizu:::mizu_region_create, 4096)
   nm <- .Call(mizu:::mizu_region_name, xp)
-  prefix <- if (.Platform[["OS.type"]] == "windows") "Local\\mizu_" else "/mizu_"
+  prefix <- if (.Platform[["OS.type"]] == "windows") {
+    "Local\\mizu_"
+  } else {
+    "/mizu_"
+  }
   suffix <- substr(nm, nchar(prefix) + 1L, nchar(nm))
   expect_error(
     .Call(mizu:::mizu_channel_attach, suffix),
@@ -147,6 +155,24 @@ test_that("a finite-timeout empty recv expires both parked and mid-spin", {
   expect_s3_class(mizu_recv(p[["host"]], timeout = 0.05), "mizu_timeout")
   # mid-spin: a deadline inside the spin budget expires before any park
   expect_s3_class(mizu_recv(p[["host"]], timeout = 1e-6), "mizu_timeout")
+  channel_end(p)
+})
+
+test_that("a closure over a missing namespace reads as unserialize does", {
+  ns <- new.env()
+  info <- new.env()
+  assign("spec", c(name = "zzmissing", version = "0.0.1"), envir = info)
+  assign(".__NAMESPACE__.", info, envir = ns)
+  f <- function(x) x + 1
+  environment(f) <- ns
+  p <- channel_pair()
+  mizu_send(p[["host"]], f)
+  mizu_send(p[["host"]], "after")
+  g <- mizu_recv(p[["peer"]], 1)
+  expect_identical(environment(g), globalenv())
+  expect_identical(g(1), 2)
+  expect_identical(environment(unserialize(serialize(f, NULL))), globalenv())
+  expect_identical(mizu_recv(p[["peer"]], 1), "after")
   channel_end(p)
 })
 

@@ -29,8 +29,10 @@
    the same discipline as the RAWVEC/STR1 immediates.
 
    Closures cross with the environment by reference — global / base /
-   empty by kind byte, a package namespace by name (R_FindNamespace on
-   read, R_Unserialize's own discipline) — since formals and bodies are
+   empty by kind byte, a package namespace by name (base's ..getNamespace
+   on read — R_Unserialize's own discipline, so a namespace that will not
+   load substitutes .GlobalEnv, it does not fail) — since formals and
+   bodies are
    the pairlist / call trees already in the subset. A keep.source parse
    hangs srcref attributes on the closure and its body language nodes;
    the srcfile they name cannot cross processes, so the write crosses a
@@ -596,9 +598,21 @@ static SEXP scr_body(mizu_scr *r, uint32_t tag, unsigned depth) {
         UNPROTECT(1);
         Rf_error("mizu: corrupt payload stream");
       }
+      /* R_Unserialize's discipline exactly: base's ..getNamespace — the
+         registry short-circuit for a registered namespace, the
+         loadNamespace attempt, the .GlobalEnv substitution, and the
+         _R_NO_REPORT_MISSING_NAMESPACES_ reporting rules (R's own
+         registry is legacy non-API, so the eval is unconditional; it
+         lands only on SC_ENV_NS reads — non-bytecode namespace closures,
+         rare: installed package functions are bytecode and never reach
+         the codec) */
+      SEXP getns =
+        PROTECT(Rf_findFun(Rf_install("..getNamespace"), R_BaseNamespace));
       SEXP spec = PROTECT(Rf_ScalarString(nm));
-      env = R_FindNamespace(spec); /* loads the namespace, as R_Unserialize */
-      UNPROTECT(2);
+      SEXP call = PROTECT(Rf_lang3(getns, spec, Rf_mkString("<unknown>")));
+      env = Rf_eval(call, R_BaseNamespace);
+      UNPROTECT(3);
+      UNPROTECT(1);
       break;
     }
     default:

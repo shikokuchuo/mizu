@@ -114,7 +114,7 @@ test_that("a task error is published and re-signalled at collect", {
   pool_end(p)
 })
 
-test_that("a task frame that fails to decode is the task's ERR, not worker death", {
+test_that("a task frame over a missing namespace decodes as unserialize does", {
   p <- pool_pair()
   ns <- new.env()
   info <- new.env()
@@ -122,11 +122,11 @@ test_that("a task frame that fails to decode is the task's ERR, not worker death
   assign(".__NAMESPACE__.", info, envir = ns)
   f <- function(x) x + 1
   environment(f) <- ns
+  # the frame decodes with f rebound to .GlobalEnv: the task runs, and the
+  # worker keeps serving
   t <- mizu_submit(p[["ctrl"]], f(1), f = f)
   pool_step(p)
-  err <- tryCatch(mizu_collect(t, timeout = 5), error = identity)
-  expect_s3_class(err, "packageNotFoundError")
-  # the worker survived: later tasks run
+  expect_identical(mizu_collect(t, timeout = 5), 2)
   t2 <- mizu_submit(p[["ctrl"]], 1 + 1)
   pool_step(p)
   expect_identical(mizu_collect(t2, timeout = 5), 2)
