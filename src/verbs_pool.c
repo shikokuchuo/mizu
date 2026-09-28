@@ -557,6 +557,15 @@ SEXP mizu_pool_deque_pull_call(SEXP xp, SEXP n_sexp) {
   return Rf_ScalarInteger(moved);
 }
 
+/* Test-only: arm/disarm the exec fault flag — the next task-frame decode
+   on this worker fails as if the payload were corrupt, exercising the
+   decode-failure-is-the-task's-ERR discipline on demand. */
+SEXP mizu_pool_exec_fail_call(SEXP xp, SEXP on) {
+  mizu_r_handle *h = pool_get_worker(xp);
+  h->exec_fail = Rf_asLogical(on) == TRUE;
+  return R_NilValue;
+}
+
 // Collect ----------------------------------------------------------------------------
 
 /* The shared collect entry. tryflag: a terminal non-OK outcome returns the

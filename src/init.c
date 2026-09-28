@@ -102,6 +102,7 @@ SEXP mizu_pool_set_eval(SEXP);
 SEXP mizu_current_pool_call(void);
 SEXP mizu_pool_set_trace_call(SEXP, SEXP);
 SEXP mizu_pool_deque_pull_call(SEXP, SEXP);
+SEXP mizu_pool_exec_fail_call(SEXP, SEXP);
 SEXP mizu_pool_dump_call(SEXP);
 SEXP mizu_pool_collect_call(SEXP, SEXP);
 SEXP mizu_pool_collect_try(SEXP, SEXP);
@@ -207,6 +208,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_current_pool_call",      (DL_FUNC) &mizu_current_pool_call,         0},
   {"mizu_pool_set_trace",         (DL_FUNC) &mizu_pool_set_trace_call,       2},
   {"mizu_pool_deque_pull",        (DL_FUNC) &mizu_pool_deque_pull_call,      2},
+  {"mizu_pool_exec_fail",         (DL_FUNC) &mizu_pool_exec_fail_call,       2},
   {"mizu_pool_dump_call",         (DL_FUNC) &mizu_pool_dump_call,            1},
   {"mizu_pool_collect",           (DL_FUNC) &mizu_pool_collect_call,         2},
   {"mizu_pool_collect_try",       (DL_FUNC) &mizu_pool_collect_try,          2},

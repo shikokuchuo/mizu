@@ -56,6 +56,8 @@ typedef struct mizu_r_handle_s {
   long self_pid;            /* fork guard */
   int role;                 /* pool: MIZU_ROLE_*; channel: -1 */
   int saw_foreign;          /* channel: a read flagged a foreign payload */
+  int exec_fail;            /* pool, test-only: fail the next task-frame
+                               decode (mizu_pool_exec_fail) */
   int pin_slot;             /* prot slot of the pin chain */
   uint32_t pins_dead;       /* tombstoned pin cells awaiting splice */
   uint32_t pins_total;      /* pin chain length (live + dead) */

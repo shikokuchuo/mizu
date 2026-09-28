@@ -222,29 +222,45 @@ void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
 
 /* The task evaluator: one wire payload — list(expr, named args) — with the
    arguments bound into a fresh unhashed frame under the base environment
-   (prot[0], set by mizu_pool_set_eval). Two error disciplines, chosen by the
-   caller. The worker loop's hot path (catching = 0) arms no handler at all:
-   a user error longjmps out of mizu_pool_step and worker_main publishes the
-   caught condition as this task's ERR result through mizu_pool_run_outcome —
-   the eval marker (mizu_pool_eval_mark) is what separates those errors from
-   infrastructure failure, which stays fatal. Help mode and nested submit's
-   inline execute (catching = 1) run inside a task's own evaluation, where an
-   escaping error would land in the wrong task's frames: they contain it with
-   R_tryCatchError and pay its R-closure trampoline. */
-struct mizu_eval_ctx { SEXP expr; SEXP env; int ok; };
+   (prot[0], set by mizu_pool_set_eval). Two error disciplines, chosen by
+   the caller, and both cover the frame decode as well as the eval: a
+   task-frame decode failure is the task's ERR, never worker death. The
+   worker loop's hot path (catching = 0) arms no handler at all: the eval
+   marker (mizu_pool_eval_mark) rides the whole exec — set at entry,
+   cleared at every normal return — so a user error anywhere in the body
+   longjmps out of mizu_pool_step with the task's identity recorded (the
+   core's pool_execute writes the cur_* sink fields ahead of the exec
+   call), and worker_main publishes the caught condition as this task's
+   ERR result through mizu_pool_run_outcome; the marker is what separates
+   those errors from infrastructure failure, which stays fatal. The set
+   and the clear are catching = 0 only: the core defines in_eval and the
+   cur_* fields as the outermost unwind-path eval's identity, so a nested
+   exec must neither set nor clear — a naive clear-on-every-return would
+   strip the mark from an outer task that collected a sibling handle and
+   then raised, degrading its own ERR to worker death. Help mode and
+   nested submit's inline execute (catching = 1) run inside a task's own
+   evaluation, where an escaping error would land in the wrong task's
+   frames: they contain the decode and the eval alike in R_tryCatchError
+   and pay its R-closure trampoline. */
+struct mizu_task_ctx {
+  SEXP prot;                      /* prot[0] is the eval env base */
+  const mizu_slot_hdr *hdr;
+  const unsigned char *payload;
+  size_t limit;
+  mizu_read_ctx *ctx;
+  int fail;                       /* test-only: a decode failure on demand */
+  int died;                       /* decode: the enqueuer's region is gone */
+  int ok;                         /* 0 once the catch handler has fired */
+};
 
-static SEXP pool_eval_body(void *data) {
-  struct mizu_eval_ctx *c = (struct mizu_eval_ctx *) data;
-  return Rf_eval(c->expr, c->env);
-}
-
-static SEXP pool_eval_handler(SEXP cond, void *data) {
-  ((struct mizu_eval_ctx *) data)->ok = 0;
+static SEXP pool_task_handler(SEXP cond, void *data) {
+  ((struct mizu_task_ctx *) data)->ok = 0;
   return cond;
 }
 
-static SEXP pool_eval_expr(mizu_pool *p, SEXP prot, SEXP expr, SEXP args,
-                           int catching, int *ok) {
+/* The eval proper: bind the named arguments into a fresh frame and
+   Rf_eval. No marker, no handler — both live at exec level now. */
+static SEXP pool_eval_expr(SEXP prot, SEXP expr, SEXP args) {
   SEXP names = PROTECT(Rf_getAttrib(args, R_NamesSymbol));
   R_xlen_t n = Rf_xlength(args);
   if (n > 0 && TYPEOF(names) != STRSXP)
@@ -256,7 +272,6 @@ static SEXP pool_eval_expr(mizu_pool *p, SEXP prot, SEXP expr, SEXP args,
   switch (TYPEOF(expr)) {
   case NILSXP: case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP:
   case STRSXP: case RAWSXP: case VECSXP:
-    *ok = 1;
     UNPROTECT(1);                    /* names */
     return expr;
   }
@@ -267,17 +282,45 @@ static SEXP pool_eval_expr(mizu_pool *p, SEXP prot, SEXP expr, SEXP args,
   for (R_xlen_t i = 0; i < n; i++)
     Rf_defineVar(Rf_installTrChar(STRING_ELT(names, i)),
                  VECTOR_ELT(args, i), env);
-  struct mizu_eval_ctx c = { expr, env, 1 };
-  SEXP value;
-  if (catching) {
-    value = R_tryCatchError(pool_eval_body, &c, pool_eval_handler, &c);
-  } else {
-    mizu_pool_eval_mark(p, 1);
-    value = Rf_eval(c.expr, c.env);
-    mizu_pool_eval_mark(p, 0);
-  }
-  *ok = c.ok;
+  SEXP value = Rf_eval(expr, env);
   UNPROTECT(2);                    /* names, env */
+  return value;
+}
+
+/* Decode + eval as one body: catching mode runs it under R_tryCatchError,
+   so a decode error there is this task's ERR, never the outer task's. An
+   INLINE codec task frame stream-decodes in place — no list(expr, args)
+   materialization, so a constant task allocates nothing on the worker.
+   Anything else takes the generic read and its shape check over the
+   exec's read ctx: the handle's open cache and the R-side view cache ride
+   it. The decode products stay protected inside the body; the eval
+   product crosses unprotected to the exec, which anchors it before the
+   publish. */
+static SEXP pool_task_body(void *data) {
+  struct mizu_task_ctx *c = (struct mizu_task_ctx *) data;
+  if (c->fail)                   /* test-only seam: see mizu_pool_exec_fail */
+    Rf_error("mizu: corrupt task payload");
+  SEXP expr = R_NilValue, args = R_NilValue;
+  if (c->hdr->kind == MIZU_KIND_INLINE && c->hdr->len <= c->limit &&
+      mizu_codec_read_task(c->payload, (size_t) c->hdr->len,
+                           &expr, &args)) {
+    PROTECT(expr);
+    PROTECT(args);
+  } else {
+    SEXP pl = mizu_payload_read(c->hdr, c->payload, (uint32_t) c->limit,
+                                c->ctx, 0);
+    if (c->ctx->gone) {
+      c->died = 1;
+      return R_NilValue;
+    }
+    if (pl == NULL || TYPEOF(pl) != VECSXP || Rf_xlength(pl) != 2 ||
+        TYPEOF(VECTOR_ELT(pl, 1)) != VECSXP)
+      Rf_error("mizu: corrupt task payload");
+    expr = PROTECT(VECTOR_ELT(pl, 0));
+    args = PROTECT(VECTOR_ELT(pl, 1));
+  }
+  SEXP value = pool_eval_expr(c->prot, expr, args);
+  UNPROTECT(2);                    /* expr, args */
   return value;
 }
 
@@ -307,50 +350,45 @@ void mizu_r_publish_err(mizu_result_sink *sink, SEXP cond) {
    exists for a file-scope SEXP). */
 SEXP mizu_curpool_xp;
 
-/* The worker's task: decode the frame, evaluate, publish through the sink.
-   An INLINE codec task frame stream-decodes in place — no list(expr, args)
-   materialization, so a constant task allocates nothing on the worker.
-   Anything else takes the generic read and its shape check over the exec's
-   read ctx: the handle's open cache and the R-side view cache ride it.
-   Both paths end with expr and args PROTECTed. */
+/* The worker's task: the eval mark rides the whole exec — set here ahead
+   of the body, cleared at every normal return, both under catching = 0
+   only (the design comment above) — so a longjmp out of the body, a frame
+   that fails to decode included, unwinds to worker_main with this task's
+   sink mintable through mizu_pool_run_outcome and comes back as its ERR
+   result: fail the task, never the worker. */
 int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                      size_t limit, mizu_result_sink *sink, int catching,
                      mizu_read_ctx *ctx) {
   mizu_pool *p = sink->p;
-  SEXP expr = R_NilValue, args = R_NilValue;
-  if (hdr->kind == MIZU_KIND_INLINE && hdr->len <= limit &&
-      mizu_codec_read_task(payload, (size_t) hdr->len, &expr, &args)) {
-    PROTECT(expr);
-    PROTECT(args);
-  } else {
-    SEXP pl = mizu_payload_read(hdr, payload, (uint32_t) limit, ctx, 0);
-    if (ctx->gone) {
-      /* the enqueuer died and its region went along: the task can never
-         run anywhere — it fails as DIED, and the drain continues */
-      mizu_result_publish_died(sink);
-      return 0;
-    }
-    if (pl == NULL || TYPEOF(pl) != VECSXP || Rf_xlength(pl) != 2 ||
-        TYPEOF(VECTOR_ELT(pl, 1)) != VECSXP)
-      Rf_error("mizu: corrupt task payload");
-    expr = PROTECT(VECTOR_ELT(pl, 0));
-    args = PROTECT(VECTOR_ELT(pl, 1));
-  }
-  /* the current-pool global rides the eval only: the catching = 0 unwind
-     may longjmp past the restore (the worker is unwinding; accepted) */
   mizu_r_handle *rh = (mizu_r_handle *) ctx->binding_ctx;
+  struct mizu_task_ctx c =
+    { rh->prot, hdr, payload, limit, ctx, rh->exec_fail, 0, 1 };
+  if (!catching)
+    mizu_pool_eval_mark(p, 1);
+  /* the current-pool global rides the task body only: the catching = 0
+     unwind may longjmp past the restore (the worker is unwinding;
+     accepted) */
   SEXP old_pool = mizu_curpool_xp;
   mizu_curpool_xp = rh->xp;
-  int ok = 1;
-  SEXP value =
-    PROTECT(pool_eval_expr(p, rh->prot, expr, args, catching, &ok));
+  SEXP value = catching ? R_tryCatchError(pool_task_body, &c,
+                                          pool_task_handler, &c) :
+                          pool_task_body(&c);
   mizu_curpool_xp = old_pool;
-  if (ok) {
-    mizu_result_publish(sink, (void *) value);
-  } else {
-    mizu_r_publish_err(sink, value);
+  if (!catching)
+    mizu_pool_eval_mark(p, 0);
+  if (c.died) {
+    /* the enqueuer died and its region went along: the task can never run
+       anywhere — it fails as DIED, and the drain continues */
+    mizu_result_publish_died(sink);
+    return 0;
   }
-  UNPROTECT(3);                    /* expr, args, value */
+  SEXP v = PROTECT(value);
+  if (c.ok) {
+    mizu_result_publish(sink, (void *) v);
+  } else {
+    mizu_r_publish_err(sink, v);
+  }
+  UNPROTECT(1);                    /* v */
   return 0;
 }
 

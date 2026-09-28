@@ -114,6 +114,57 @@ test_that("a task error is published and re-signalled at collect", {
   pool_end(p)
 })
 
+test_that("a task frame that fails to decode is the task's ERR, not worker death", {
+  p <- pool_pair()
+  ns <- new.env()
+  info <- new.env()
+  assign("spec", c(name = "zzmissing", version = "0.0.1"), envir = info)
+  assign(".__NAMESPACE__.", info, envir = ns)
+  f <- function(x) x + 1
+  environment(f) <- ns
+  t <- mizu_submit(p[["ctrl"]], f(1), f = f)
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "packageNotFoundError")
+  # the worker survived: later tasks run
+  t2 <- mizu_submit(p[["ctrl"]], 1 + 1)
+  pool_step(p)
+  expect_identical(mizu_collect(t2, timeout = 5), 2)
+  pool_end(p)
+})
+
+test_that("a decode failure on demand is the task's ERR (exec fault flag)", {
+  p <- pool_pair()
+  .Call(mizu:::mizu_pool_exec_fail, p[["wk"]], TRUE)
+  t <- mizu_submit(p[["ctrl"]], 1 + 1)
+  pool_step(p)
+  .Call(mizu:::mizu_pool_exec_fail, p[["wk"]], FALSE)
+  err <- tryCatch(mizu_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "simpleError")
+  expect_identical(conditionMessage(err), "mizu: corrupt task payload")
+  t2 <- mizu_submit(p[["ctrl"]], 2 + 2)
+  pool_step(p)
+  expect_identical(mizu_collect(t2, timeout = 5), 4)
+  pool_end(p)
+})
+
+test_that("a nested collect keeps the outer task's eval mark on unwind", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], {
+    s <- mizu_submit(mizu_current_pool(), 40 + 2)
+    mizu_collect(s, timeout = 5)
+    stop("outer boom")
+  })
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "simpleError")
+  expect_identical(conditionMessage(err), "outer boom")
+  t2 <- mizu_submit(p[["ctrl"]], 1L)
+  pool_step(p)
+  expect_identical(mizu_collect(t2, timeout = 5), 1L)
+  pool_end(p)
+})
+
 test_that("a classed condition re-signals with class and fields intact", {
   p <- pool_pair()
   cond <- structure(
@@ -613,7 +664,7 @@ test_that("collect_try boxes a cancellation instead of raising", {
   pool_end(p)
 })
 
-test_that("a corrupt task payload is infrastructure failure, not the task's", {
+test_that("a corrupt task payload is the task's ERR, not worker death", {
   p <- pool_pair()
   t1 <- .Call(
     mizu:::mizu_pool_submit,
@@ -629,14 +680,12 @@ test_that("a corrupt task payload is infrastructure failure, not the task's", {
     Inf,
     0L
   ) # unnamed argument list
-  # the shape check fires before the in_eval gate arms: the error is not
-  # attributable to the task and stays fatal to the step
-  expect_error(pool_step(p), "corrupt task payload")
-  expect_error(pool_step(p), "corrupt task payload")
-  # the claims were consumed but never published: cancel the stranded slots
-  mizu_cancel(t1)
-  mizu_cancel(t2)
-  # the next step heals the dangling announce; the worker keeps serving
+  # the eval mark arms at exec entry, ahead of the decode: a shape-check
+  # failure unwinds as this task's ERR, and the worker keeps serving
+  pool_step(p)
+  expect_error(mizu_collect(t1, timeout = 5), "corrupt task payload")
+  pool_step(p)
+  expect_error(mizu_collect(t2, timeout = 5), "corrupt task payload")
   t3 <- mizu_submit(p[["ctrl"]], "alive")
   pool_step(p)
   expect_identical(mizu_collect(t3, timeout = 5), "alive")
