@@ -13,10 +13,8 @@
 /* Returns the condition with nf field slots after message / call left
    NULL for the caller to fill, UNPROTECTED — the caller PROTECTs at the
    call site (nothing allocates between). */
-static SEXP mizu_cond(const char *subclass, const char **fnames, int nf,
-                     const char *fmt, va_list ap) {
-  char msg[1024];
-  vsnprintf(msg, sizeof(msg), fmt, ap);
+static SEXP mizu_cond_msg(const char *subclass, const char **fnames, int nf,
+                         const char *msg) {
   SEXP cond = PROTECT(Rf_allocVector(VECSXP, 2 + nf));
   SEXP names = PROTECT(Rf_allocVector(STRSXP, 2 + nf));
   SET_VECTOR_ELT(cond, 0, Rf_mkString(msg));
@@ -33,6 +31,13 @@ static SEXP mizu_cond(const char *subclass, const char **fnames, int nf,
   Rf_setAttrib(cond, R_ClassSymbol, klass);
   UNPROTECT(3);                    /* cond, names, klass */
   return cond;
+}
+
+static SEXP mizu_cond(const char *subclass, const char **fnames, int nf,
+                     const char *fmt, va_list ap) {
+  char msg[1024];
+  vsnprintf(msg, sizeof(msg), fmt, ap);
+  return mizu_cond_msg(subclass, fnames, nf, msg);
 }
 
 NORET void mizu_cond_signal(SEXP cond) {
@@ -135,6 +140,17 @@ NORET void mizu_stop_died(int slot, double pid, const char *fmt, ...) {
   va_end(ap);
   mizu_cond_signal(cond);
   UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
+}
+
+/* The channel's foreign-payload decline record: one message, built once at
+   load and interned (mizu_channel_init) — a constructor call per decline
+   would allocate inside the read hook for a message that never changes.
+   Returns the condition UNPROTECTED for the init caller to preserve. */
+SEXP mizu_cond_python_payload(void) {
+  return mizu_cond_msg(
+    "mizu_error_python_payload", NULL, 0,
+    "mizu: Python payload (no codec interop) - send R values from a mizu peer"
+  );
 }
 
 /* A plain error, not a classed one: a foreign payload is misuse of the

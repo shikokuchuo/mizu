@@ -155,8 +155,8 @@ mizu_channel <- function(
 #'
 #' From a non-R peer, only vectors and strings are legal payloads. Anything
 #' else (a pymizu codec stream or a pickle) is declined: the receive raises
-#' a "Python payload" error. The declined message is consumed, so the
-#' channel keeps flowing.
+#' a classed `mizu_error_python_payload` error (see [mizu_error]). The
+#' declined message is consumed, so the channel keeps flowing.
 #'
 #' @param ch a channel handle from [mizu_channel()] (or the `ch` binding
 #'   inside a peer expression).

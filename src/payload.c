@@ -264,9 +264,10 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
    read_fn then propagates by returning NULL); the view tiers open their own
    split mappings through the R-side cache zoc (ctx->binding_ctx). A foreign
    (Python) stream on a serialize tier: with consume_foreign (the channel)
-   set saw_foreign and fail the read with MIZU_READ_CONSUME, so the slot is
-   consumed before the veneer raises; without it (the pool) raise in place —
-   a pool is R-only, so a foreign stream there is corruption. */
+   stash the interned decline condition on the handle and fail the read with
+   MIZU_READ_CONSUME, so the slot is consumed before the veneer signals it;
+   without it (the pool) raise in place — a pool is R-only, so a foreign
+   stream there is corruption. */
 SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
                        uint32_t inline_max, mizu_read_ctx *ctx,
                        int consume_foreign) {
@@ -297,8 +298,7 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
       return mizu_codec_read(payload, hdr->len);
     if (mizu_is_python_payload(payload, hdr->len)) {
       if (consume_foreign) {
-        ((mizu_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-        ctx->flags |= MIZU_READ_CONSUME;
+        mizu_decline_foreign(ctx);
         return NULL;
       }
       mizu_stop_python_payload();
@@ -352,8 +352,7 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
       return mizu_codec_read(stream, len);
     if (mizu_is_python_payload(stream, len)) {
       if (consume_foreign) {
-        ((mizu_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-        ctx->flags |= MIZU_READ_CONSUME;
+        mizu_decline_foreign(ctx);
         return NULL;
       }
       mizu_stop_python_payload();

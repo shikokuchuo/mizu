@@ -35,6 +35,10 @@
 #' * `mizu_error_shm` — shared-memory region create or open failure
 #'   anywhere on the surface. Field `bytes`: the requested size of a
 #'   region that was not created, `NA` when a region was not opened.
+#' * `mizu_error_python_payload` — [mizu_recv()] or [mizu_recv_batch()]
+#'   on a channel message written by a Python peer that R cannot read
+#'   back (only vectors and strings cross). The declined message is
+#'   consumed, so the channel keeps flowing.
 #'
 #' Errors of misuse (unnamed task arguments, out-of-range slots, operations
 #' on a closed handle) stay plain errors: the classed hierarchy covers the
@@ -76,7 +80,7 @@
 #' cannot be named in `dropped_fields` and is dropped silently.
 #'
 #' @name mizu_error
-#' @aliases mizu_error_submit_timeout mizu_error_slots_exhausted mizu_error_stopped mizu_error_cancelled mizu_error_worker_died mizu_error_startup mizu_error_shm
+#' @aliases mizu_error_submit_timeout mizu_error_slots_exhausted mizu_error_stopped mizu_error_cancelled mizu_error_worker_died mizu_error_startup mizu_error_shm mizu_error_python_payload
 NULL
 
 # Raise a classed mizu error — class c(subclass, "mizu_error", "error",

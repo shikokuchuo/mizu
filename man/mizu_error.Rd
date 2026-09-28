@@ -9,6 +9,7 @@
 \alias{mizu_error_worker_died}
 \alias{mizu_error_startup}
 \alias{mizu_error_shm}
+\alias{mizu_error_python_payload}
 \title{Error Conditions}
 \description{
 Terminal failures that a caller can act on programmatically are raised
@@ -47,6 +48,10 @@ section of \code{\link[=mizu_map]{mizu_map()}}).
 \item \code{mizu_error_shm} — shared-memory region create or open failure
 anywhere on the surface. Field \code{bytes}: the requested size of a
 region that was not created, \code{NA} when a region was not opened.
+\item \code{mizu_error_python_payload} — \code{\link[=mizu_recv]{mizu_recv()}} or \code{\link[=mizu_recv_batch]{mizu_recv_batch()}}
+on a channel message written by a Python peer that R cannot read
+back (only vectors and strings cross). The declined message is
+consumed, so the channel keeps flowing.
 }
 
 Errors of misuse (unnamed task arguments, out-of-range slots, operations

@@ -70,8 +70,8 @@ Python.
 
 From a non-R peer, only vectors and strings are legal payloads. Anything
 else (a pymizu codec stream or a pickle) is declined: the receive raises
-a "Python payload" error. The declined message is consumed, so the
-channel keeps flowing.
+a classed \code{mizu_error_python_payload} error (see \link{mizu_error}). The
+declined message is consumed, so the channel keeps flowing.
 }
 \examples{
 ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))

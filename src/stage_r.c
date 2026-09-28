@@ -142,10 +142,10 @@ void mizu_vec_sink(void *ctx, size_t i, void *obj) {
    else defers to the shared payload reader (ctx carries the handle's open
    cache and the R-side view cache). Returns the object, or NULL with
    ctx->gone set on a vanished out-of-line region. A foreign (Python) stream
-   sets the handle's saw_foreign and fails the read with MIZU_READ_CONSUME,
-   so the core consumes the slot before the recv veneer raises on the flag —
-   a plain failure here would leave the slot in place and wedge the ring
-   behind it. */
+   stashes the interned decline condition on the handle and fails the read
+   with MIZU_READ_CONSUME, so the core consumes the slot before the recv
+   veneer signals the record — a plain failure here would leave the slot in
+   place and wedge the ring behind it. */
 void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
                           const unsigned char *payload, size_t limit,
                           mizu_read_ctx *ctx) {
@@ -154,8 +154,7 @@ void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
     if (payload[0] == MIZU_CODEC_MAGIC)
       return (void *) mizu_codec_read(payload, limit);
     if (mizu_is_python_payload(payload, limit)) {
-      ((mizu_r_handle *) ctx->binding_ctx)->saw_foreign = 1;
-      ctx->flags |= MIZU_READ_CONSUME;
+      mizu_decline_foreign(ctx);
       return NULL;
     }
     return (void *) mizu_view_unserialize_from((unsigned char *) payload, limit);

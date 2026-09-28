@@ -46,8 +46,8 @@ typedef struct mizu_zc_cache_s {
    (a mizu_channel or mizu_pool) is opaque; everything R-side rides here: the
    prot chain (GC-visible slots) and the zc view cache — keyed on SEXP views,
    so it cannot live in the R-free core. Channel prot: [0] zoc wraps,
-   [1] pin chain. Pool prot: [0] eval env, [1] trace fn, [2] map cache,
-   [3] zoc wraps, [4] pin chain. */
+   [1] pin chain, [2] decline record. Pool prot: [0] eval env, [1] trace fn,
+   [2] map cache, [3] zoc wraps, [4] pin chain. */
 typedef struct mizu_r_handle_s {
   mizu_handle *core;         /* the core handle; NULL after destroy */
   SEXP prot;                /* the extptr's prot chain */
@@ -55,10 +55,11 @@ typedef struct mizu_r_handle_s {
                                the current-pool accessor; NULL on channels */
   long self_pid;            /* fork guard */
   int role;                 /* pool: MIZU_ROLE_*; channel: -1 */
-  int saw_foreign;          /* channel: a read flagged a foreign payload */
   int exec_fail;            /* pool, test-only: fail the next task-frame
                                decode (mizu_pool_exec_fail) */
   int pin_slot;             /* prot slot of the pin chain */
+  int decline_slot;         /* channel: prot slot of the decline record (a
+                               stashed condition, R_NilValue when empty) */
   uint32_t pins_dead;       /* tombstoned pin cells awaiting splice */
   uint32_t pins_total;      /* pin chain length (live + dead) */
   mizu_zc_cache zoc;        /* the R-side zc view cache */
@@ -135,9 +136,10 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
    payload as an ALTREP view. ctx carries the handle's open cache (via
    mizu_read_region) and the R-side view cache; a vanished out-of-line region
    sets ctx->gone and the read returns NULL. A foreign (Python) stream on a
-   serialize tier: with consume_foreign (the channel), sets the handle's
-   saw_foreign and fails the read with MIZU_READ_CONSUME, so the slot is
-   consumed before the veneer raises; without it (the pool), raises. */
+   serialize tier: with consume_foreign (the channel), stash the interned
+   decline condition on the handle and fail the read with MIZU_READ_CONSUME,
+   so the slot is consumed before the veneer signals it; without it (the
+   pool), raise in place. */
 SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
                        uint32_t inline_max, mizu_read_ctx *ctx,
                        int consume_foreign);
@@ -150,6 +152,21 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
 static inline int mizu_is_python_payload(const unsigned char *p, size_t n) {
   return n >= 1 &&
     (p[0] == MIZU_PYMIZU_CODEC_MAGIC || (n >= 2 && p[0] == 0x80 && p[1] >= 2));
+}
+
+/* The interned foreign-payload decline condition (condition.c; preserved
+   at load): the general decline record a consumed read failure hands the
+   veneer through the handle's prot slot. */
+extern SEXP mizu_decline_python;
+
+/* The channel's foreign-payload decline: stash the interned condition on
+   the handle's decline slot (SET_VECTOR_ELT, no allocation) and consume
+   the slot — the recv veneer signals the record ahead of chan_raise, and
+   the core records nothing for a consumed read. */
+static inline void mizu_decline_foreign(mizu_read_ctx *ctx) {
+  mizu_r_handle *rh = (mizu_r_handle *) ctx->binding_ctx;
+  SET_VECTOR_ELT(rh->prot, rh->decline_slot, mizu_decline_python);
+  ctx->flags |= MIZU_READ_CONSUME;
 }
 
 // Zero-copy payload tiers (zc.c) ---------------------------------------------------
@@ -197,6 +214,7 @@ NORET void mizu_stop_shm(double bytes, const char *fmt, ...)
 NORET void mizu_stop_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
 NORET void mizu_stop_python_payload(void) MIZU_COLD;
+SEXP mizu_cond_python_payload(void);
 NORET void mizu_cond_signal(SEXP cond);
 SEXP mizu_cond_set_index(SEXP cond, int index);
 SEXP mizu_caught(SEXP cond);

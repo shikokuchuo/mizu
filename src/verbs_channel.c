@@ -12,6 +12,7 @@
 static SEXP mizu_chan_tag;
 static SEXP mizu_class_channel;
 SEXP mizu_sent_full, mizu_sent_timeout, mizu_sent_closed, mizu_sent_gone;
+SEXP mizu_decline_python;
 
 static SEXP mizu_make_sentinel(const char *value, const char *cls) {
   SEXP s = PROTECT(Rf_mkString(value));
@@ -34,9 +35,13 @@ void mizu_channel_init(void) {
   mizu_sent_timeout = mizu_make_sentinel("timeout", "mizu_timeout");
   mizu_sent_closed = mizu_make_sentinel("closed", "mizu_closed");
   mizu_sent_gone = mizu_make_sentinel("peer_gone", "mizu_peer_gone");
+  mizu_decline_python = PROTECT(mizu_cond_python_payload());
+  R_PreserveObject(mizu_decline_python);
+  UNPROTECT(1);
 }
 
 void mizu_channel_fini(void) {
+  R_ReleaseObject(mizu_decline_python);
   R_ReleaseObject(mizu_sent_gone);
   R_ReleaseObject(mizu_sent_closed);
   R_ReleaseObject(mizu_sent_timeout);
@@ -81,14 +86,15 @@ static void chan_binding(mizu_r_handle *h, mizu_binding *b) {
 }
 
 /* Build the extptr around a created/attached core handle: the prot chain
-   ([0] the zc view cache's wrap table, [1] the pin chain) and the
-   finalizer. */
+   ([0] the zc view cache's wrap table, [1] the pin chain, [2] the decline
+   record) and the finalizer. */
 static SEXP chan_wrap(mizu_r_handle *h) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 2));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 3));
   SET_VECTOR_ELT(prot, 0, Rf_allocVector(VECSXP, MIZU_OPEN_CACHE_MAX));
   h->zoc.wraps = VECTOR_ELT(prot, 0);
   h->prot = prot;
   h->pin_slot = 1;
+  h->decline_slot = 2;
   SEXP xp = PROTECT(R_MakeExternalPtr(h, mizu_chan_tag, prot));
   R_RegisterCFinalizerEx(xp, mizu_chan_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, mizu_class_channel);
@@ -329,14 +335,17 @@ SEXP mizu_channel_send_batch_call(SEXP xp, SEXP xs) {
 SEXP mizu_channel_recv_call(SEXP xp, SEXP timeout) {
   mizu_r_handle *h = chan_get(xp);
   mizu_channel *c = (mizu_channel *) h->core;
-  h->saw_foreign = 0;
+  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   void *obj = NULL;
   mizu_status st = mizu_channel_recv(c, &obj, mizu_timeout_ms(Rf_asReal(timeout)));
-  /* the read hook flags a foreign payload on the handle and fails the read
-     with MIZU_READ_CONSUME: the slot is already consumed, so the informative
-     error costs the message, not the channel */
+  /* a declining read hook stashes its condition on the handle and fails the
+     read with MIZU_READ_CONSUME: the slot is already consumed, so the
+     informative error costs the message, not the channel — and the core
+     records nothing for a consumed read, so chan_raise would format a stale
+     or blank record */
   if (st == MIZU_ERR) {
-    if (h->saw_foreign) mizu_stop_python_payload();
+    SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
+    if (decline != R_NilValue) mizu_cond_signal(decline);   /* no return */
     chan_raise(c);
   }
   if (st != MIZU_OK) return status_sentinel(st);
@@ -354,17 +363,18 @@ SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   if (n < 1) Rf_error("mizu: n must be at least 1");
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
   size_t count = 0;
-  h->saw_foreign = 0;
+  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st = mizu_channel_recv_batch_fn(c, (size_t) n, &count,
                                             mizu_vec_sink, out,
                                             mizu_timeout_ms(Rf_asReal(timeout)));
-  /* a foreign payload in the batch: the read hook flags the handle and its
-     slot is consumed (MIZU_READ_CONSUME), so the informative error costs the
-     message, not the channel */
+  /* a declining read in the batch: the stashed condition rides the handle
+     and its slot is consumed (MIZU_READ_CONSUME), so the informative error
+     costs the message, not the channel */
   if (st == MIZU_ERR) {
-    if (h->saw_foreign) {
+    SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
+    if (decline != R_NilValue) {
       UNPROTECT(1);
-      mizu_stop_python_payload();
+      mizu_cond_signal(decline);   /* no return */
     }
     chan_raise(c);
   }
