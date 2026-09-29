@@ -1,5 +1,5 @@
 Package: mizu
-Title: Lock-Free Shared-Memory Channels and Task Pools
+Title: Lock-Free Shared-Memory Parallelism for R
 Version: 0.0.0.9000
 Authors@R: c(
     person("Charlie", "Gao", , "charlie.gao@posit.co", role = c("aut", "cre"),

@@ -4,7 +4,7 @@
 \name{mizu-package}
 \alias{mizu}
 \alias{mizu-package}
-\title{mizu: Lock-Free Shared-Memory Channels and Task Pools}
+\title{mizu: Lock-Free Shared-Memory Parallelism for R}
 \description{
 Parallel computation and data exchange between R processes on the same
 machine. Lock-free channels and work-stealing task pools over 'POSIX'

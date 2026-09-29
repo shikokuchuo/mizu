@@ -1,4 +1,4 @@
-#' mizu: Lock-Free Shared-Memory Channels and Task Pools
+#' mizu: Lock-Free Shared-Memory Parallelism for R
 #'
 #' Parallel computation and data exchange between R processes on the same
 #' machine. Lock-free channels and work-stealing task pools over 'POSIX'
