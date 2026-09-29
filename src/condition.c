@@ -157,7 +157,7 @@ SEXP mizu_cond_python_payload(void) {
    channel, not a transport state. */
 NORET void mizu_stop_python_payload(void) {
   Rf_error(
-    "mizu: Python payload (no codec interop) - send R values from an mizu peer"
+    "mizu: Python payload (no codec interop) - send R values from a mizu peer"
   );
 }
 

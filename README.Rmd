@@ -29,9 +29,9 @@ knitr::opts_chunk$set(
  \/_______/
 ```
 
-mizu is the R binding to [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
+mizu makes communication between R processes cheap enough to divide work at granularities usually reserved for threads.
 
-Parallel computation and data exchange between R processes: channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
+Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
 
 A channel is a two-way message link between an R session and a helper process that it spawns.
 A pool is a set of worker processes that divide submitted tasks among themselves.
@@ -39,8 +39,11 @@ In both, one process writes data and the other reads it in place — never copie
 
 The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
 
-R evaluates code on a single thread, so parallelism in R means multiple processes.
-mizu makes the communication between these processes cheap enough that you can divide work at granularities usually reserved for threads.
+mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
+[pymizu](https://github.com/shikokuchuo/pymizu) binds the same core for Python, so R and Python can talk to each other.
+
+Pre-release.
+The API is not stable and may change at any time before a release.
 
 ## Installation
 
@@ -103,7 +106,7 @@ mizu_pool_stop(p)
 
 ## Benchmarks
 
-Headline numbers against mirai (M4 Pro, from `dev/bench/mizu-mirai-bench.R`):
+Communication overhead against mirai on one machine (M4 Pro, from `dev/bench/mizu-mirai-bench.R`):
 
 | Benchmark | mizu | mirai | Speedup |
 |---|---|---|---|
@@ -111,6 +114,9 @@ Headline numbers against mirai (M4 Pro, from `dev/bench/mizu-mirai-bench.R`):
 | Pipelined throughput, 1 worker | 833,000 tasks/s | 9,700 tasks/s | 86x |
 | 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
 | Parallel map of 2,000 ~10 µs tasks, 4 workers | 5.0 ms | 218 ms | 44x |
+
+These rows measure communication overhead, the cost mizu is built to remove.
+mirai also covers workers on remote machines and HPC clusters, which shared memory cannot reach.
 
 ## Python interop
 
