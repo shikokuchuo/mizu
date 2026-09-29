@@ -23,6 +23,21 @@ test_that("a Python peer echoes vectors and strings across the tiers", {
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a Python peer echoes a view by reference", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- runif(2e5)
+  mizu_send(ch, x)
+  y <- mizu_recv(ch, 30)
+  expect_true(.Call(mizu:::mizu_zc_view_check, y))
+  expect_identical(.Call(mizu:::mizu_zc_refcount, y)[[2L]] %% 2L, 1L)
+  expect_identical(y, x)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("a foreign payload is declined and consumed, not wedging the ring", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
