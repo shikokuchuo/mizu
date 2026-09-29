@@ -194,8 +194,45 @@ void mizu_view_set_wire_hooks(mizu_view_emit_hook_fn emit, mizu_view_resolve_hoo
 typedef mizu_shm *(*mizu_view_open_hook_fn)(const char *name);
 void mizu_view_set_open_hook(mizu_view_open_hook_fn hook);
 
-// Alignment macro -------------------------------------------------------------
+// Alignment macro and the MIZS string block geometry -------------------------
 
 #define MIZU_VIEW_ALIGN64(x) (((x) + 63) & ~(size_t)63)
+
+/* The string block: the body of an MIZS region (at byte 64) and the form of
+   an MIZL STRSXP leaf (at its directory entry's data_offset). For n strings,
+   four sections, each 64-byte aligned from the block start:
+
+     validity   ceil(n / 8) bytes — a bitmap, LSB first (bit i of byte i / 8):
+                set = present, clear = NA_STRING
+     offsets    (n + 1) int64 — offsets[0] = 0, non-decreasing; string i is
+                data[offsets[i], offsets[i + 1]) and an NA spans zero bytes
+     encoding   n uint8 — the cetype_t of each string (CE_NATIVE, CE_UTF8,
+                CE_LATIN1 or CE_BYTES); 0 for an NA
+     data       offsets[n] bytes — the packed string bytes, no terminators
+
+   validity, offsets and data are Arrow large_utf8's three buffers verbatim,
+   so a consumer that has checked every encoding byte is UTF-8-compatible can
+   hand the block to an Arrow reader without a copy; the encoding section is
+   the R addition (a per-CHARSXP mark Arrow has no home for). Every writer,
+   reader and size oracle takes the section offsets from this one function. */
+typedef struct mizu_view_str_geom_s {
+  size_t validity;
+  size_t offsets;
+  size_t encoding;
+  size_t data;      /* also the size of everything before the string bytes */
+} mizu_view_str_geom;
+
+static inline mizu_view_str_geom mizu_view_str_geometry(size_t n) {
+  mizu_view_str_geom g;
+  g.validity = 0;
+  g.offsets  = MIZU_VIEW_ALIGN64((n + 7) / 8);
+  g.encoding = g.offsets + MIZU_VIEW_ALIGN64(8 * (n + 1));
+  g.data     = g.encoding + MIZU_VIEW_ALIGN64(n);
+  return g;
+}
+
+static inline int mizu_view_str_valid(const unsigned char *validity, size_t i) {
+  return (validity[i >> 3] >> (i & 7)) & 1;
+}
 
 #endif /* MIZU_VIEW_H */

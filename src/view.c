@@ -1,3 +1,4 @@
+#include <limits.h>
 #include <stdlib.h>
 #include "view.h"
 
@@ -45,15 +46,6 @@ typedef struct {
 /* S4 flag riding a directory entry's sexptype: SEXPTYPEs are small
    positive values, so bit 30 is free. Set at write, masked off at read. */
 #define MIZU_VIEW_ELEM_S4 0x40000000
-
-/* ALTSTRING offset table entry (16 bytes per string).
-   str_length < 0 sentinel means NA_STRING.
-   str_encoding is a cetype_t. */
-typedef struct {
-  int64_t str_offset;
-  int32_t str_length;
-  int32_t str_encoding;
-} mizu_view_str_entry;
 
 // SHM eligibility: any atomic vector (attributes stored separately) ---------
 
@@ -409,9 +401,8 @@ SEXP mizu_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
 // ALTSTRING methods -----------------------------------------------------------
 
 /*
- * String entry in offset table (16 bytes per string):
- *   str_offset(int64) + str_length(int32) + str_encoding(int32)
- * str_length < 0 means NA_STRING.
+ * The string block (view.h, mizu_view_str_geometry): validity bitmap,
+ * (n + 1) int64 offsets, n encoding bytes, then the packed string bytes.
  *
  * Layout:
  *   data1 = extptr (tag = mizu_view_owned_tag, addr = mizu_view_str *)
@@ -422,28 +413,31 @@ SEXP mizu_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
 
 typedef struct {
   mizu_view_owned owned;
-  const unsigned char *table;
+  const unsigned char *validity;
+  const unsigned char *offsets;
+  const unsigned char *encoding;
   const unsigned char *data;
   R_xlen_t length;
-  int64_t str_bytes;  /* size of the packed string area; bounds each entry */
+  int64_t str_bytes;  /* size of the packed string area; bounds each span */
   int32_t index;   /* -1 = standalone, >= 0 = element of ALTLIST */
 } mizu_view_str;
 
 static inline SEXP mizu_view_string_elt_shm(mizu_view_str *s, R_xlen_t i) {
-  mizu_view_str_entry e;
-  memcpy(&e, s->table + sizeof(mizu_view_str_entry) * (size_t) i,
-         sizeof(mizu_view_str_entry));
+  if (!mizu_view_str_valid(s->validity, (size_t) i)) return NA_STRING;
 
-  if (e.str_length < 0) return NA_STRING;
+  int64_t lo, hi;
+  memcpy(&lo, s->offsets + 8 * (size_t) i, 8);
+  memcpy(&hi, s->offsets + 8 * ((size_t) i + 1), 8);
+  unsigned enc = s->encoding[i];
 
-  /* Bounds-check the entry against the packed string area before reading */
-  if (e.str_offset < 0 ||
-      e.str_offset > s->str_bytes - (int64_t) e.str_length ||
-      e.str_encoding < CE_NATIVE || e.str_encoding > CE_BYTES)
+  /* Bounds-check the span against the packed string area before reading;
+     a CHARSXP holds at most INT_MAX bytes. */
+  if (lo < 0 || hi < lo || hi > s->str_bytes || hi - lo > INT_MAX ||
+      enc > CE_BYTES)
     Rf_error("mizu: invalid string data");
 
-  return Rf_mkCharLenCE((const char *) (s->data + e.str_offset),
-                        e.str_length, (cetype_t) e.str_encoding);
+  return Rf_mkCharLenCE((const char *) (s->data + lo), (int) (hi - lo),
+                        (cetype_t) enc);
 }
 
 static R_xlen_t mizu_view_string_Length(SEXP x) {
@@ -498,22 +492,28 @@ static SEXP mizu_view_string_Duplicate(SEXP x, Rboolean deep) {
   return result;
 }
 
-/* region_base: points to the offset table. data_size: bytes available for
-   the table, alignment padding, and packed strings (the caller excludes any
-   trailing attributes) — the table must fit within it, and the remainder is
-   recorded as str_bytes to bound each offset-table entry at Elt time.
+/* region_base: points to the string block. data_size: bytes available for
+   the block (the caller excludes any trailing attributes) — the sections
+   ahead of the string bytes must fit within it, and the remainder is
+   recorded as str_bytes to bound each offset span at Elt time. The two end
+   offsets are checked here, in O(1); every span is checked as it is read.
    keeper: SEXP kept alive via the extptr's protected slot (parent SHM). */
 SEXP mizu_view_str_wrap(const unsigned char *region_base, R_xlen_t n,
                    int64_t data_size, SEXP keeper,
                    mizu_view_release_fn release, void *release_arg) {
 
-  if (n < 0 || data_size < 0 ||
-      n > data_size / (R_xlen_t) sizeof(mizu_view_str_entry))
+  /* n bounded by the offsets section alone keeps the geometry overflow-free */
+  if (n < 0 || data_size < 0 || n > data_size / 8)
     Rf_error("mizu: invalid string data");
 
-  size_t table_size = sizeof(mizu_view_str_entry) * (size_t) n;
-  size_t aligned = MIZU_VIEW_ALIGN64(table_size);
-  if (aligned > (size_t) data_size)
+  mizu_view_str_geom g = mizu_view_str_geometry((size_t) n);
+  if (g.data > (size_t) data_size)
+    Rf_error("mizu: invalid string data");
+
+  int64_t str_bytes = data_size - (int64_t) g.data, first, last;
+  memcpy(&first, region_base + g.offsets, 8);
+  memcpy(&last, region_base + g.offsets + 8 * (size_t) n, 8);
+  if (first != 0 || last < 0 || last > str_bytes)
     Rf_error("mizu: invalid string data");
 
   mizu_view_str *s = malloc(sizeof(mizu_view_str));
@@ -521,10 +521,12 @@ SEXP mizu_view_str_wrap(const unsigned char *region_base, R_xlen_t n,
 
   s->owned.release = release;
   s->owned.release_arg = release_arg;
-  s->table = region_base;
-  s->data = region_base + aligned;
+  s->validity = region_base + g.validity;
+  s->offsets = region_base + g.offsets;
+  s->encoding = region_base + g.encoding;
+  s->data = region_base + g.data;
   s->length = n;
-  s->str_bytes = data_size - (int64_t) aligned;
+  s->str_bytes = str_bytes;
   s->index = -1;
 
   SEXP ptr = PROTECT(R_MakeExternalPtr(s, mizu_view_owned_tag, keeper));
@@ -612,6 +614,11 @@ static SEXP mizu_view_unwrap_element(unsigned char *base, int64_t region_size,
  *   Bytes 32-35: uint32_t flags (bit 0: S4 object bit)
  *   Bytes 36-63: reserved (zero)
  *   Byte 64+:    element directory (32 bytes per element)
+ *   Then the element data, each entry's data_offset 64-byte aligned: bare
+ *   element bytes (an atomic leaf), a string block (a STRSXP leaf — view.h,
+ *   mizu_view_str_geometry), a nested MIZL (a VECSXP) or an R_Serialize
+ *   stream (sexptype 0); a leaf's attrs blob trails its data (the last
+ *   attrs_size bytes of data_size).
  */
 
 /* Validate a MIZL region and return a freshly allocated owned-tag extptr
@@ -898,51 +905,47 @@ static SEXP mizu_view_open_consumer(const char *name) {
 
 // String write helper (shared by standalone and list paths) -------------------
 
-/* Returns total bytes written (including alignment padding). */
+/* Writes the string block for x at dest (view.h documents the form).
+   Returns total bytes written (including alignment padding). */
 static size_t mizu_view_write_strings(unsigned char *dest, SEXP x) {
   R_xlen_t n = XLENGTH(x);
-  size_t table_size = sizeof(mizu_view_str_entry) * (size_t) n;
-  size_t data_start = MIZU_VIEW_ALIGN64(table_size);
+  mizu_view_str_geom g = mizu_view_str_geometry((size_t) n);
+  unsigned char *validity = dest + g.validity;
+  unsigned char *offsets = dest + g.offsets;
+  unsigned char *encoding = dest + g.encoding;
+  unsigned char *data = dest + g.data;
 
-  /* Zero-fill alignment gap */
-  if (data_start > table_size)
-    memset(dest + table_size, 0, data_start - table_size);
+  /* Everything ahead of the string bytes starts zeroed: a clear validity
+     bit and a zero encoding byte are the NA form, and the alignment gaps
+     carry nothing an embedder's region reuse could leave stale. The
+     offsets are then written in full (offsets[0] is the zero). */
+  memset(dest, 0, g.data);
 
-  size_t cur = 0;
+  int64_t cur = 0;
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP elt = STRING_ELT(x, i);
-    unsigned char *tbl = dest + sizeof(mizu_view_str_entry) * (size_t) i;
-    mizu_view_str_entry e;
-
-    if (elt == NA_STRING) {
-      e.str_offset = 0;
-      e.str_length = -1;
-      e.str_encoding = 0;
-    } else {
-      int32_t slen = (int32_t) LENGTH(elt);
-      e.str_offset = (int64_t) cur;
-      e.str_length = slen;
-      e.str_encoding = (int32_t) Rf_getCharCE(elt);
-      memcpy(dest + data_start + cur, CHAR(elt), (size_t) slen);
-      cur += (size_t) slen;
+    if (elt != NA_STRING) {
+      size_t slen = (size_t) LENGTH(elt);
+      memcpy(data + cur, CHAR(elt), slen);
+      cur += (int64_t) slen;
+      validity[i >> 3] |= (unsigned char) (1u << (i & 7));
+      encoding[i] = (unsigned char) Rf_getCharCE(elt);
     }
-
-    memcpy(tbl, &e, sizeof(mizu_view_str_entry));
+    memcpy(offsets + 8 * ((size_t) i + 1), &cur, 8);
   }
 
-  return data_start + cur;
+  return g.data + (size_t) cur;
 }
 
 static size_t mizu_view_string_data_size(SEXP x) {
   R_xlen_t n = XLENGTH(x);
-  size_t table_size = sizeof(mizu_view_str_entry) * (size_t) n;
   size_t str_bytes = 0;
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP elt = STRING_ELT(x, i);
     if (elt != NA_STRING)
       str_bytes += (size_t) LENGTH(elt);
   }
-  return MIZU_VIEW_ALIGN64(table_size) + str_bytes;
+  return mizu_view_str_geometry((size_t) n).data + str_bytes;
 }
 
 // .Call entry points: host-side SHM creation ---------------------------------
@@ -1169,7 +1172,20 @@ static void mizh_write(unsigned char *base, SEXP x) {
   memcpy(base + MIZU_VIEW_FLAGS_OFF, &flags, 4);
 }
 
-/* MIZS layout size: 64-byte header + offset table + packed strings + attrs. */
+/*
+ * MIZS region layout:
+ *   Bytes 0-3:   uint32_t magic (MIZU_MAGIC_STR, "MIZS")
+ *   Bytes 4-7:   int32_t  attrs_size
+ *   Bytes 8-15:  int64_t  n (string count)
+ *   Bytes 16-23: int64_t  str_size (the string block's byte size)
+ *   Bytes 24-31: reserved (zero) — embedder cross-process state
+ *   Bytes 32-35: uint32_t flags (bit 0: S4 object bit)
+ *   Bytes 36-63: reserved (zero)
+ *   Byte 64+:    the string block (view.h, mizu_view_str_geometry), then
+ *                the attrs blob at 64 + str_size
+ */
+
+/* MIZS layout size: 64-byte header + string block + attrs. */
 static size_t mizs_size(SEXP x) {
   SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
   size_t attrs_size = (attrs != R_NilValue) ? mizu_view_serialize_count(attrs) : 0;
@@ -1177,8 +1193,8 @@ static size_t mizs_size(SEXP x) {
   return MIZU_HEADER_SIZE + mizu_view_string_data_size(x) + attrs_size;
 }
 
-/* MIZS write: header (reserved bytes zeroed) + string data + attrs. The
-   string write reports the exact data size, so no separate sizing walk;
+/* MIZS write: header (reserved bytes zeroed) + string block + attrs. The
+   block write reports its exact size, so no separate sizing walk;
    header fields are written last, once both sizes are known. */
 static void mizs_write(unsigned char *base, SEXP x) {
 

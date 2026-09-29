@@ -252,3 +252,25 @@ pool_end <- function(p) {
   }
   .Call(mizu:::mizu_pool_destroy, p[["ctrl"]])
 }
+
+# Byte-level access to the region behind a root view, for layout tests:
+# view_peek(x) opens the region read-only and returns a reader of
+# (offset, n) -> raw. i64v() decodes little-endian int64 words whose high
+# halves are zero (layout counts and offsets are small); align64() is the
+# layouts' section alignment.
+view_peek <- function(x) {
+  rg <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, x),
+    FALSE
+  )
+  function(offset, n) .Call(mizu:::mizu_peek, rg, offset, n)
+}
+
+i64v <- function(r) {
+  w <- readBin(r, "integer", n = length(r) / 4, size = 4, endian = "little")
+  stopifnot(all(w[c(FALSE, TRUE)] == 0L))
+  as.numeric(w[c(TRUE, FALSE)])
+}
+
+align64 <- function(b) (b + 63) %/% 64 * 64

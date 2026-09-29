@@ -144,6 +144,7 @@ SEXP mizu_map_rng_install(SEXP);
 SEXP mizu_strip_srcref(SEXP);
 SEXP mizu_zc_view_check_call(SEXP);
 SEXP mizu_zc_refcount_call(SEXP);
+SEXP mizu_zc_view_name_call(SEXP);
 SEXP mizu_pool_zc_info(SEXP);
 
 static const R_CallMethodDef CallEntries[] = {
@@ -249,6 +250,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_strip_srcref",           (DL_FUNC) &mizu_strip_srcref,              1},
   {"mizu_zc_view_check",          (DL_FUNC) &mizu_zc_view_check_call,        1},
   {"mizu_zc_refcount",            (DL_FUNC) &mizu_zc_refcount_call,          1},
+  {"mizu_zc_view_name",           (DL_FUNC) &mizu_zc_view_name_call,         1},
   {"mizu_pool_zc_info",           (DL_FUNC) &mizu_pool_zc_info,              1},
   {NULL, NULL, 0}
 };

@@ -111,12 +111,13 @@ mizu_shm *mizu_zc_open(const char *name) {
 
 // Eligibility --------------------------------------------------------------------
 
-/* Lower bound on the MIZS layout size (header + offset table + packed
-   string bytes; attrs excluded): 64 + align64(16 per entry) + the CHARSXP
-   bytes. Walks string lengths only — no allocation, no serialize count. */
+/* Lower bound on the MIZS layout size (header + the string block's fixed
+   sections + packed string bytes; attrs excluded): 64 + the geometry's
+   data offset + the CHARSXP bytes. Walks string lengths only — no
+   allocation, no serialize count. */
 static size_t mizu_zc_str_probe(SEXP x) {
   R_xlen_t n = XLENGTH(x);
-  size_t total = MIZU_HEADER_SIZE + MIZU_ALIGN64(16 * (size_t) n);
+  size_t total = MIZU_HEADER_SIZE + mizu_view_str_geometry((size_t) n).data;
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP s = STRING_ELT(x, i);
     if (s != NA_STRING) total += (size_t) LENGTH(s);
@@ -578,6 +579,14 @@ SEXP mizu_zc_refcount_call(SEXP x) {
   INTEGER(out)[0] = (int) mizu_zc_refcount(shm);
   INTEGER(out)[1] = (int) mizu_zc_flags(shm);
   return out;
+}
+
+/* The identifier of the region behind a view — the region's own name for a
+   root view; NULL for anything else. Lets a test open the region and read
+   the layout bytes. */
+SEXP mizu_zc_view_name_call(SEXP x) {
+  if (!mizu_view_check(x)) return R_NilValue;
+  return mizu_view_shm_name(x);
 }
 
 /* c(free-list entries, lent-ledger entries) for a handle's spill state. */

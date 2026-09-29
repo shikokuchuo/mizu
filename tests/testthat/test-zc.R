@@ -309,6 +309,77 @@ test_that("string vectors cross as views (MORS), small ones copy", {
   channel_end(p)
 })
 
+test_that("the MIZS string block is Arrow large_utf8-shaped", {
+  p <- channel_pair(arena_size = 0)
+  lat <- iconv("caf\u00e9", "UTF-8", "latin1")
+  byt <- "\xff\xfe"
+  Encoding(byt) <- "bytes"
+  x <- c(rep("abc", 20000), NA_character_, "", lat, byt, "z") # past the floor
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  expect_identical(y, x)
+
+  n <- length(x)
+  peek <- view_peek(y)
+  hdr <- peek(0, 64)
+  expect_identical(readBin(hdr[1:4], "integer", endian = "little"), 0x4D495A53L)
+  expect_identical(i64v(hdr[9:16]), as.numeric(n))
+
+  # sections, each 64-byte aligned from the block start (byte 64)
+  off_offsets <- 64 + align64(ceiling(n / 8))
+  off_enc <- off_offsets + align64(8 * (n + 1))
+  off_data <- off_enc + align64(n)
+
+  bits <- as.integer(rawToBits(peek(64, ceiling(n / 8))))[seq_len(n)]
+  expect_identical(bits, as.integer(!is.na(x)))
+
+  offsets <- i64v(peek(off_offsets, 8 * (n + 1)))
+  expect_identical(offsets[[1L]], 0)
+  nbytes <- ifelse(is.na(x), 0L, nchar(x, "bytes"))
+  expect_identical(diff(offsets), as.numeric(nbytes))
+  expect_identical(i64v(hdr[17:24]), off_data - 64 + offsets[[n + 1L]])
+
+  ce <- c(unknown = 0L, `UTF-8` = 1L, latin1 = 2L, bytes = 3L)[Encoding(x)]
+  ce[is.na(x)] <- 0L
+  expect_identical(as.integer(peek(off_enc, n)), unname(ce))
+
+  expect_identical(
+    peek(off_data, offsets[[n + 1L]]),
+    unlist(lapply(x[!is.na(x)], charToRaw))
+  )
+  channel_end(p)
+})
+
+test_that("a string leaf in a list view carries the same string block", {
+  p <- channel_pair(arena_size = 0)
+  s <- c(paste0("s", 1:20000), NA_character_)
+  x <- list(a = runif(1000), s = s, e = character(0))
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  expect_identical(y, x)
+
+  n <- length(s)
+  peek <- view_peek(y)
+  entry <- peek(64 + 32, 32) # directory entry of element 2
+  data_offset <- i64v(entry[1:8])
+  expect_identical(readBin(entry[17:20], "integer", endian = "little"), 16L)
+  expect_identical(i64v(entry[25:32]), as.numeric(n))
+
+  bits <- as.integer(rawToBits(peek(data_offset, ceiling(n / 8))))[seq_len(n)]
+  expect_identical(bits, as.integer(!is.na(s)))
+  off_offsets <- data_offset + align64(ceiling(n / 8))
+  offsets <- i64v(peek(off_offsets, 8 * (n + 1)))
+  expect_identical(offsets[[1L]], 0)
+  expect_identical(offsets[[n + 1L]], as.numeric(sum(nchar(s[-n], "bytes"))))
+
+  empty <- peek(64 + 64, 32) # character(0): a 64-byte block, one zero offset
+  expect_identical(i64v(empty[9:16]), 64)
+  expect_identical(i64v(empty[25:32]), 0)
+  channel_end(p)
+})
+
 test_that("a held string view pins its region until GC", {
   p <- channel_pair(arena_size = 0)
   x <- paste0("s", 1:50000)
