@@ -1123,9 +1123,9 @@ size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
 
 // Reader ---------------------------------------------------------------------------
 
-static NORET void mizu_stop_interop(const char *fmt, ...)
+NORET static void mizu_stop_interop(const char *fmt, ...)
   R_PRINTF_FORMAT(1, 2);
-static NORET void mizu_stop_interop(const char *fmt, ...) {
+NORET static void mizu_stop_interop(const char *fmt, ...) {
   char buf[512];
   va_list ap;
   va_start(ap, fmt);
@@ -1136,7 +1136,7 @@ static NORET void mizu_stop_interop(const char *fmt, ...) {
 
 /* The cursor's error as the R error: the informative text rides the
    core's TLS record. */
-static NORET void ixr_stop_tls(void) {
+NORET static void ixr_stop_tls(void) {
   Rf_error("mizu: %s", mizu_last_error_message());
 }
 
@@ -1199,7 +1199,7 @@ static void ixr_dict_into(mizu_ix *cur, SEXP out, SEXP names, uint64_t n,
 // The attr shape builder ------------------------------------------------------------
 
 /* The class and attribute names for the no-home error. */
-static NORET void ixr_stop_no_home(SEXP attrs) {
+NORET static void ixr_stop_no_home(SEXP attrs) {
   SEXP keys = Rf_getAttrib(attrs, R_NamesSymbol);
   char msg[512];
   size_t off = (size_t) snprintf(msg, sizeof msg,

@@ -192,11 +192,11 @@ test_that("the decline set raises mizu_error_not_portable on a foreign handle", 
     mizu_send(p$host, ordered(c("a", "b"))),
     class = "mizu_error_not_portable"
   )
-  skip_if_not_installed("tibble")
-  expect_error(
-    mizu_send(p$host, tibble::tibble(x = 1:2)),
-    class = "mizu_error_not_portable"
+  tbl <- structure(
+    data.frame(x = 1:2),
+    class = c("tbl_df", "tbl", "data.frame")
   )
+  expect_error(mizu_send(p$host, tbl), class = "mizu_error_not_portable")
   bs <- "héllo"
   Encoding(bs) <- "bytes"
   expect_error(mizu_send(p$host, bs), class = "mizu_error_not_portable")

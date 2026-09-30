@@ -30,6 +30,12 @@
 #include <stdlib.h>
 #include "mizu.h"
 
+/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
+   earlier R, where ATTRIB() was still the sanctioned spelling. */
+#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
+#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
+#endif
+
 static SEXP mizu_rel_tag;      /* the release-record extptr */
 static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminus */
 

@@ -2,6 +2,12 @@
 #include <stdlib.h>
 #include "view.h"
 
+/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
+   earlier R, where ATTRIB() was still the sanctioned spelling. */
+#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
+#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
+#endif
+
 // Global ALTREP class handles and sentinel ------------------------------------
 
 static R_altrep_class_t mizu_view_list_class;
