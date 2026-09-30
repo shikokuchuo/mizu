@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="151fcae491aadb87f51976ebdb2796ec156ee332"  # libmizu: Leave fails an announced in-flight claim as DIED
+PIN="2699996731ea4dbaa82d77e137245b7c0cd1969b"  # libmizu: Cross-language phase 0: identity words, layout checks, validity section
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

@@ -43,10 +43,6 @@ typedef struct {
   int64_t length;
 } mizu_view_elem;
 
-/* S4 flag riding a directory entry's sexptype: SEXPTYPEs are small
-   positive values, so bit 30 is free. Set at write, masked off at read. */
-#define MIZU_VIEW_ELEM_S4 0x40000000
-
 // SHM eligibility: any atomic vector (attributes stored separately) ---------
 
 static inline int mizu_view_shm_eligible(int type) {
@@ -553,6 +549,8 @@ static SEXP mizu_view_unwrap_element(unsigned char *base, int64_t region_size,
 
   if (mizu_view_oob(data_offset, data_size, region_size))
     Rf_error("mizu: invalid element data");
+  if ((data_offset & 63) != 0)
+    Rf_error("mizu: invalid element data");   /* entries are 64-aligned */
   if (attrs_size < 0 || attrs_size > data_size)
     Rf_error("mizu: invalid element data");
 
@@ -649,7 +647,8 @@ static SEXP mizu_view_make_extptr(unsigned char *base, int64_t region_size,
   memcpy(&attrs_size, base + 16, 8);
 
   if (n < 0 || n > (region_size - MIZU_HEADER_SIZE) / 32 ||
-      mizu_view_oob(attrs_offset, attrs_size, region_size))
+      mizu_view_oob(attrs_offset, attrs_size, region_size) ||
+      !mizu_view_flags_known(base))
     Rf_error("mizu: invalid nested list region");
 
   mizu_view_list *v = malloc(sizeof(mizu_view_list));
@@ -1330,7 +1329,8 @@ static SEXP mizu_view_open_vector(SEXP shm_ptr) {
   if (region_size < MIZU_HEADER_SIZE || length < 0 || attrs_size < 0 ||
       (elt_size != 0 &&
        length > (region_size - MIZU_HEADER_SIZE) / (int64_t) elt_size) ||
-      attrs_size > region_size - MIZU_HEADER_SIZE - length * (int64_t) elt_size)
+      attrs_size > region_size - MIZU_HEADER_SIZE - length * (int64_t) elt_size ||
+      !mizu_view_flags_known(base))
     Rf_error("mizu: invalid or corrupted shared memory region");
 
   SEXP result = PROTECT(mizu_view_vec_wrap(
@@ -1364,7 +1364,8 @@ static SEXP mizu_view_open_string(SEXP shm_ptr) {
   if (region_size < MIZU_HEADER_SIZE || n < 0 || str_data_size < 0 ||
       attrs_size < 0 ||
       str_data_size > region_size - MIZU_HEADER_SIZE ||
-      attrs_size > region_size - MIZU_HEADER_SIZE - str_data_size)
+      attrs_size > region_size - MIZU_HEADER_SIZE - str_data_size ||
+      !mizu_view_flags_known(base))
     Rf_error("mizu: invalid or corrupted shared memory region");
 
   SEXP result = PROTECT(mizu_view_str_wrap(

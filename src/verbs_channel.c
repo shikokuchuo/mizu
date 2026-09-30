@@ -83,6 +83,7 @@ static void chan_binding(mizu_r_handle *h, mizu_binding *b) {
   b->check = mizu_r_check;
   b->drop = mizu_r_drop;
   b->ctx = h;
+  b->ident = MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL);
 }
 
 /* Build the extptr around a created/attached core handle: the prot chain

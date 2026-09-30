@@ -26,6 +26,10 @@
 #define MIZU_VIEW_FLAGS_OFF 32
 #define MIZU_VIEW_FLAG_S4 0x1u
 
+/* S4 flag riding an MIZL directory entry's sexptype: SEXPTYPEs are small
+   positive values, so bit 30 is free. Set at write, masked off at read. */
+#define MIZU_VIEW_ELEM_S4 0x40000000
+
 /* int64 wire tag: outside SEXPTYPE space. The core's MIZU_TYPE_INT64 — the
    vendored unit cannot name the enum constant (mori carries no mizu_type_e);
    the embedder _Static_asserts the pin. */
@@ -117,6 +121,15 @@ static inline SEXP mizu_view_apply_s4(SEXP x, const unsigned char *base) {
   uint32_t flags;
   memcpy(&flags, base + MIZU_VIEW_FLAGS_OFF, 4);
   return (flags & MIZU_VIEW_FLAG_S4) ? Rf_asS4(x, TRUE, 0) : x;
+}
+
+/* The [32-35] flags word is a format word: the S4 bit is the only assigned
+   bit, and a set bit the reader does not know rejects the region as
+   corrupt or newer. Mirrors the vendored core's layout checks. */
+static inline int mizu_view_flags_known(const unsigned char *base) {
+  uint32_t flags;
+  memcpy(&flags, base + MIZU_VIEW_FLAGS_OFF, 4);
+  return (flags & ~MIZU_VIEW_FLAG_S4) == 0;
 }
 
 // altrep.c --------------------------------------------------------------------
@@ -222,13 +235,15 @@ typedef struct mizu_view_str_geom_s {
   size_t data;      /* also the size of everything before the string bytes */
 } mizu_view_str_geom;
 
+/* The core's mizu_mizs_geometry owns the section arithmetic (vendored
+   mizu_ext.h); this wrapper keeps the embedder-local types. */
 static inline mizu_view_str_geom mizu_view_str_geometry(size_t n) {
-  mizu_view_str_geom g;
-  g.validity = 0;
-  g.offsets  = MIZU_VIEW_ALIGN64((n + 7) / 8);
-  g.encoding = g.offsets + MIZU_VIEW_ALIGN64(8 * (n + 1));
-  g.data     = g.encoding + MIZU_VIEW_ALIGN64(n);
-  return g;
+  mizu_mizs_geom g = mizu_mizs_geometry((int64_t) n);
+  mizu_view_str_geom v = {
+    (size_t) g.validity, (size_t) g.offsets, (size_t) g.encoding,
+    (size_t) g.data
+  };
+  return v;
 }
 
 static inline int mizu_view_str_valid(const unsigned char *validity, size_t i) {

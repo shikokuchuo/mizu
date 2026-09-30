@@ -14,8 +14,6 @@
 #include <stdlib.h>
 #include "mizu.h"
 
-#define MIZU_MAP_MAGIC 0x4D495A4Du   /* "MIZM" — this binding's morsel tag */
-
 static SEXP mizu_map_tag;
 static SEXP mizu_rs_sym;
 SEXP mizu_srcref_sym;
@@ -187,7 +185,7 @@ SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   }
 
   mizu_morsel_hdr h;
-  uint64_t size = mizu_morsel_layout(&h, MIZU_MAP_MAGIC, n, morsel_size,
+  uint64_t size = mizu_morsel_layout(&h, n, morsel_size,
                                     desc_len, x_type, x_len, out_type, out_m,
                                     MIZU_MAX_WORKERS);
   /* the R-facing checks above pre-validate the geometry, so a layout
@@ -239,8 +237,7 @@ SEXP mizu_map_open(SEXP name_sexp, SEXP writable_sexp) {
     mizu_stop_shm(NA_REAL, "mizu: cannot open map region '%s' — its "
                  "submitter died or the map ended", name);
   mizu_morsel_hdr h;
-  const char *err = mizu_morsel_hdr_check(shm->addr, shm->size,
-                                         MIZU_MAP_MAGIC, &h);
+  const char *err = mizu_morsel_hdr_check(shm->addr, shm->size, &h);
   if (err != NULL) {
     mizu_shm_close(shm, 0);
     Rf_error("mizu: invalid map region: %s", err);

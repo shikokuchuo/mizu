@@ -664,6 +664,7 @@ test_that("a nested-resolved view re-marks REFHELD through the shared mapping", 
 
 test_that("a forked child's resolve and GC leave the parent's count unmoved", {
   skip_on_os("windows") # no fork
+  skip_if_no_fork() # Positron/RStudio sessions block mcfork
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
   mizu_send(p[["host"]], x)

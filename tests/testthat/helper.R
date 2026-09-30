@@ -139,6 +139,20 @@ skip_if_no_reaper <- function() {
   testthat::skip_if_not(reaper_ok(), "PID 1 does not reap orphans")
 }
 
+# Fork is unavailable on Windows and blocked in Positron/RStudio sessions
+# (their mcfork hook raises). Probe once with a trivial collected child.
+fork_ok <- function() {
+  ok <- tryCatch(
+    parallel::mccollect(parallel::mcparallel(TRUE, silent = TRUE)),
+    error = function(e) NULL
+  )
+  isTRUE(ok[[1L]])
+}
+
+skip_if_no_fork <- function() {
+  testthat::skip_if_not(fork_ok(), "fork is unavailable in this session")
+}
+
 # In-process channel pair: both ends of one region attached from this
 # process — the deterministic harness for ring mechanics, with no process
 # management involved. The host end produces on the same ring the peer end

@@ -13,10 +13,22 @@
 #define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
 #endif
 
-/* The vendored view layer owns the macro spelling (mori renames it); pin it
-   to the core enum here, where both are visible. */
+/* The vendored view layer owns the macro spellings (mori renames them); pin
+   them to the core's wire-format numbers here, where both are visible. */
 _Static_assert(MIZU_VIEW_TYPE_INT64 == MIZU_TYPE_INT64,
                "view/core int64 tag drift");
+_Static_assert(MIZU_VIEW_FLAGS_OFF == MIZU_HDR_FLAGS_OFF,
+               "view/core flags-word offset drift");
+_Static_assert(MIZU_VIEW_FLAG_S4 == MIZU_HDR_FLAG_S4,
+               "view/core S4 flag drift");
+_Static_assert(MIZU_VIEW_ELEM_S4 == MIZU_MIZL_S4,
+               "view/core directory S4 bit drift");
+/* The MIZU_CE_* encoding constants are R's cetype_t, hoisted to the wire
+   contract. */
+_Static_assert(MIZU_CE_NATIVE == CE_NATIVE, "CE_NATIVE drift");
+_Static_assert(MIZU_CE_UTF8 == CE_UTF8, "CE_UTF8 drift");
+_Static_assert(MIZU_CE_LATIN1 == CE_LATIN1, "CE_LATIN1 drift");
+_Static_assert(MIZU_CE_BYTES == CE_BYTES, "CE_BYTES drift");
 
 void *mizu_vec_ptr(SEXP x) {
   switch (TYPEOF(x)) {

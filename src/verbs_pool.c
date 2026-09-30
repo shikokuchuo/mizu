@@ -77,6 +77,7 @@ static void pool_binding(mizu_r_handle *h, mizu_binding *b, int worker) {
   b->drop = mizu_r_drop;
   b->sweep = mizu_r_sweep;
   b->ctx = h;
+  b->ident = MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL);
 }
 
 /* Build the extptr around a created/joined/attached core handle: the prot
