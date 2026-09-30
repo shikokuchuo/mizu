@@ -276,6 +276,90 @@ test_that("an unmarked native non-ASCII UTF-8 string round-trips", {
   expect_identical(ix_rt(p, x), x)
 })
 
+test_that("foreign sends build the validity section; same-language writes {0, 0}", {
+  # a factor with NAs: the MIZH root's section maps the NA positions
+  f <- factor(rep(c("a", NA, "b"), 20000), levels = c("a", "b"))
+  p <- foreign_pair(caps = 2L) # MIZU_CAP_ATTRS
+  got <- ix_rt(p, f)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  peek <- view_peek(got)
+  hdr <- i64v(peek(40, 16))
+  expect_gt(hdr[1], 0)
+  expect_equal(hdr[1] %% 64, 0) # a 64-aligned bitmap
+  expect_equal(hdr[2], 20000) # every third element NA
+  # a, NA, b, a, NA, b, a, NA -> bits 1011 0110 (LSB first)
+  expect_identical(peek(hdr[1], 1), as.raw(0x6d))
+  expect_identical(got[], f)
+  channel_end(p)
+
+  # a clean factor: known-NA-free, no section materialized
+  cf <- factor(rep(c("a", "b"), 20000), levels = c("a", "b"))
+  p <- foreign_pair(caps = 2L)
+  got <- ix_rt(p, cf)
+  peek <- view_peek(got)
+  expect_identical(
+    readBin(peek(40, 16), "integer", 4, 4, endian = "little"),
+    c(0L, 0L, -1L, -1L)
+  )
+  channel_end(p)
+
+  # a frame with an NA column and a clean column: the MIZL header's table
+  df <- data.frame(a = rep(c(1.5, NA), 10000), b = runif(20000))
+  p <- foreign_pair(caps = 6L) # ATTRS + MIZL
+  got <- ix_rt(p, df)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  peek <- view_peek(got)
+  hdr <- i64v(peek(40, 16))
+  expect_gt(hdr[1], 0)
+  expect_equal(hdr[2], 10000)
+  tab <- readBin(peek(hdr[1], 32), "integer", 8, 4, endian = "little")
+  expect_equal(tab[3], 10000) # column a's null count
+  expect_equal(tab[2], 0) # its bitmap offset's high half
+  expect_identical(tab[5:8], c(0L, 0L, -1L, -1L)) # column b: known-NA-free
+  expect_identical(as.data.frame(got[]), df)
+  channel_end(p)
+
+  # a clean frame: the header's known-NA-free, no table
+  p <- foreign_pair(caps = 6L)
+  got <- ix_rt(p, data.frame(b = runif(20000), c = runif(20000)))
+  peek <- view_peek(got)
+  expect_identical(
+    readBin(peek(40, 16), "integer", 4, 4, endian = "little"),
+    c(0L, 0L, -1L, -1L)
+  )
+  channel_end(p)
+
+  # same-language sends never pay the build: the words stay {0, 0}
+  q <- channel_pair(arena_size = 0)
+  mizu_send(q[["host"]], df)
+  got <- mizu_recv(q[["peer"]], 5)
+  peek <- view_peek(got)
+  expect_equal(i64v(peek(40, 16)), c(0, 0))
+  channel_end(q)
+
+  # a flat attribute-free vector (the core's reserve): {0, 0} even with NAs
+  v <- runif(100000)
+  v[5] <- NA
+  p <- foreign_pair()
+  got <- ix_rt(p, v)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  peek <- view_peek(got)
+  expect_equal(i64v(peek(40, 16)), c(0, 0))
+  channel_end(p)
+})
+
+test_that("a seq-columned frame crosses as MIZL on a foreign handle, sender compact", {
+  df <- data.frame(id = 1:200000, x = runif(200000))
+  p <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL
+  got <- ix_rt(p, df)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got[["id"]][], df[["id"]])
+  expect_identical(got[["x"]][], df[["x"]])
+  # the sender's compact sequence was never expanded (a GET_REGION copy)
+  expect_lt(length(serialize(df[["id"]], NULL)), 1000L)
+  channel_end(p)
+})
+
 test_that("the foreign zero-copy filter gates the layouts by capability", {
   # a factor past the floor: SHM_VEC only when the peer advertises ATTRS
   big <- factor(rep(c("a", "b"), 20000), levels = c("a", "b"))

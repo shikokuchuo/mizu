@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="7ee1b8c47b13ca48c805299fa419aad72882c322"  # libmizu: Specify the err tag (Phase 2): normative internals, corpus fixtures
+PIN="ad3700a436f25198d72ed520f82c531fca2a674d"  # libmizu: na_at: the ISNA payload discipline for REAL/CPLX
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

@@ -39,6 +39,46 @@ void mizu_view_set_open_hook(mizu_view_open_hook_fn hook) {
   mizu_view_open_hook = hook;
 }
 
+/* Embedder attribute-blob hooks (view.h): set once at embedder load as a
+   triple, consulted at every attribute-blob write and read. */
+static mizu_view_attrs_size_fn mizu_view_attrs_size_hook;
+static mizu_view_attrs_write_fn mizu_view_attrs_write_hook;
+static mizu_view_attrs_read_fn mizu_view_attrs_read_hook;
+
+void mizu_view_set_attrs_hooks(mizu_view_attrs_size_fn size,
+                               mizu_view_attrs_write_fn write,
+                               mizu_view_attrs_read_fn read) {
+  mizu_view_attrs_size_hook = size;
+  mizu_view_attrs_write_hook = write;
+  mizu_view_attrs_read_hook = read;
+}
+
+/* The attr blob's size: the embedder's encoding when the hooks are set
+   and accept the set (a nonzero return), else R_Serialize. x is the
+   attributed object (the hook qualifies it); attrs its serialized-form
+   container (mizu_view_get_attrs_for_serialize's). */
+static size_t mizu_view_attrs_size(SEXP x, SEXP attrs) {
+  if (mizu_view_attrs_size_hook != NULL) {
+    size_t n = mizu_view_attrs_size_hook(x);
+    if (n != 0) return n;
+  }
+  return mizu_view_serialize_count(attrs);
+}
+
+/* Writes the blob at dst; returns bytes written. The embedder's write
+   runs the same qualification as its size pass over the same object, so
+   the two agree; a zero return after a nonzero size is a bug, never a
+   fallback (the layout has already been sized). */
+static size_t mizu_view_attrs_write(unsigned char *dst, SEXP x, SEXP attrs) {
+  if (mizu_view_attrs_write_hook != NULL) {
+    size_t n = mizu_view_attrs_write_hook(dst, x);
+    if (n != 0) return n;
+    if (mizu_view_attrs_size_hook != NULL && mizu_view_attrs_size_hook(x) != 0)
+      Rf_error("mizu: attribute blob write disagrees with its size pass");
+  }
+  return mizu_view_serialize_into(dst, attrs);
+}
+
 // Element directory (for list SHM layout) -------------------------------------
 
 typedef struct {
@@ -142,7 +182,19 @@ static void mizu_view_set_attrs_from(SEXP result, SEXP attrs) {
 #endif
 }
 
+/* The one site every attribute-blob read passes through, root and leaf
+   alike: the embedder's form (the hooks' encoding, dispatched on the
+   blob's first byte — 'I' is the interchange stream's magic) goes to the
+   read hook; anything else is R_Unserialize as before. An R reader homes
+   any attribute set, so the hook's apply is shape-free — a malformed
+   blob rejects in the corrupt-region house style from the cursor's own
+   errors. */
 void mizu_view_restore_attrs(SEXP result, unsigned char *buf, size_t size) {
+  if (size > 0 && buf[0] == MIZU_INTEROP_MAGIC &&
+      mizu_view_attrs_read_hook != NULL) {
+    mizu_view_attrs_read_hook(result, buf, size);
+    return;
+  }
   SEXP attrs = PROTECT(mizu_view_unserialize_from(buf, size));
   mizu_view_set_attrs_from(result, attrs);
   UNPROTECT(1);
@@ -970,29 +1022,35 @@ static size_t mizu_view_string_data_size(SEXP x) {
 
 // Recursive size/write helpers for nested list regions -----------------------
 
-static size_t mizu_view_nested_size(SEXP x, int *ok);
-static size_t mizu_view_nested_write(unsigned char *base, SEXP x);
+static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign);
+static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign);
 
 /* Total bytes occupied by a MIZL region for VECSXP x, including header,
    directory, elements (recursing into VECSXP/LISTSXP children), trailing
    attrs, and all 64-byte alignment padding. Caller passes a VECSXP; any
-   LISTSXP children are coerced locally during recursion.
+   LISTSXP children are coerced locally during recursion. The foreign
+   staging mode adds the validity tail's reserve (the write spends it
+   only where NAs are present, so the write returns at most this).
    ok is NULL on the host path. When non-NULL (the embedder layout oracle),
    each node is vetted before sizing and the first rejection sets *ok = 0 and
    bails out with return 0: an ALTREP node that is neither a view
    nor directly readable with no keeper chain (mizu_view_altrep_readable)
    would materialize through DATAPTR_RO at write or duplicate a wire
    identity (a compact 1:1e8 becomes an 800 MB memcpy). R's S4 data-part
-   wrappers forward to their materialized data part and are accepted. */
-static size_t mizu_view_nested_size(SEXP x, int *ok) {
+   wrappers forward to their materialized data part and are accepted. The
+   foreign mode relaxes this: the foreign filter has already vetted the
+   tree, and the write copies any atomic ALTREP through *_GET_REGION. */
+static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign) {
 
   R_xlen_t n = XLENGTH(x);
   size_t total = MIZU_VIEW_ALIGN64(MIZU_HEADER_SIZE + 32 * (size_t) n);
+  size_t valid_reserve = 0;
+  int any_na_atomic = 0;
 
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP elt = VECTOR_ELT(x, i);
 
-    if (ok != NULL) {
+    if (ok != NULL && !foreign) {
       if (ALTREP(elt) && !mizu_view_check(elt) && !mizu_view_altrep_readable(elt)) {
         *ok = 0; return 0;
       }
@@ -1004,18 +1062,26 @@ static size_t mizu_view_nested_size(SEXP x, int *ok) {
     if (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt))) {
       SEXP coerced = (type == LISTSXP) ? Rf_coerceVector(elt, VECSXP) : elt;
       PROTECT(coerced);
-      elt_size = mizu_view_nested_size(coerced, ok);
+      elt_size = mizu_view_nested_size(coerced, ok, foreign);
       UNPROTECT(1);
       if (ok != NULL && !*ok) return 0;
     } else if (mizu_view_shm_eligible(type)) {
+      /* the integer64 leaf gate: the directory tag carries the class, no
+         blob (mizh's root treatment — the write gates identically) */
+      int int64 = type != STRSXP && mizu_view_is_int64_any(elt);
       size_t raw_size = (type == STRSXP) ?
         mizu_view_string_data_size(elt) :
         (size_t) XLENGTH(elt) * mizu_view_sizeof_elt(type);
       SEXP elt_attrs = PROTECT(mizu_view_get_attrs_for_serialize(elt));
-      size_t attrs_size = (elt_attrs != R_NilValue) ?
-        mizu_view_serialize_count(elt_attrs) : 0;
+      size_t attrs_size = 0;
+      if (elt_attrs != R_NilValue && !int64)
+        attrs_size = mizu_view_attrs_size(elt, elt_attrs);
       UNPROTECT(1);
       elt_size = raw_size + attrs_size;
+      if (foreign && type != STRSXP && type != RAWSXP) {
+        any_na_atomic = 1;
+        valid_reserve += 63 + ((size_t) XLENGTH(elt) + 7) / 8;
+      }
     } else {
       elt_size = mizu_view_serialize_count(elt);
     }
@@ -1025,19 +1091,21 @@ static size_t mizu_view_nested_size(SEXP x, int *ok) {
 
   SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
   size_t attrs_size = (attrs != R_NilValue) ?
-    mizu_view_serialize_count(attrs) : 0;
+    mizu_view_attrs_size(x, attrs) : 0;
   UNPROTECT(1);
   total += MIZU_VIEW_ALIGN64(attrs_size);
-
-  return total;
+  if (any_na_atomic) valid_reserve += 63 + 16 * (size_t) n;
+  return total + valid_reserve;
 }
 
 /* Writes a complete MIZL region for VECSXP x starting at base. Returns
-   total bytes written (must equal mizu_view_nested_size(x)). Blob sizes are
-   read off the write itself — mizu_view_serialize_into's cursor return and
-   mizu_view_write_strings' data-size return — so the counting pass that
-   mizu_view_nested_size already ran is never repeated here. */
-static size_t mizu_view_nested_write(unsigned char *base, SEXP x) {
+   total bytes written (mizu_view_nested_size(x) exactly when foreign ==
+   0; at most it in the foreign staging mode, the difference the clean
+   leaves' unspent validity bytes). Blob sizes are read off the write
+   itself — the blob hook's cursor return and mizu_view_write_strings'
+   data-size return — so the counting pass that mizu_view_nested_size
+   already ran is never repeated here. */
+static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
 
   R_xlen_t n = XLENGTH(x);
   size_t cur = MIZU_VIEW_ALIGN64(MIZU_HEADER_SIZE + 32 * (size_t) n);
@@ -1057,7 +1125,7 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x) {
     if (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt))) {
       SEXP coerced = (type == LISTSXP) ? Rf_coerceVector(elt, VECSXP) : elt;
       PROTECT(coerced);
-      size_t written = mizu_view_nested_write(base + cur, coerced);
+      size_t written = mizu_view_nested_write(base + cur, coerced, foreign);
       entry.sexptype = VECSXP;
       entry.attrs_size = 0;
       entry.length = (int64_t) XLENGTH(coerced);
@@ -1065,6 +1133,8 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x) {
       UNPROTECT(1);
       cur += MIZU_VIEW_ALIGN64(written);
     } else if (mizu_view_shm_eligible(type)) {
+      /* the integer64 leaf gate (the size pass gates identically) */
+      int int64 = type != STRSXP && mizu_view_is_int64_any(elt);
       SEXP elt_attrs = PROTECT(mizu_view_get_attrs_for_serialize(elt));
       size_t raw_size, attrs_size = 0;
 
@@ -1072,12 +1142,34 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x) {
         raw_size = mizu_view_write_strings(base + cur, elt);
       } else {
         raw_size = (size_t) XLENGTH(elt) * mizu_view_sizeof_elt(type);
-        memcpy(base + cur, DATAPTR_RO(elt), raw_size);
+        if (ALTREP(elt) && DATAPTR_OR_NULL(elt) == NULL) {
+          /* a foreign-admitted ALTREP leaf copies through *_GET_REGION —
+             the sender's vector stays compact (mizh_write's branch) */
+          switch (type) {
+          case LGLSXP:
+          case INTSXP:
+            INTEGER_GET_REGION(elt, 0, XLENGTH(elt), (int *) (base + cur));
+            break;
+          case REALSXP:
+            REAL_GET_REGION(elt, 0, XLENGTH(elt), (double *) (base + cur));
+            break;
+          case CPLXSXP:
+            COMPLEX_GET_REGION(elt, 0, XLENGTH(elt), (Rcomplex *) (base + cur));
+            break;
+          default:
+            RAW_GET_REGION(elt, 0, XLENGTH(elt), (Rbyte *) (base + cur));
+            break;
+          }
+        } else {
+          memcpy(base + cur, DATAPTR_RO(elt), raw_size);
+        }
       }
-      if (elt_attrs != R_NilValue)
-        attrs_size = mizu_view_serialize_into(base + cur + raw_size, elt_attrs);
+      if (elt_attrs != R_NilValue && !int64)
+        attrs_size = mizu_view_attrs_write(base + cur + raw_size,
+                                           elt, elt_attrs);
 
-      entry.sexptype = type | (Rf_isS4(elt) ? MIZU_VIEW_ELEM_S4 : 0);
+      entry.sexptype = (int64 ? MIZU_VIEW_TYPE_INT64 : type) |
+        (Rf_isS4(elt) ? MIZU_VIEW_ELEM_S4 : 0);
       entry.attrs_size = (int32_t) attrs_size;
       entry.length = (int64_t) XLENGTH(elt);
       entry.data_size = (int64_t) (raw_size + attrs_size);
@@ -1101,9 +1193,57 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x) {
   int64_t attrs_offset = (int64_t) cur;
   size_t attrs_size = 0;
   if (list_attrs != R_NilValue)
-    attrs_size = mizu_view_serialize_into(base + cur, list_attrs);
+    attrs_size = mizu_view_attrs_write(base + cur, x, list_attrs);
   cur += MIZU_VIEW_ALIGN64(attrs_size);
   UNPROTECT(1);
+
+  if (foreign) {
+    /* The validity tail: a bitmap per NA-capable atomic leaf, built from
+       the just-written data and spent only where NAs are present, then
+       the n-entry table — a clean run collapses to the header's
+       known-NA-free and no tail bytes. */
+    int64_t *tab = (int64_t *) malloc(16 * (size_t) n);
+    if (tab == NULL) Rf_error("mizu: allocation failure");
+    int64_t total_nulls = 0;
+    for (R_xlen_t i = 0; i < n; i++) {
+      mizu_view_elem entry;
+      memcpy(&entry, base + MIZU_HEADER_SIZE + 32 * (size_t) i,
+             sizeof(mizu_view_elem));
+      int32_t tag = entry.sexptype & ~MIZU_VIEW_ELEM_S4;
+      if (mizu_view_sizeof_elt(tag) == 0) {
+        tab[2 * i] = 0;   /* VEC / STR / serialized: the nested header or
+                             the string block carries its own */
+        tab[2 * i + 1] = 0;
+        continue;
+      }
+      if (tag == RAWSXP) {
+        tab[2 * i] = 0;   /* no missing sentinel: known-NA-free */
+        tab[2 * i + 1] = -1;
+        continue;
+      }
+      size_t off = MIZU_VIEW_ALIGN64(cur);
+      int64_t nulls = (int64_t) mizu_na_build(
+        tag, base + off, base + entry.data_offset, (uint64_t) entry.length, 0);
+      if (nulls > 0) {
+        tab[2 * i] = (int64_t) off;
+        tab[2 * i + 1] = nulls;
+        total_nulls += nulls;
+        cur = off + ((size_t) entry.length + 7) / 8;
+      } else {
+        tab[2 * i] = 0;
+        tab[2 * i + 1] = -1;
+      }
+    }
+    if (total_nulls > 0) {
+      size_t tab_off = MIZU_VIEW_ALIGN64(cur);
+      memcpy(base + tab_off, tab, 16 * (size_t) n);
+      mizu_mizh_validity_set(base, (int64_t) tab_off, total_nulls);
+      cur = tab_off + 16 * (size_t) n;
+    } else {
+      mizu_mizh_validity_set(base, 0, -1);
+    }
+    free(tab);
+  }
 
   /* Write header */
   uint32_t magic = MIZU_MAGIC_LIST;
@@ -1144,25 +1284,34 @@ static void mizu_view_shm_create_failed(int category, size_t requested) {
            sizebuf, summary, hint[0] != '\0' ? ". " : "", hint);
 }
 
-/* MIZH layout size: 64-byte header + data + attrs. */
-static size_t mizh_size(SEXP x) {
+/* MIZH layout size: 64-byte header + data + attrs, plus the foreign
+   staging mode's validity reserve (the write spends the bitmap bytes
+   only when NAs are present, so the write returns at most this). */
+static size_t mizh_size(SEXP x, int foreign) {
   size_t data_size = (size_t) XLENGTH(x) * mizu_view_sizeof_elt(TYPEOF(x));
+  size_t total = MIZU_HEADER_SIZE + data_size;
   /* class-only integer64: the wire tag carries the class — no attrs
      section (mizh_write gates identically; the two must agree) */
-  if (mizu_view_is_int64_any(x))
-    return MIZU_HEADER_SIZE + data_size;
-  SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
-  size_t attrs_size = (attrs != R_NilValue) ? mizu_view_serialize_count(attrs) : 0;
-  UNPROTECT(1);
-  return MIZU_HEADER_SIZE + data_size + attrs_size;
+  if (!mizu_view_is_int64_any(x)) {
+    SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
+    if (attrs != R_NilValue)
+      total += mizu_view_attrs_size(x, attrs);
+    UNPROTECT(1);
+  }
+  if (foreign && TYPEOF(x) != RAWSXP)
+    total = MIZU_VIEW_ALIGN64(total) + ((size_t) XLENGTH(x) + 7) / 8;
+  return total;
 }
 
-/* MIZH write: header (reserved bytes zeroed) + bare data + attrs. Header
-   fields are written last, once the counted attr write reports its size.
-   An ALTREP with no readable pointer (a top-level ALTREP atomic admitted
-   on a foreign handle, zc.c's baseline) copies through *_GET_REGION —
-   never expanded on the sender. */
-static void mizh_write(unsigned char *base, SEXP x) {
+/* MIZH write: header (reserved bytes zeroed) + bare data + attrs, then
+   the foreign staging mode's validity section — the bitmap built from
+   the just-written data, spent only when NAs are present (a clean vector
+   stamps known-NA-free); the returned total is the actual bytes used.
+   Header fields are written last, once the counted attr write reports
+   its size. An ALTREP with no readable pointer (a top-level ALTREP
+   atomic admitted on a foreign handle, zc.c's baseline) copies through
+   *_GET_REGION — never expanded on the sender. */
+static size_t mizh_write(unsigned char *base, SEXP x, int foreign) {
 
   int int64 = mizu_view_is_int64_any(x);
   int type = TYPEOF(x);
@@ -1194,8 +1343,8 @@ static void mizh_write(unsigned char *base, SEXP x) {
   if (!int64) {
     SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
     if (attrs != R_NilValue)
-      attrs_size = mizu_view_serialize_into(base + MIZU_HEADER_SIZE + data_size,
-                                       attrs);
+      attrs_size = mizu_view_attrs_write(base + MIZU_HEADER_SIZE + data_size,
+                                         x, attrs);
     UNPROTECT(1);
   }
 
@@ -1209,6 +1358,21 @@ static void mizh_write(unsigned char *base, SEXP x) {
   memcpy(base + 8, &length, 8);
   memcpy(base + 16, &as64, 8);
   memcpy(base + MIZU_VIEW_FLAGS_OFF, &flags, 4);
+
+  size_t total = MIZU_HEADER_SIZE + data_size + attrs_size;
+  if (foreign && type != RAWSXP) {
+    size_t off = MIZU_VIEW_ALIGN64(total);
+    uint64_t nulls = mizu_na_build(
+      int64 ? MIZU_TYPE_INT64 : type, base + off,
+      base + MIZU_HEADER_SIZE, (uint64_t) n, 0);
+    if (nulls > 0) {
+      mizu_mizh_validity_set(base, (int64_t) off, (int64_t) nulls);
+      total = off + ((size_t) n + 7) / 8;
+    } else {
+      mizu_mizh_validity_set(base, 0, -1);
+    }
+  }
+  return total;
 }
 
 /*
@@ -1227,14 +1391,15 @@ static void mizh_write(unsigned char *base, SEXP x) {
 /* MIZS layout size: 64-byte header + string block + attrs. */
 static size_t mizs_size(SEXP x) {
   SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
-  size_t attrs_size = (attrs != R_NilValue) ? mizu_view_serialize_count(attrs) : 0;
+  size_t attrs_size = (attrs != R_NilValue) ? mizu_view_attrs_size(x, attrs) : 0;
   UNPROTECT(1);
   return MIZU_HEADER_SIZE + mizu_view_string_data_size(x) + attrs_size;
 }
 
 /* MIZS write: header (reserved bytes zeroed) + string block + attrs. The
    block write reports its exact size, so no separate sizing walk;
-   header fields are written last, once both sizes are known. */
+   header fields are written last, once both sizes are known. The string
+   block carries its own validity bitmap — no header section. */
 static void mizs_write(unsigned char *base, SEXP x) {
 
   R_xlen_t n = XLENGTH(x);
@@ -1245,8 +1410,8 @@ static void mizs_write(unsigned char *base, SEXP x) {
   SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
   size_t attrs_size = 0;
   if (attrs != R_NilValue)
-    attrs_size = mizu_view_serialize_into(base + MIZU_HEADER_SIZE + str_size,
-                                     attrs);
+    attrs_size = mizu_view_attrs_write(base + MIZU_HEADER_SIZE + str_size,
+                                       x, attrs);
 
   uint32_t magic = MIZU_MAGIC_STR;
   int32_t as32 = (int32_t) attrs_size;
@@ -1264,14 +1429,15 @@ static void mizs_write(unsigned char *base, SEXP x) {
 
 /* Shared size dispatcher for the host (mizu_view_create) and embedder
    (mizu_view_layout_size) paths. ok == NULL vets nothing — the host path
-   materializes foreign ALTREPs through DATAPTR_RO at write. The embedder oracle passes
-   &ok: the root is vetted here and every descendant inside
-   mizu_view_nested_size (list trees recurse; everything else is a leaf), and the
-   first rejection sets *ok = 0 and yields a 0 return. Non-layoutable types
-   also return 0 — never ambiguous: every region opens with a 64-byte
-   header. */
-static size_t mizu_view_layout_size_impl(SEXP x, int *ok) {
-  if (ok != NULL) {
+   materializes foreign ALTREPs through DATAPTR_RO at write. The embedder
+   oracle passes &ok: the root is vetted here and every descendant inside
+   mizu_view_nested_size (list trees recurse; everything else is a leaf), and
+   the first rejection sets *ok = 0 and yields a 0 return; the foreign
+   staging mode relaxes the ALTREP rejection (the write copies through
+   *_GET_REGION). Non-layoutable types also return 0 — never ambiguous:
+   every region opens with a 64-byte header. */
+static size_t mizu_view_layout_size_impl(SEXP x, int *ok, int foreign) {
+  if (ok != NULL && !foreign) {
     if (ALTREP(x) && !mizu_view_check(x) && !mizu_view_altrep_readable(x)) {
       *ok = 0; return 0;
     }
@@ -1285,21 +1451,21 @@ static size_t mizu_view_layout_size_impl(SEXP x, int *ok) {
     } else {
       PROTECT(x);
     }
-    size_t total = mizu_view_nested_size(x, ok);
+    size_t total = mizu_view_nested_size(x, ok, foreign);
     UNPROTECT(1);
     return total;
   }
   if (type == STRSXP) return mizs_size(x);
-  if (mizu_view_shm_eligible(type)) return mizh_size(x);
+  if (mizu_view_shm_eligible(type)) return mizh_size(x, foreign);
   return 0;
 }
 
-size_t mizu_view_layout_size(SEXP x) {
+size_t mizu_view_layout_size(SEXP x, int foreign) {
   int ok = 1;
-  return mizu_view_layout_size_impl(x, &ok);
+  return mizu_view_layout_size_impl(x, &ok, foreign);
 }
 
-void mizu_view_layout_write(unsigned char *base, SEXP x) {
+size_t mizu_view_layout_write(unsigned char *base, SEXP x, int foreign) {
   int type = TYPEOF(x);
   if (type == VECSXP || type == LISTSXP) {
     if (type == LISTSXP) {
@@ -1307,15 +1473,19 @@ void mizu_view_layout_write(unsigned char *base, SEXP x) {
     } else {
       PROTECT(x);
     }
-    mizu_view_nested_write(base, x);
+    size_t total = mizu_view_nested_write(base, x, foreign);
     UNPROTECT(1);
-    return;
+    return total;
   }
   if (type == STRSXP) {
     mizs_write(base, x);
-    return;
+    int32_t as32;
+    int64_t sd;
+    memcpy(&as32, base + 4, 4);
+    memcpy(&sd, base + 16, 8);
+    return MIZU_HEADER_SIZE + (size_t) sd + (size_t) as32;
   }
-  mizh_write(base, x);
+  return mizh_write(base, x, foreign);
 }
 
 /* Unified entry point: existing views return unchanged (idempotent);
@@ -1326,14 +1496,14 @@ void mizu_view_layout_write(unsigned char *base, SEXP x) {
 SEXP mizu_view_create(SEXP x) {
   if (mizu_view_check(x)) return x;
 
-  size_t total = mizu_view_layout_size_impl(x, NULL);
+  size_t total = mizu_view_layout_size_impl(x, NULL, 0);
   if (total == 0) return x;
 
   mizu_shm *shm;
   int rc = mizu_shm_create_heap(&shm, total);
   if (rc) mizu_view_shm_create_failed(rc, total);
 
-  mizu_view_layout_write((unsigned char *) shm->addr, x);
+  mizu_view_layout_write((unsigned char *) shm->addr, x, 0);
 
   return mizu_view_make_result(shm);
 }

@@ -115,7 +115,7 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
   if (!foreign && mizu_str1_stage(hdr, payload, inline_max, x)) {
     /* a length-1 string's bytes are self-contained: pin nothing */
     return 0;
-  } else if (!foreign && mizu_zc_eligible(x, inline_max, &total) &&
+  } else if (!foreign && mizu_zc_eligible(x, inline_max, &total, 0) &&
              !mizu_handle_churn(h)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
@@ -125,15 +125,16 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
        SHM_RAW surrender deterministically, where a fresh SHM_VEC region
        per message would pile up in the ledger */
     mizu_stage_reap(h);
-    mizu_zc_stage(hdr, payload, x, total, h, ctx);
+    mizu_zc_stage(hdr, payload, x, total, h, ctx, 0);
     return 0;
   } else if (foreign &&
              mizu_zc_eligible_foreign(x, inline_max, &total, rh->peer_caps) &&
              !mizu_handle_churn(h)) {
     /* the foreign zero-copy gate: the baseline layouts plus whatever the
-       peer's capability mask advertises */
+       peer's capability mask advertises; the layout write builds the
+       validity-bitmap section for the foreign reader's Arrow exports */
     mizu_stage_reap(h);
-    mizu_zc_stage(hdr, payload, x, total, h, ctx);
+    mizu_zc_stage(hdr, payload, x, total, h, ctx, 1);
     return 0;
   }
   if (foreign) {

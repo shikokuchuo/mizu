@@ -635,3 +635,24 @@ tasks/s (the pipelined-pool band swings wide across records);
 payload 2.6/80.7/457.5 -> 2.8/81.3/448.9 us; streaming 42.7M -> 41.7M
 msg/s; map rows flat; serialize/codec result 3.4/2.2 -> 3.3/2.7 us.
 Full suite 2648 pass, 0 fail (expected skips).
+
+## 2026-09-30: the 'I' attribute blob and validity sections (3.5a)
+
+Attribute blobs in the view layouts are now complete 'I' streams when
+encodable (R_Serialize otherwise), applied apply-as-is at receive — an
+R->R frame/factor/named-vector receive no longer pays an R_Unserialize
+of its attributes. Foreign sends build the MIZH/MIZL validity-bitmap
+section fused into the layout write ({off, count} for a column with NAs,
+{0, -1} for a clean one, {0, 0} on same-language writes and the core's
+flat reserve); mizu declares MIZU_CAP_ATTRS. libmizu ad3700a fixes the
+NA test's REAL/CPLX payload discrimination to R's ISNA (any NaN with
+low word 1954) ahead of the fused builds. R->R round trips before
+(f6cd80d) -> after, this host: 16 MB frame (1e6 rows) 0.80 -> 1.20 ms,
+4 MB factor 0.20 -> 0.20 ms, 32 MiB named vector (4M names) 480.5 ->
+418.0 ms. The frame residual is the automatic row.names' exact 1:n
+verification per send: R >= 4.6 stores it as an ALTREP sequence and the
+'I' writer's compact canonicalization must verify by value — one scan
+per send, with the size hook's verdict memo removing the second, and
+send-only timings actually improved (1.15 -> 1.05 ms).
+Full suite 2804 pass, 0 fail (3 expected macOS skips); rchk zero
+findings in package code.

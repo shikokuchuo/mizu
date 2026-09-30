@@ -236,7 +236,7 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
     }
   } else if (mizu_str1_stage(hdr, payload, inline_max, x)) {
     return;
-  } else if (mizu_zc_eligible(x, inline_max, &total) &&
+  } else if (mizu_zc_eligible(x, inline_max, &total, 0) &&
              !mizu_handle_churn(h)) {
     /* SHM_VEC: view-layout-eligible objects (strings, list trees) past
        the budget and the zc floor — cheap probes keep the layout-size
@@ -244,8 +244,9 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
        swept the lent ledger and reclaimed nothing — a Linux-only signal)
        the fresh region per SHM_VEC payload is dearer than the serialize
        copy: fall to SHM_RAW, whose region surrenders deterministically at
-       consumer-done. */
-    mizu_zc_stage(hdr, payload, x, total, h, ctx);
+       consumer-done. Pools are homogeneous (Phase 4 tags foreign
+       results), so the layout write's foreign mode stays off here. */
+    mizu_zc_stage(hdr, payload, x, total, h, ctx, 0);
     return;
   }
   /* the reader-language branch (one predicted check on the handle):

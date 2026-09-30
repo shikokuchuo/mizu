@@ -145,18 +145,18 @@ test_that("R -> Python -> R documented shifts", {
     mizu_send(ch, x)
     expect_identical(mizu_recv(ch, 30), expect)
   }
-  rt(c("a", "bc"), list("a", "bc"))          # a strv returns as a list
+  rt(c("a", "bc"), list("a", "bc")) # a strv returns as a list
   rt(factor(c("b", "a"), levels = c("a", "b")), list("b", "a"))
   rt(NA, NULL)
   rt(NA_integer_, NULL)
   rt(NA_character_, NULL)
-  rt(array(1:2, 2), 1:2)                     # a length-1 dim: a plain vector
+  rt(array(1:2, 2), 1:2) # a length-1 dim: a plain vector
   rt(.POSIXct(1700000000, tz = ""), .POSIXct(1700000000, tz = "UTC"))
   rt(
     .POSIXct(1700000000, tz = "Europe/Paris"),
     .POSIXct(1700000000, tz = "UTC")
   )
-  rt(c(TRUE, NA), c(1L, NA))                 # logical with NA -> integer
+  rt(c(TRUE, NA), c(1L, NA)) # logical with NA -> integer
   expect_true(mizu_close(ch, timeout = 10))
 })
 
@@ -188,7 +188,7 @@ test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     "
-assert ch._h._peer_ident() == (2, 5)   # MIZU_LANG_R, MIZS | MIZL
+assert ch._h._peer_ident() == (2, 7)   # MIZU_LANG_R, MIZS | ATTRS | MIZL
 ch.send('ok')
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)

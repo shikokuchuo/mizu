@@ -183,14 +183,15 @@ static size_t mizu_zc_tree_probe(SEXP x, int *reject) {
    foreign ALTREP nodes). Top-level LISTSXP stays on the serialize
    tiers: the layout coerces it to VECSXP, a type change a transport must
    not make. */
-int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
+int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total,
+                     int foreign) {
   int type = TYPEOF(x);
   size_t elt = mizu_view_sizeof_elt(type);
   if (elt != 0) {
-    if (ALTREP(x) && !mizu_view_altrep_readable(x)) return 0;
+    if (!foreign && ALTREP(x) && !mizu_view_altrep_readable(x)) return 0;
     size_t data = (size_t) XLENGTH(x) * elt;
     if (data <= (size_t) inline_max || data < MIZU_ZC_FLOOR) return 0;
-    size_t total = mizu_view_layout_size(x);
+    size_t total = mizu_view_layout_size(x, foreign);
     if (total == 0 || total <= (size_t) inline_max) return 0;
     *out_total = total;
     return 1;
@@ -212,7 +213,7 @@ int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   } else {
     return 0;
   }
-  size_t total = mizu_view_layout_size(x);
+  size_t total = mizu_view_layout_size(x, foreign);
   if (total == 0) return 0;
   *out_total = total;
   return 1;
@@ -230,8 +231,13 @@ static int mizu_zc_tree_caps_walk(SEXP x, uint32_t caps) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
     if (!ANY_ATTRIB(x)) return !mizu_view_check(x);
     if (mizu_view_is_int64(x)) return 1;
-    if (caps & MIZU_CAP_ATTRS)
-      return mizu_interop_attrs_qualify(x) == MIZU_IXQ_FACTOR;
+    if (caps & MIZU_CAP_ATTRS) {
+      /* the whitelisted leaf shapes a region-backed reader homes:
+         factor, dim, Date, POSIXct (the 'I' leaf blob carries them) */
+      const int q = mizu_interop_attrs_qualify(x);
+      return q == MIZU_IXQ_FACTOR || q == MIZU_IXQ_DIM ||
+             q == MIZU_IXQ_DATE || q == MIZU_IXQ_POSIXCT;
+    }
     return 0;
   case STRSXP:
     return !ANY_ATTRIB(x) && (caps & MIZU_CAP_MIZS) &&
@@ -275,10 +281,11 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
   if (elt != 0) {
     if (Rf_isS4(x)) return 0;
     if (!ANY_ATTRIB(x) || mizu_view_is_int64_any(x)) {
-      /* the baseline MIZH, any representation */
+      /* the baseline MIZH, any representation — the layout write's
+         foreign mode adds the validity reserve, so size it there */
       size_t data = (size_t) XLENGTH(x) * elt;
       if (data <= (size_t) inline_max || data < MIZU_ZC_FLOOR) return 0;
-      size_t total = MIZU_HEADER_SIZE + data;
+      size_t total = mizu_view_layout_size(x, 1);
       if (total <= (size_t) inline_max) return 0;
       *out_total = total;
       return 1;
@@ -287,7 +294,7 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
     if (!(caps & MIZU_CAP_ATTRS)) return 0;
     const int q = mizu_interop_attrs_qualify(x);
     if (q == MIZU_IXQ_NONE || q == MIZU_IXQ_ENCODABLE) return 0;
-    return mizu_zc_eligible(x, inline_max, out_total);
+    return mizu_zc_eligible(x, inline_max, out_total, 1);
   }
   if (type == STRSXP) {
     /* MIZS, gated on the bit and every element crossing as UTF-8 (a
@@ -295,7 +302,7 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
        bytes-marked one declines there) */
     if (!(caps & MIZU_CAP_MIZS) || !mizu_interop_strings_utf8(x))
       return 0;
-    return mizu_zc_eligible(x, inline_max, out_total);
+    return mizu_zc_eligible(x, inline_max, out_total, 1);
   }
   if (type != VECSXP) return 0;
   /* a plain data.frame: ATTRS + MIZL, plus MIZS when any column is a
@@ -308,10 +315,10 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
     for (R_xlen_t i = 0; i < XLENGTH(x); i++)
       if (TYPEOF(VECTOR_ELT(x, i)) == STRSXP) need |= MIZU_CAP_MIZS;
     if ((caps & need) != need) return 0;
-    return mizu_zc_eligible(x, inline_max, out_total);
+    return mizu_zc_eligible(x, inline_max, out_total, 1);
   }
   return mizu_zc_tree_caps(x, caps) &&
-    mizu_zc_eligible(x, inline_max, out_total);
+    mizu_zc_eligible(x, inline_max, out_total, 1);
 }
 
 /* The REF half of the filter: a view re-sent top-level crosses by
@@ -344,18 +351,22 @@ int mizu_zc_ref_foreign_ok(SEXP x, uint32_t caps) {
    its own reference; a recycled region carries a stale count), and the
    name as the payload. Fills the retain entry: the region, the pin of x,
    and the consumer key cell (-1) the release point may re-stamp. ctx is
-   the stage hook's binding ctx. */
+   the stage hook's binding ctx. foreign is the peer-language signal: the
+   layout write builds the validity-bitmap section (mizu.h's [40-55]
+   header words) and aux carries the write's actual total — the size
+   pass's reservation counts clean leaves' unspent bitmap bytes. */
 void mizu_zc_stage(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                  size_t total, mizu_handle *h, void *ctx) {
+                  size_t total, mizu_handle *h, void *ctx, int foreign) {
   mizu_shm *shm = mizu_spill_get_raise(h, (size_t) total);
-  mizu_view_layout_write((unsigned char *) shm->addr, x);
+  size_t used =
+    mizu_view_layout_write((unsigned char *) shm->addr, x, foreign);
   /* the aux code must match the layout's root sexptype: class-only
      integer64 stamped its MIZH root MIZU_VIEW_TYPE_INT64 */
   int type = mizu_view_is_int64_any(x) ? MIZU_TYPE_INT64 : (int) TYPEOF(x);
   hdr->kind = MIZU_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = mizu_aux_shm_vec(type == LISTSXP ? VECSXP : type,
-                             (uint64_t) total);
+                             (uint64_t) used);
   memcpy(payload, shm->name, shm->name_len);
   mizu_r_pin(h, ctx, x);
   /* the producer-loan refcount store (rc = 1, flags = 0) rides the retain */
@@ -475,12 +486,28 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
         attrs_size >
           region_size - (int64_t) MIZU_HEADER_SIZE - length * (int64_t) elt)
       Rf_error("mizu: corrupt payload slot");
-    if (aux != 0 &&
-        ((uint32_t) mizu_aux_type(aux) != (uint32_t) type ||
-         mizu_aux_hi(aux) != (uint64_t) ((size_t) MIZU_HEADER_SIZE +
-                                        (size_t) length * elt +
-                                        (size_t) attrs_size)))
+    /* the three-state validity pair (mizu.h): {0, 0} absent, {0, -1}
+       known-NA-free, or a 64-aligned offset whose bitmap fits the region
+       — the R view never reads the section; a foreign writer's carries
+       the exact-extent term below */
+    int64_t voff, vcount;
+    memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
+    memcpy(&vcount, base + MIZU_HDR_VALID_COUNT, 8);
+    if (voff == 0) {
+      if (vcount != 0 && vcount != -1) Rf_error("mizu: corrupt payload slot");
+    } else if ((voff & 63) != 0 || vcount < 0 || vcount > length ||
+               voff > region_size ||
+               (uint64_t) ((length + 7) / 8) > (uint64_t) (region_size - voff))
       Rf_error("mizu: corrupt payload slot");
+    if (aux != 0) {
+      uint64_t extent = (uint64_t) voff > 0 ?
+        (uint64_t) voff + ((uint64_t) length + 7) / 8 :
+        (uint64_t) ((size_t) MIZU_HEADER_SIZE + (size_t) length * elt +
+                    (size_t) attrs_size);
+      if ((uint32_t) mizu_aux_type(aux) != (uint32_t) type ||
+          mizu_aux_hi(aux) != extent)
+        Rf_error("mizu: corrupt payload slot");
+    }
     SEXP view = PROTECT(mizu_view_vec_wrap(base + MIZU_HEADER_SIZE,
                                       (R_xlen_t) length, type, name_xp,
                                       mizu_zc_rel_fire, rel_xp));

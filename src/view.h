@@ -168,10 +168,15 @@ void mizu_view_restore_attrs(SEXP result, unsigned char *buf, size_t size);
    take: an ALTREP node is rejected unless it is a view (rides the
    wire hooks) or mizu_view_altrep_readable (R's S4 data-part wrappers
    qualify; a compact 1:1e8 would materialize through DATAPTR_RO at
-   write). The write emits exactly mizu_view_layout_size bytes and zeroes
-   header reserved bytes. */
-size_t mizu_view_layout_size(SEXP x);
-void mizu_view_layout_write(unsigned char *base, SEXP x);
+   write). The write emits at most mizu_view_layout_size bytes (exactly
+   when foreign == 0) and zeroes header reserved bytes.
+   foreign: the cross-language staging mode — the oracle admits ALTREP
+   atomic nodes (the write copies them through *_GET_REGION, never
+   expanding the sender's vector) and the write builds the
+   validity-bitmap section (mizu.h's [40-47]/[48-55] header words) fused
+   after each atomic node's copy, returning the actual bytes used. */
+size_t mizu_view_layout_size(SEXP x, int foreign);
+size_t mizu_view_layout_write(unsigned char *base, SEXP x, int foreign);
 
 /* View introspection: C-level is_shared, the identifier formatter, the
    identifier parser, and a path walk over an already-open region (keeper
@@ -207,6 +212,25 @@ void mizu_view_set_wire_hooks(mizu_view_emit_hook_fn emit, mizu_view_resolve_hoo
 #define MIZU_VIEW_CACHE_MAX 16
 typedef mizu_shm *(*mizu_view_open_hook_fn)(const char *name);
 void mizu_view_set_open_hook(mizu_view_open_hook_fn hook);
+
+/* Embedder attribute-blob hooks (optional; set once at embedder load, as
+   a triple). When set, the layout writer offers every non-empty
+   attribute set to `size` first: a nonzero return is the blob's encoded
+   size and `write` emits exactly those bytes for the same object (a
+   decline there is a bug, never a fallback); a zero `size` return
+   declines and the blob is an R_Serialize stream, the pre-hook form.
+   Every blob read passes through mizu_view_restore_attrs, which hands
+   the embedder's form to `read` (dispatched on the blob's first byte)
+   and keeps R_Unserialize for anything else. An embedder that leaves
+   the triple unset keeps R_Serialize both ways and never meets the
+   embedder form on read. */
+typedef size_t (*mizu_view_attrs_size_fn)(SEXP x);
+typedef size_t (*mizu_view_attrs_write_fn)(unsigned char *dst, SEXP x);
+typedef void (*mizu_view_attrs_read_fn)(SEXP result, const unsigned char *buf,
+                                        size_t size);
+void mizu_view_set_attrs_hooks(mizu_view_attrs_size_fn size,
+                               mizu_view_attrs_write_fn write,
+                               mizu_view_attrs_read_fn read);
 
 // Alignment macro and the MIZS string block geometry -------------------------
 

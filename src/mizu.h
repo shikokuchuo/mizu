@@ -255,12 +255,16 @@ int mizu_zc_ref_fired(void);
    layer's embedder open hook, so the wire-resolve cache's mappings carry the
    same protection split as the prep path's, which calls it directly. */
 mizu_shm *mizu_zc_open(const char *name);
-int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total);
+int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total,
+                     int foreign);
 /* Stage x as SHM_VEC through the handle's services: the region checkout, the
    zc producer-loan retain (mizu_stage_retain_zc performs the refcount store),
-   and the pin of x. ctx is the stage hook's binding ctx. */
+   and the pin of x. ctx is the stage hook's binding ctx. foreign is the
+   peer-language signal: the layout write builds the validity-bitmap
+   section and aux carries the write's actual total (the size pass's
+   reservation counts clean leaves' unspent bitmap bytes). */
 void mizu_zc_stage(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
-                   size_t total, mizu_handle *h, void *ctx);
+                   size_t total, mizu_handle *h, void *ctx, int foreign);
 int mizu_zc_ref_stage(mizu_slot_hdr *hdr, unsigned char *payload,
                       uint32_t inline_max, SEXP x);
 /* The foreign-handle SHM_VEC gate: the baseline layouts (an

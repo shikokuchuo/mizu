@@ -447,6 +447,88 @@ test_that("a data frame crosses as a view with its class and row names", {
   channel_end(p)
 })
 
+test_that("attributed views carry 'I' blobs: identical() across the shapes", {
+  p <- channel_pair(arena_size = 0)
+
+  # a standalone factor: an 'I' blob on the MIZH root, applied as-is
+  f <- factor(rep(c("a", "b"), 20000), levels = c("a", "b"))
+  mizu_send(p[["host"]], f)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  peek <- view_peek(y)
+  expect_identical(peek(64 + 4 * length(f), 1), charToRaw("I"))
+  expect_identical(y[], f)
+
+  # a frame: the 'I' root blob located by the header's attrs offset
+  df <- data.frame(a = runif(20000), b = rep("s", 20000))
+  mizu_send(p[["host"]], df)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  peek <- view_peek(y)
+  expect_identical(peek(i64v(peek(8, 8)), 1), charToRaw("I"))
+  expect_identical(as.data.frame(y[]), df)
+
+  # a frame with a list column, a matrix column and an ordered-factor
+  # column: the root dict is the whitelisted shape, the columns are not —
+  # the apply-as-is read must not reject it
+  df2 <- data.frame(x = runif(5000), stringsAsFactors = FALSE)
+  df2$mat <- matrix(runif(5000 * 4), 5000, 4)
+  df2$ord <- ordered(rep(letters[1:4], length.out = 5000))
+  df2$lst <- lapply(seq_len(5000), function(i) i)
+  mizu_send(p[["host"]], df2)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  expect_identical(as.data.frame(y[]), df2)
+
+  # a Date-columned frame and an integer64-columned frame (the leaf gate:
+  # the directory tag carries the integer64 class, no blob)
+  df3 <- data.frame(
+    d = as.Date("2022-03-21") + 0:19999,
+    i64 = structure(runif(20000), class = "integer64")
+  )
+  mizu_send(p[["host"]], df3)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  peek <- view_peek(y)
+  expect_identical(
+    readBin(peek(64 + 16 + 32, 4), "integer", 1, 4, endian = "little"),
+    32L
+  ) # the int64 leaf's directory tag
+  expect_identical(
+    readBin(peek(64 + 16 + 32 + 4, 4), "integer", 1, 4, endian = "little"),
+    0L
+  ) # and no attrs tail
+  expect_identical(as.data.frame(y[]), df3)
+  channel_end(p)
+})
+
+test_that("a named vector and an environment-attributed vector keep their attrs", {
+  p <- channel_pair(arena_size = 0)
+
+  # a named vector: the {names} 'I' blob
+  nv <- runif(20000)
+  names(nv) <- paste0("n", seq_along(nv))
+  mizu_send(p[["host"]], nv)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  peek <- view_peek(y)
+  expect_identical(peek(64 + 8 * length(nv), 1), charToRaw("I"))
+  expect_identical(y[], nv)
+
+  # an attribute set the codec cannot carry (an environment): the blob
+  # stays R_Serialize, applied verbatim
+  v <- runif(20000)
+  attr(v, "meta") <- new.env(parent = emptyenv())
+  mizu_send(p[["host"]], v)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  peek <- view_peek(y)
+  expect_false(identical(peek(64 + 8 * length(v), 1), charToRaw("I")))
+  expect_true(is.environment(attr(y, "meta")))
+  expect_identical(as.numeric(y), as.numeric(v))
+  channel_end(p)
+})
+
 test_that("a list view re-sends as REF even after element access", {
   p <- channel_pair(arena_size = 0)
   x <- list(nums = runif(100000), strs = paste0("s", 1:5000))

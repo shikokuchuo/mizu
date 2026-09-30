@@ -911,8 +911,15 @@ MIZU_EXT_INLINE int mizu_ext_mizl_tag_ok(int32_t sexptype) {
 }
 
 /* One per-element NA test per NA-capable wire type (anything else is
-   never null): INT32_MIN for LGL and INT, INT64_MIN, the NA_real_
-   payload discriminated from other NaNs, the CPLX pair either part. */
+   never null): INT32_MIN for LGL and INT, INT64_MIN, and the NA_real_
+   payload discriminated from other NaNs — any NaN whose low word is
+   1954 (0x7A2), R's own ISNA test, so a writer's quiet-bit-clear
+   NA_real_ (R's verbatim form) and the wire's quiet-bit-set twin both
+   read as NA while a genuine NaN stays a value. The CPLX pair either
+   part. */
+MIZU_EXT_INLINE int mizu_ext_na_real_bits(uint64_t bits) {
+  return ((bits >> 52) & 0x7FF) == 0x7FF && (uint32_t) bits == 0x7A2u;
+}
 MIZU_EXT_INLINE int mizu_ext_na_at(int type, const void *src, uint64_t i) {
   const unsigned char *p = (const unsigned char *) src;
   uint64_t bits, re, im;
@@ -925,11 +932,11 @@ MIZU_EXT_INLINE int mizu_ext_na_at(int type, const void *src, uint64_t i) {
     return v32 == MIZU_NA_INT32;
   case MIZU_TYPE_REAL:
     memcpy(&bits, p + 8 * i, 8);
-    return bits == MIZU_NA_REAL_BITS;
+    return mizu_ext_na_real_bits(bits);
   case MIZU_TYPE_CPLX:
     memcpy(&re, p + 16 * i, 8);
     memcpy(&im, p + 16 * i + 8, 8);
-    return re == MIZU_NA_REAL_BITS || im == MIZU_NA_REAL_BITS;
+    return mizu_ext_na_real_bits(re) || mizu_ext_na_real_bits(im);
   case MIZU_TYPE_INT64:
     memcpy(&v64, p + 8 * i, 8);
     return v64 == MIZU_NA_INT64;
@@ -1419,7 +1426,9 @@ typedef struct mizu_ix_s {
 
 /* Open a cursor over a whole stream: the magic and version checks, the
    unknown version taking the informative "the peer uses a newer format"
-   decline. MIZU_OK, or MIZU_ERR with the error in the TLS slot. */
+   decline. The stream is borrowed, never copied: buf must outlive the
+   cursor, and item spans (mizu_ix_item.ptr) point into it. MIZU_OK, or
+   MIZU_ERR with the error in the TLS slot. */
 MIZU_API mizu_status mizu_ix_open(mizu_ix *cur, const void *buf, size_t len);
 /* The next item: bounds, depth, UTF-8 and grammar checks per the spec.
    MIZU_OK and *item filled, or MIZU_ERR with the informative text in the

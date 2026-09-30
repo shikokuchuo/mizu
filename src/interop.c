@@ -291,7 +291,7 @@ static int ix_qualify_dim(SEXP x) {
    compact automatic c(NA, ±n) included); one or more columns, each an
    attribute-free atomic vector, a class-only integer64, a plain factor,
    a Date, or a POSIXct, all of one length. */
-static int ix_qualify_frame(SEXP x) {
+static int ix_qualify_frame(SEXP x, int *rn_seq1n) {
   if (TYPEOF(x) != VECSXP || !ix_class_is(x, ix_frame_class) ||
       ix_attr_count(x) != 3)
     return 0;
@@ -340,26 +340,36 @@ static int ix_qualify_frame(SEXP x) {
   }
   SEXP rn = PROTECT(Rf_getAttrib(x, R_RowNamesSymbol));
   int ok = 0;
+  if (rn_seq1n != NULL) *rn_seq1n = 0;
   switch (TYPEOF(rn)) {
   case INTSXP:
     if (XLENGTH(rn) == 2 && !ALTREP(rn) && INTEGER(rn)[0] == NA_INTEGER) {
       ok = INTEGER(rn)[1] == n || INTEGER(rn)[1] == -n;  /* compact */
     } else if (XLENGTH(rn) != n) {
       ok = 0;
-    } else if (ALTREP(rn)) {
-      ok = 1;
-      int buf[512];
-      for (R_xlen_t i = 0; ok && i < n; ) {
-        const R_xlen_t m = n - i < 512 ? n - i : 512;
-        INTEGER_GET_REGION(rn, i, m, buf);
-        for (R_xlen_t j = 0; j < m; j++)
-          if (buf[j] == NA_INTEGER) ok = 0;
-        i += m;
-      }
     } else {
-      ok = 1;
-      for (R_xlen_t i = 0; i < n; i++)
-        if (INTEGER(rn)[i] == NA_INTEGER) ok = 0;
+      /* the seq test doubles as the NA check (1:n carries no NA): one
+         pass settles both, and the blob's row.names normalization reads
+         the verdict back instead of re-scanning */
+      int seq = ix_int_is_seq1n(rn, n);
+      if (seq) {
+        if (rn_seq1n != NULL) *rn_seq1n = 1;
+        ok = 1;
+      } else if (ALTREP(rn)) {
+        ok = 1;
+        int buf[512];
+        for (R_xlen_t i = 0; ok && i < n; ) {
+          const R_xlen_t m = n - i < 512 ? n - i : 512;
+          INTEGER_GET_REGION(rn, i, m, buf);
+          for (R_xlen_t j = 0; j < m; j++)
+            if (buf[j] == NA_INTEGER) ok = 0;
+          i += m;
+        }
+      } else {
+        ok = 1;
+        for (R_xlen_t i = 0; i < n; i++)
+          if (INTEGER(rn)[i] == NA_INTEGER) ok = 0;
+      }
     }
     break;
   case STRSXP:
@@ -428,11 +438,61 @@ static int ix_encodable(SEXP x, unsigned depth) {
 int mizu_interop_attrs_qualify(SEXP x) {
   if (Rf_isS4(x) || !ANY_ATTRIB(x)) return MIZU_IXQ_NONE;
   if (ix_qualify_factor(x)) return MIZU_IXQ_FACTOR;
-  if (ix_qualify_frame(x)) return MIZU_IXQ_FRAME;
+  if (ix_qualify_frame(x, NULL)) return MIZU_IXQ_FRAME;
   if (ix_qualify_dim(x)) return MIZU_IXQ_DIM;
   if (ix_qualify_date(x)) return MIZU_IXQ_DATE;
   if (ix_qualify_posixct(x)) return MIZU_IXQ_POSIXCT;
   return ix_encodable(x, 0) ? MIZU_IXQ_ENCODABLE : MIZU_IXQ_NONE;
+}
+
+/* The blob hooks' half: the qualification, with the frame row.names
+   seq verdict handed back (its scan doubles as the qualification's NA
+   check, so the blob's normalization never re-scans). */
+static int ix_qualify_blob(SEXP x, int *rn_seq1n) {
+  if (Rf_isS4(x) || !ANY_ATTRIB(x)) return MIZU_IXQ_NONE;
+  if (ix_qualify_factor(x)) return MIZU_IXQ_FACTOR;
+  if (ix_qualify_frame(x, rn_seq1n)) return MIZU_IXQ_FRAME;
+  if (ix_qualify_dim(x)) return MIZU_IXQ_DIM;
+  if (ix_qualify_date(x)) return MIZU_IXQ_DATE;
+  if (ix_qualify_posixct(x)) return MIZU_IXQ_POSIXCT;
+  return ix_encodable(x, 0) ? MIZU_IXQ_ENCODABLE : MIZU_IXQ_NONE;
+}
+
+/* The size→write verdict memo: the blob write hook re-runs the
+   qualification by contract (the two passes must agree), but the common
+   layout has exactly one attributed node — a frame's root, a factor, a
+   named vector — whose verdict the size hook computed moments ago.
+   Reuse it, one pointer-compared entry consumed on hit; a miss runs the
+   full qualification and restocks. The naked pointer is compare-only
+   and never aliases a different object: the stage keeps x anchored
+   through both passes, and every layout write's own size pass restocks
+   the entry before any write hook compares it. */
+static SEXP ix_blob_memo_x;
+static int ix_blob_memo_q = MIZU_IXQ_NONE;
+static int ix_blob_memo_seq = -1;
+
+/* The size hook's half: restock the verdict (it always computes fresh —
+   the object may have been mutated between stages). */
+static void ix_blob_memo_store(SEXP x, int q, int rn_seq1n) {
+  ix_blob_memo_x = x;
+  ix_blob_memo_q = q;
+  ix_blob_memo_seq = rn_seq1n;
+}
+
+/* The write hook's half: consume the size hook's verdict when it is for
+   this object, else run the full qualification and restock (a tree's
+   attributed leaves do this; the root's hit is then a miss — correct,
+   just unsaved). */
+static int ix_qualify_blob_mixed(SEXP x, int *rn_seq1n) {
+  if (x == ix_blob_memo_x) {
+    ix_blob_memo_x = NULL;   /* one-shot: a tree's later sites re-qualify */
+    *rn_seq1n = ix_blob_memo_seq;
+    return ix_blob_memo_q;
+  }
+  *rn_seq1n = -1;
+  const int q = ix_qualify_blob(x, rn_seq1n);
+  ix_blob_memo_store(x, q, *rn_seq1n);
+  return q;
 }
 
 // Writer ------------------------------------------------------------------------
@@ -632,16 +692,46 @@ static void ixw_dict_pairs(mizu_ixw *w, SEXP names, SEXP values) {
    1:n by value on later R) writes intv[na, ∓n]; a zero-row frame's
    integer(0) writes intv[na, 0]; any other integer or character vector
    writes as-is. */
-static int ix_int_is_seq1n(SEXP rn, R_xlen_t n) {
-  if (XLENGTH(rn) != n || n <= 0) return 0;
-  int buf[512];
+static int ix_int_is_seq1n_chunked(SEXP rn, R_xlen_t n) {
+  int buf[8192];
   for (R_xlen_t i = 0; i < n; ) {
-    const R_xlen_t m = n - i < 512 ? n - i : 512;
+    const R_xlen_t m = n - i < 8192 ? n - i : 8192;
     INTEGER_GET_REGION(rn, i, m, buf);
     for (R_xlen_t j = 0; j < m; j++)
       if (buf[j] != (int) (i + j + 1)) return 0;
     i += m;
   }
+  return 1;
+}
+
+/* A warm scratch for the big-vector scan: the per-call malloc's
+   first-touch page faults are the cost at 1e6 rows, so the buffer grows
+   on demand and stays. Single-threaded staging (the core's contract —
+   the stage hook runs on the verb's thread). */
+static int *ix_seq_buf;
+static size_t ix_seq_buf_n;
+
+static int ix_int_is_seq1n(SEXP rn, R_xlen_t n) {
+  if (XLENGTH(rn) != n || n <= 0) return 0;
+  if (n <= 8192 || n > (R_xlen_t) 1 << 28)
+    return ix_int_is_seq1n_chunked(rn, n);
+  /* one flat pass: the GET_REGION fill and the compare are both
+     memory-bandwidth work (a compact sequence computes its fill; the
+     compare vectorizes) */
+  if (ix_seq_buf_n < (size_t) n) {
+    int *nb = (int *) realloc(ix_seq_buf, (size_t) n * sizeof(int));
+    if (nb == NULL) {
+      free(ix_seq_buf);
+      ix_seq_buf = NULL;
+      ix_seq_buf_n = 0;
+      return ix_int_is_seq1n_chunked(rn, n);
+    }
+    ix_seq_buf = nb;
+    ix_seq_buf_n = (size_t) n;
+  }
+  INTEGER_GET_REGION(rn, 0, n, ix_seq_buf);
+  for (R_xlen_t j = 0; j < n; j++)
+    if (ix_seq_buf[j] != (int) (j + 1)) return 0;
   return 1;
 }
 
@@ -1387,6 +1477,111 @@ SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate) {
   return value;
 }
 
+// The layout attribute blob (§3.5: the view layer's embedder hooks) ------------------
+
+/* The blob's row.names value for a frame: automatic forms write the
+   compact c(NA, ∓n) (the ixw_rownames discipline — a 1:n ALTREP would
+   otherwise serialize a full element per row into the blob). seq1n is
+   the qualification's verdict (it scanned already — the seq test
+   doubles as its NA check), 0 for character or explicit row names. */
+static SEXP ix_blob_rownames(SEXP rn, R_xlen_t n, int seq1n) {
+  if (TYPEOF(rn) != INTSXP) return rn;
+  if (XLENGTH(rn) == 2 && !ALTREP(rn) && INTEGER(rn)[0] == NA_INTEGER)
+    return rn;                         /* already the compact form */
+  if (XLENGTH(rn) == 0) seq1n = 1;
+  if (!seq1n) return rn;
+  SEXP compact = PROTECT(Rf_allocVector(INTSXP, 2));
+  INTEGER(compact)[0] = NA_INTEGER;
+  INTEGER(compact)[1] = XLENGTH(rn) == 0 ? 0 : (int) -n;
+  UNPROTECT(1);
+  return compact;
+}
+
+/* The attribute set as a plain named list — the blob's dict value:
+   R_getAttributes' named list on R >= 4.6, the pairlist walked below.
+   seq1n (the qualification's row.names verdict) drives the row.names
+   normalization; -1 means "not a frame" (no normalization). Caller
+   PROTECTs. */
+static SEXP ix_attrs_list(SEXP x, int seq1n) {
+  if (!ANY_ATTRIB(x)) return R_NilValue;
+  const int frame = seq1n >= 0;
+  const R_xlen_t na = ix_attr_count(x);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, na));
+  SEXP names = PROTECT(Rf_allocVector(STRSXP, na));
+  const R_xlen_t nrows = frame && TYPEOF(x) == VECSXP && XLENGTH(x) > 0 ?
+    XLENGTH(VECTOR_ELT(x, 0)) : 0;
+#if R_VERSION >= R_Version(4, 6, 0)
+  SEXP attrs = PROTECT(R_getAttributes(x));
+  SEXP keys = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
+  for (R_xlen_t i = 0; i < na; i++) {
+    SEXP nm = STRING_ELT(keys, i);
+    SEXP value = VECTOR_ELT(attrs, i);
+    if (frame && Rf_installChar(nm) == R_RowNamesSymbol)
+      value = ix_blob_rownames(value, nrows, seq1n);
+    SET_VECTOR_ELT(out, i, value);
+    SET_STRING_ELT(names, i, nm);
+  }
+  UNPROTECT(2);
+#else
+  R_xlen_t i = 0;
+  for (SEXP a = ATTRIB(x); a != R_NilValue; a = CDR(a), i++) {
+    SEXP value = CAR(a);
+    if (frame && TAG(a) == R_RowNamesSymbol)
+      value = ix_blob_rownames(value, nrows, seq1n);
+    SET_VECTOR_ELT(out, i, value);
+    SET_STRING_ELT(names, i, PRINTNAME(TAG(a)));
+  }
+#endif
+  Rf_setAttrib(out, R_NamesSymbol, names);
+  UNPROTECT(2);
+  return out;
+}
+
+/* The blob size hook: a complete 'I' stream whose value is the attribute
+   dict, when the set is encodable — else a decline (0) and the view
+   layer's R_Serialize fallback. No peer knowledge: the §1.1 zero-copy
+   filter keeps a peer without MIZU_CAP_ATTRS off the layouts, and an R
+   reader homes any dict. */
+static size_t mizu_interop_attrs_blob_size(SEXP x) {
+  int rn_seq1n = -1;
+  const int q = ix_qualify_blob(x, &rn_seq1n);
+  ix_blob_memo_store(x, q, rn_seq1n);
+  if (q == MIZU_IXQ_NONE) return 0;
+  SEXP attrs = PROTECT(ix_attrs_list(x, q == MIZU_IXQ_FRAME ? rn_seq1n : -1));
+  size_t total = attrs == R_NilValue ? 0 :
+    mizu_interop_write(NULL, 0, attrs, NULL);
+  UNPROTECT(1);
+  return total;
+}
+
+/* The blob write hook: emits behind the size pass's total — the two
+   passes run the same qualification over the same object, so they agree
+   (a zero return after a nonzero size is the view layer's bug guard,
+   never a fallback). */
+static size_t mizu_interop_attrs_blob_write(unsigned char *dst, SEXP x) {
+  int rn_seq1n = -1;
+  const int q = ix_qualify_blob_mixed(x, &rn_seq1n);
+  if (q == MIZU_IXQ_NONE) return 0;
+  SEXP attrs = PROTECT(ix_attrs_list(x, q == MIZU_IXQ_FRAME ? rn_seq1n : -1));
+  size_t total = attrs == R_NilValue ? 0 :
+    mizu_interop_write(dst, SIZE_MAX, attrs, NULL);
+  UNPROTECT(1);
+  return total;
+}
+
+/* The blob read hook: the cursor opens the 'I' stream (its own errors
+   reject a malformed blob in the corrupt-region house style), the dict
+   applies apply-as-is — no frame-shape validation on a layout read: an
+   R reader homes any attribute set, whoever wrote the region, and a
+   legitimate frame's columns legitimately escape the whitelisted shapes
+   (list, matrix, Date and ordered-factor columns ride leaf blobs). */
+static void mizu_interop_attrs_blob_read(SEXP result, const unsigned char *buf,
+                                         size_t size) {
+  SEXP attrs = PROTECT(mizu_interop_read(buf, size));
+  mizu_interop_attrs_build(result, attrs, 0);
+  UNPROTECT(1);
+}
+
 /* The err tag's R home: a mizu_error_remote condition as a *value* — the
    channel's remote-error discipline is that user code decides to raise
    (mizu_raise). Fields: message, remote_type, detail, and index (1-based)
@@ -1660,4 +1855,9 @@ void mizu_interop_init(void) {
   SET_STRING_ELT(ix_ordered_class, 0, Rf_mkChar("ordered"));
   SET_STRING_ELT(ix_ordered_class, 1, Rf_mkChar("factor"));
   R_PreserveObject(ix_ordered_class);
+  /* the view layer's attribute blobs are 'I' streams from here (mori
+     leaves the triple unset and keeps R_Serialize both ways) */
+  mizu_view_set_attrs_hooks(mizu_interop_attrs_blob_size,
+                            mizu_interop_attrs_blob_write,
+                            mizu_interop_attrs_blob_read);
 }
