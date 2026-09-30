@@ -8,6 +8,7 @@
    doorbell, the worker loop) is all core-side. */
 
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 #include "mizu.h"
 
@@ -77,8 +78,7 @@ static void pool_binding(mizu_r_handle *h, mizu_binding *b, int worker) {
   b->drop = mizu_r_drop;
   b->sweep = mizu_r_sweep;
   b->ctx = h;
-  b->ident = MIZU_IDENT(MIZU_LANG_R,
-                       MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS);
+  b->ident = MIZU_R_IDENT;
 }
 
 /* Build the extptr around a created/joined/attached core handle: the prot
@@ -252,6 +252,15 @@ SEXP mizu_pool_suffix(SEXP xp) {
 
 /* Startup / elastic-spawn rendezvous: cover the given worker slots. Returns
    FALSE on deadline expiry. */
+/* The pool's worker identity word, cached on the handle: the word never
+   resets once a worker has joined, so a nonzero cache is final, and a
+   zero one is re-read (an attach can race ahead of the first join). */
+static uint64_t pool_word(mizu_r_handle *h) {
+  if (h->worker_ident == 0)
+    h->worker_ident = mizu_pool_worker_ident((mizu_pool *) h->core);
+  return h->worker_ident;
+}
+
 SEXP mizu_pool_ready_wait_call(SEXP xp, SEXP slots_sexp, SEXP timeout) {
   mizu_r_handle *h = pool_get(xp);
   if (h->role != MIZU_ROLE_CONTROLLER)
@@ -266,6 +275,7 @@ SEXP mizu_pool_ready_wait_call(SEXP xp, SEXP slots_sexp, SEXP timeout) {
   mizu_status st = mizu_pool_ready_wait(p, slots, (size_t) n,
                                       mizu_timeout_ms(Rf_asReal(timeout)));
   if (st == MIZU_ERR) pool_raise(p);
+  if (st == MIZU_OK) (void) pool_word(h);
   return Rf_ScalarLogical(st == MIZU_OK);
 }
 
@@ -318,6 +328,7 @@ SEXP mizu_pool_worker_join_call(SEXP suffix_sexp, SEXP slot_sexp,
   h->core = (mizu_handle *) p;
   h->self_pid = mizu_self_pid();
   h->role = MIZU_ROLE_WORKER;
+  (void) pool_word(h);
   return pool_wrap(h);
 }
 
@@ -338,6 +349,7 @@ SEXP mizu_pool_attach_call(SEXP suffix_sexp) {
   h->core = (mizu_handle *) p;
   h->self_pid = mizu_self_pid();
   h->role = MIZU_ROLE_SUBMITTER;
+  (void) pool_word(h);
   return pool_wrap(h);
 }
 
@@ -440,15 +452,150 @@ SEXP mizu_pool_submit_call(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp)
   return pool_submit(xp, payload, timeout, Rf_asInteger(flags_sexp), 0);
 }
 
+/* The private-frame guard: a pool whose joined workers are not R takes
+   spec tasks only — a private frame would reach a worker that cannot
+   parse it, and its ERR would publish in a format the submitter cannot
+   read. A word of 0 (no worker joined yet) queues unchanged: the
+   residual window is accepted and stated (§4.1). */
+static void pool_check_native(mizu_r_handle *h) {
+  const uint64_t word = pool_word(h);
+  if (word != 0 && (word & 0xff) != MIZU_LANG_R)
+    Rf_error("mizu: this pool's workers are not R — submit a mizu_call() "
+             "spec with mizu_submit_call() instead");
+}
+
 /* mizu_submit's entry: takes the quoted expression and the evaluated args
    list separately and assembles the list(expr, args) wire payload here. */
 SEXP mizu_pool_submit_expr(SEXP xp, SEXP expr, SEXP args, SEXP timeout,
                            SEXP flags_sexp) {
   pool_check_task_args(args);
+  pool_check_native(pool_get(xp));
   SEXP payload = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(payload, 0, expr);
   SET_VECTOR_ELT(payload, 1, args);
   SEXP out = pool_submit(xp, payload, timeout, Rf_asInteger(flags_sexp), 0);
+  UNPROTECT(1);
+  return out;
+}
+
+/* The name-kind qualifier check, syntax-shaped per worker language and
+   run before args staging (a bare name with non-portable args raises
+   this error, never the portability one). The check exists because the
+   worker's global namespace is the runner module, never the submitter's
+   (pickle's importable-reference rule motivates it). An unknown language
+   defers to the worker's resolution error stream. */
+static int pool_name_qualified(const char *s, uint32_t lang) {
+  switch (lang) {
+  case MIZU_LANG_R: {
+    /* pkg::fn (or pkg:::fn): a non-empty package of name characters and
+       a non-empty R name */
+    const char *sep = strstr(s, "::");
+    if (sep == NULL || sep == s) return 0;
+    for (const char *p = s; p < sep; p++)
+      if (!isalnum((unsigned char) *p) && *p != '.') return 0;
+    const char *fn = sep + 2;
+    if (*fn == ':') fn++;
+    if (*fn == '\0' || (!isalpha((unsigned char) *fn) && *fn != '.'))
+      return 0;
+    for (const char *p = fn + 1; *p != '\0'; p++)
+      if (!isalnum((unsigned char) *p) && *p != '.' && *p != '_') return 0;
+    return 1;
+  }
+  case MIZU_LANG_PYTHON: {
+    /* mod.fn: dot-separated identifiers, at least one dot */
+    if (!isalpha((unsigned char) *s) && *s != '_') return 0;
+    int dots = 0, start = 0;
+    for (const char *p = s + 1; ; p++) {
+      if (*p == '.') {
+        dots++;
+        start = 1;
+      } else if (*p == '\0') {
+        return dots > 0 && !start;
+      } else if (start) {
+        if (!isalpha((unsigned char) *p) && *p != '_') return 0;
+        start = 0;
+      } else if (!isalnum((unsigned char) *p) && *p != '_') {
+        return 0;
+      }
+    }
+  }
+  default:
+    return 1;
+  }
+}
+
+/* mizu_submit_call's entry: standard evaluation, the spec validated and
+   qualifier-checked here, the task stream written by the stage hook off
+   the spec field (the err_cond pattern). The field rides
+   R_ExecWithCleanup, not a plain clear-on-return: the core's full-ring
+   wait polls the check hook (an interrupt longjmps) before the stage
+   runs, and a dangling field would mis-frame a later stage whose object
+   landed at that address. The trailing ident is a test-only identity
+   override (helper.R's foreign-submitter simulation), NULL for this
+   build's word. */
+typedef struct mizu_spec_submit_s {
+  mizu_r_handle *h;
+  SEXP xp, timeout;
+  SEXP out;
+} mizu_spec_submit;
+
+static SEXP mizu_spec_submit_do(void *data) {
+  mizu_spec_submit *c = (mizu_spec_submit *) data;
+  SEXP spec = c->h->spec;
+  c->out = pool_submit(c->xp, spec, c->timeout, 0, 0);
+  return c->out;
+}
+
+static void mizu_spec_submit_clean(void *data) {
+  mizu_spec_submit *c = (mizu_spec_submit *) data;
+  c->h->spec = NULL;
+  c->h->spec_ident = 0;
+}
+
+SEXP mizu_pool_submit_spec(SEXP xp, SEXP spec, SEXP timeout,
+                           SEXP ident_sexp) {
+  mizu_r_handle *h = pool_get(xp);
+  const uint64_t word = pool_word(h);
+  if (word == 0)
+    Rf_error("mizu: no worker has joined this pool");
+  const uint32_t target = (uint32_t) (word & 0xff);
+  if (TYPEOF(spec) != VECSXP || XLENGTH(spec) != 4 ||
+      TYPEOF(VECTOR_ELT(spec, 0)) != STRSXP ||
+      XLENGTH(VECTOR_ELT(spec, 0)) != 1 ||
+      TYPEOF(VECTOR_ELT(spec, 1)) != INTSXP ||
+      XLENGTH(VECTOR_ELT(spec, 1)) != 1 ||
+      TYPEOF(VECTOR_ELT(spec, 2)) != VECSXP ||
+      TYPEOF(VECTOR_ELT(spec, 3)) != VECSXP)
+    Rf_error("mizu: 'spec' must be a mizu_call() specification");
+  SEXP code = VECTOR_ELT(spec, 0);
+  const int kind = INTEGER(VECTOR_ELT(spec, 1))[0];
+  if (kind == 0 &&
+      !pool_name_qualified(CHAR(STRING_ELT(code, 0)), target))
+    Rf_error("mizu: a name-kind task needs a qualified name ('pkg::fn' "
+             "for R workers, 'mod.fn' for Python workers): '%s'",
+             CHAR(STRING_ELT(code, 0)));
+  uint64_t ident = MIZU_R_IDENT;
+  if (ident_sexp != R_NilValue) {
+    if (TYPEOF(ident_sexp) != INTSXP || XLENGTH(ident_sexp) != 2)
+      Rf_error("mizu: expected an identity pair c(lang, caps)");
+    ident = MIZU_IDENT((uint32_t) INTEGER(ident_sexp)[0],
+                       (uint32_t) INTEGER(ident_sexp)[1]);
+  }
+  mizu_spec_submit c = { h, xp, timeout, R_NilValue };
+  h->spec = spec;
+  h->spec_ident = ident;
+  R_ExecWithCleanup(mizu_spec_submit_do, &c, mizu_spec_submit_clean, &c);
+  return c.out;
+}
+
+/* The pool's worker identity word as c(lang, caps), or NULL while no
+   worker has joined (the map guard and the test suite read it). */
+SEXP mizu_pool_ident_call(SEXP xp) {
+  const uint64_t word = pool_word(pool_get(xp));
+  if (word == 0) return R_NilValue;
+  SEXP out = PROTECT(Rf_allocVector(INTSXP, 2));
+  INTEGER(out)[0] = (int) (word & 0xff);
+  INTEGER(out)[1] = (int) (uint32_t) (word >> 32);
   UNPROTECT(1);
   return out;
 }
@@ -485,6 +632,7 @@ SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   if (TYPEOF(exprs) != VECSXP)
     Rf_error("mizu: exprs must be a list of expressions");
   pool_check_task_args(args);
+  pool_check_native(pool_get(xp));
   mizu_pool *p = pool_core(xp);
   R_xlen_t n = XLENGTH(exprs);
   mizu_batch_supply supply;
@@ -863,11 +1011,20 @@ SEXP mizu_pool_dump_call(SEXP xp) {
   if (mizu_pool_dump_get(p, &d) != MIZU_OK) pool_raise(p);
   uint32_t mw = d.status.max_workers, ms = d.status.max_submitters;
   const char *names[] = {"name", "shutdown", "workers", "submitters",
-                         "tasks", "local", "help", ""};
+                         "tasks", "local", "help", "language",
+                         "capabilities", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(d.status.name));
   SET_VECTOR_ELT(out, 1, Rf_ScalarLogical(d.status.shutdown));
   SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(d.help_wanted));
+  /* the pool word: the workers' language and reader capabilities (0
+     while no worker has joined) */
+  const uint64_t word = mizu_pool_worker_ident(p);
+  if (word != 0) {
+    SET_VECTOR_ELT(out, 7, Rf_ScalarInteger((int) (word & 0xff)));
+    SET_VECTOR_ELT(out, 8,
+                   Rf_ScalarInteger((int) (uint32_t) (word >> 32)));
+  }
 
   /* the spill free list, mapping cache, and collect park count are
      handle-local, surfacing here rather than in the cross-process stats */

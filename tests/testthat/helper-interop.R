@@ -275,6 +275,29 @@ ix_value <- function(st) {
         class = c("mizu_error_remote", "mizu_error", "error", "condition")
       )
     },
+    "task" = {
+      ix_expect(st, "(")
+      target <- as.integer(ix_token(st, ","))
+      ix_expect(st, ",")
+      kind <- as.integer(ix_token(st, ","))
+      ix_expect(st, ",")
+      ident <- as.numeric(ix_token(st, ","))
+      ix_expect(st, ",")
+      code <- ix_value(st)
+      ix_expect(st, ",")
+      positional <- ix_value(st)
+      ix_expect(st, ",")
+      named <- ix_value(st)
+      ix_expect(st, ")")
+      list(
+        target = target,
+        kind = kind,
+        ident = ident,
+        code = code,
+        positional = positional,
+        named = named
+      )
+    },
     "strv" = {
       ix_expect(st, "[")
       elts <- character(0L)
@@ -451,4 +474,19 @@ ix_write <- function(x) {
     return(ix_write_err(x))
   }
   ix_raw_to_hex(.Call(mizu:::mizu_interop_write_call, x))
+}
+
+# Task rows: the exec-hook decode (components, no resolution) and the task
+# writer off the spec components.
+ix_read_task <- function(hex) {
+  .Call(mizu:::mizu_interop_read_task_call, ix_hex_to_raw(hex))
+}
+
+ix_write_task <- function(x) {
+  ix_raw_to_hex(.Call(
+    mizu:::mizu_interop_write_task_call,
+    list(x$code, x$kind, x$positional, x$named),
+    x$target,
+    x$ident
+  ))
 }

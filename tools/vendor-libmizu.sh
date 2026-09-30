@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="ad3700a436f25198d72ed520f82c531fca2a674d"  # libmizu: na_at: the ISNA payload discipline for REAL/CPLX
+PIN="8c26849b3de0e97b894f7a039286f74f454cce51"  # libmizu: the task tag (Phase 4): normative format, task corpus fixtures
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

@@ -194,6 +194,23 @@ void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
   mizu_stage_retain(h, shm);
 }
 
+/* The SHM_RAW spill of a task stream past the inline budget (n from the
+   counting first pass): the ordinary SHM_RAW retain, no keeperless claim
+   — a task entry pins nothing the collect-side gate would read (§4.0). */
+void mizu_payload_spill_task(mizu_slot_hdr *hdr, unsigned char *payload,
+                             SEXP spec, uint32_t target, uint64_t ident,
+                             size_t n, mizu_handle *h) {
+  mizu_shm *shm = mizu_spill_get_raise(h, n);
+  if (mizu_interop_write_task((unsigned char *) shm->addr, shm->size, spec,
+                              target, ident, NULL) != n)
+    Rf_error("mizu: task write mismatch");   /* the walk is deterministic */
+  hdr->kind = MIZU_KIND_SHM_RAW;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = (uint64_t) n;
+  memcpy(payload, shm->name, shm->name_len);
+  mizu_stage_retain(h, shm);
+}
+
 /* The NIL, RAWVEC, and STR1 kinds retain nothing: their slot bytes are
    self-contained (RAWVEC and STR1 exclude ALTREP, attributes, and S4, so
    no hook-emitted identifier can ride along), unlike the serialize tiers,
@@ -202,6 +219,11 @@ void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
 void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, SEXP x, mizu_handle *h,
                         void *ctx) {
+  mizu_r_handle *rh = (mizu_r_handle *) ctx;
+  /* the reader-language state (one predicted branch per stage): a foreign
+     pool handle is the §4.2 foreign result, its zero-copy admission the
+     submitter's capability mask; same-language handles run unchanged */
+  const int foreign = rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
   size_t rawlen, total;
   /* NULL stages as the immediate kind: the canonical empty result / ACK
      pays no serialize pass and no receive-side allocation */
@@ -214,8 +236,12 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
   /* a mizu-native view crosses by reference (REF) at any size — required
      once SHM_VEC views exist: the serialize-hook fallback resolves
      uncounted, and the producer could recycle under the far side's view.
-     The pin keeps the view (and with it the region) until consumer-done. */
-  if (mizu_zc_ref_stage(hdr, payload, inline_max, x)) {
+     The pin keeps the view (and with it the region) until consumer-done.
+     The foreign filter runs ahead of the claim: a view whose layout the
+     submitter cannot wrap takes the interop writer below as a value copy
+     off the shared pages. */
+  if ((!foreign || mizu_zc_ref_foreign_ok(x, rh->peer_caps)) &&
+      mizu_zc_ref_stage(hdr, payload, inline_max, x)) {
     mizu_r_pin(h, ctx, x);
     return;
   }
@@ -234,6 +260,12 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
       memcpy(dst, mizu_vec_ptr(x), rawlen);
       return;
     }
+  } else if (foreign) {
+    /* the foreign STR1: a length-1 string crosses normalized to UTF-8 */
+    mizu_ix_decline rec = { 0, "", "", "" };
+    int s1 = mizu_interop_str1_foreign(hdr, payload, inline_max, x, &rec);
+    if (s1 > 0) return;
+    if (s1 < 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
   } else if (mizu_str1_stage(hdr, payload, inline_max, x)) {
     return;
   } else if (mizu_zc_eligible(x, inline_max, &total, 0) &&
@@ -244,19 +276,23 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
        swept the lent ledger and reclaimed nothing — a Linux-only signal)
        the fresh region per SHM_VEC payload is dearer than the serialize
        copy: fall to SHM_RAW, whose region surrenders deterministically at
-       consumer-done. Pools are homogeneous (Phase 4 tags foreign
-       results), so the layout write's foreign mode stays off here. */
+       consumer-done. */
     mizu_zc_stage(hdr, payload, x, total, h, ctx, 0);
     return;
   }
-  /* the reader-language branch (one predicted check on the handle):
-     foreign handles write interop only — a decline raises at send,
-     naming the value and the reason; same-language handles keep the
-     private codec / R_Serialize path below unchanged. Pools are
-     homogeneous by construction, so this is never taken here — the
-     per-task foreign result of §4.2 rides the same branch. */
-  if (((mizu_r_handle *) ctx)->peer_lang != 0 &&
-      ((mizu_r_handle *) ctx)->peer_lang != MIZU_LANG_R) {
+  /* the reader-language branch: a foreign result writes interop only, the
+     zero-copy admission gated on the submitter's capability mask — a
+     decline raises at publish, preflighted by the exec's gate (§4.2) */
+  if (foreign) {
+    if (rawtype == 0 &&
+        mizu_zc_eligible_foreign(x, inline_max, &total, rh->peer_caps) &&
+        !mizu_handle_churn(h)) {
+      /* the foreign zero-copy gate: the baseline layouts plus whatever
+         the submitter's mask advertises; the layout write builds the
+         validity-bitmap section for the foreign reader */
+      mizu_zc_stage(hdr, payload, x, total, h, ctx, 1);
+      return;
+    }
     mizu_ix_decline rec;
     size_t n = mizu_interop_write(payload, inline_max, x, &rec);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);

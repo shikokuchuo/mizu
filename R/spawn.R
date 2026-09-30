@@ -127,19 +127,20 @@ mizu_launcher <- function(stdout = "", stderr = "") {
   }
 }
 
-# Feature probe for the Python peer entry: an importable pymizu whose child
-# module provides the source-drop path. Successful probes are cached per
-# interpreter.
-has_pymizu_child <- local({
+# Feature probe for a pymizu entry module: an importable pymizu.child (the
+# source-drop path) or pymizu.worker. Successful probes are cached per
+# interpreter and module.
+pymizu_prober <- local({
   cache <- new.env(parent = emptyenv())
-  function(python) {
-    if (exists(python, envir = cache)) {
+  function(python, module) {
+    key <- paste(python, module)
+    if (exists(key, envir = cache)) {
       return(TRUE)
     }
     ok <- tryCatch(
       system2(
         python,
-        c("-c", shQuote("import pymizu.child")),
+        c("-c", shQuote(sprintf("import pymizu.%s", module))),
         stdout = FALSE,
         stderr = FALSE,
         timeout = 60
@@ -148,11 +149,13 @@ has_pymizu_child <- local({
       condition = function(c) FALSE
     )
     if (ok) {
-      cache[[python]] <- TRUE
+      cache[[key]] <- TRUE
     }
     ok
   }
 })
+
+has_pymizu_child <- function(python) pymizu_prober(python, "child")
 
 #' Python Channel Peer Launcher
 #'
@@ -222,6 +225,75 @@ mizu_py_launcher <- function(python = NULL, stdout = "", stderr = "") {
     system2(
       python,
       c("-m", "pymizu.child", token),
+      wait = FALSE,
+      stdout = stdout,
+      stderr = stderr
+    )
+  }
+}
+
+#' Python Pool Worker Launcher
+#'
+#' Returns a launcher for [mizu_pool()] that spawns each worker as a
+#' Python process running `python -m pymizu.worker`, the worker entry of
+#' [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
+#' the same shared-memory core. The mirror of pymizu's
+#' `r_pool_launcher()`, which spawns R workers from a Python host.
+#'
+#' The first worker's join records the workers' language in the pool, so
+#' the launcher carries no language attribute: a pool of Python workers
+#' takes [mizu_call()] specifications through [mizu_submit_call()], and a
+#' native [mizu_submit()] errors locally naming the spec verb. A launcher
+#' that spawns the wrong language fails at join, not at the first task.
+#'
+#' The interpreter is probed for pymizu when the launcher is created, so a
+#' missing interpreter or package raises here, before any pool exists.
+#'
+#' @inheritParams mizu_py_launcher
+#'
+#' @return A `function(token, slot)` that spawns one worker process, for
+#'   the `launcher` argument of [mizu_pool()] and [mizu_spawn_workers()].
+#'
+#' @examples
+#' \dontrun{
+#' p <- mizu_pool(2, launcher = mizu_py_pool_launcher())
+#' t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
+#' mizu_collect(t)
+#' mizu_pool_stop(p)
+#' }
+#'
+#' @export
+mizu_py_pool_launcher <- function(python = NULL, stdout = "", stderr = "") {
+  if (is.null(python)) {
+    python <- unname(Sys.which("python3"))
+    if (!nzchar(python)) {
+      stop(
+        paste0(
+          "mizu: mizu_py_pool_launcher() needs python3 on the PATH ",
+          "(or pass python)"
+        ),
+        call. = FALSE
+      )
+    }
+  }
+  if (!pymizu_prober(python, "worker")) {
+    stop(
+      sprintf(
+        paste0(
+          "mizu: mizu_py_pool_launcher() needs the Python package 'pymizu' ",
+          "installed for %s"
+        ),
+        python
+      ),
+      call. = FALSE
+    )
+  }
+  force(stdout)
+  force(stderr)
+  function(token, slot) {
+    system2(
+      python,
+      c("-m", "pymizu.worker", token, slot),
       wait = FALSE,
       stdout = stdout,
       stderr = stderr

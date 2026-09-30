@@ -62,3 +62,43 @@
       Error in `ix_read()`:
       ! mizu: no portable home for an attributed value (attributes: "class"; class: "Date")
 
+---
+
+    Code
+      ix_read(corpus[["err-task-value"]])
+    Condition
+      Error in `ix_read()`:
+      ! mizu: an interop task is not a value
+
+---
+
+    Code
+      ix_read(corpus[["err-task-nested"]])
+    Condition
+      Error in `ix_read()`:
+      ! mizu: an interop task is not a value
+
+---
+
+    Code
+      ix_read_task(corpus[["err-taskdec-shape"]])
+    Condition
+      Error in `ix_read_task()`:
+      ! mizu: malformed task stream: the code field is not a string
+
+---
+
+    Code
+      ix_read_task(corpus[["err-taskdec-list"]])
+    Condition
+      Error in `ix_read_task()`:
+      ! mizu: malformed task stream: the positional field is not a list
+
+---
+
+    Code
+      ix_read_task(corpus[["err-taskdec-dict"]])
+    Condition
+      Error in `ix_read_task()`:
+      ! mizu: malformed task stream: the named field is not a dict
+

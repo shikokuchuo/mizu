@@ -263,6 +263,31 @@ void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
 int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
                       unsigned char *payload, uint32_t inline_max,
                       mizu_handle *h, void *ctx) {
+  mizu_r_handle *rh = (mizu_r_handle *) ctx;
+  if ((SEXP) obj == rh->spec) {
+    /* the spec submit (mizu_pool_submit_spec): frame the task stream off
+       the spec's components — one pointer compare (cleared as it matches)
+       ahead of the value framing, the err_cond pattern. A raise inside
+       the write (a non-portable argument) leaves nothing dangling: the
+       field is already cleared, and the publish path never sets it. */
+    rh->spec = NULL;
+    SEXP spec = (SEXP) obj;
+    uint32_t target = (uint32_t) (rh->worker_ident & 0xff);
+    mizu_ix_decline rec;
+    size_t n = mizu_interop_write_task(payload, inline_max, spec, target,
+                                       rh->spec_ident, &rec);
+    if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+    if (n <= inline_max) {
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = 0;        /* no keeperless claim: inert on task entries */
+      return 0;
+    }
+    mizu_stage_reap(h);
+    mizu_payload_spill_task(hdr, payload, spec, target, rh->spec_ident,
+                            n, h);
+    return 0;
+  }
   mizu_payload_stage(hdr, payload, inline_max, (SEXP) obj, h, ctx);
   return 0;
 }
@@ -328,6 +353,7 @@ struct mizu_task_ctx {
   const unsigned char *payload;
   size_t limit;
   mizu_read_ctx *ctx;
+  mizu_result_sink *sink;
   int fail;                       /* test-only: a decode failure on demand */
   int died;                       /* decode: the enqueuer's region is gone */
   int ok;                         /* 0 once the catch handler has fired */
@@ -336,6 +362,91 @@ struct mizu_task_ctx {
 static SEXP pool_task_handler(SEXP cond, void *data) {
   ((struct mizu_task_ctx *) data)->ok = 0;
   return cond;
+}
+
+/* The executing task's submitter identity word (mizu.h): 0 for a private
+   frame (reads as same-language), the task stream's header word from
+   decode on. Borrowed discipline — a plain word, no GC concerns. */
+uint64_t mizu_curpool_ident;
+
+/* The entry's byte span for the task-magic dispatch (§4.2): INLINE,
+   RAWVEC and STR1 in place; a SHM_RAW entry opened first through the
+   read ctx's open cache (a spilled task stream's offsets are stream
+   offsets, not entry-payload offsets). Legit task frames are codec or
+   serialize streams on INLINE / SHM_RAW, so the inline byte tiers carry
+   only crafted entries; RAWSPILL is skipped (its bytes are vector data,
+   not a stream). NULL for every other kind, and for a vanished region
+   (ctx->gone set). */
+static const unsigned char *pool_entry_bytes(const mizu_slot_hdr *hdr,
+                                             const unsigned char *payload,
+                                             size_t limit,
+                                             mizu_read_ctx *ctx,
+                                             size_t *out_len) {
+  switch (hdr->kind) {
+  case MIZU_KIND_INLINE:
+    if (hdr->len > limit) return NULL;
+    *out_len = hdr->len;
+    return payload;
+  case MIZU_KIND_RAWVEC:
+  case MIZU_KIND_STR1:
+    *out_len = hdr->len;
+    return payload;
+  case MIZU_KIND_SHM_RAW: {
+    if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) return NULL;
+    mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);
+    if (shm == NULL) return NULL;         /* ctx->gone set */
+    *out_len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
+      (size_t) hdr->aux : (size_t) shm->size;
+    return (const unsigned char *) shm->addr;
+  }
+  default:
+    return NULL;
+  }
+}
+
+/* The task-stream path: decode (the submitter identity is stashed inside,
+   ahead of every field read) and eval. Name kind evals the consed call;
+   source kind evals each parsed form in order in the fresh frame, the
+   result the last form's value — R's eval semantics give the §4.0
+   trailing-expression convention for free. Ends with the §4.2 result
+   gate: a foreign submitter's result is preflighted under the foreign
+   writer policy inside the containment, so a non-portable result fails
+   the task here (an error stream), never the publish below. */
+static SEXP pool_task_spec(struct mizu_task_ctx *c,
+                           const unsigned char *bytes, size_t blen) {
+  mizu_curpool_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
+  SEXP base = VECTOR_ELT(c->prot, 0);
+  if (TYPEOF(base) != ENVSXP)
+    Rf_error("mizu: no evaluator registered on this worker handle");
+  int kind;
+  SEXP task = PROTECT(mizu_interop_exec_task(bytes, blen, base, &kind));
+  SEXP value = R_NilValue;
+  if (kind == 0) {
+    value = Rf_eval(task, R_GlobalEnv);
+  } else {
+    SEXP exprs = VECTOR_ELT(task, 0);
+    SEXP env = VECTOR_ELT(task, 1);
+    for (R_xlen_t i = 0; i < Rf_xlength(exprs); i++)
+      value = Rf_eval(VECTOR_ELT(exprs, i), env);
+  }
+  UNPROTECT(1);
+  if (mizu_curpool_ident != 0 &&
+      (mizu_curpool_ident & 0xff) != MIZU_LANG_R && value != R_NilValue) {
+    /* the §4.2 result gate, inside the containment: a foreign result the
+       publish could only decline fails the task here. The interop size
+       pass runs first (cheap) — a writable value needs no layout walk */
+    const uint32_t caps = (uint32_t) (mizu_curpool_ident >> 32);
+    size_t rawlen, total;
+    mizu_ix_decline rec = { 0, "", "", "" };
+    PROTECT(value);
+    if (mizu_raw_type(value, &rawlen) == 0 &&
+        mizu_interop_write(NULL, 0, value, &rec) == 0 &&
+        !mizu_zc_eligible_foreign(value, c->sink->inline_max, &total,
+                                  caps))
+      mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+    UNPROTECT(1);
+  }
+  return value;
 }
 
 /* The eval proper: bind the named arguments into a fresh frame and
@@ -378,8 +489,44 @@ static SEXP pool_eval_expr(SEXP prot, SEXP expr, SEXP args) {
    publish. */
 static SEXP pool_task_body(void *data) {
   struct mizu_task_ctx *c = (struct mizu_task_ctx *) data;
+  mizu_r_handle *rh = (mizu_r_handle *) c->ctx->binding_ctx;
+  /* the per-task reset: non-task frames stash a 0 identity (reads as
+     same-language), and a foreign-result publish that raised leaves the
+     handle's policy fields set — a later task must not inherit either */
+  mizu_curpool_ident = 0;
+  rh->peer_lang = 0;
+  rh->peer_caps = 0;
   if (c->fail)                   /* test-only seam: see mizu_pool_exec_fail */
     Rf_error("mizu: corrupt task payload");
+  size_t blen = 0;
+  const unsigned char *bytes =
+    pool_entry_bytes(c->hdr, c->payload, c->limit, c->ctx, &blen);
+  if (c->ctx->gone) {
+    c->died = 1;
+    return R_NilValue;
+  }
+  if (bytes != NULL) {
+    if (blen >= 3 && bytes[0] == MIZU_INTEROP_MAGIC &&
+        bytes[2] == MIZU_IX_TAG_TASK) {
+      /* the misroute guard (§4.2): the target byte at stream offset 3 is
+         checked without a cursor — one byte compare between a torn or
+         mis-stamped task stream and executing code written for another
+         language. Fails with the neutral error stream, never executes */
+      if (blen >= 4 && bytes[3] != MIZU_LANG_R) {
+        mizu_curpool_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
+        Rf_error("mizu: task language mismatch (the task targets language "
+                 "%u, this worker is R)", (unsigned) bytes[3]);
+      }
+      return pool_task_spec(c, bytes, blen);
+    }
+    if (mizu_is_python_payload(bytes, blen)) {
+      /* a foreign private frame ('P' or pickle at an R worker): the
+         neutral error stream, never a private ERR the submitter could
+         not read — the registry test the channel read hook runs */
+      mizu_curpool_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
+      Rf_error("mizu: task in a foreign private codec");
+    }
+  }
   SEXP expr = R_NilValue, args = R_NilValue;
   if (c->hdr->kind == MIZU_KIND_INLINE && c->hdr->len <= c->limit &&
       mizu_codec_read_task(c->payload, (size_t) c->hdr->len,
@@ -387,8 +534,11 @@ static SEXP pool_task_body(void *data) {
     PROTECT(expr);
     PROTECT(args);
   } else {
-    SEXP pl = mizu_payload_read(c->hdr, c->payload, (uint32_t) c->limit,
-                                c->ctx, 0);
+    /* a spilled private frame reads from the bytes the dispatch already
+       resolved — a second open would be a cache probe at best */
+    SEXP pl = c->hdr->kind == MIZU_KIND_SHM_RAW && bytes != NULL ?
+      mizu_stream_read(bytes, blen, c->ctx, 0) :
+      mizu_payload_read(c->hdr, c->payload, (uint32_t) c->limit, c->ctx, 0);
     if (c->ctx->gone) {
       c->died = 1;
       return R_NilValue;
@@ -413,6 +563,18 @@ static SEXP pool_task_body(void *data) {
    fallback out of line. Shared by exec's catching paths and the unwind path
    (mizu_pool_run_outcome). */
 void mizu_r_publish_err(mizu_result_sink *sink, SEXP cond) {
+  /* the ERR format keys on the task stream's submitter identity (§4.2):
+     a foreign submitter gets the neutral error stream every binding
+     reads — the private flatten would be unreadable there. Bounded by
+     construction, INLINE, cannot fail. A same-language submitter (a 0
+     stash included) keeps the rich private flatten. */
+  if (mizu_curpool_ident != 0 &&
+      (mizu_curpool_ident & 0xff) != MIZU_LANG_R) {
+    size_t en = mizu_interop_write_err((unsigned char *) sink->payload,
+                                       sink->inline_max, cond);
+    mizu_result_publish_err(sink, (void *) cond, (uint32_t) en);
+    return;
+  }
   SEXP flat =
     PROTECT(mizu_condition_flatten(cond, (size_t) sink->inline_max));
   size_t n =
@@ -442,7 +604,7 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   mizu_pool *p = sink->p;
   mizu_r_handle *rh = (mizu_r_handle *) ctx->binding_ctx;
   struct mizu_task_ctx c =
-    { rh->prot, hdr, payload, limit, ctx, rh->exec_fail, 0, 1 };
+    { rh->prot, hdr, payload, limit, ctx, sink, rh->exec_fail, 0, 1 };
   if (!catching)
     mizu_pool_eval_mark(p, 1);
   /* the current-pool global rides the task body only: the catching = 0
@@ -464,7 +626,19 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   }
   SEXP v = PROTECT(value);
   if (c.ok) {
-    mizu_result_publish(sink, (void *) v);
+    /* a foreign submitter's result stages under the §4.2 foreign writer
+       policy (the capability mask rides the handle through the publish);
+       the body's gate already preflighted the fit inside the containment */
+    const uint64_t ident = mizu_curpool_ident;
+    if (ident != 0 && (ident & 0xff) != MIZU_LANG_R) {
+      rh->peer_lang = (uint32_t) (ident & 0xff);
+      rh->peer_caps = (uint32_t) (ident >> 32);
+      mizu_result_publish(sink, (void *) v);
+      rh->peer_lang = 0;
+      rh->peer_caps = 0;
+    } else {
+      mizu_result_publish(sink, (void *) v);
+    }
   } else {
     mizu_r_publish_err(sink, v);
   }

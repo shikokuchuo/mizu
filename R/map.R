@@ -250,6 +250,7 @@ mizu_map <- function(
   .timeout = Inf,
   .collect = "value"
 ) {
+  map_check_native(pool, f)
   f <- match.fun(f)
   map_template_check(.template)
   map_collect_check(.collect, .template)
@@ -329,6 +330,7 @@ mizu_map_prepare <- function(
   .template = NULL,
   .chunks = NULL
 ) {
+  map_check_native(pool, f)
   f <- match.fun(f)
   map_template_check(.template)
   pm <- new.env(parent = emptyenv())
@@ -528,6 +530,25 @@ map_rearm <- function(pool, st, seed) {
   }
   st[["timed_out"]] <- FALSE
   invisible(st)
+}
+
+# The map guard for a foreign pool: a native f fails fast at the entry
+# point (its runner tasks are same-language private frames that would
+# otherwise each fail remotely, one error per runner). A spec f is the
+# cross-language map, which lands in a later phase. Language byte 2 is R.
+map_check_native <- function(pool, f) {
+  ident <- .Call(mizu_pool_ident, pool)
+  if (is.null(ident) || ident[[1L]] == 2L) {
+    return(invisible())
+  }
+  if (inherits(f, "mizu_call")) {
+    stop("mizu: cross-language mizu_map() is not supported yet", call. = FALSE)
+  }
+  stop(
+    "mizu: this pool's workers are not R - mizu_map() needs a mizu_call() ",
+    "spec as 'f' on a foreign pool",
+    call. = FALSE
+  )
 }
 
 map_collect_check <- function(collect, template) {

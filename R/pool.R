@@ -617,6 +617,14 @@ mizu_pool_status <- function(pool) {
 #' @export
 mizu_pool_dump <- function(pool) {
   d <- .Call(mizu_pool_dump_call, pool)
+  lang <- d[["language"]]
+  d[["language"]] <- if (is.null(lang)) {
+    "none"
+  } else if (lang >= 1L && lang <= 3L) {
+    c("bytes", "R", "Python")[lang]
+  } else {
+    "unknown"
+  }
   w <- d[["workers"]]
   w[["status"]] <- c("free", "claiming", "live", "leaving", "reaping")[
     w[["status"]] + 1L

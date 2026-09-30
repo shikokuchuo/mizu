@@ -9,7 +9,9 @@ test_that("the golden corpus drives the R writer and builder", {
     langs <- cases$langs[[row]]
     value <- cases$value[[row]]
     note <- cases$note[[row]]
-    if (!langs %in% c("all", "R")) next
+    if (!langs %in% c("all", "R")) {
+      next
+    }
 
     if (kind == "rt") {
       x <- ix_parse(value)
@@ -22,11 +24,20 @@ test_that("the golden corpus drives the R writer and builder", {
     } else if (kind == "enc") {
       x <- ix_parse(value)
       expect_identical(ix_write(x), unname(corpus[[id]]), info = id)
+    } else if (kind == "task") {
+      x <- ix_parse(value)
+      expect_identical(ix_read_task(corpus[[id]]), x, info = id)
+      expect_identical(ix_write_task(x), unname(corpus[[id]]), info = id)
     } else if (kind == "read-err") {
       # cursor-level rows reject in the core cursor, builder-level in
       # the shape builder; both are errors here (the levels are split in
-      # libmizu's C conformance test and this file's snapshot tests)
-      expect_error(ix_read(corpus[[id]]), info = id)
+      # libmizu's C conformance test and this file's snapshot tests).
+      # err-taskdec- rows ride the task decoder, the rest the value reader
+      if (startsWith(id, "err-taskdec-")) {
+        expect_error(ix_read_task(corpus[[id]]), info = id)
+      } else {
+        expect_error(ix_read(corpus[[id]]), info = id)
+      }
     } else if (kind == "write-decline") {
       x <- ix_parse(value)
       expect_error(ix_write(x), info = id)
@@ -44,4 +55,9 @@ test_that("corpus read-err texts stay informative", {
   expect_snapshot(ix_read(corpus[["err-frame-shape"]]), error = TRUE)
   expect_snapshot(ix_read(corpus[["err-attr-unknown"]]), error = TRUE)
   expect_snapshot(ix_read(corpus[["err-date-fractional"]]), error = TRUE)
+  expect_snapshot(ix_read(corpus[["err-task-value"]]), error = TRUE)
+  expect_snapshot(ix_read(corpus[["err-task-nested"]]), error = TRUE)
+  expect_snapshot(ix_read_task(corpus[["err-taskdec-shape"]]), error = TRUE)
+  expect_snapshot(ix_read_task(corpus[["err-taskdec-list"]]), error = TRUE)
+  expect_snapshot(ix_read_task(corpus[["err-taskdec-dict"]]), error = TRUE)
 })

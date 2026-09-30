@@ -50,6 +50,8 @@ SEXP mizu_codec_read_call(SEXP);
 SEXP mizu_interop_write_call(SEXP);
 SEXP mizu_interop_read_call(SEXP);
 SEXP mizu_interop_write_err_call(SEXP, SEXP);
+SEXP mizu_interop_write_task_call(SEXP, SEXP, SEXP);
+SEXP mizu_interop_read_task_call(SEXP);
 SEXP mizu_stream_read_call(SEXP);
 SEXP mizu_region_create(SEXP);
 SEXP mizu_region_open(SEXP, SEXP);
@@ -97,6 +99,8 @@ SEXP mizu_pool_leave_call(SEXP);
 SEXP mizu_pool_lame_duck_call(SEXP);
 SEXP mizu_pool_retire_call(SEXP, SEXP);
 SEXP mizu_pool_attach_call(SEXP);
+SEXP mizu_pool_ident_call(SEXP);
+SEXP mizu_pool_submit_spec(SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_pool_submit_call(SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_pool_submit_batch_call(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_pool_submit_expr(SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -162,6 +166,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_interop_write_call",     (DL_FUNC) &mizu_interop_write_call,        1},
   {"mizu_interop_read_call",      (DL_FUNC) &mizu_interop_read_call,         1},
   {"mizu_interop_write_err_call", (DL_FUNC) &mizu_interop_write_err_call,    2},
+  {"mizu_interop_write_task_call", (DL_FUNC) &mizu_interop_write_task_call,  3},
+  {"mizu_interop_read_task_call", (DL_FUNC) &mizu_interop_read_task_call,    1},
   {"mizu_stream_read_call",       (DL_FUNC) &mizu_stream_read_call,          1},
   {"mizu_codec_read_call",        (DL_FUNC) &mizu_codec_read_call,           1},
   {"mizu_region_create",          (DL_FUNC) &mizu_region_create,             1},
@@ -213,6 +219,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_pool_submit",            (DL_FUNC) &mizu_pool_submit_call,          4},
   {"mizu_pool_submit_batch",      (DL_FUNC) &mizu_pool_submit_batch_call,    5},
   {"mizu_pool_submit_expr",       (DL_FUNC) &mizu_pool_submit_expr,          5},
+  {"mizu_pool_submit_spec",       (DL_FUNC) &mizu_pool_submit_spec,          4},
+  {"mizu_pool_ident",             (DL_FUNC) &mizu_pool_ident_call,           1},
   {"mizu_pool_submit_try",        (DL_FUNC) &mizu_pool_submit_try,           4},
   {"mizu_pool_step",              (DL_FUNC) &mizu_pool_step_call,            2},
   {"mizu_pool_run",               (DL_FUNC) &mizu_pool_run,                  2},

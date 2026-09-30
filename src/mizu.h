@@ -62,16 +62,33 @@ typedef struct mizu_r_handle_s {
                                stashed condition, R_NilValue when empty) */
   uint32_t pins_dead;       /* tombstoned pin cells awaiting splice */
   uint32_t pins_total;      /* pin chain length (live + dead) */
-  uint32_t peer_lang;       /* channel: the peer's MIZU_LANG_* byte (0 unset;
-                               pools are same-language by construction) */
-  uint32_t peer_caps;       /* channel: the peer's reader-capability mask */
+  uint32_t peer_lang;       /* channel: the peer's MIZU_LANG_* byte (0 unset).
+                               Pool: the §4.2 foreign-result policy, set from
+                               the task stream's submitter identity around
+                               one publish, 0 otherwise */
+  uint32_t peer_caps;       /* channel: the peer's reader-capability mask
+                               (pool: the submitter's, same discipline) */
+  uint64_t worker_ident;    /* pool: the cached pool word (mizu_pool_worker_ident,
+                               0 until a worker joins; re-read while 0) */
   SEXP err_cond;            /* channel: the peer shim's err-send condition
                                (mizu_channel_send_error); the stage hook
                                pointer-matches it and frames the err stream.
                                NULL when idle; set and cleared within the
                                send veneer, whose argument roots it. */
+  SEXP spec;                /* pool submitter: the mizu_pool_submit_spec spec
+                               under staging, pointer-matched by the stage
+                               hook (the err_cond pattern). NULL when idle;
+                               set and cleared within the submit veneer,
+                               whose argument roots it. */
+  uint64_t spec_ident;      /* the submitter identity stamped on the spec's
+                               task stream (this build's word, or the submit
+                               veneer's test-only trailing override) */
   mizu_zc_cache zoc;        /* the R-side zc view cache */
 } mizu_r_handle;
+
+/* This build's identity word, the one binding fill (channel and pool). */
+#define MIZU_R_IDENT \
+  MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS)
 
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */
@@ -83,6 +100,14 @@ extern SEXP mizu_sent_full, mizu_sent_timeout, mizu_sent_closed, mizu_sent_gone;
    extptr is anchored by worker_main's handle. mizu_current_pool() reads
    it. */
 extern SEXP mizu_curpool_xp;
+
+/* The executing task's submitter identity word (stage_r.c): 0 for a
+   private frame (reads as same-language), else the task stream's header
+   word, set at decode before any field is read — the ERR-format and
+   result-policy key of §4.2 (foreign = nonzero with a non-R language
+   byte). Left dangling on the catching = 0 longjmp exactly like
+   mizu_curpool_xp; read by mizu_r_publish_err on both its paths. */
+extern uint64_t mizu_curpool_ident;
 
 // Bounded single-pass serialize (bounded.c) ---------------------------------------
 
@@ -155,6 +180,21 @@ int mizu_interop_strings_utf8(SEXP x);
 int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
                               uint32_t inline_max, SEXP x,
                               mizu_ix_decline *rec);
+/* The task stream (0x12) writer: emits off the spec's components (code,
+   positional, named) — two-pass, NULL dst sizes and qualifies (0 = a
+   non-portable argument, the record filled). */
+size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
+                               uint32_t target, uint64_t ident,
+                               mizu_ix_decline *rec);
+/* The exec-hook decode of a task stream: validates the header and the
+   per-kind shape off the cursor, stashes the submitter identity in
+   mizu_curpool_ident, and builds in place — name kind: a LANGSXP (the
+   qualified name resolved); source kind: list(parsed exprs, env) with the
+   arguments bound as names (positional as "..1", "..2", ...) in a fresh
+   frame under base. kind_out takes the kind byte. Raises the informative
+   shape errors (the exec hook contains them). */
+SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
+                            int *kind_out);
 
 // Payload framing (payload.c) -----------------------------------------------------
 
@@ -216,6 +256,11 @@ SEXP mizu_stream_read(const unsigned char *buf, size_t len,
                       mizu_read_ctx *ctx, int consume_foreign);
 void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
                                 SEXP x, size_t n, mizu_handle *h);
+/* The SHM_RAW spill of a task stream (a pool has no arena): the ordinary
+   SHM_RAW retain, no keeperless claim (§4.0). */
+void mizu_payload_spill_task(mizu_slot_hdr *hdr, unsigned char *payload,
+                             SEXP spec, uint32_t target, uint64_t ident,
+                             size_t n, mizu_handle *h);
 /* Foreign-stream detection on the serialize tiers: a pymizu compact-codec
    stream opens with 'P' (DESIGN.md's codec registry allocates 'R' to mizu
    and 'P' to pymizu), and anything past its subset rides pickle (0x80 then a
