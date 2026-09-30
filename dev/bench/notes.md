@@ -622,3 +622,16 @@ pipelined-pool dip against the 2026-09-26 record (593k) is host noise: a
 targeted re-measure of the same loop (4x500 fire-and-collect) draws
 666k-1M tasks/s across five reps. Everything else inside the historical
 bands. Full suite 2342 pass, 0 fail (3 expected macOS skips).
+
+## 2026-09-30: the interchange codec (1.1, before/after acceptance)
+
+The 'I' interchange codec landed (foreign-handle interop, the identity
+exchange, capability-gated zero-copy); same-language staging is
+unchanged by construction (one predicted branch per decision point).
+mizu-bench.R, this host, before (312d091) -> after: sequential rt
+1.0 -> 1.1 channel, 1.5 -> 1.7 pool us (inside the recorded 1.0-1.7
+bands); pipelined channel 921.7k -> 917.2k rt/s, pool 375.6k -> 592.5k
+tasks/s (the pipelined-pool band swings wide across records);
+payload 2.6/80.7/457.5 -> 2.8/81.3/448.9 us; streaming 42.7M -> 41.7M
+msg/s; map rows flat; serialize/codec result 3.4/2.2 -> 3.3/2.7 us.
+Full suite 2648 pass, 0 fail (expected skips).
