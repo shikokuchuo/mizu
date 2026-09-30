@@ -162,6 +162,18 @@ test_that("the decline set raises mizu_error_not_portable on a foreign handle", 
   p <- foreign_pair()
   on.exit(channel_end(p))
 
+  expect_error(
+    mizu_send(p$host, new.env()),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, function(x) x),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, quote(sym)),
+    class = "mizu_error_not_portable"
+  )
   dup <- structure(list(1, 2), names = c("a", "a"))
   expect_error(mizu_send(p$host, dup), class = "mizu_error_not_portable")
   expect_error(

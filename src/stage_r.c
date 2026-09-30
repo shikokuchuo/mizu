@@ -49,10 +49,9 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
     hdr->aux = 0;
     return 0;
   }
-  if (foreign && rawtype == 0 && XLENGTH(x) == 1 && !ANY_ATTRIB(x) &&
-      !Rf_isS4(x) && TYPEOF(x) != RAWSXP && TYPEOF(x) != STRSXP &&
+  if (foreign && rawtype == 0 && !ANY_ATTRIB(x) && !Rf_isS4(x) &&
       (TYPEOF(x) == LGLSXP || TYPEOF(x) == INTSXP ||
-       TYPEOF(x) == REALSXP || TYPEOF(x) == CPLXSXP)) {
+       TYPEOF(x) == REALSXP || TYPEOF(x) == CPLXSXP) && XLENGTH(x) == 1) {
     /* a top-level length-1 attribute-free atomic stages as the 'I'
        scalar tag (inline at RAWVEC's cost) — R scalars reach Python as
        scalars, top level and nested alike */
