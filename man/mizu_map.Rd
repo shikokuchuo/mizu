@@ -26,7 +26,9 @@ coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
 
 \item{f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
 \code{f(x[[i]], ...)}. Serialized once with its enclosing environment.
-Keep that environment small, as with any cross-process map.}
+Keep that environment small, as with any cross-process map. A
+\code{\link[=mizu_call]{mizu_call()}} specification maps over a pool of any worker language —
+see the Cross-language maps section.}
 
 \item{...}{further constant arguments to \code{f}, staged once.}
 
@@ -183,6 +185,29 @@ parallelism at deque cost. The first nested map of a worker claims a
 submitter slot. So at the default \code{max_submitters = 8} (one held by the
 controller) at most 7 workers can nest concurrently. Raise
 \code{max_submitters} for wider nested fan-outs.
+}
+
+\section{Cross-language maps}{
+
+\code{f} may be a \code{\link[=mizu_call]{mizu_call()}} specification instead of a function — the
+way to map over a foreign pool (one spawned with
+\code{\link[=mizu_py_pool_launcher]{mizu_py_pool_launcher()}}, or any pool whose workers are not R). A spec
+\code{f} always stages a shared map region: the descriptor crosses in the
+interchange format and each runner task carries a region reference any
+worker language reads. The map element fills the spec's first
+positional argument (name kind) or binds as \code{x} (source kind), and the
+spec's own constant arguments ride with it — so \code{...} must be empty
+with a spec \code{f}. Constants and elements must be portable values (the
+interchange subset documented in \code{\link[=mizu_send]{mizu_send()}}); a non-portable one
+raises \code{mizu_error_not_portable} at stage time. \code{.template} and
+\code{.collect} work unchanged — the output area is wire-typed slots
+gathered (or view-wrapped) by the submitter's own binding — and a
+per-element error crosses with its element index. \code{.seed} carries as
+the language-neutral \verb{(seed, offset)} pair and each worker language
+derives its own per-element streams: batching- and steal-order
+invariance holds within a worker language, but the draws are not
+identical across languages. A spec map runs on a same-language pool
+too, subject to the same portability rules.
 }
 
 \section{Very large x}{

@@ -51,6 +51,8 @@ SEXP mizu_interop_write_call(SEXP);
 SEXP mizu_interop_read_call(SEXP);
 SEXP mizu_interop_write_err_call(SEXP, SEXP);
 SEXP mizu_interop_write_task_call(SEXP, SEXP, SEXP);
+SEXP mizu_interop_map_desc_call(SEXP, SEXP, SEXP);
+SEXP mizu_interop_runner_call(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_interop_read_task_call(SEXP);
 SEXP mizu_stream_read_call(SEXP);
 SEXP mizu_region_create(SEXP);
@@ -105,6 +107,7 @@ SEXP mizu_pool_submit_call(SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_pool_submit_batch_call(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_pool_submit_expr(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_pool_submit_try(SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_submit_map_runner(SEXP, SEXP, SEXP);
 SEXP mizu_pool_step_call(SEXP, SEXP);
 SEXP mizu_pool_run(SEXP, SEXP);
 SEXP mizu_pool_run_outcome(SEXP, SEXP);
@@ -131,6 +134,7 @@ SEXP mizu_map_eligible(SEXP);
 SEXP mizu_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_open(SEXP, SEXP);
 SEXP mizu_map_desc(SEXP);
+SEXP mizu_map_is_template(SEXP);
 SEXP mizu_map_slice(SEXP, SEXP, SEXP);
 SEXP mizu_map_write(SEXP, SEXP, SEXP);
 SEXP mizu_map_gather(SEXP);
@@ -167,6 +171,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_interop_read_call",      (DL_FUNC) &mizu_interop_read_call,         1},
   {"mizu_interop_write_err_call", (DL_FUNC) &mizu_interop_write_err_call,    2},
   {"mizu_interop_write_task_call", (DL_FUNC) &mizu_interop_write_task_call,  3},
+  {"mizu_interop_map_desc_call",  (DL_FUNC) &mizu_interop_map_desc_call,     3},
+  {"mizu_interop_runner_call",    (DL_FUNC) &mizu_interop_runner_call,       5},
   {"mizu_interop_read_task_call", (DL_FUNC) &mizu_interop_read_task_call,    1},
   {"mizu_stream_read_call",       (DL_FUNC) &mizu_stream_read_call,          1},
   {"mizu_codec_read_call",        (DL_FUNC) &mizu_codec_read_call,           1},
@@ -222,6 +228,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_pool_submit_spec",       (DL_FUNC) &mizu_pool_submit_spec,          4},
   {"mizu_pool_ident",             (DL_FUNC) &mizu_pool_ident_call,           1},
   {"mizu_pool_submit_try",        (DL_FUNC) &mizu_pool_submit_try,           4},
+  {"mizu_pool_submit_map_runner", (DL_FUNC) &mizu_pool_submit_map_runner,    3},
   {"mizu_pool_step",              (DL_FUNC) &mizu_pool_step_call,            2},
   {"mizu_pool_run",               (DL_FUNC) &mizu_pool_run,                  2},
   {"mizu_pool_run_outcome",       (DL_FUNC) &mizu_pool_run_outcome,          2},
@@ -248,6 +255,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_map_stage",              (DL_FUNC) &mizu_map_stage,                 6},
   {"mizu_map_open",               (DL_FUNC) &mizu_map_open,                  2},
   {"mizu_map_desc",               (DL_FUNC) &mizu_map_desc,                  1},
+  {"mizu_map_is_template",        (DL_FUNC) &mizu_map_is_template,           1},
   {"mizu_map_slice",              (DL_FUNC) &mizu_map_slice,                 3},
   {"mizu_map_write",              (DL_FUNC) &mizu_map_write,                 3},
   {"mizu_map_gather",             (DL_FUNC) &mizu_map_gather,                1},

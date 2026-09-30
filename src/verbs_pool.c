@@ -610,6 +610,48 @@ SEXP mizu_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
                      Rf_asInteger(flags_sexp), 1);
 }
 
+/* The spec map's runner submit (Phase 5): the runner spec — (region name,
+   packed ordinal+generation, seed pair | NULL) — rides the spec seam (the
+   stage hook frames the kind-2 task stream off it), flagged
+   MIZU_ENTRY_RUNNER so a doorbell help beat re-homes it instead of
+   executing a join ticket nested. The map's one deadline, absolute like
+   submit_try. */
+typedef struct {
+  mizu_r_handle *h;
+  SEXP xp;
+  SEXP timeout;
+  SEXP out;
+} mizu_runner_submit;
+
+static SEXP mizu_runner_submit_do(void *data) {
+  mizu_runner_submit *c = (mizu_runner_submit *) data;
+  SEXP spec = c->h->spec;
+  c->out = pool_submit(c->xp, spec, c->timeout, MIZU_ENTRY_RUNNER, 1);
+  return c->out;
+}
+
+static void mizu_runner_submit_clean(void *data) {
+  mizu_runner_submit *c = (mizu_runner_submit *) data;
+  c->h->spec = NULL;
+  c->h->spec_ident = 0;
+}
+
+SEXP mizu_pool_submit_map_runner(SEXP xp, SEXP spec, SEXP deadline) {
+  mizu_r_handle *h = pool_get(xp);
+  if (pool_word(h) == 0)
+    Rf_error("mizu: no worker has joined this pool");
+  double d = Rf_asReal(deadline);
+  double timeout_s = R_FINITE(d) ? d - mizu_now() : R_PosInf;
+  mizu_runner_submit c = { h, xp, PROTECT(Rf_ScalarReal(timeout_s)),
+                           R_NilValue };
+  h->spec = spec;
+  h->spec_ident = MIZU_R_IDENT;
+  R_ExecWithCleanup(mizu_runner_submit_do, &c, mizu_runner_submit_clean,
+                    &c);
+  UNPROTECT(1);
+  return c.out;
+}
+
 /* mizu_submit_batch's entry: one crossing per burst. Each task's wire
    payload is mizu_submit's list(expr, args), staged through ONE reusable
    pair — the supply callback swaps the expr in as the core's batch loop

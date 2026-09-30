@@ -1055,13 +1055,68 @@ size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
 
 // Task streams (Phase 4) ------------------------------------------------------
 
-/* The two-pass task writer (0x12): the header fields through the core
-   emitters, then the code string, the positional list and the named dict
-   emitted directly off the spec's components — the elements through the
+/* The spec shape: the constructor's and the submit veneer's contract —
+   (code, kind, positional, named). */
+static int ixw_spec_check(SEXP spec) {
+  if (TYPEOF(spec) != VECSXP || XLENGTH(spec) != 4 ||
+      TYPEOF(VECTOR_ELT(spec, 0)) != STRSXP ||
+      XLENGTH(VECTOR_ELT(spec, 0)) != 1 ||
+      TYPEOF(VECTOR_ELT(spec, 1)) != INTSXP ||
+      XLENGTH(VECTOR_ELT(spec, 1)) != 1 ||
+      TYPEOF(VECTOR_ELT(spec, 2)) != VECSXP ||
+      TYPEOF(VECTOR_ELT(spec, 3)) != VECSXP)
+    return 0;
+  const int kind = INTEGER(VECTOR_ELT(spec, 1))[0];
+  return kind >= 0 && kind <= 255;
+}
+
+/* The task fields' emission, shared by the task writer and the map
+   descriptor writer: the code string, the positional list and the named
+   dict directly off the spec's components — the elements through the
    generic writer, never an intermediate object. A decline (a non-portable
-   argument, bad names) fills the record and returns 0 — a foreign task
-   with non-portable args can never run, so there is no fallback. The
-   spec's shape is the constructor's and the submit veneer's contract. */
+   argument, bad names) fills the record and flips the depth marker. */
+static void ixw_task_fields(mizu_ixw *w, SEXP spec) {
+  SEXP cs = STRING_ELT(VECTOR_ELT(spec, 0), 0);
+  int32_t clen;
+  if (!ixw_str_size(cs, &clen)) {
+    ixw_decline(w, "the task code is not writable as UTF-8 (CE_BYTES or "
+                   "invalid native bytes)", NULL);
+    return;
+  }
+  ixw_str_put(w, cs, clen, 0);
+  if (w->depth < 0) return;
+
+  SEXP positional = VECTOR_ELT(spec, 2);
+  const R_xlen_t np = XLENGTH(positional);
+  IXW_PUT(w, mizu_ix_put_list_begin, (uint64_t) np);
+  for (R_xlen_t i = 0; i < np; i++) {
+    size_t saved = w->path_len;
+    ixw_path_push(w, i + 1);
+    ixw_node(w, VECTOR_ELT(positional, i));
+    ixw_path_pop(w, saved);
+    if (w->depth < 0) return;
+  }
+
+  SEXP named = VECTOR_ELT(spec, 3);
+  const R_xlen_t nn = XLENGTH(named);
+  SEXP names = PROTECT(Rf_getAttrib(named, R_NamesSymbol));
+  if (nn > 0 &&
+      (TYPEOF(names) != STRSXP || XLENGTH(names) != nn ||
+       !mizu_interop_names_ok(names))) {
+    UNPROTECT(1);
+    ixw_decline(w, "named arguments have duplicate, NA, or non-UTF-8 "
+                   "names", NULL);
+    return;
+  }
+  IXW_PUT(w, mizu_ix_put_dict_begin, (uint64_t) nn);
+  if (nn > 0) ixw_dict_pairs(w, names, named);
+  UNPROTECT(1);
+}
+
+/* The two-pass task writer (0x12): the header fields through the core
+   emitters, then the spec's fields. A decline fills the record and
+   returns 0 — a foreign task with non-portable args can never run, so
+   there is no fallback. */
 size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t target, uint64_t ident,
                                mizu_ix_decline *rec) {
@@ -1071,59 +1126,91 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
     rec->reason[0] = '\0';
     rec->remedy[0] = '\0';
   }
-  if (TYPEOF(spec) != VECSXP || XLENGTH(spec) != 4 ||
-      TYPEOF(VECTOR_ELT(spec, 0)) != STRSXP ||
-      XLENGTH(VECTOR_ELT(spec, 0)) != 1 ||
-      TYPEOF(VECTOR_ELT(spec, 1)) != INTSXP ||
-      XLENGTH(VECTOR_ELT(spec, 1)) != 1 ||
-      TYPEOF(VECTOR_ELT(spec, 2)) != VECSXP ||
-      TYPEOF(VECTOR_ELT(spec, 3)) != VECSXP)
+  if (!ixw_spec_check(spec))
     Rf_error("mizu: a malformed mizu_call spec");
-  SEXP code = VECTOR_ELT(spec, 0);
   const int kind = INTEGER(VECTOR_ELT(spec, 1))[0];
-  SEXP positional = VECTOR_ELT(spec, 2);
-  SEXP named = VECTOR_ELT(spec, 3);
-  if (kind < 0 || kind > 255)
-    Rf_error("mizu: a malformed mizu_call spec (kind out of range)");
 
   mizu_ixw w = { dst, limit, 0, 0, 0, rec, "args", 4 };
   IXW_PUT(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
-
-  SEXP cs = STRING_ELT(code, 0);
-  int32_t clen;
-  if (!ixw_str_size(cs, &clen)) {
-    ixw_decline(&w, "the task code is not writable as UTF-8 (CE_BYTES or "
-                   "invalid native bytes)", NULL);
-    return 0;
-  }
-  ixw_str_put(&w, cs, clen, 0);
+  ixw_task_fields(&w, spec);
   if (w.depth < 0) return 0;
+  return w.total;
+}
 
-  const R_xlen_t np = XLENGTH(positional);
-  IXW_PUT(&w, mizu_ix_put_list_begin, (uint64_t) np);
-  for (R_xlen_t i = 0; i < np; i++) {
-    size_t saved = w.path_len;
-    ixw_path_push(&w, i + 1);
-    ixw_node(&w, VECTOR_ELT(positional, i));
-    ixw_path_pop(&w, saved);
-    if (w.depth < 0) return 0;
-  }
+// Map descriptors and runner tasks (Phase 5) ---------------------------------------
 
-  const R_xlen_t nn = XLENGTH(named);
-  SEXP names = PROTECT(Rf_getAttrib(named, R_NamesSymbol));
-  if (nn > 0 &&
-      (TYPEOF(names) != STRSXP || XLENGTH(names) != nn ||
-       !mizu_interop_names_ok(names))) {
-    UNPROTECT(1);
-    ixw_decline(&w, "named arguments have duplicate, NA, or non-UTF-8 "
-                   "names", NULL);
-    return 0;
+/* The map descriptor's 'I' form: one complete stream, list[task, x | nil]
+   — the f spec nested as a kind 0/1 task tag (target byte and submitter
+   identity included, as the exec tasks'), then the list-x values as a
+   bare 0x0c list (names stay submitter-side for assembly), or nil when x
+   rides the raw section. Two-pass like the task writer; a decline means a
+   non-portable constant or element, the record filled. */
+size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
+                                   SEXP spec, SEXP x, uint32_t target,
+                                   uint64_t ident, mizu_ix_decline *rec) {
+  if (rec != NULL) {
+    rec->decline = 0;
+    rec->path[0] = '\0';
+    rec->reason[0] = '\0';
+    rec->remedy[0] = '\0';
   }
-  IXW_PUT(&w, mizu_ix_put_dict_begin, (uint64_t) nn);
-  if (nn > 0) ixw_dict_pairs(&w, names, named);
-  UNPROTECT(1);
+  if (!ixw_spec_check(spec))
+    Rf_error("mizu: a malformed mizu_call spec");
+  const int kind = INTEGER(VECTOR_ELT(spec, 1))[0];
+  if (x != R_NilValue && TYPEOF(x) != VECSXP)
+    Rf_error("mizu: a malformed map descriptor x");
+
+  mizu_ixw w = { dst, limit, 0, 0, 0, rec, "args", 4 };
+  IXW_PUT(&w, mizu_ix_put_header);
+  IXW_PUT(&w, mizu_ix_put_list_begin, 2);
+  IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
+  ixw_task_fields(&w, spec);
   if (w.depth < 0) return 0;
+  if (x == R_NilValue) {
+    IXW_PUT(&w, mizu_ix_put_nil);
+  } else {
+    const R_xlen_t n = XLENGTH(x);
+    IXW_PUT(&w, mizu_ix_put_list_begin, (uint64_t) n);
+    w.depth++;
+    memcpy(w.path, "x", 2);
+    w.path_len = 1;
+    for (R_xlen_t i = 0; i < n; i++) {
+      size_t saved = w.path_len;
+      ixw_path_push(&w, i + 1);
+      ixw_node(&w, VECTOR_ELT(x, i));
+      ixw_path_pop(&w, saved);
+      if (w.depth < 0) return 0;
+    }
+    w.depth--;
+  }
+  return w.total;
+}
+
+/* The kind-2 (runner) task stream: the header fields, then the region
+   name, the packed ordinal+generation i64 (ordinal the high 32 bits, the
+   morsel generation the low 32 — DESIGN.md's task kind registry), and the
+   seed as nil or the (seed, offset) i64v[2]. Bounded by the region name's
+   MIZU_NAME_MAX, so it always fits an entry's inline budget; the inputs
+   are the submit veneer's, already validated — the writer cannot
+   decline. */
+size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
+                                 SEXP name, double gen_field, SEXP seed,
+                                 uint32_t target, uint64_t ident) {
+  mizu_ixw w = { dst, limit, 0, 0, 0, NULL, "x", 1 };
+  IXW_PUT(&w, mizu_ix_put_header);
+  IXW_PUT(&w, mizu_ix_put_task, (int) target, 2, ident);
+  SEXP cs = STRING_ELT(name, 0);
+  IXW_PUT(&w, mizu_ix_put_str, CHAR(cs), (int32_t) LENGTH(cs));
+  IXW_PUT(&w, mizu_ix_put_int, (int64_t) gen_field);
+  if (seed == R_NilValue) {
+    IXW_PUT(&w, mizu_ix_put_nil);
+  } else {
+    int64_t pair[2];
+    pair[0] = (int64_t) REAL(seed)[0];
+    pair[1] = (int64_t) REAL(seed)[1];
+    IXW_PUT(&w, mizu_ix_put_vec, MIZU_TYPE_INT64, pair, 2);
+  }
   return w.total;
 }
 
@@ -1262,6 +1349,18 @@ size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
       int ok;
       const char *d = ix_char_utf8(ix_err_call_text(call), &ok, &detail_n);
       if (ok) detail = d;
+    }
+    /* a map runner's per-element failure crosses with the in-flight
+       element index (the runner's 1-based annotation; the wire is
+       0-based) — Phase 5's flags bit 0 */
+    SEXP ix = ix_cond_field(cond, "mizu_map_index");
+    if ((TYPEOF(ix) == INTSXP || TYPEOF(ix) == REALSXP) &&
+        XLENGTH(ix) == 1) {
+      const double v = Rf_asReal(ix);
+      if (!ISNA(v) && v >= 1 && v <= 9007199254740992.0) {
+        has_index = 1;
+        index = (uint64_t) v - 1;
+      }
     }
   }
 
@@ -1823,12 +1922,12 @@ static void ixt_want_dict(mizu_ix *cur, mizu_ix_item *it) {
    the submitter identity stashed ahead of every field read, so even a
    torn stream fails the task in the submitter's own format. */
 static void ixt_open(mizu_ix *cur, const unsigned char *buf, size_t len,
-                     mizu_ix_item *it, int stash) {
+                     mizu_ix_item *it, int stash, int max_kind) {
   if (mizu_ix_open(cur, buf, len) != MIZU_OK) ixr_stop_tls();
   ixt_next(cur, it);
   if (it->kind != MIZU_IX_TASK)
     mizu_stop_interop("malformed task stream: no task tag");
-  if (it->task_kind > 1)
+  if (it->task_kind > (uint32_t) max_kind)
     mizu_stop_interop("unsupported task kind 0x%02X", it->task_kind);
   if (stash) mizu_curpool_ident = it->u64[0];
 }
@@ -1858,22 +1957,22 @@ static SEXP ixt_resolve_name(const unsigned char *code, uint64_t len) {
   return value;    /* a function, anchored by the namespace */
 }
 
-/* The exec-hook decode: builds only what the call needs — the name kind
-   conses its LANGSXP directly as the cursor yields the arguments (the
-   do.call shape); the source kind parses first, then binds the arguments
-   as names in a fresh frame under base (positional as "..1", "..2", ...).
+/* The per-kind call construction, shared by the exec decode and the map
+   descriptor decode: the cursor stands past the TASK item; builds only
+   what the call needs — the name kind conses its LANGSXP directly as the
+   cursor yields the arguments (the do.call shape); the source kind builds
+   a closure over the named-argument frame — the parsed forms its body
+   (the trailing form's value is the result, the §4.0 convention), the
+   positional arguments riding its "..." so the source's ..N pronouns
+   resolve (a plain "..1" binding never does — the dots mechanism owns
+   those names) — and the element the first formal on the map path.
    Every value is stored the moment it is allocated (the mizu_codec_read
-   discipline). Raises the informative shape errors; the exec hook
-   contains them. */
-SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
-                            int *kind_out) {
-  mizu_ix cur;
-  mizu_ix_item it, code, pos, named;
-  ixt_open(&cur, buf, len, &it, 1);
-  const int kind = (int) it.task_kind;
-  *kind_out = kind;
-  ixt_want_code(&cur, &code);
-  ixt_want_list(&cur, &pos);
+   discipline). No finishing check: the caller owns the stream boundary.
+   Raises the informative shape errors; the exec hook contains them. */
+static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
+  mizu_ix_item code, pos, named;
+  ixt_want_code(cur, &code);
+  ixt_want_list(cur, &pos);
   SEXP out;
   if (kind == 0) {
     /* fn stays protected to the end — it is the call's CAR anyway, and
@@ -1883,17 +1982,17 @@ SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
     SEXP tail = out;
     for (uint64_t i = 0; i < pos.count; i++) {
       SEXP cell = PROTECT(Rf_cons(R_NilValue, R_NilValue));
-      SETCAR(cell, ixr_value(&cur));
+      SETCAR(cell, ixr_value(cur));
       SETCDR(tail, cell);
       tail = cell;
       UNPROTECT(1);
     }
-    ixt_want_dict(&cur, &named);
+    ixt_want_dict(cur, &named);
     ix_keyset ks = { NULL, 0 };
     if (named.count != 0) ixr_keyset_init(&ks, named.count);
     for (uint64_t i = 0; i < named.count; i++) {
       mizu_ix_item key;
-      ixr_expect_str(&cur, &key);
+      ixr_expect_str(cur, &key);
       SEXP cs = PROTECT(ixr_charsxp(&key));
       if (!ix_keyset_add(&ks, cs)) {
         UNPROTECT(1);
@@ -1901,14 +2000,10 @@ SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
       }
       SEXP cell = PROTECT(Rf_cons(R_NilValue, R_NilValue));
       SET_TAG(cell, Rf_installChar(cs));
-      SETCAR(cell, ixr_value(&cur));
+      SETCAR(cell, ixr_value(cur));
       SETCDR(tail, cell);
       tail = cell;
       UNPROTECT(2);
-    }
-    if (mizu_ix_end(&cur) != MIZU_OK) {
-      UNPROTECT(2);
-      ixr_stop_tls();
     }
     UNPROTECT(2);                  /* fn, out */
     return out;
@@ -1919,37 +2014,153 @@ SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
   if (status != PARSE_OK)
     mizu_stop_interop("malformed task stream: the source does not parse");
   SEXP env = PROTECT(R_NewEnv(base, 0, 0));
-  for (uint64_t i = 0; i < pos.count; i++) {
-    char nm[16];
-    snprintf(nm, sizeof nm, "..%llu", (unsigned long long) (i + 1));
-    SEXP sym = Rf_install(nm);
-    SEXP v = PROTECT(ixr_value(&cur));
-    Rf_defineVar(sym, v, env);
-    UNPROTECT(1);
-  }
-  ixt_want_dict(&cur, &named);
+  /* the positional arguments as a plain list (they ride the call's "..."),
+     the named ones bound in the closure's frame */
+  SEXP pos_args = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));
+  for (uint64_t i = 0; i < pos.count; i++)
+    SET_VECTOR_ELT(pos_args, (R_xlen_t) i, ixr_value(cur));
+  ixt_want_dict(cur, &named);
   ix_keyset ks = { NULL, 0 };
   if (named.count != 0) ixr_keyset_init(&ks, named.count);
   for (uint64_t i = 0; i < named.count; i++) {
     mizu_ix_item key;
-    ixr_expect_str(&cur, &key);
+    ixr_expect_str(cur, &key);
     SEXP kc = PROTECT(ixr_charsxp(&key));
     if (!ix_keyset_add(&ks, kc)) {
       UNPROTECT(1);
       mizu_stop_interop("malformed task stream: a duplicate dict key");
     }
-    SEXP v = PROTECT(ixr_value(&cur));
+    SEXP v = PROTECT(ixr_value(cur));
     Rf_defineVar(Rf_installChar(kc), v, env);
     UNPROTECT(2);
   }
+  SEXP body = PROTECT(Rf_lcons(Rf_install("{"), R_NilValue));
+  SEXP tail = body;
+  for (R_xlen_t i = 0; i < Rf_xlength(exprs); i++) {
+    SEXP cell = PROTECT(Rf_cons(VECTOR_ELT(exprs, i), R_NilValue));
+    SETCDR(tail, cell);
+    tail = cell;
+    UNPROTECT(1);
+  }
+  SEXP dots = PROTECT(Rf_cons(R_MissingArg, R_NilValue));
+  SET_TAG(dots, R_DotsSymbol);
+  SEXP formals = PROTECT(map ? Rf_cons(R_MissingArg, dots) : dots);
+  if (map) SET_TAG(formals, Rf_install("x"));
+  SEXP fn = PROTECT(R_mkClosure(formals, body, env));
   out = PROTECT(Rf_allocVector(VECSXP, 2));
-  SET_VECTOR_ELT(out, 0, exprs);
-  SET_VECTOR_ELT(out, 1, env);
+  SET_VECTOR_ELT(out, 0, fn);
+  SET_VECTOR_ELT(out, 1, pos_args);
+  UNPROTECT(9);
+  return out;
+}
+
+/* The exec-hook decode: the task stream's one value, then the cursor's
+   finishing check. */
+SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
+                            int *kind_out) {
+  mizu_ix cur;
+  mizu_ix_item it;
+  ixt_open(&cur, buf, len, &it, 1, 1);
+  const int kind = (int) it.task_kind;
+  *kind_out = kind;
+  SEXP out = PROTECT(ixt_call(&cur, kind, base, 0));
   if (mizu_ix_end(&cur) != MIZU_OK) {
-    UNPROTECT(4);
+    UNPROTECT(1);
     ixr_stop_tls();
   }
-  UNPROTECT(4);                    /* cs, exprs, env, out */
+  UNPROTECT(1);
+  return out;
+}
+
+// The runner stream and map descriptor decodes (Phase 5) --------------------------
+
+/* The kind-2 (runner) decode for the exec hook: region name, the packed
+   ordinal+generation i64, and the seed (nil, or the (seed, offset) i64
+   pair, returned as doubles). Returns list(name, gen_field, seed|NULL);
+   the R side unpacks and evals. The submitter identity stashes as the
+   call kinds' — the runner's result policy keys on it. */
+SEXP mizu_interop_exec_runner(const unsigned char *buf, size_t len) {
+  mizu_ix cur;
+  mizu_ix_item it, name, gen, seed;
+  ixt_open(&cur, buf, len, &it, 1, 2);
+  if (it.task_kind != 2)
+    mizu_stop_interop("malformed runner stream: not a runner task");
+  ixt_next(&cur, &name);
+  if (name.kind != MIZU_IX_STR1 || name.na)
+    mizu_stop_interop("malformed runner stream: the region name is not a "
+                      "string");
+  ixt_next(&cur, &gen);
+  if (gen.kind != MIZU_IX_INT)
+    mizu_stop_interop("malformed runner stream: the generation is not an "
+                      "integer");
+  ixt_next(&cur, &seed);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, 3));
+  int64_t gv;
+  memcpy(&gv, &gen.u64[0], 8);
+  SET_VECTOR_ELT(out, 0, Rf_ScalarString(ixr_charsxp(&name)));
+  SET_VECTOR_ELT(out, 1, Rf_ScalarReal((double) gv));
+  if (seed.kind == MIZU_IX_NIL) {
+    SET_VECTOR_ELT(out, 2, R_NilValue);
+  } else if (seed.kind == MIZU_IX_VEC && seed.type == MIZU_TYPE_INT64 &&
+             seed.count == 2) {
+    int64_t pair[2];
+    memcpy(pair, seed.ptr, 16);
+    SEXP sd = PROTECT(Rf_allocVector(REALSXP, 2));
+    REAL(sd)[0] = (double) pair[0];
+    REAL(sd)[1] = (double) pair[1];
+    SET_VECTOR_ELT(out, 2, sd);
+    UNPROTECT(1);
+  } else {
+    UNPROTECT(1);
+    mizu_stop_interop("malformed runner stream: the seed is not nil or an "
+                      "i64 pair");
+  }
+  if (mizu_ix_end(&cur) != MIZU_OK) {
+    UNPROTECT(1);
+    ixr_stop_tls();
+  }
+  UNPROTECT(1);
+  return out;
+}
+
+/* The map descriptor's 'I' form: list[task, x | nil] — the descriptor
+   reader is the one other builder with a task case (DESIGN.md): the spec
+   decodes through the exec decode's per-kind construction (no stash —
+   the runner task's own identity rules the result policy), the list-x
+   through the generic builder. Returns list(kind, product, x|NULL):
+   name kind: the consed LANGSXP; source kind: list(exprs, env). base is
+   the frame parent for the source kind (the global environment — the
+   mizu_call() contract). */
+SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
+                                SEXP base) {
+  mizu_ix cur;
+  mizu_ix_item it;
+  if (mizu_ix_open(&cur, buf, len) != MIZU_OK) ixr_stop_tls();
+  ixt_next(&cur, &it);
+  if (it.kind != MIZU_IX_LIST || it.count != 2)
+    mizu_stop_interop("malformed map descriptor: not a two-element list");
+  ixt_next(&cur, &it);
+  if (it.kind != MIZU_IX_TASK)
+    mizu_stop_interop("malformed map descriptor: no task tag");
+  if (it.task_kind > 1)
+    mizu_stop_interop("malformed map descriptor: kind 0x%02X is not a "
+                      "call spec", it.task_kind);
+  SEXP task = PROTECT(ixt_call(&cur, (int) it.task_kind, base, 1));
+  SEXP x = PROTECT(ixr_value(&cur));
+  if (mizu_ix_end(&cur) != MIZU_OK) {
+    UNPROTECT(2);
+    ixr_stop_tls();
+  }
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, 3));
+  SET_VECTOR_ELT(out, 0, Rf_ScalarInteger((int) it.task_kind));
+  SET_VECTOR_ELT(out, 1, task);
+  SET_VECTOR_ELT(out, 2, x);
+  /* the worker's map context dispatches on the descriptor form — a class
+     beats shape-sniffing beside the private (f, dots[, x]) triple */
+  SEXP klass = PROTECT(Rf_allocVector(STRSXP, 1));
+  SET_STRING_ELT(klass, 0, Rf_mkChar("mizu_map_ix"));
+  Rf_setAttrib(out, R_ClassSymbol, klass);
+  UNPROTECT(4);
   return out;
 }
 
@@ -2052,6 +2263,45 @@ SEXP mizu_interop_write_task_call(SEXP spec, SEXP target, SEXP ident) {
   return bytes;
 }
 
+/* The map descriptor writer as a stream: the map path's spec staging
+   (x the list-x, or NULL when the raw section carries it). */
+SEXP mizu_interop_map_desc_call(SEXP spec, SEXP x, SEXP target) {
+  const int t = Rf_asInteger(target);
+  if (t < 0 || t > 255) Rf_error("mizu: expected a language byte");
+  mizu_ix_decline rec;
+  size_t n = mizu_interop_write_map_desc(NULL, 0, spec, x, (uint32_t) t,
+                                         MIZU_R_IDENT, &rec);
+  if (n == 0)
+    mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+  SEXP bytes = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
+  if (mizu_interop_write_map_desc(RAW(bytes), n, spec, x, (uint32_t) t,
+                                  MIZU_R_IDENT, NULL) != n) {
+    UNPROTECT(1);
+    mizu_stop_interop("map descriptor write mismatch");
+  }
+  UNPROTECT(1);
+  return bytes;
+}
+
+/* The runner writer as a stream (the map submit path's staging and the
+   test suite's stream construction). */
+SEXP mizu_interop_runner_call(SEXP name, SEXP gen_field, SEXP seed,
+                              SEXP target, SEXP ident) {
+  const int t = Rf_asInteger(target);
+  if (t < 0 || t > 255) Rf_error("mizu: expected a language byte");
+  const uint64_t id = (uint64_t) Rf_asReal(ident);
+  size_t n = mizu_interop_write_runner(NULL, 0, name, Rf_asReal(gen_field),
+                                       seed, (uint32_t) t, id);
+  SEXP bytes = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
+  if (mizu_interop_write_runner(RAW(bytes), n, name, Rf_asReal(gen_field),
+                                seed, (uint32_t) t, id) != n) {
+    UNPROTECT(1);
+    mizu_stop_interop("runner write mismatch");
+  }
+  UNPROTECT(1);
+  return bytes;
+}
+
 /* The hook decode: the same cursor walk and shape checks as the exec
    decode, building the components for inspection (no name resolution, no
    eval). The stash is not touched — this is not a worker. */
@@ -2059,7 +2309,7 @@ SEXP mizu_interop_read_task_call(SEXP bytes) {
   if (TYPEOF(bytes) != RAWSXP) Rf_error("mizu: expected a raw vector");
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
-  ixt_open(&cur, RAW(bytes), (size_t) XLENGTH(bytes), &it, 0);
+  ixt_open(&cur, RAW(bytes), (size_t) XLENGTH(bytes), &it, 0, 1);
   ixt_want_code(&cur, &code);
   ixt_want_list(&cur, &pos);
   SEXP positional = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));

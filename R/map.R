@@ -180,6 +180,27 @@ mono_time <- function() .Call(mizu_now_call)
 #' controller) at most 7 workers can nest concurrently. Raise
 #' `max_submitters` for wider nested fan-outs.
 #'
+#' @section Cross-language maps:
+#' `f` may be a [mizu_call()] specification instead of a function — the
+#' way to map over a foreign pool (one spawned with
+#' [mizu_py_pool_launcher()], or any pool whose workers are not R). A spec
+#' `f` always stages a shared map region: the descriptor crosses in the
+#' interchange format and each runner task carries a region reference any
+#' worker language reads. The map element fills the spec's first
+#' positional argument (name kind) or binds as `x` (source kind), and the
+#' spec's own constant arguments ride with it — so `...` must be empty
+#' with a spec `f`. Constants and elements must be portable values (the
+#' interchange subset documented in [mizu_send()]); a non-portable one
+#' raises `mizu_error_not_portable` at stage time. `.template` and
+#' `.collect` work unchanged — the output area is wire-typed slots
+#' gathered (or view-wrapped) by the submitter's own binding — and a
+#' per-element error crosses with its element index. `.seed` carries as
+#' the language-neutral `(seed, offset)` pair and each worker language
+#' derives its own per-element streams: batching- and steal-order
+#' invariance holds within a worker language, but the draws are not
+#' identical across languages. A spec map runs on a same-language pool
+#' too, subject to the same portability rules.
+#'
 #' @section Very large x:
 #' The serialized runner wrapper needs a little over 200 bytes of entry
 #' inline budget, so pools created with `slot_size = 256L` (224-byte
@@ -202,7 +223,9 @@ mono_time <- function() .Call(mizu_now_call)
 #'   coerced with `as.list()`, as [lapply()] does.
 #' @param f a function (or, as [match.fun()] accepts, its name) applied as
 #'   `f(x[[i]], ...)`. Serialized once with its enclosing environment.
-#'   Keep that environment small, as with any cross-process map.
+#'   Keep that environment small, as with any cross-process map. A
+#'   [mizu_call()] specification maps over a pool of any worker language —
+#'   see the Cross-language maps section.
 #' @param ... further constant arguments to `f`, staged once.
 #' @param .template `NULL` for a list result, or a [vapply()]-style
 #'   `FUN.VALUE`: an atomic vector template that each result must match.
@@ -251,13 +274,25 @@ mizu_map <- function(
   .collect = "value"
 ) {
   map_check_native(pool, f)
-  f <- match.fun(f)
+  spec <- inherits(f, "mizu_call")
+  dots <- list(...)
+  if (spec) {
+    if (length(dots)) {
+      stop(
+        "mizu: constant arguments ride the mizu_call() spec — '...' must ",
+        "be empty with a spec 'f'",
+        call. = FALSE
+      )
+    }
+  } else {
+    f <- match.fun(f)
+  }
   map_template_check(.template)
   map_collect_check(.collect, .template)
   if (length(x) == 0L) {
     return(map_empty(x, .template))
   }
-  st <- map_stage(pool, x, f, list(...), .template, .chunks, .seed)
+  st <- map_stage(pool, x, f, dots, .template, .chunks, .seed)
   map_run(pool, st, .timeout, .collect)
 }
 
@@ -331,17 +366,29 @@ mizu_map_prepare <- function(
   .chunks = NULL
 ) {
   map_check_native(pool, f)
-  f <- match.fun(f)
+  spec <- inherits(f, "mizu_call")
+  dots <- list(...)
+  if (spec) {
+    if (length(dots)) {
+      stop(
+        "mizu: constant arguments ride the mizu_call() spec — '...' must ",
+        "be empty with a spec 'f'",
+        call. = FALSE
+      )
+    }
+  } else {
+    f <- match.fun(f)
+  }
   map_template_check(.template)
   pm <- new.env(parent = emptyenv())
   pm[["pool"]] <- pool
   pm[["x"]] <- x
   pm[["f"]] <- f
-  pm[["dots"]] <- list(...)
+  pm[["dots"]] <- dots
   pm[["template"]] <- .template
   pm[["chunks"]] <- .chunks
   if (length(x) > 0L) {
-    pm[["st"]] <- map_stage(pool, x, f, pm[["dots"]], .template, .chunks)
+    pm[["st"]] <- map_stage(pool, x, f, dots, .template, .chunks)
   }
   class(pm) <- "mizu_map_prepared"
   pm
@@ -457,13 +504,12 @@ map_swap_x <- function(pm, x) {
   invisible(pm)
 }
 
-# One validation path for .seed, shared by map_stage and map_rearm: NULL
-# stays NULL (unseeded), a scalar derives the base CMRG state, and a
-# length-2 vector pre-seeks that base by seed[2] stream jumps — exact by
-# jump composition (A^a A^b = A^(a+b) over the jump matrices), so element
-# i runs under the stream of element i + seed[2] of an unoffset run, and
-# c(s, 0) is identical to s. Runs once per map, never per element.
-map_seed_state <- function(seed) {
+# The wire form of .seed — the language-neutral (seed, offset) pair as
+# doubles, NULL when unseeded. One validation path shared by
+# map_seed_state (the native CMRG derivation) and a spec map's kind-2
+# runner fields (the pair itself rides the stream; the worker's own
+# language derives from it).
+map_seed_pair <- function(seed) {
   if (is.null(seed)) {
     return(NULL)
   }
@@ -478,14 +524,9 @@ map_seed_state <- function(seed) {
   if (!is.finite(s) || abs(s) > .Machine$integer.max) {
     stop("mizu: .seed[1] must be an integer", call. = FALSE)
   }
-  base <- .Call(mizu_map_rng_base, s)
   if (n == 1L) {
-    return(base)
+    return(c(s, 0))
   }
-  # the fractional check is the one C can't do: mizu_map_rng_seek truncates
-  # k to uint64_t, so a fractional offset would silently floor. NA /
-  # negative / fractional get the specific message here; Inf and huge
-  # offsets error on the C side ("invalid stream index")
   offset <- seed[2L]
   if (is.na(offset) || offset < 0 || offset != floor(offset)) {
     stop(
@@ -493,7 +534,27 @@ map_seed_state <- function(seed) {
       call. = FALSE
     )
   }
-  .Call(mizu_map_rng_seek, base, offset)
+  c(s, offset)
+}
+
+# One validation path for .seed, shared by map_stage and map_rearm: NULL
+# stays NULL (unseeded), a scalar derives the base CMRG state, and a
+# length-2 vector pre-seeks that base by seed[2] stream jumps — exact by
+# jump composition (A^a A^b = A^(a+b) over the jump matrices), so element
+# i runs under the stream of element i + seed[2] of an unoffset run, and
+# c(s, 0) is identical to s. Runs once per map, never per element.
+map_seed_state <- function(seed) {
+  pair <- map_seed_pair(seed)
+  if (is.null(pair)) {
+    return(NULL)
+  }
+  base <- .Call(mizu_map_rng_base, pair[[1L]])
+  if (pair[[2L]] == 0) {
+    return(base)
+  }
+  # mizu_map_rng_seek truncates k to uint64_t: Inf and huge offsets error
+  # on the C side ("invalid stream index")
+  .Call(mizu_map_rng_seek, base, pair[[2L]])
 }
 
 # One runner per live worker (floored at 1 so a workerless map still
@@ -510,7 +571,11 @@ map_runner_count <- function(caps, nm = Inf) {
 # before. The staged morsel geometry is inherited: batching absorbs
 # worker-count drift between runs.
 map_rearm <- function(pool, st, seed) {
-  st[["seed_state"]] <- map_seed_state(seed)
+  if (isTRUE(st[["spec"]])) {
+    st[["seed_pair"]] <- map_seed_pair(seed)
+  } else {
+    st[["seed_state"]] <- map_seed_state(seed)
+  }
   if (is.null(st[["blob"]])) {
     caps <- .Call(mizu_pool_map_caps, pool)
     if (caps[[2L]] == 0L) {
@@ -534,15 +599,20 @@ map_rearm <- function(pool, st, seed) {
 
 # The map guard for a foreign pool: a native f fails fast at the entry
 # point (its runner tasks are same-language private frames that would
-# otherwise each fail remotely, one error per runner). A spec f is the
-# cross-language map, which lands in a later phase. Language byte 2 is R.
+# otherwise each fail remotely, one error per runner). A spec f takes the
+# cross-language path on any pool (the 'I' descriptor and kind-2 runner
+# tasks), and needs the pool word already set: the descriptor's target
+# byte stages once, at stage time. Language byte 2 is R.
 map_check_native <- function(pool, f) {
   ident <- .Call(mizu_pool_ident, pool)
-  if (is.null(ident) || ident[[1L]] == 2L) {
+  if (inherits(f, "mizu_call")) {
+    if (is.null(ident)) {
+      stop("mizu: no worker has joined this pool", call. = FALSE)
+    }
     return(invisible())
   }
-  if (inherits(f, "mizu_call")) {
-    stop("mizu: cross-language mizu_map() is not supported yet", call. = FALSE)
+  if (is.null(ident) || ident[[1L]] == 2L) {
+    return(invisible())
   }
   stop(
     "mizu: this pool's workers are not R - mizu_map() needs a mizu_call() ",
@@ -622,6 +692,7 @@ map_stage <- function(
   chunks = NULL,
   seed = NULL
 ) {
+  spec <- inherits(f, "mizu_call")
   # srcrefs would serialize each closure's source (and its srcfile
   # environment) into the descriptor: stripping them keeps staged sizes
   # deterministic across keep.source settings — often the difference
@@ -648,7 +719,12 @@ map_stage <- function(
   st[["nms"]] <- names(x)
   st[["template"]] <- template
   st[["direct"]] <- direct
-  st[["seed_state"]] <- map_seed_state(seed)
+  st[["spec"]] <- spec
+  # a spec map on foreign workers collects the workers' own runner shape
+  # (pymizu's element-range histories), not this binding's morsel pairs
+  st[["pymap"]] <- FALSE
+  st[["seed_state"]] <- if (spec) NULL else map_seed_state(seed)
+  st[["seed_pair"]] <- if (spec) map_seed_pair(seed) else NULL
 
   # free_rs counts FREE slots in this submitter's own subrange (claiming a
   # worker's submitter slot on nested first use); zero errors here, before
@@ -680,15 +756,17 @@ map_stage <- function(
   st[["xraw"]] <- xlen >= 0
 
   # Region-less probe (generic maps only — the template path needs the
-  # region's output area): does the full chunk payload, wrapper plus the
-  # single descriptor stream as an ordinary argument, pass the bounded
-  # check against the entry inline budget? The bounded pass doubles as the
+  # region's output area, and a spec map always stages a region: the
+  # inline chunk tasks are same-language private frames a foreign worker
+  # cannot run): does the full chunk payload, wrapper plus the single
+  # descriptor stream as an ordinary argument, pass the bounded check
+  # against the entry inline budget? The bounded pass doubles as the
   # descriptor count when the region is needed after all. Skipped when a
   # RAWVEC x alone already exceeds the budget, so a huge x is never
   # serialized just to learn it does not fit.
   inline_entry <- caps[[4L]]
   desc_len <- NULL
-  if (is.null(template) && !(st[["xraw"]] && xlen > inline_entry)) {
+  if (!spec && is.null(template) && !(st[["xraw"]] && xlen > inline_entry)) {
     bl <- .Call(mizu_bounded_call, list(f, dots, x), inline_entry)
     desc_len <- bl[[1L]]
     if (!is.null(bl[[2L]])) {
@@ -740,16 +818,41 @@ map_stage <- function(
     }
     st[["nm"]] <- ceiling(n / st[["ms"]])
     st[["gen"]] <- 0
-    desc <- if (st[["xraw"]]) list(f, dots) else list(f, dots, x)
-    sr <- .Call(
-      mizu_map_stage,
-      desc,
-      if (st[["xraw"]]) x,
-      if (!st[["xraw"]]) desc_len,
-      n,
-      if (direct) template,
-      st[["ms"]]
-    )
+    if (spec) {
+      # the cross-language path: one 'I' descriptor (the f spec nested as
+      # a task tag, the list-x bare or nil when the raw section carries
+      # it) and kind-2 runner tasks, on any pool language. A non-raw
+      # atomic x (ALTREP, attributed) coerces to the element list — the
+      # same values the native loop's [[ would hand f
+      ident <- .Call(mizu_pool_ident, pool)
+      st[["pymap"]] <- ident[[1L]] != 2L
+      desc <- .Call(
+        mizu_interop_map_desc_call,
+        f,
+        if (st[["xraw"]]) NULL else as.list(x),
+        ident[[1L]]
+      )
+      sr <- .Call(
+        mizu_map_stage,
+        desc,
+        if (st[["xraw"]]) x,
+        NULL,
+        n,
+        if (direct) template,
+        st[["ms"]]
+      )
+    } else {
+      desc <- if (st[["xraw"]]) list(f, dots) else list(f, dots, x)
+      sr <- .Call(
+        mizu_map_stage,
+        desc,
+        if (st[["xraw"]]) x,
+        if (!st[["xraw"]]) desc_len,
+        n,
+        if (direct) template,
+        st[["ms"]]
+      )
+    }
     st[["name"]] <- sr[[1L]]
     st[["wrap"]] <- sr[[2L]]
     st[["R"]] <- map_runner_count(caps, st[["nm"]])
@@ -770,6 +873,7 @@ map_stage <- function(
 # tasks stay unflagged: bounded work, no cursor to drain.
 map_submit <- function(pool, st, deadline = Inf) {
   blob <- !is.null(st[["blob"]])
+  spec <- isTRUE(st[["spec"]])
   # armed across the loop: a timed-out return or a fatal submit error
   # (stopped, slots exhausted) longjmping through cancels the tasks
   # already in; disarmed once every task is submitted
@@ -782,18 +886,34 @@ map_submit <- function(pool, st, deadline = Inf) {
       st[["timed_out"]] <- TRUE
       return(invisible(st))
     }
-    payload <- if (blob) {
-      map_payload(st, c(st[["lo"]][[k]], st[["hi"]][[k]]))
+    h <- if (spec) {
+      # the kind-2 runner task: region name, the ordinal and generation
+      # packed in one i64 (ordinal the high 32 bits), the (seed, offset)
+      # pair when seeded — staged as the 'I' runner stream
+      .Call(
+        mizu_pool_submit_map_runner,
+        pool,
+        list(
+          st[["name"]],
+          (k - 1) * 2^32 + st[["gen"]],
+          st[["seed_pair"]]
+        ),
+        deadline
+      )
     } else {
-      runner_payload(st, k - 1L)
+      payload <- if (blob) {
+        map_payload(st, c(st[["lo"]][[k]], st[["hi"]][[k]]))
+      } else {
+        runner_payload(st, k - 1L)
+      }
+      .Call(
+        mizu_pool_submit_try,
+        pool,
+        payload,
+        deadline,
+        if (blob) 0L else 1L
+      )
     }
-    h <- .Call(
-      mizu_pool_submit_try,
-      pool,
-      payload,
-      deadline,
-      if (blob) 0L else 1L
-    )
     if (inherits(h, "mizu_timeout")) {
       st[["timed_out"]] <- TRUE
       return(invisible(st))
@@ -809,6 +929,59 @@ map_ranges_label <- function(elts) {
     return("(none)")
   }
   paste(sprintf("%.0f-%.0f", elts[, 1L], elts[, 2L]), collapse = ", ")
+}
+
+# A collected runner error's element index: this binding's runners
+# annotate the condition itself (mizu_map_index); a foreign runner's
+# error crosses as a mizu_error_remote, whose index field carries it.
+map_err_index <- function(e) {
+  i <- e[["mizu_map_index"]]
+  if (is.null(i)) {
+    i <- e[["index"]]
+  }
+  i
+}
+
+# The pymap-shape splice (a spec map on foreign workers): their runners
+# publish batch histories as element ranges (0-based half-open), not this
+# binding's (morsel start, morsel count) pairs — collect splices by
+# position either way. The template path publishes no values.
+map_splice_ix <- function(out, runs) {
+  for (run in runs) {
+    vals <- run[[2L]]
+    if (is.null(vals)) {
+      next
+    }
+    hist <- run[[1L]]
+    for (j in seq_along(hist)) {
+      rg <- hist[[j]]
+      out[(as.numeric(rg[[1L]]) + 1):as.numeric(rg[[2L]])] <- vals[[j]]
+    }
+  }
+  out
+}
+
+# The death lost-set scan needs this binding's morsel-pair histories:
+# convert the foreign runners' element ranges back (a batch is whole
+# morsels, the final grant possibly partial, so the count rounds up).
+map_hist_ix <- function(runs, ms) {
+  lapply(runs, function(run) {
+    hist <- run[[1L]]
+    list(
+      vapply(
+        hist,
+        function(rg) floor(as.numeric(rg[[1L]]) / ms),
+        numeric(1L)
+      ),
+      vapply(
+        hist,
+        function(rg) {
+          ceiling((as.numeric(rg[[2L]]) - as.numeric(rg[[1L]])) / ms)
+        },
+        numeric(1L)
+      )
+    )
+  })
 }
 
 # Collect the map's tasks, then assemble: value lists spliced into place
@@ -884,7 +1057,7 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
           .Call(mizu_map_cancel_set, st[["wrap"]])
           if (inherits(v, "mizu_error_worker_died")) {
             if (is.null(died)) died <<- v
-          } else if (!is.null(v[["mizu_map_index"]])) {
+          } else if (!is.null(map_err_index(v))) {
             errs[[length(errs) + 1L]] <<- v
             # the erroring runner's completed batches still count against
             # the lost set; only its uncompleted batch reports lost
@@ -959,7 +1132,11 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
       map_cancel(st)
       # the lost set is arithmetic over the collected histories, in C:
       # issued = [0, cursor), lost = issued minus their union
-      elts <- .Call(mizu_map_lost, st[["wrap"]], runs)
+      elts <- .Call(
+        mizu_map_lost,
+        st[["wrap"]],
+        if (st[["pymap"]]) map_hist_ix(runs, st[["ms"]]) else runs
+      )
       stop_mizu(
         "mizu_error_worker_died",
         sprintf(
@@ -976,13 +1153,18 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
       # first by element index among the runners that ran — the set that
       # ran already depended on steal order; the fail-fast store only
       # shrinks it sooner
-      idx <- vapply(errs, function(e) as.numeric(e[["mizu_map_index"]]), 0)
+      idx <- vapply(errs, function(e) as.numeric(map_err_index(e)), 0)
       stop(errs[[which.min(idx)]])
     }
     if (!st[["direct"]]) {
-      # generic assembly: one C pass splices every runner's batch value
-      # lists into out by element position
-      .Call(mizu_map_splice, out, runs, st[["ms"]])
+      if (st[["pymap"]]) {
+        # generic assembly off the foreign runners' element-range shape
+        out <- map_splice_ix(out, runs)
+      } else {
+        # one C pass splices every runner's batch value lists into out by
+        # element position
+        .Call(mizu_map_splice, out, runs, st[["ms"]])
+      }
     }
   }
   if (!st[["direct"]] && is.null(st[["template"]])) {
@@ -1242,13 +1424,44 @@ map_ctx <- function(pool, name) {
     }
     xp <- .Call(mizu_map_open, name, TRUE)
     d <- .Call(mizu_map_desc, xp)
-    ctx <- list(
-      f = d[[1L]],
-      dots = d[[2L]],
-      x = if (length(d) >= 3L) d[[3L]],
-      xp = xp
-    )
+    if (inherits(d, "mizu_map_ix")) {
+      # the cross-language form (Phase 5): the f spec decoded once per
+      # worker — name kind: the resolved function and its constant
+      # arguments, the element prepended per call; source kind: a closure
+      # over the argument namespace, the element its formal x and the
+      # positional constants its "..."
+      task <- d[[2L]]
+      f <- task[[1L]]
+      dots <- if (d[[1L]] == 0L) as.list(task[-1L]) else task[[2L]]
+      ctx <- list(
+        f = f,
+        dots = dots,
+        x = d[[3L]],
+        xp = xp,
+        tmpl = .Call(mizu_map_is_template, xp)
+      )
+    } else {
+      ctx <- list(
+        f = d[[1L]],
+        dots = d[[2L]],
+        x = if (length(d) >= 3L) d[[3L]],
+        xp = xp,
+        tmpl = .Call(mizu_map_is_template, xp)
+      )
+    }
     assign(name, ctx, envir = cache)
   }
   ctx
+}
+
+# Worker-side kind-2 runner entry (the cross-language map): the exec hook
+# hands the decoded runner stream's fields here — n the region name, g
+# the ordinal and generation packed in one i64 (the ordinal the high 32
+# bits), sd the (seed, offset) pair when seeded. The runner is always
+# same-language as the worker: unpack and run the native loop, deriving
+# this language's own seed state from the neutral pair.
+map_runner_ix <- function(n, g, sd) {
+  s <- if (!is.null(sd)) map_seed_state(sd)
+  ctx <- map_ctx(mizu_current_pool(), n)
+  map_runner(n, c(g %/% 2^32, g %% 2^32, if (ctx[["tmpl"]]) 1), s)
 }

@@ -265,17 +265,42 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
                       mizu_handle *h, void *ctx) {
   mizu_r_handle *rh = (mizu_r_handle *) ctx;
   if ((SEXP) obj == rh->spec) {
-    /* the spec submit (mizu_pool_submit_spec): frame the task stream off
-       the spec's components — one pointer compare (cleared as it matches)
-       ahead of the value framing, the err_cond pattern. A raise inside
-       the write (a non-portable argument) leaves nothing dangling: the
-       field is already cleared, and the publish path never sets it. */
+    /* the spec submit (mizu_pool_submit_spec / the map's runner submit):
+       frame the task stream off the spec's components — one pointer
+       compare (cleared as it matches) ahead of the value framing, the
+       err_cond pattern. A raise inside the write (a non-portable
+       argument) leaves nothing dangling: the field is already cleared,
+       and the publish path never sets it. */
     rh->spec = NULL;
     SEXP spec = (SEXP) obj;
     uint32_t target = (uint32_t) (rh->worker_ident & 0xff);
+    size_t n;
+    if (XLENGTH(spec) == 3) {
+      /* a map runner spec (name, gen_field, seed): the kind-2 stream,
+         bounded by MIZU_NAME_MAX — always inline */
+      if (TYPEOF(VECTOR_ELT(spec, 0)) != STRSXP ||
+          XLENGTH(VECTOR_ELT(spec, 0)) != 1 ||
+          TYPEOF(VECTOR_ELT(spec, 1)) != REALSXP ||
+          XLENGTH(VECTOR_ELT(spec, 1)) != 1 ||
+          (VECTOR_ELT(spec, 2) != R_NilValue &&
+           (TYPEOF(VECTOR_ELT(spec, 2)) != REALSXP ||
+            XLENGTH(VECTOR_ELT(spec, 2)) != 2)))
+        Rf_error("mizu: a malformed map runner spec");
+      n = mizu_interop_write_runner(payload, inline_max,
+                                    VECTOR_ELT(spec, 0),
+                                    REAL(VECTOR_ELT(spec, 1))[0],
+                                    VECTOR_ELT(spec, 2), target,
+                                    rh->spec_ident);
+      if (n > inline_max)
+        Rf_error("mizu: map runner stream exceeds the entry budget");
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = 0;
+      return 0;
+    }
     mizu_ix_decline rec;
-    size_t n = mizu_interop_write_task(payload, inline_max, spec, target,
-                                       rh->spec_ident, &rec);
+    n = mizu_interop_write_task(payload, inline_max, spec, target,
+                                rh->spec_ident, &rec);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     if (n <= inline_max) {
       hdr->kind = MIZU_KIND_INLINE;
@@ -404,14 +429,32 @@ static const unsigned char *pool_entry_bytes(const mizu_slot_hdr *hdr,
   }
 }
 
+/* The §4.2 result gate, inside the containment: a foreign result the
+   publish could only decline fails the task here (an error stream), never
+   the publish. The interop size pass runs first (cheap) — a writable
+   value needs no layout walk. Shared by the call and runner task paths. */
+static void pool_result_gate(SEXP value, mizu_result_sink *sink) {
+  if (mizu_curpool_ident != 0 &&
+      (mizu_curpool_ident & 0xff) != MIZU_LANG_R && value != R_NilValue) {
+    const uint32_t caps = (uint32_t) (mizu_curpool_ident >> 32);
+    size_t rawlen, total;
+    mizu_ix_decline rec = { 0, "", "", "" };
+    PROTECT(value);
+    if (mizu_raw_type(value, &rawlen) == 0 &&
+        mizu_interop_write(NULL, 0, value, &rec) == 0 &&
+        !mizu_zc_eligible_foreign(value, sink->inline_max, &total,
+                                  caps))
+      mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+    UNPROTECT(1);
+  }
+}
+
 /* The task-stream path: decode (the submitter identity is stashed inside,
    ahead of every field read) and eval. Name kind evals the consed call;
    source kind evals each parsed form in order in the fresh frame, the
    result the last form's value — R's eval semantics give the §4.0
    trailing-expression convention for free. Ends with the §4.2 result
-   gate: a foreign submitter's result is preflighted under the foreign
-   writer policy inside the containment, so a non-portable result fails
-   the task here (an error stream), never the publish below. */
+   gate. */
 static SEXP pool_task_spec(struct mizu_task_ctx *c,
                            const unsigned char *bytes, size_t blen) {
   mizu_curpool_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
@@ -424,28 +467,44 @@ static SEXP pool_task_spec(struct mizu_task_ctx *c,
   if (kind == 0) {
     value = Rf_eval(task, R_GlobalEnv);
   } else {
-    SEXP exprs = VECTOR_ELT(task, 0);
-    SEXP env = VECTOR_ELT(task, 1);
-    for (R_xlen_t i = 0; i < Rf_xlength(exprs); i++)
-      value = Rf_eval(VECTOR_ELT(exprs, i), env);
-  }
-  UNPROTECT(1);
-  if (mizu_curpool_ident != 0 &&
-      (mizu_curpool_ident & 0xff) != MIZU_LANG_R && value != R_NilValue) {
-    /* the §4.2 result gate, inside the containment: a foreign result the
-       publish could only decline fails the task here. The interop size
-       pass runs first (cheap) — a writable value needs no layout walk */
-    const uint32_t caps = (uint32_t) (mizu_curpool_ident >> 32);
-    size_t rawlen, total;
-    mizu_ix_decline rec = { 0, "", "", "" };
-    PROTECT(value);
-    if (mizu_raw_type(value, &rawlen) == 0 &&
-        mizu_interop_write(NULL, 0, value, &rec) == 0 &&
-        !mizu_zc_eligible_foreign(value, c->sink->inline_max, &total,
-                                  caps))
-      mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+    /* the source closure over its positional arguments — value types all,
+       self-evaluating in the call */
+    SEXP fn = VECTOR_ELT(task, 0);
+    SEXP pos_args = VECTOR_ELT(task, 1);
+    SEXP call = PROTECT(Rf_lcons(fn, R_NilValue));
+    SEXP tail = call;
+    for (R_xlen_t i = 0; i < Rf_xlength(pos_args); i++) {
+      SEXP cell = PROTECT(Rf_cons(VECTOR_ELT(pos_args, i), R_NilValue));
+      SETCDR(tail, cell);
+      tail = cell;
+      UNPROTECT(1);
+    }
+    value = Rf_eval(call, R_GlobalEnv);
     UNPROTECT(1);
   }
+  UNPROTECT(1);
+  pool_result_gate(value, c->sink);
+  return value;
+}
+
+/* The kind-2 (runner) path: decode the region reference and hand it to
+   the binding's own runner loop (map_runner_ix unpacks the ordinal and
+   generation, derives the seed state, and runs mizu:::map_runner against
+   the named region). The runner is always same-language as the worker —
+   a foreign submitter sends only the region reference. Ends with the
+   §4.2 result gate: the runner's (histories, values) publish is a
+   foreign-submitter result like any task's. */
+static SEXP pool_task_runner(struct mizu_task_ctx *c,
+                             const unsigned char *bytes, size_t blen) {
+  mizu_curpool_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
+  SEXP dec = PROTECT(mizu_interop_exec_runner(bytes, blen));
+  SEXP ns = PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
+  SEXP fn = Rf_findFun(Rf_install("map_runner_ix"), ns);
+  SEXP call = PROTECT(Rf_lang4(fn, VECTOR_ELT(dec, 0), VECTOR_ELT(dec, 1),
+                               VECTOR_ELT(dec, 2)));
+  SEXP value = Rf_eval(call, ns);
+  UNPROTECT(3);
+  pool_result_gate(value, c->sink);
   return value;
 }
 
@@ -516,6 +575,10 @@ static SEXP pool_task_body(void *data) {
         mizu_curpool_ident = MIZU_IDENT(MIZU_LANG_BYTES, 0);
         Rf_error("mizu: task language mismatch (the task targets language "
                  "%u, this worker is R)", (unsigned) bytes[3]);
+      }
+      /* the kind byte at stream offset 4: kind 2 is the map runner */
+      if (blen >= 5 && bytes[4] == 2) {
+        return pool_task_runner(c, bytes, blen);
       }
       return pool_task_spec(c, bytes, blen);
     }

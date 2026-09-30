@@ -19,7 +19,9 @@ coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
 
 \item{f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
 \code{f(x[[i]], ...)}. Serialized once with its enclosing environment.
-Keep that environment small, as with any cross-process map.}
+Keep that environment small, as with any cross-process map. A
+\code{\link[=mizu_call]{mizu_call()}} specification maps over a pool of any worker language —
+see the Cross-language maps section.}
 
 \item{...}{further constant arguments to \code{f}, staged once.}
 

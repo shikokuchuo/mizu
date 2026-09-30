@@ -195,6 +195,25 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
    shape errors (the exec hook contains them). */
 SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
                             int *kind_out);
+/* The map descriptor's 'I' form (Phase 5): one stream, list[task, x | nil]
+   — the f spec nested as a kind 0/1 task tag, the list-x a bare list (nil
+   when the raw section carries it). Two-pass; 0 = decline. */
+size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
+                                   SEXP spec, SEXP x, uint32_t target,
+                                   uint64_t ident, mizu_ix_decline *rec);
+/* The kind-2 (runner) task stream: region name, the packed
+   ordinal+generation i64 (ordinal the high 32 bits, the morsel generation
+   the low 32), the seed nil or the (seed, offset) i64v[2]. */
+size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
+                                 SEXP name, double gen_field, SEXP seed,
+                                 uint32_t target, uint64_t ident);
+/* The exec-hook kind-2 decode: list(name, gen_field, seed|NULL); the
+   submitter identity stashes as the call kinds'. */
+SEXP mizu_interop_exec_runner(const unsigned char *buf, size_t len);
+/* The map descriptor read: list(kind, product, x|NULL) — name kind: the
+   consed LANGSXP; source kind: list(exprs, env) parented on base. */
+SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
+                                SEXP base);
 
 // Payload framing (payload.c) -----------------------------------------------------
 

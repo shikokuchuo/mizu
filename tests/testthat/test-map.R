@@ -1278,3 +1278,238 @@ test_that("a template type mismatch names the template's type", {
   )
   pool_end(p)
 })
+
+test_that("a name-kind spec map takes the region path and returns in order", {
+  p <- pool_pair()
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:10,
+    mizu_call("base::sqrt"),
+    list(),
+    chunks = 2
+  )
+  expect_true(st[["spec"]])
+  expect_false(st[["pymap"]])
+  # a spec f always takes the region path: the inline chunk tasks are
+  # same-language private frames
+  expect_null(st[["blob"]])
+  # 1:10 is ALTREP: x rides the descriptor as the element list
+  expect_false(st[["xraw"]])
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], st), as.list(sqrt(1:10)))
+  pool_end(p)
+})
+
+test_that("a raw x section rides a spec map as bare bytes", {
+  p <- pool_pair()
+  x <- 1:8 + 0L
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    x,
+    mizu_call("base::log"),
+    list(),
+    chunks = 2
+  )
+  expect_true(st[["xraw"]])
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], st), as.list(log(x)))
+  pool_end(p)
+})
+
+test_that("spec constant arguments ride the spec, named and positional", {
+  p <- pool_pair()
+  expect_identical(
+    run_map(p, 1:5, mizu_call("base::round", digits = 1L)),
+    as.list(round(1:5, digits = 1L))
+  )
+  expect_identical(
+    run_map(p, 1:5, mizu_call(name = NULL, 10L, source = "x * ..1")),
+    as.list(1:5 * 10L)
+  )
+  expect_identical(
+    run_map(p, as.list(1:5), mizu_call(source = "x + k", k = 5L)),
+    as.list(1:5 + 5L)
+  )
+  pool_end(p)
+})
+
+test_that("a spec f rejects constant arguments in ...", {
+  p <- pool_pair()
+  expect_error(
+    mizu_map(p[["ctrl"]], 1:4, mizu_call("base::sqrt"), digits = 1L),
+    "must \\s*be empty with a spec",
+    perl = TRUE
+  )
+  expect_error(
+    mizu_map_prepare(p[["ctrl"]], 1:4, mizu_call("base::sqrt"), 1L),
+    "be empty with a spec"
+  )
+  pool_end(p)
+})
+
+test_that("a spec f held in a variable bypasses match.fun", {
+  p <- pool_pair()
+  f <- mizu_call("base::sqrt")
+  expect_identical(run_map(p, 1:4, f), as.list(sqrt(1:4)))
+  pool_end(p)
+})
+
+test_that("a native f on a foreign pool fails fast, a spec passes the guard", {
+  p <- pool_pair(ident = c(3L, 7L))
+  expect_error(
+    mizu_map(p[["ctrl"]], 1:4, identity),
+    "workers are not R"
+  )
+  expect_error(
+    mizu_map(p[["ctrl"]], 1:4, mizu_call("numpy.mean"), extra = 1),
+    "be empty with a spec"
+  )
+  pool_end(p)
+})
+
+test_that("a spec map needs a joined worker", {
+  ctrl <- .Call(
+    mizu:::mizu_pool_create,
+    1L,
+    8L,
+    64L,
+    64L,
+    64L,
+    512L
+  )
+  expect_error(
+    mizu_map(ctrl, 1:4, mizu_call("base::sqrt")),
+    "no worker has joined"
+  )
+  .Call(mizu:::mizu_pool_destroy, ctrl)
+})
+
+test_that("a spec map stages the template path and gathers a view", {
+  p <- pool_pair()
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:6,
+    mizu_call("base::log"),
+    list(),
+    template = numeric(1),
+    chunks = 2
+  )
+  expect_true(st[["direct"]])
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], st), log(1:6))
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:6,
+    mizu_call("base::log"),
+    list(),
+    template = numeric(1)
+  )
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  v <- mizu:::map_collect(st, collect = "view")
+  expect_equal(as.numeric(v), log(1:6))
+  pool_end(p)
+})
+
+test_that("a spec map's seed matches the native derivation, chunk-invariant", {
+  p <- pool_pair()
+  f <- mizu_call(source = "runif(1)")
+  a <- run_map(p, 1:20, f, seed = 42)
+  b <- run_map(p, 1:20, f, seed = 42, chunks = 7)
+  expect_identical(a, b)
+  d <- run_map(p, 1:20, f, seed = c(42, 20))
+  e <- run_map(p, 1:20, function(x) runif(1), seed = c(42, 20))
+  expect_identical(unlist(d), unlist(e))
+  expect_error(
+    mizu_map(p[["ctrl"]], 1:4, f, .seed = 2^31),
+    ".seed\\[1\\] must be an integer"
+  )
+  pool_end(p)
+})
+
+test_that("a prepared spec map re-runs under fresh seeds without restaging", {
+  p <- pool_pair()
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:12, mizu_call(source = "runif(1)"))
+  st <- pm[["st"]]
+  name1 <- st[["name"]]
+  mizu:::map_rearm(p[["ctrl"]], st, 1)
+  mizu:::map_submit(p[["ctrl"]], st)
+  expect_identical(pool_step(p), 1L)
+  r1 <- collect30(p[["ctrl"]], st)
+  # run 2: the same region and name (no restage), a fresh seed on the
+  # re-armed runner fields
+  mizu:::map_rearm(p[["ctrl"]], st, 2)
+  expect_identical(st[["name"]], name1)
+  mizu:::map_submit(p[["ctrl"]], st)
+  expect_identical(pool_step(p), 1L)
+  r2 <- collect30(p[["ctrl"]], st)
+  expect_false(identical(unlist(r1), unlist(r2)))
+  mizu:::map_rearm(p[["ctrl"]], st, 1)
+  mizu:::map_submit(p[["ctrl"]], st)
+  expect_identical(pool_step(p), 1L)
+  expect_identical(collect30(p[["ctrl"]], st), r1)
+  pool_end(p)
+})
+
+test_that("a spec map error re-signals with the failing element's index", {
+  p <- pool_pair()
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:10,
+    mizu_call(source = "if (x == 7) stop(\"boom\") else x"),
+    list(),
+    chunks = 2
+  )
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  e <- tryCatch(collect30(p[["ctrl"]], st), error = identity)
+  expect_identical(e[["mizu_map_index"]], 7)
+  expect_match(conditionMessage(e), "boom")
+  pool_end(p)
+})
+
+test_that("the pymap adapter splices element ranges and converts histories", {
+  # the foreign runner shape: (hist, vals) with 0-based half-open element
+  # ranges, as pymizu's _runner publishes them
+  runs <- list(
+    list(
+      list(list(0L, 3L), list(3L, 6L)),
+      list(as.list(1:3), as.list(4:6))
+    ),
+    list(list(list(6L, 8L)), list(as.list(7:8)))
+  )
+  out <- vector("list", 8L)
+  out <- mizu:::map_splice_ix(out, runs)
+  expect_identical(out, as.list(1:8))
+  # template path publishes no values
+  expect_identical(
+    mizu:::map_splice_ix(vector("list", 2L), list(list(list(), NULL))),
+    vector("list", 2L)
+  )
+  # histories convert back to morsel pairs (morsel size 3, partial grant)
+  hist <- mizu:::map_hist_ix(runs, 3)
+  expect_identical(hist[[1L]], list(c(0, 1), c(1, 1)))
+  expect_identical(hist[[2L]], list(2, 1))
+})
+
+test_that("a spec map declines a non-portable constant at stage time", {
+  p <- pool_pair()
+  expect_error(
+    mizu_map(p[["ctrl"]], 1:4, mizu_call("base::identity", new.env())),
+    class = "mizu_error_not_portable"
+  )
+  pool_end(p)
+})

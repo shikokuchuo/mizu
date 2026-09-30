@@ -153,7 +153,11 @@ SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   if (!(msd >= 1) || msd > nd)
     Rf_error("mizu: invalid map morsel size");
   uint64_t morsel_size = (uint64_t) msd;
-  size_t desc_len = desc_len_sexp == R_NilValue ?
+  /* a RAWSXP descriptor is already framed bytes (the 'I' interchange form
+     of a spec map's descriptor) — memcpy, no serialize pass */
+  const int desc_raw = TYPEOF(desc) == RAWSXP;
+  size_t desc_len = desc_raw ? (size_t) XLENGTH(desc) :
+    desc_len_sexp == R_NilValue ?
     mizu_view_serialize_count(desc) : (size_t) Rf_asReal(desc_len_sexp);
   if (desc_len == 0)
     Rf_error("mizu: invalid map descriptor size");
@@ -205,8 +209,14 @@ SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
   SEXP wrap = PROTECT(mizu_shm_wrap_producer(shm));
   unsigned char *b = (unsigned char *) shm->addr;
   memcpy(b, &h, sizeof(h));
-  if (mizu_serialize_bounded(b + h.desc_off, desc_len, desc) != desc_len)
+  if (desc_raw) {
+    if ((size_t) XLENGTH(desc) != desc_len)
+      Rf_error("mizu: invalid map descriptor size");
+    memcpy(b + h.desc_off, RAW(desc), desc_len);
+  } else if (mizu_serialize_bounded(b + h.desc_off, desc_len, desc) !=
+             desc_len) {
     Rf_error("mizu: map descriptor size changed between count and write");
+  }
   if (x != R_NilValue)
     memcpy(b + h.x_off, mizu_vec_ptr(x), (size_t) h.x_len);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
@@ -250,8 +260,21 @@ SEXP mizu_map_open(SEXP name_sexp, SEXP writable_sexp) {
 
 SEXP mizu_map_desc(SEXP xp) {
   mizu_map_h *mh = map_h_get(xp);
-  return mizu_view_unserialize_from((unsigned char *) mh->shm->addr +
-                               mh->h.desc_off, (size_t) mh->h.desc_len);
+  const unsigned char *desc =
+    (const unsigned char *) mh->shm->addr + mh->h.desc_off;
+  /* the descriptor's codec identity rides its first byte: the 'I'
+     interchange form (a spec map) or this binding's private stream — the
+     one branch the Phase 5 reader dispatch needs */
+  if (mh->h.desc_len >= 1 && desc[0] == MIZU_INTEROP_MAGIC)
+    return mizu_interop_read_map_desc(desc, (size_t) mh->h.desc_len,
+                                      R_GlobalEnv);
+  return mizu_view_unserialize_from(desc, (size_t) mh->h.desc_len);
+}
+
+/* The template-path flag off the cached header (a spec map's runner reads
+   it here — the kind-2 stream carries no per-runner flag). */
+SEXP mizu_map_is_template(SEXP xp) {
+  return Rf_ScalarLogical(map_h_get(xp)->h.out_type != 0);
 }
 
 /* RAWVEC x slice [lo, hi]: one allocVector + memcpy straight from the
