@@ -82,6 +82,7 @@ SEXP mizu_channel_recv_batch_call(SEXP, SEXP, SEXP);
 SEXP mizu_channel_close_call(SEXP, SEXP);
 SEXP mizu_channel_close_signal_call(SEXP);
 SEXP mizu_channel_alive_call(SEXP);
+SEXP mizu_channel_keep_out_call(SEXP);
 SEXP mizu_channel_stat(SEXP);
 SEXP mizu_sentinel_check(SEXP);
 SEXP mizu_now_call(void);
@@ -192,6 +193,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_channel_close",          (DL_FUNC) &mizu_channel_close_call,        2},
   {"mizu_channel_close_signal",   (DL_FUNC) &mizu_channel_close_signal_call, 1},
   {"mizu_channel_alive",          (DL_FUNC) &mizu_channel_alive_call,        1},
+  {"mizu_channel_keep_out",       (DL_FUNC) &mizu_channel_keep_out_call,   1},
   {"mizu_channel_stat",           (DL_FUNC) &mizu_channel_stat,              1},
   {"mizu_sentinel_check",         (DL_FUNC) &mizu_sentinel_check,            1},
   {"mizu_now_call",               (DL_FUNC) &mizu_now_call,                  0},

@@ -449,6 +449,15 @@ SEXP mizu_channel_alive_call(SEXP xp) {
   return Rf_ScalarLogical(mizu_channel_alive((mizu_channel *) h->core));
 }
 
+/* The tx-keeper count, exposed for the test suite: the keeperless and
+   reap discipline over interop traffic (1.4's acceptance). */
+SEXP mizu_channel_keep_out_call(SEXP xp) {
+  mizu_r_handle *h = chan_peek(xp);
+  if (h == NULL) return Rf_ScalarInteger(-1);
+  return Rf_ScalarInteger(
+    (int) mizu_handle_keep_out((const mizu_handle *) h->core));
+}
+
 SEXP mizu_channel_stat(SEXP xp) {
   mizu_r_handle *h = chan_get(xp);
   mizu_channel *c = (mizu_channel *) h->core;

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="8339da8128bff0bdb46b50b5915a2e244b479f92"  # libmizu: Cross-language 1.6a: interop cursor, emit helpers, golden corpus
+PIN="0cce6cd83fc7adfcb0c25d9d5e0fdcd044743566"  # libmizu: Add mizu_handle_keep_out (the tx-keeper count, channel handles)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

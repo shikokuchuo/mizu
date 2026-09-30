@@ -352,6 +352,34 @@ test_that("the foreign zero-copy filter gates the layouts by capability", {
   channel_end(p)
 })
 
+test_that("interop traffic keeps the keeperless/reap discipline", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  ko <- function() .Call(mizu:::mizu_channel_keep_out, p$host)
+  n0 <- ko()
+  # within the inline budget: keeperless, no retain-table growth
+  x <- list(a = 1L, b = "s")
+  for (i in 1:4) {
+    mizu_send(p$host, x)
+  }
+  expect_identical(ko(), n0)
+  for (i in 1:4) {
+    expect_identical(mizu_recv(p$peer, timeout = 5), x)
+  }
+  # past the budget but within the arena: one ARENA chunk, still no keeper
+  big <- paste(rep("x", 500), collapse = "")
+  mizu_send(p$host, big)
+  expect_identical(ko(), n0)
+  expect_identical(mizu_recv(p$peer, timeout = 5), big)
+  # past the arena: one spill retain, reaped on the verb after consumption
+  huge <- paste(rep("x", 50000), collapse = "")
+  mizu_send(p$host, huge)
+  expect_identical(ko(), n0 + 1L)
+  expect_identical(mizu_recv(p$peer, timeout = 5), huge)
+  mizu_send(p$host, "y") # the reap trigger
+  expect_identical(ko(), n0)
+})
+
 test_that("ALTREP crosses by value on foreign handles", {
   p <- foreign_pair()
   on.exit(channel_end(p))
