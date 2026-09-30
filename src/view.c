@@ -88,8 +88,9 @@ static inline SEXP mizu_view_get_attrs_for_serialize(SEXP x) {
    mizu_view_get_attrs_for_serialize's split (named list on R >= 4.6,
    pairlist below); the CHARSXP comparator is interned, so the class test is
    a pointer compare. */
-int mizu_view_is_int64(SEXP x) {
-  if (TYPEOF(x) != REALSXP || ALTREP(x) || Rf_isS4(x)) return 0;
+static int view_int64_classed(SEXP x, int altrep_ok) {
+  if (TYPEOF(x) != REALSXP || (!altrep_ok && ALTREP(x)) || Rf_isS4(x))
+    return 0;
   SEXP cls = Rf_getAttrib(x, R_ClassSymbol);
   if (TYPEOF(cls) != STRSXP || XLENGTH(cls) != 1 ||
       STRING_ELT(cls, 0) != STRING_ELT(mizu_view_int64_class, 0))
@@ -101,6 +102,18 @@ int mizu_view_is_int64(SEXP x) {
      class-only test is exactly one node, the class */
   return TAG(ATTRIB(x)) == R_ClassSymbol && CDR(ATTRIB(x)) == R_NilValue;
 #endif
+}
+
+int mizu_view_is_int64(SEXP x) {
+  return view_int64_classed(x, 0);
+}
+
+/* The ALTREP-tolerant half: the capability gates and the interop writer ask
+   only whether the class rides the wire tag (an INT64 view's region header
+   carries it, and a by-value copy stages through *_GET_REGION either way);
+   the raw tier's data-pointer question keeps the ALTREP rejection above. */
+int mizu_view_is_int64_any(SEXP x) {
+  return view_int64_classed(x, 1);
 }
 
 /* Sets class last to avoid validation ordering issues. */
@@ -1130,7 +1143,7 @@ static size_t mizh_size(SEXP x) {
   size_t data_size = (size_t) XLENGTH(x) * mizu_view_sizeof_elt(TYPEOF(x));
   /* class-only integer64: the wire tag carries the class — no attrs
      section (mizh_write gates identically; the two must agree) */
-  if (mizu_view_is_int64(x))
+  if (mizu_view_is_int64_any(x))
     return MIZU_HEADER_SIZE + data_size;
   SEXP attrs = PROTECT(mizu_view_get_attrs_for_serialize(x));
   size_t attrs_size = (attrs != R_NilValue) ? mizu_view_serialize_count(attrs) : 0;
@@ -1145,7 +1158,7 @@ static size_t mizh_size(SEXP x) {
    never expanded on the sender. */
 static void mizh_write(unsigned char *base, SEXP x) {
 
-  int int64 = mizu_view_is_int64(x);
+  int int64 = mizu_view_is_int64_any(x);
   int type = TYPEOF(x);
   R_xlen_t n = XLENGTH(x);
   size_t data_size = (size_t) n * mizu_view_sizeof_elt(type);

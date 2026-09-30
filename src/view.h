@@ -142,6 +142,7 @@ void mizu_view_altrep_init(DllInfo *dll);
    set is class = "integer64". */
 extern SEXP mizu_view_int64_class;
 int mizu_view_is_int64(SEXP x);
+int mizu_view_is_int64_any(SEXP x);
 
 /* SHM extptr finalizers, defined alongside the wrap constructors that
    register them: mizu_view_shm_finalizer releases this side's mapping only;

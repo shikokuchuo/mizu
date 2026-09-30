@@ -319,7 +319,7 @@ static int ix_qualify_frame(SEXP x) {
       break;
     }
     if (ok_cols && ANY_ATTRIB(col)) {
-      if (mizu_view_is_int64(col)) {
+      if (mizu_view_is_int64_any(col)) {
         if (ix_attr_count(col) != 1) ok_cols = 0;
       } else {
         const int q = mizu_interop_attrs_qualify(col);
@@ -395,7 +395,7 @@ static int ix_encodable(SEXP x, unsigned depth) {
     return 0;
   }
   if (!ANY_ATTRIB(x)) return 1;
-  if (mizu_view_is_int64(x)) return ix_attr_count(x) == 1;
+  if (mizu_view_is_int64_any(x)) return ix_attr_count(x) == 1;
   /* the attribute set itself: names under the dict-key rules, every
      value encodable (a whitelisted shape's values always pass, so this
      alone answers both questions without consulting the whitelist) */
@@ -789,7 +789,7 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
   const SEXPTYPE ty = TYPEOF(x);
   switch (ty) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP: {
-    if (mizu_view_is_int64(x) && ix_attr_count(x) == 1 && !Rf_isS4(x)) {
+    if (mizu_view_is_int64_any(x) && ix_attr_count(x) == 1 && !Rf_isS4(x)) {
       /* a class-only integer64 writes 0x0e at every length */
       ixw_atomic_put(w, MIZU_TYPE_INT64, x);
       return;

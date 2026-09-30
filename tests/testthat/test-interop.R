@@ -23,15 +23,17 @@ test_that("per-tag identical() round-trips over a foreign channel", {
   expect_identical(ix_rt(p, TRUE), TRUE)
   expect_identical(ix_rt(p, 1L), 1L)
   expect_identical(ix_rt(p, 1.5), 1.5)
-  expect_identical(ix_rt(p, 1+2i), 1+2i)
+  expect_identical(ix_rt(p, 1 + 2i), 1 + 2i)
   expect_identical(ix_rt(p, "héllo ✓"), "héllo ✓")
   expect_identical(ix_rt(p, as.raw(c(0x00, 0xff))), as.raw(c(0x00, 0xff)))
   expect_identical(ix_rt(p, c(TRUE, NA)), c(TRUE, NA))
   expect_identical(ix_rt(p, c(1L, NA, -3L)), c(1L, NA, -3L))
   expect_identical(ix_rt(p, c(1.5, NA)), c(1.5, NA))
   expect_identical(ix_rt(p, c("a", NA, "hé")), c("a", NA, "hé"))
-  expect_identical(ix_rt(p, list(a = 1L, b = list(2.5, "x"))),
-                   list(a = 1L, b = list(2.5, "x")))
+  expect_identical(
+    ix_rt(p, list(a = 1L, b = list(2.5, "x"))),
+    list(a = 1L, b = list(2.5, "x"))
+  )
 
   f <- factor(c("b", "a", NA), levels = c("a", "b"))
   expect_identical(ix_rt(p, f), f)
@@ -40,7 +42,7 @@ test_that("per-tag identical() round-trips over a foreign channel", {
     f = factor(c("a", NA)),
     i = bit64::as.integer64(c(5, NA)),
     r = as.raw(c(1, 2)),
-    z = c(1+2i, 3+4i),
+    z = c(1 + 2i, 3 + 4i),
     s = c("x", "y")
   )
   expect_identical(ix_rt(p, df), df)
@@ -76,7 +78,7 @@ test_that("the dim shape round-trips", {
   expect_identical(ix_rt(p, im), im)
   dz <- array(integer(0), c(0, 3))
   expect_identical(ix_rt(p, dz), dz)
-  expect_identical(ix_rt(p, 1:2), 1:2)  # a length-1 dim: plain vector home
+  expect_identical(ix_rt(p, 1:2), 1:2) # a length-1 dim: plain vector home
 })
 
 test_that("the temporal shapes round-trip", {
@@ -112,10 +114,14 @@ test_that("NA mappings and the integer boundaries", {
   expect_identical(x, bit64::as.integer64(-2147483648))
   # integer64 of length 1 and an integer64 NA nested in a list
   expect_identical(ix_rt(p, bit64::as.integer64(5)), bit64::as.integer64(5))
-  expect_identical(ix_rt(p, list(bit64::as.integer64(NA), 1L)),
-                   list(bit64::as.integer64(NA), 1L))
-  expect_identical(ix_rt(p, bit64::as.integer64(c(2^53, NA))),
-                   bit64::as.integer64(c(2^53, NA)))
+  expect_identical(
+    ix_rt(p, list(bit64::as.integer64(NA), 1L)),
+    list(bit64::as.integer64(NA), 1L)
+  )
+  expect_identical(
+    ix_rt(p, bit64::as.integer64(c(2^53, NA))),
+    bit64::as.integer64(c(2^53, NA))
+  )
 })
 
 test_that("top-level length-1 atomics stage as scalar tags on a foreign handle", {
@@ -124,7 +130,7 @@ test_that("top-level length-1 atomics stage as scalar tags on a foreign handle",
   expect_identical(ix_rt(p, 1.5), 1.5)
   expect_identical(ix_rt(p, FALSE), FALSE)
   expect_identical(ix_rt(p, 42L), 42L)
-  expect_identical(ix_rt(p, 2+3i), 2+3i)
+  expect_identical(ix_rt(p, 2 + 3i), 2 + 3i)
   expect_identical(ix_rt(p, "s"), "s")
   # raw and integer64 keep RAWVEC on foreign handles too
   skip_if_not_installed("bit64")
@@ -158,28 +164,45 @@ test_that("the decline set raises mizu_error_not_portable on a foreign handle", 
 
   dup <- structure(list(1, 2), names = c("a", "a"))
   expect_error(mizu_send(p$host, dup), class = "mizu_error_not_portable")
-  expect_error(mizu_send(p$host, c(a = 1, b = 2)), class = "mizu_error_not_portable")
-  expect_error(mizu_send(p$host, array(1:4, c(2, 2), dimnames = list(c("a", "b"), NULL))),
-               class = "mizu_error_not_portable")
-  expect_error(mizu_send(p$host, matrix(letters[1:4], 2)),
-               class = "mizu_error_not_portable")
-  expect_error(mizu_send(p$host, ordered(c("a", "b"))),
-               class = "mizu_error_not_portable")
+  expect_error(
+    mizu_send(p$host, c(a = 1, b = 2)),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, array(1:4, c(2, 2), dimnames = list(c("a", "b"), NULL))),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, matrix(letters[1:4], 2)),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, ordered(c("a", "b"))),
+    class = "mizu_error_not_portable"
+  )
   skip_if_not_installed("tibble")
-  expect_error(mizu_send(p$host, tibble::tibble(x = 1:2)),
-               class = "mizu_error_not_portable")
+  expect_error(
+    mizu_send(p$host, tibble::tibble(x = 1:2)),
+    class = "mizu_error_not_portable"
+  )
   bs <- "héllo"
   Encoding(bs) <- "bytes"
   expect_error(mizu_send(p$host, bs), class = "mizu_error_not_portable")
   ni64 <- bit64::as.integer64(1:2)
   names(ni64) <- c("a", "b")
   expect_error(mizu_send(p$host, ni64), class = "mizu_error_not_portable")
-  expect_error(mizu_send(p$host, as.POSIXlt(Sys.time())),
-               class = "mizu_error_not_portable")
-  expect_error(mizu_send(p$host, as.difftime(1, units = "days")),
-               class = "mizu_error_not_portable")
-  expect_error(mizu_send(p$host, as.Date("2022-01-15") + 0.5),
-               class = "mizu_error_not_portable")
+  expect_error(
+    mizu_send(p$host, as.POSIXlt(Sys.time())),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, as.difftime(1, units = "days")),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, as.Date("2022-01-15") + 0.5),
+    class = "mizu_error_not_portable"
+  )
   dfx <- data.frame(x = 1:2)
   attr(dfx, "extra") <- TRUE
   expect_error(mizu_send(p$host, dfx), class = "mizu_error_not_portable")
@@ -198,7 +221,9 @@ test_that("the depth cap declines", {
   p <- foreign_pair()
   on.exit(channel_end(p))
   x <- NULL
-  for (i in seq_len(65)) x <- list(x)
+  for (i in seq_len(65)) {
+    x <- list(x)
+  }
   expect_error(mizu_send(p$host, x), class = "mizu_error_not_portable")
   e <- tryCatch(mizu_send(p$host, x), error = function(e) e)
   expect_match(e$reason, "depth")
@@ -207,7 +232,7 @@ test_that("the depth cap declines", {
 test_that("corrupt and unknown streams raise informatively", {
   expect_snapshot(ix_read("49017f"), error = TRUE)
   expect_snapshot(ix_read("490200"), error = TRUE)
-  expect_snapshot(ix_read("4901020102030405"), error = TRUE)  # truncated
+  expect_snapshot(ix_read("4901020102030405"), error = TRUE) # truncated
   # an unlisted first byte: the consumed decline condition
   r <- .Call(mizu:::mizu_stream_read_call, as.raw(0x7f))
   expect_s3_class(r, "mizu_error_python_payload")
@@ -220,10 +245,13 @@ test_that("corrupt and unknown streams raise informatively", {
 test_that("an attribute set outside the whitelist and a mismatched frame decline", {
   # builder-level: attribute set outside the whitelist
   bad <- paste0(
-    "49010f", ix_write(1L) |> substring(5),
+    "49010f",
+    ix_write(1L) |> substring(5),
     "0d0200000000000000",
-    "03000000666f6f", ix_write(2L) |> substring(5),
-    "05000000636c617373", ix_write("bar") |> substring(5)
+    "03000000666f6f",
+    ix_write(2L) |> substring(5),
+    "05000000636c617373",
+    ix_write("bar") |> substring(5)
   )
   expect_snapshot(ix_read(bad), error = TRUE)
 })
@@ -244,7 +272,7 @@ test_that("the foreign zero-copy filter gates the layouts by capability", {
   expect_false(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got, big)
   channel_end(p)
-  p <- foreign_pair(caps = 2L)  # MIZU_CAP_ATTRS
+  p <- foreign_pair(caps = 2L) # MIZU_CAP_ATTRS
   got <- ix_rt(p, big)
   expect_true(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got[], big[])
@@ -260,19 +288,19 @@ test_that("the foreign zero-copy filter gates the layouts by capability", {
 
   # a plain frame: the ATTRS + MIZL conjunction
   df <- data.frame(x = rnorm(10000), y = rnorm(10000))
-  p <- foreign_pair(caps = 2L)          # ATTRS, no MIZL: an attr copy
+  p <- foreign_pair(caps = 2L) # ATTRS, no MIZL: an attr copy
   got <- ix_rt(p, df)
   expect_false(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got, df)
   channel_end(p)
-  p <- foreign_pair(caps = 6L)          # ATTRS + MIZL: a region
+  p <- foreign_pair(caps = 6L) # ATTRS + MIZL: a region
   got <- ix_rt(p, df)
   expect_true(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(as.data.frame(got[]), df)
   channel_end(p)
   # a string-columned frame adds MIZS to the conjunction
   dfs <- data.frame(x = rnorm(10000), s = rep("a", 10000))
-  p <- foreign_pair(caps = 6L)          # ATTRS + MIZL, no MIZS: an attr copy
+  p <- foreign_pair(caps = 6L) # ATTRS + MIZL, no MIZS: an attr copy
   got <- ix_rt(p, dfs)
   expect_false(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got, dfs)
@@ -285,7 +313,7 @@ test_that("the foreign zero-copy filter gates the layouts by capability", {
   expect_false(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got, sv)
   channel_end(p)
-  p <- foreign_pair(caps = 1L)  # MIZU_CAP_MIZS
+  p <- foreign_pair(caps = 1L) # MIZU_CAP_MIZS
   got <- ix_rt(p, sv)
   expect_true(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got[], sv[])
@@ -319,7 +347,7 @@ test_that("ALTREP crosses by value on foreign handles", {
   x <- 1:100000
   got <- ix_rt(p, x)
   expect_identical(got, x)
-  expect_lt(length(serialize(x, NULL)), 1000L)  # the sender is still compact
+  expect_lt(length(serialize(x, NULL)), 1000L) # the sender is still compact
   # same-handle staging keeps the private codec (R->R compactness)
   q <- channel_pair()
   mizu_send(q$host, x)
@@ -334,7 +362,7 @@ test_that("a compact-sequence vector past the floor crosses as MIZH", {
   got <- ix_rt(p, x)
   expect_true(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got[], x)
-  expect_lt(length(serialize(x, NULL)), 1000L)  # never expanded on the sender
+  expect_lt(length(serialize(x, NULL)), 1000L) # never expanded on the sender
   channel_end(p)
 })
 
@@ -349,7 +377,7 @@ test_that("a seq-columned data.frame crosses foreign", {
 test_that("a nested mizu view crosses by value", {
   x <- 1:1e6
   p <- foreign_pair()
-  got <- ix_rt(p, x)          # a view on the peer side
+  got <- ix_rt(p, x) # a view on the peer side
   expect_true(.Call(mizu:::mizu_zc_view_check, got))
   # send the received view back nested in a list: by value
   mizu_send(p$host, list(got, 1L))
@@ -366,4 +394,27 @@ test_that("integer64 keeps RAWVEC at top level past the floor", {
   expect_true(.Call(mizu:::mizu_zc_view_check, got))
   expect_identical(got[], x[])
   channel_end(p)
+})
+
+test_that("a class-only integer64 view re-crosses a foreign handle", {
+  skip_if_not_installed("bit64")
+  x <- bit64::as.integer64(seq_len(100000))
+  p <- foreign_pair() # caps = 0: the class rides the wire tag, baseline
+  on.exit(channel_end(p))
+  mizu_send(p$peer, x)
+  v <- mizu_recv(p$host, timeout = 5)
+  expect_true(.Call(mizu:::mizu_zc_view_check, v))
+  mizu_send(p$host, v) # the foreign end echoes by reference (REF)
+  got <- mizu_recv(p$peer, timeout = 5)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got[], x[])
+  # materialized (COW'd), the same echo crosses by value as 0x0e
+  mizu_send(p$peer, x)
+  v <- mizu_recv(p$host, timeout = 5)
+  v[1L] <- bit64::as.integer64(0L)
+  mizu_send(p$host, v)
+  got <- mizu_recv(p$peer, timeout = 5)
+  expected <- x
+  expected[1L] <- bit64::as.integer64(0L)
+  expect_identical(got, expected)
 })

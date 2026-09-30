@@ -268,7 +268,7 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
   const size_t elt = mizu_view_sizeof_elt(type);
   if (elt != 0) {
     if (Rf_isS4(x)) return 0;
-    if (!ANY_ATTRIB(x) || mizu_view_is_int64(x)) {
+    if (!ANY_ATTRIB(x) || mizu_view_is_int64_any(x)) {
       /* the baseline MIZH, any representation */
       size_t data = (size_t) XLENGTH(x) * elt;
       if (data <= (size_t) inline_max || data < MIZU_ZC_FLOOR) return 0;
@@ -315,7 +315,7 @@ int mizu_zc_ref_foreign_ok(SEXP x, uint32_t caps) {
   if (!mizu_view_check(x)) return 1;   /* not a view: REF never claims it */
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
-    if (!ANY_ATTRIB(x) || mizu_view_is_int64(x)) return 1;
+    if (!ANY_ATTRIB(x) || mizu_view_is_int64_any(x)) return 1;
     return (caps & MIZU_CAP_ATTRS) != 0;
   case STRSXP: {
     const uint32_t need = ANY_ATTRIB(x) ?
@@ -345,7 +345,7 @@ void mizu_zc_stage(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
   mizu_view_layout_write((unsigned char *) shm->addr, x);
   /* the aux code must match the layout's root sexptype: class-only
      integer64 stamped its MIZH root MIZU_VIEW_TYPE_INT64 */
-  int type = mizu_view_is_int64(x) ? MIZU_TYPE_INT64 : (int) TYPEOF(x);
+  int type = mizu_view_is_int64_any(x) ? MIZU_TYPE_INT64 : (int) TYPEOF(x);
   hdr->kind = MIZU_KIND_SHM_VEC;
   hdr->len = (uint32_t) shm->name_len;
   hdr->aux = mizu_aux_shm_vec(type == LISTSXP ? VECSXP : type,
