@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="2699996731ea4dbaa82d77e137245b7c0cd1969b"  # libmizu: Cross-language phase 0: identity words, layout checks, validity section
+PIN="8339da8128bff0bdb46b50b5915a2e244b479f92"  # libmizu: Cross-language 1.6a: interop cursor, emit helpers, golden corpus
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
@@ -60,6 +60,13 @@ cp "$src_root/src/internal.h" "$DEST/internal.h"
 for f in "$src_root"/src/*.c; do
   cp "$f" "$DEST/"
 done
+
+# The golden interop corpus rides the same pin as the core: a spec change
+# and its fixtures arrive in one re-vendor.
+FIXDEST="$(cd "$(dirname "$0")/.." && pwd)/tests/testthat/interop-corpus"
+mkdir -p "$FIXDEST"
+cp "$src_root/tests/interop/cases.txt" "$FIXDEST/cases.txt"
+cp "$src_root/tests/interop/corpus.txt" "$FIXDEST/corpus.txt"
 
 # The gate: the core is language-agnostic — no binding-side or old-name
 # remnants.
