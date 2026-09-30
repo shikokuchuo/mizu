@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="8c26849b3de0e97b894f7a039286f74f454cce51"  # libmizu: the task tag (Phase 4): normative format, task corpus fixtures
+PIN="532bc38873b4bcdeb788015584f6bd98d35ec41f"  # libmizu: the task tag (Phase 4): normative format, task corpus fixtures
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

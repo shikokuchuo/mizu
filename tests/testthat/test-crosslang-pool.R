@@ -52,7 +52,7 @@ test_that("errors cross with remote_type, and result portability is gated", {
   t3 <- mizu_submit_call(p, mizu_call(source = "{1, 2, 3}"))
   c3 <- tryCatch(mizu_collect(t3), mizu_error_remote = function(c) c)
   expect_s3_class(c3, "mizu_error_remote")
-  expect_equal(c3$remote_type, "mizu_error_not_portable")
+  expect_equal(c3$remote_type, "DeclinedError")
 
   # nested submit inside a foreign-run task
   src <- paste0(
@@ -69,7 +69,7 @@ test_that("errors cross with remote_type, and result portability is gated", {
   t6 <- mizu_submit_call(p, mizu_call(source = "raise ValueError('boom')"))
   r <- mizu_collect_any(list(t5, t6))
   expect_identical(r[["index"]], 1L)
-  expect_identical(r[["value"]], 2)
+  expect_identical(r[["value"]], 2L)
   t7 <- mizu_submit_call(p, mizu_call(source = "1 + 1"))
   t8 <- mizu_submit_call(p, mizu_call(source = "raise ValueError('boom')"))
   cnd2 <- tryCatch(
@@ -79,7 +79,7 @@ test_that("errors cross with remote_type, and result portability is gated", {
   expect_s3_class(cnd2, "mizu_error_remote")
   expect_equal(cnd2[["index"]], 2L)
   expect_equal(cnd2$remote_type, "ValueError")
-  expect_identical(mizu_collect(t7), 2)
+  expect_identical(mizu_collect(t7), 2L)
 
   d <- mizu_pool_dump(p)
   expect_identical(d[["language"]], "Python")
@@ -90,12 +90,12 @@ test_that("a dead Python worker surfaces as the died condition", {
   launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(1L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
-  pid <- mizu_pool_status(p)[["workers"]][["pid"]][1L]
+  pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
   t <- mizu_submit_call(p, mizu_call(source = "import time\ntime.sleep(30)"))
   expect_true(wait_until(any(
     mizu_pool_dump(p)[["workers"]][["in_flight"]] != -1L
   )))
   kill_hard(pid)
-  cnd <- tryCatch(mizu_collect(t), mizu_error_died = function(c) c)
-  expect_s3_class(cnd, "mizu_error_died")
+  cnd <- tryCatch(mizu_collect(t), mizu_error_worker_died = function(c) c)
+  expect_s3_class(cnd, "mizu_error_worker_died")
 })

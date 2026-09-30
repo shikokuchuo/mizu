@@ -215,6 +215,27 @@ Past a size floor the frame travels as one shared-memory region both directions:
 An unmodified R → polars → R round trip moves zero payload bytes at all — the return hop is a reference to the region R itself staged.
 The full contract, with the NA-sentinel and widening rules per dtype, is the dtype matrix in the pymizu README; a value outside the portable subset raises at send time on either side, naming the path and reason.
 
+## Mixed-language pools
+
+Channels move values; pools move computation — a pool’s workers can be Python processes, driven through a neutral task specification.
+`mizu_py_pool_launcher()` spawns them (`python3 -m pymizu.worker`, probed like the channel launcher), `mizu_call()` describes the task — a qualified `"mod.fn"` name or a `source =` string, plus the constant arguments — and `mizu_submit_call()` stages it:
+
+``` r
+p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
+t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
+mizu_collect(t)
+#> [1] 0.2180191 0.4444593 0.7222683
+s <- mizu_submit_call(p, mizu_call(source = "y = x * 2\ny + 1", x = 20))
+mizu_collect(s)
+#> [1] 41
+mizu_pool_stop(p)
+```
+
+Unnamed arguments map to the positional list and named ones to the named dict, matching Python’s `*args, **kwargs`; a `source =` task evaluates in a fresh namespace with the named arguments bound as names and the result as the trailing expression’s value.
+The workers’ language comes from the pool itself — a plain `mizu_submit()` on a foreign pool errors locally naming `mizu_submit_call()`, a bare unqualified name errors at submit, and a non-portable argument raises `mizu_error_not_portable` at submit.
+Task errors cross as `mizu_error_remote` conditions with the remote type preserved, and a result without a portable home fails the task with one naming the type.
+The reverse direction mirrors: `pymizu.Pool.create()` with `pymizu.r_pool_launcher()`, and `Pool.submit()` with `pymizu.call()` specs.
+
 ## Benchmarks
 
 Two head-to-head measurements against mirai, timed with [bench](https://bench.r-lib.org).
@@ -255,8 +276,8 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu       249.44µs 409.14µs     2057.  474.84KB     25.8
-#> 2 mirai        7.49ms   7.97ms      125.    3.81MB     21.6
+#> 1 mizu       296.59µs 411.07µs     2063.  474.84KB     25.7
+#> 2 mirai        7.55ms   8.01ms      124.    3.81MB     23.2
 ```
 
 End to end, mizu is **19x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
@@ -282,12 +303,12 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      17.87ms   17.9ms     56.0     30.8MB  1231.  
-#> 2 mizu         5.01ms    5.7ms    140.      51.3KB     0   
-#> 3 mirai      204.45ms  204.5ms      4.89      19MB     9.78
+#> 1 serial       18.9ms     21ms     47.6     30.8MB   476.  
+#> 2 mizu         5.16ms    6.1ms    144.      51.7KB     1.98
+#> 3 mirai      208.29ms  208.3ms      4.80      19MB     9.60
 ```
 
-mizu turns the four workers into a **3.1x** gain over the serial loop, and runs **36x** ahead of mirai (medians).
+mizu turns the four workers into a **3.4x** gain over the serial loop, and runs **34x** ahead of mirai (medians).
 
 ``` r
 daemons(0L)
