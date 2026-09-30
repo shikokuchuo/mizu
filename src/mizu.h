@@ -65,6 +65,11 @@ typedef struct mizu_r_handle_s {
   uint32_t peer_lang;       /* channel: the peer's MIZU_LANG_* byte (0 unset;
                                pools are same-language by construction) */
   uint32_t peer_caps;       /* channel: the peer's reader-capability mask */
+  SEXP err_cond;            /* channel: the peer shim's err-send condition
+                               (mizu_channel_send_error); the stage hook
+                               pointer-matches it and frames the err stream.
+                               NULL when idle; set and cleared within the
+                               send veneer, whose argument roots it. */
   mizu_zc_cache zoc;        /* the R-side zc view cache */
 } mizu_r_handle;
 
@@ -129,6 +134,13 @@ enum {
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
                           mizu_ix_decline *rec);
 SEXP mizu_interop_read(const unsigned char *buf, size_t len);
+/* The err tag (0x11) framer: cond as the bounded top-level error value —
+   truncated to fit inline_max by construction, so the caller stamps INLINE
+   with the keeperless claim (the writer cannot fail). A mizu_error_remote
+   keeps its origin fields; any other condition writes its most-specific
+   class, raw message field, and call text. */
+size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
+                              SEXP cond);
 int mizu_interop_attrs_qualify(SEXP x);
 SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate);
 /* The dict-key rules on a names vector (non-NA, UTF-8-writable, unique

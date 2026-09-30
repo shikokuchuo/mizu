@@ -10,6 +10,7 @@
 \alias{mizu_error_startup}
 \alias{mizu_error_shm}
 \alias{mizu_error_python_payload}
+\alias{mizu_error_remote}
 \title{Error Conditions}
 \description{
 Terminal failures that a caller can act on programmatically are raised
@@ -49,9 +50,25 @@ section of \code{\link[=mizu_map]{mizu_map()}}).
 anywhere on the surface. Field \code{bytes}: the requested size of a
 region that was not created, \code{NA} when a region was not opened.
 \item \code{mizu_error_python_payload} — \code{\link[=mizu_recv]{mizu_recv()}} or \code{\link[=mizu_recv_batch]{mizu_recv_batch()}}
-on a channel message written by a Python peer that R cannot read
-back (only vectors and strings cross). The declined message is
+on a channel message written in a language-private stream (a pymizu
+codec or pickle payload) that this reader cannot interpret. The
+portable interchange subset crosses; the declined message is
 consumed, so the channel keeps flowing.
+\item \code{mizu_error_not_portable} — \code{\link[=mizu_send]{mizu_send()}} on a channel whose peer is
+a foreign-language process, of a value outside the portable
+interchange subset (a named atomic vector, an environment, a
+closure, an S4 object, an ordered factor, a data frame subclass,
+and the like). Fields \code{path} (where in the value the walk
+declined), \code{reason}, and \code{remedy} (a one-line rewrite where one
+exists, else \code{character(0)}).
+\item \code{mizu_error_remote} — never raised by mizu itself: the value a
+channel receive returns for a remote error stream, most commonly a
+peer process whose expression errored (the peer shims send one
+before exit, on every channel). Fields \code{remote_type} (the
+most-specific class of the original error), \code{message}, \code{detail}
+(the call or traceback text), and \code{index} (the 1-based element
+index) when the remote error carries one. Test with
+\code{\link[=mizu_is_remote_error]{mizu_is_remote_error()}}; raise with \code{\link[=mizu_raise]{mizu_raise()}}.
 }
 
 Errors of misuse (unnamed task arguments, out-of-range slots, operations

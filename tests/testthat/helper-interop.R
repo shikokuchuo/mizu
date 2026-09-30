@@ -5,7 +5,8 @@
 
 ix_hex_to_raw <- function(hex) {
   as.raw(strtoi(
-    substring(hex, seq(1L, nchar(hex), 2L), seq(2L, nchar(hex), 2L)), 16L
+    substring(hex, seq(1L, nchar(hex), 2L), seq(2L, nchar(hex), 2L)),
+    16L
   ))
 }
 
@@ -16,7 +17,8 @@ ix_raw_to_hex <- function(r) {
 ix_cases <- function() {
   lines <- readLines(
     test_path("interop-corpus", "cases.txt"),
-    warn = FALSE, encoding = "UTF-8"
+    warn = FALSE,
+    encoding = "UTF-8"
   )
   lines <- trimws(lines)
   lines <- lines[nzchar(lines) & !startsWith(lines, "#")]
@@ -27,7 +29,9 @@ ix_cases <- function() {
     langs = trimws(vapply(parts, `[[`, "", 3L)),
     value = trimws(vapply(parts, `[[`, "", 4L)),
     note = trimws(vapply(
-      parts, function(p) if (length(p) == 5L) p[[5L]] else "", ""
+      parts,
+      function(p) if (length(p) == 5L) p[[5L]] else "",
+      ""
     )),
     stringsAsFactors = FALSE
   )
@@ -36,7 +40,8 @@ ix_cases <- function() {
 ix_corpus <- function() {
   lines <- readLines(
     test_path("interop-corpus", "corpus.txt"),
-    warn = FALSE, encoding = "UTF-8"
+    warn = FALSE,
+    encoding = "UTF-8"
   )
   lines <- trimws(lines)
   lines <- lines[nzchar(lines) & !startsWith(lines, "#")]
@@ -74,7 +79,9 @@ ix_peek <- function(st) {
 
 ix_expect <- function(st, ch) {
   ix_ws(st)
-  if (ix_peek(st) != ch) stop("expected '", ch, "' at ", st$i)
+  if (ix_peek(st) != ch) {
+    stop("expected '", ch, "' at ", st$i)
+  }
   st$i <- st$i + 1L
 }
 
@@ -91,27 +98,34 @@ ix_string <- function(st) {
   ix_expect(st, '"')
   out <- character(0L)
   repeat {
-    if (st$i > nchar(st$s)) stop("unterminated string")
+    if (st$i > nchar(st$s)) {
+      stop("unterminated string")
+    }
     c <- substr(st$s, st$i, st$i)
     st$i <- st$i + 1L
-    if (c == '"') return(paste0(out, collapse = ""))
+    if (c == '"') {
+      return(paste0(out, collapse = ""))
+    }
     if (c == "\\") {
       e <- substr(st$s, st$i, st$i)
       st$i <- st$i + 1L
-      out <- c(out, switch(
-        e,
-        "n" = "\n",
-        "t" = "\t",
-        "r" = "\r",
-        "\\" = "\\",
-        "\"" = "\"",
-        "u" = {
-          code <- substr(st$s, st$i, st$i + 3L)
-          st$i <- st$i + 4L
-          intToUtf8(strtoi(code, 16L))
-        },
-        stop("bad escape \\", e)
-      ))
+      out <- c(
+        out,
+        switch(
+          e,
+          "n" = "\n",
+          "t" = "\t",
+          "r" = "\r",
+          "\\" = "\\",
+          "\"" = "\"",
+          "u" = {
+            code <- substr(st$s, st$i, st$i + 3L)
+            st$i <- st$i + 4L
+            intToUtf8(strtoi(code, 16L))
+          },
+          stop("bad escape \\", e)
+        )
+      )
     } else {
       out <- c(out, c)
     }
@@ -136,7 +150,9 @@ ix_real_atom <- function(st, stop) {
 
 ix_int_atom <- function(st, stop) {
   tok <- ix_token(st, stop)
-  if (tok == "na") return(NA)
+  if (tok == "na") {
+    return(NA)
+  }
   tok
 }
 
@@ -148,9 +164,26 @@ ix_value <- function(st) {
   rest <- substring(st$s, st$i)
   name <- NULL
   for (nm in c(
-    "lglv", "intv", "realv", "cplxv", "rawv", "strv", "i64v",
-    "list", "tuple", "dict", "attr", "lgl", "int", "real", "cplx",
-    "str", "bytes", "err", "task", "nil"
+    "lglv",
+    "intv",
+    "realv",
+    "cplxv",
+    "rawv",
+    "strv",
+    "i64v",
+    "list",
+    "tuple",
+    "dict",
+    "attr",
+    "lgl",
+    "int",
+    "real",
+    "cplx",
+    "str",
+    "bytes",
+    "err",
+    "task",
+    "nil"
   )) {
     if (startsWith(rest, nm)) {
       name <- nm
@@ -158,7 +191,9 @@ ix_value <- function(st) {
       break
     }
   }
-  if (is.null(name)) stop("bad value at ", st$i, " of ", sQuote(st$s))
+  if (is.null(name)) {
+    stop("bad value at ", st$i, " of ", sQuote(st$s))
+  }
   switch(
     name,
     "nil" = NULL,
@@ -200,7 +235,9 @@ ix_value <- function(st) {
     "str" = {
       ix_expect(st, "(")
       v <- if (ix_peek(st) == '"') ix_string(st) else NA_character_
-      if (ix_peek(st) != '"') ix_token(st, ")")
+      if (ix_peek(st) != '"') {
+        ix_token(st, ")")
+      }
       ix_expect(st, ")")
       v
     },
@@ -214,6 +251,30 @@ ix_value <- function(st) {
     "tuple" = ix_seq(st, "("),
     "dict" = ix_dict(st),
     "attr" = ix_attr(st),
+    "err" = {
+      ix_expect(st, "(")
+      type <- ix_string(st)
+      ix_expect(st, ",")
+      msg <- ix_string(st)
+      ix_expect(st, ",")
+      detail <- ix_string(st)
+      fields <- list(message = msg, remote_type = type, detail = detail)
+      ix_ws(st)
+      if (ix_peek(st) == ",") {
+        st$i <- st$i + 1L
+        if (ix_token(st, "=") != "index") {
+          stop("bad err field")
+        }
+        ix_expect(st, "=")
+        # the wire index is 0-based; the R field adds 1
+        fields$index <- as.integer(ix_token(st, ")")) + 1L
+      }
+      ix_expect(st, ")")
+      structure(
+        fields,
+        class = c("mizu_error_remote", "mizu_error", "error", "condition")
+      )
+    },
     "strv" = {
       ix_expect(st, "[")
       elts <- character(0L)
@@ -221,7 +282,9 @@ ix_value <- function(st) {
         if (ix_peek(st) == '"') {
           elts <- c(elts, ix_string(st))
         } else {
-          if (ix_token(st, c(",", "]")) != "na") stop("bad strv element")
+          if (ix_token(st, c(",", "]")) != "na") {
+            stop("bad strv element")
+          }
           elts <- c(elts, NA_character_)
         }
         if (ix_peek(st) == ",") st$i <- st$i + 1L
@@ -316,7 +379,9 @@ ix_seq <- function(st, open) {
 }
 
 ix_key <- function(st) {
-  if (ix_peek(st) == '"') return(ix_string(st))
+  if (ix_peek(st) == '"') {
+    return(ix_string(st))
+  }
   ix_token(st, "=")
 }
 
@@ -355,7 +420,9 @@ ix_attr <- function(st) {
       attr(x, p$keys[[j]]) <- p$values[[j]]
     }
   }
-  if (!is.null(klass)) class(x) <- klass
+  if (!is.null(klass)) {
+    class(x) <- klass
+  }
   x
 }
 
@@ -363,7 +430,9 @@ ix_parse <- function(text) {
   st <- ix_new_parser(text)
   v <- ix_value(st)
   ix_ws(st)
-  if (st$i <= nchar(text)) stop("trailing notation at ", st$i)
+  if (st$i <= nchar(text)) {
+    stop("trailing notation at ", st$i)
+  }
   v
 }
 
@@ -373,6 +442,13 @@ ix_read <- function(hex) {
   .Call(mizu:::mizu_interop_read_call, ix_hex_to_raw(hex))
 }
 
+ix_write_err <- function(x, budget = 240L) {
+  ix_raw_to_hex(.Call(mizu:::mizu_interop_write_err_call, x, budget))
+}
+
 ix_write <- function(x) {
+  if (inherits(x, "mizu_error_remote")) {
+    return(ix_write_err(x))
+  }
   ix_raw_to_hex(.Call(mizu:::mizu_interop_write_call, x))
 }

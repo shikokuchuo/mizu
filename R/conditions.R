@@ -47,6 +47,14 @@
 #'   and the like). Fields `path` (where in the value the walk
 #'   declined), `reason`, and `remedy` (a one-line rewrite where one
 #'   exists, else `character(0)`).
+#' * `mizu_error_remote` — never raised by mizu itself: the value a
+#'   channel receive returns for a remote error stream, most commonly a
+#'   peer process whose expression errored (the peer shims send one
+#'   before exit, on every channel). Fields `remote_type` (the
+#'   most-specific class of the original error), `message`, `detail`
+#'   (the call or traceback text), and `index` (the 1-based element
+#'   index) when the remote error carries one. Test with
+#'   [mizu_is_remote_error()]; raise with [mizu_raise()].
 #'
 #' Errors of misuse (unnamed task arguments, out-of-range slots, operations
 #' on a closed handle) stay plain errors: the classed hierarchy covers the
@@ -88,7 +96,7 @@
 #' cannot be named in `dropped_fields` and is dropped silently.
 #'
 #' @name mizu_error
-#' @aliases mizu_error_submit_timeout mizu_error_slots_exhausted mizu_error_stopped mizu_error_cancelled mizu_error_worker_died mizu_error_startup mizu_error_shm mizu_error_python_payload
+#' @aliases mizu_error_submit_timeout mizu_error_slots_exhausted mizu_error_stopped mizu_error_cancelled mizu_error_worker_died mizu_error_startup mizu_error_shm mizu_error_python_payload mizu_error_remote
 NULL
 
 # Raise a classed mizu error — class c(subclass, "mizu_error", "error",
@@ -124,3 +132,48 @@ stop_mizu <- function(subclass, message, ...) {
 #'
 #' @export
 mizu_is_sentinel <- function(x) .Call(mizu_sentinel_check, x)
+
+#' Remote Errors
+#'
+#' A channel receive returns a remote error stream as a value, not a
+#' raised condition: an error in the peer is data until user code decides
+#' otherwise. The value is a `mizu_error_remote` condition (see
+#' [mizu_error]) — an ordinary condition object, so it prints, and
+#' `conditionMessage()` leads with `remote_type: message`.
+#'
+#' `mizu_is_remote_error()` tests the class. `mizu_raise()` signals the
+#' condition with [stop()], so handlers dispatch on its classes
+#' (`mizu_error_remote`, then `mizu_error`, `error`, `condition`).
+#'
+#' @param x for `mizu_is_remote_error()`, any R object; for
+#'   `mizu_raise()`, a `mizu_error_remote` condition as returned by
+#'   [mizu_recv()] or [mizu_recv_batch()].
+#'
+#' @return `mizu_is_remote_error()` returns `TRUE` or `FALSE`.
+#'   `mizu_raise()` does not return.
+#'
+#' @examples
+#' ch <- mizu_channel(quote(stop("boom")))
+#' x <- mizu_recv(ch, timeout = 5)
+#' mizu_is_remote_error(x)
+#' conditionMessage(x)
+#'
+#' @export
+mizu_is_remote_error <- function(x) inherits(x, "mizu_error_remote")
+
+#' @rdname mizu_is_remote_error
+#' @export
+mizu_raise <- function(x) {
+  if (!mizu_is_remote_error(x)) {
+    stop(
+      "mizu: mizu_raise() expects a mizu_error_remote condition",
+      call. = FALSE
+    )
+  }
+  stop(x)
+}
+
+#' @export
+conditionMessage.mizu_error_remote <- function(c) {
+  paste0(c$remote_type, ": ", c$message)
+}

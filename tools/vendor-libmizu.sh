@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="0cce6cd83fc7adfcb0c25d9d5e0fdcd044743566"  # libmizu: Add mizu_handle_keep_out (the tx-keeper count, channel handles)
+PIN="7ee1b8c47b13ca48c805299fa419aad72882c322"  # libmizu: Specify the err tag (Phase 2): normative internals, corpus fixtures
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

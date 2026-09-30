@@ -29,6 +29,19 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
                          mizu_handle *h, void *ctx) {
   SEXP x = (SEXP) obj;
   mizu_r_handle *rh = (mizu_r_handle *) ctx;
+  if (x == rh->err_cond) {
+    /* the peer shim's err send (mizu_channel_send_error): frame the
+       condition as an 'I' err stream INLINE, whatever the peer's language
+       — the pointer match (one compare, cleared as it matches) bypasses
+       the value codec choice below. Bounded by construction; pins
+       nothing. §4.1's spec submit reuses this pattern for task streams. */
+    rh->err_cond = NULL;
+    size_t en = mizu_interop_write_err(payload, inline_max, x);
+    hdr->kind = MIZU_KIND_INLINE;
+    hdr->len = (uint32_t) en;
+    hdr->aux = MIZU_AUX_F_KEEPERLESS;
+    return 0;
+  }
   /* the reader-language state (one predicted branch per stage): foreign
      handles write interop only, filter the zero-copy tiers by the peer's
      capability mask, and stage top-level length-1 atomics as the 'I'

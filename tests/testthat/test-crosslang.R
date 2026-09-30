@@ -196,3 +196,37 @@ ch.send('ok')
   expect_identical(mizu_recv(ch, 30), "ok")
   expect_true(mizu_close(ch, timeout = 10))
 })
+
+test_that("a Python peer error reaches R as a mizu_error_remote value", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+ch.send(1.5)
+raise ValueError('boom')
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  expect_identical(mizu_recv(ch, 30), 1.5)
+  e <- mizu_recv(ch, 30)
+  expect_s3_class(e, "mizu_error_remote")
+  expect_identical(e[["remote_type"]], "ValueError")
+  expect_identical(e[["message"]], "boom")
+  expect_true(nzchar(e[["detail"]])) # the Python traceback text
+  expect_s3_class(mizu_recv(ch, 30), "mizu_closed")
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a Python peer's sys.exit is an orderly close, no error value", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import sys
+ch.send(1.5)
+sys.exit(3)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  expect_identical(mizu_recv(ch, 30), 1.5)
+  expect_s3_class(mizu_recv(ch, 30), "mizu_closed")
+  expect_true(mizu_close(ch, timeout = 10))
+})

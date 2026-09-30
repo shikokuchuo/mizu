@@ -311,6 +311,9 @@ peer_main <- function(token) {
         sep = "",
         file = stderr()
       )
+      # the err stream crosses ahead of the close signal, whatever the
+      # peer's language; a full ring drops it (the stderr line stands)
+      .Call(mizu_channel_send_error, ch, e)
       status <<- 1L
     },
     interrupt = function(e) status <<- 2L

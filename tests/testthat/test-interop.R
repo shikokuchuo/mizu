@@ -458,3 +458,73 @@ test_that("a class-only integer64 view re-crosses a foreign handle", {
   expected[1L] <- bit64::as.integer64(0L)
   expect_identical(got, expected)
 })
+
+test_that("the err tag reads as a mizu_error_remote value, index 1-based", {
+  e <- ix_read(
+    "49011100000a00000056616c75654572726f7204000000626f6f6d00000000"
+  )
+  expect_s3_class(e, "mizu_error_remote")
+  expect_s3_class(e, "mizu_error")
+  expect_identical(e[["remote_type"]], "ValueError")
+  expect_identical(e[["message"]], "boom")
+  expect_identical(e[["detail"]], "")
+  ei <- ix_read(
+    "490111010029000000000000000b000000576f726b65724572726f720e000000656c656d656e74206661696c656400000000"
+  )
+  expect_identical(ei[["index"]], 42L) # wire 41, 0-based
+})
+
+test_that("the err framer writes class, message and call text, bounded", {
+  cond <- errorCondition(
+    "region create failed",
+    call = quote(f(x)),
+    class = c("mizu_error_shm", "mizu_error")
+  )
+  e <- ix_read(ix_write_err(cond))
+  expect_identical(e[["remote_type"]], "mizu_error_shm")
+  expect_identical(e[["message"]], "region create failed")
+  expect_identical(e[["detail"]], "f(x)")
+  # the frame fits the slot by construction: strings truncate at shares
+  long <- errorCondition(strrep("m", 500L), class = "custom_error")
+  b <- .Call(mizu:::mizu_interop_write_err_call, long, 48L)
+  expect_lte(length(b), 48L)
+  e2 <- .Call(mizu:::mizu_interop_read_call, b)
+  expect_identical(e2[["remote_type"]], "custom_error")
+  expect_identical(nchar(e2[["message"]], type = "bytes"), 11L)
+  # a multibyte string cuts at a character boundary
+  uni <- errorCondition(strrep("é", 100L), class = "custom_error")
+  b3 <- .Call(mizu:::mizu_interop_write_err_call, uni, 60L)
+  expect_lte(length(b3), 60L)
+  expect_identical(e2[["remote_type"]], "custom_error")
+  m <- .Call(mizu:::mizu_interop_read_call, b3)[["message"]]
+  expect_identical(m, strrep("é", 11L))
+})
+
+test_that("a remote error re-frames keeping its origin fields", {
+  hex <- "49011100000a00000056616c75654572726f7204000000626f6f6d00000000"
+  expect_identical(ix_write_err(ix_read(hex)), hex)
+  hex_idx <- "490111010029000000000000000b000000576f726b65724572726f720e000000656c656d656e74206661696c656400000000"
+  expect_identical(ix_write_err(ix_read(hex_idx)), hex_idx)
+})
+
+test_that("an err send crosses as a value on foreign and R channels alike", {
+  cond <- errorCondition("boom", class = "custom_error")
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  expect_true(.Call(mizu:::mizu_channel_send_error, p$peer, cond))
+  e <- mizu_recv(p$host, timeout = 5)
+  expect_s3_class(e, "mizu_error_remote")
+  expect_identical(e[["message"]], "boom")
+  expect_identical(e[["remote_type"]], "custom_error")
+  # same-language: the pointer match bypasses the private codec, so the
+  # host receives the same value a foreign peer would
+  p2 <- channel_pair()
+  on.exit(channel_end(p2))
+  expect_true(.Call(mizu:::mizu_channel_send_error, p2$peer, cond))
+  e2 <- mizu_recv(p2$host, timeout = 5)
+  expect_s3_class(e2, "mizu_error_remote")
+  expect_identical(e2[["remote_type"]], "custom_error")
+  # a second send of the same condition stages as an ordinary value again
+  mizu_send(p2$peer, 1L)
+  expect_identical(mizu_recv(p2$host, timeout = 5), 1L)
+})

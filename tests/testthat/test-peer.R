@@ -36,6 +36,7 @@ test_that("a malformed source drop errors in the peer, closing orderly", {
     "this is not R code !!!",
     launcher = mizu_launcher(stderr = FALSE)
   )
+  expect_s3_class(mizu_recv(ch, 30), "mizu_error_remote")
   expect_s3_class(mizu_recv(ch, 30), "mizu_closed")
   expect_true(mizu_close(ch, timeout = 10))
 })
@@ -68,6 +69,10 @@ test_that("a peer error is an orderly close, not a death", {
     quote(stop("boom")),
     launcher = mizu_launcher(stderr = FALSE)
   )
+  e <- mizu_recv(ch, 30)
+  expect_s3_class(e, "mizu_error_remote")
+  expect_identical(e[["message"]], "boom")
+  expect_identical(e[["remote_type"]], "simpleError")
   expect_s3_class(mizu_recv(ch, 30), "mizu_closed")
   expect_true(mizu_close(ch, timeout = 10))
 })

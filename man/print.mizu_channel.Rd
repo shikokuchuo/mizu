@@ -6,6 +6,7 @@
 \alias{print.mizu_task}
 \alias{print.mizu_map_prepared}
 \alias{print.mizu_sentinel}
+\alias{print.mizu_error_remote}
 \title{Print Methods for mizu Objects}
 \usage{
 \method{print}{mizu_channel}(x, ...)
@@ -17,6 +18,8 @@
 \method{print}{mizu_map_prepared}(x, ...)
 
 \method{print}{mizu_sentinel}(x, ...)
+
+\method{print}{mizu_error_remote}(x, ...)
 }
 \arguments{
 \item{x}{the object.}

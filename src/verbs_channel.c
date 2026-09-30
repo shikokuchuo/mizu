@@ -338,6 +338,22 @@ SEXP mizu_channel_send_call(SEXP xp, SEXP x) {
   return st == MIZU_OK ? Rf_ScalarLogical(TRUE) : status_sentinel(st);
 }
 
+/* The peer shim's uncaught-error send (peer_main's error handler): point
+   the handle's err field at the condition and send it — the stage hook
+   pointer-matches and frames the 'I' err stream INLINE in place of a
+   value, whatever the peer's language. Bounded: the ordinary send never
+   blocks for ring space, so a full ring drops the stream (the stderr line
+   still lands). The field is cleared by the hook as it matches, and here
+   on every path back, ahead of a raise that could leave it stale. */
+SEXP mizu_channel_send_error_call(SEXP xp, SEXP cond) {
+  mizu_r_handle *rh = chan_get(xp);
+  rh->err_cond = cond;
+  mizu_status st = mizu_channel_send((mizu_channel *) rh->core, (void *) cond);
+  rh->err_cond = NULL;
+  if (st == MIZU_ERR) chan_raise((mizu_channel *) rh->core);
+  return st == MIZU_OK ? Rf_ScalarLogical(TRUE) : status_sentinel(st);
+}
+
 /* One .Call; the core batches the tail store and the wake. Returns the count
    accepted (short on ring-full or close midway — probe why with mizu_send). */
 SEXP mizu_channel_send_batch_call(SEXP xp, SEXP xs) {

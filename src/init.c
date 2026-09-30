@@ -49,6 +49,7 @@ SEXP mizu_codec_write_call(SEXP);
 SEXP mizu_codec_read_call(SEXP);
 SEXP mizu_interop_write_call(SEXP);
 SEXP mizu_interop_read_call(SEXP);
+SEXP mizu_interop_write_err_call(SEXP, SEXP);
 SEXP mizu_stream_read_call(SEXP);
 SEXP mizu_region_create(SEXP);
 SEXP mizu_region_open(SEXP, SEXP);
@@ -76,6 +77,7 @@ SEXP mizu_channel_destroy_call(SEXP);
 SEXP mizu_channel_attach_call(SEXP, SEXP);
 SEXP mizu_channel_ready_set_call(SEXP);
 SEXP mizu_channel_send_call(SEXP, SEXP);
+SEXP mizu_channel_send_error_call(SEXP, SEXP);
 SEXP mizu_channel_send_batch_call(SEXP, SEXP);
 SEXP mizu_channel_recv_call(SEXP, SEXP);
 SEXP mizu_channel_recv_batch_call(SEXP, SEXP, SEXP);
@@ -159,6 +161,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_codec_write_call",       (DL_FUNC) &mizu_codec_write_call,          1},
   {"mizu_interop_write_call",     (DL_FUNC) &mizu_interop_write_call,        1},
   {"mizu_interop_read_call",      (DL_FUNC) &mizu_interop_read_call,         1},
+  {"mizu_interop_write_err_call", (DL_FUNC) &mizu_interop_write_err_call,    2},
   {"mizu_stream_read_call",       (DL_FUNC) &mizu_stream_read_call,          1},
   {"mizu_codec_read_call",        (DL_FUNC) &mizu_codec_read_call,           1},
   {"mizu_region_create",          (DL_FUNC) &mizu_region_create,             1},
@@ -187,6 +190,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_channel_attach",         (DL_FUNC) &mizu_channel_attach_call,       2},
   {"mizu_channel_ready_set",      (DL_FUNC) &mizu_channel_ready_set_call,    1},
   {"mizu_channel_send",           (DL_FUNC) &mizu_channel_send_call,         2},
+  {"mizu_channel_send_error",     (DL_FUNC) &mizu_channel_send_error_call,   2},
   {"mizu_channel_send_batch",     (DL_FUNC) &mizu_channel_send_batch_call,   2},
   {"mizu_channel_recv",           (DL_FUNC) &mizu_channel_recv_call,         2},
   {"mizu_channel_recv_batch",     (DL_FUNC) &mizu_channel_recv_batch_call,   3},

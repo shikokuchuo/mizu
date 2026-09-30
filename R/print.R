@@ -103,3 +103,10 @@ print.mizu_sentinel <- function(x, ...) {
   cat(sprintf("<%s>\n", class(x)[1L]))
   invisible(x)
 }
+
+#' @rdname print.mizu_channel
+#' @export
+print.mizu_error_remote <- function(x, ...) {
+  cat(sprintf("<mizu_error_remote: %s>\n", conditionMessage(x)))
+  invisible(x)
+}

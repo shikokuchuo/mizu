@@ -64,3 +64,24 @@ test_that("region create failure raises mizu_error_shm carrying bytes", {
   expect_s3_class(err, "mizu_error_shm")
   expect_identical(err[["bytes"]], 2^52)
 })
+
+test_that("mizu_error_remote: class test, message and re-raise dispatch", {
+  e <- .Call(
+    mizu:::mizu_interop_read_call,
+    as.raw(c(
+      0x49, 0x01, 0x11, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00,
+      as.integer(charToRaw("ValueError")),
+      0x04, 0x00, 0x00, 0x00, as.integer(charToRaw("boom")),
+      0x00, 0x00, 0x00, 0x00
+    ))
+  )
+  expect_true(mizu_is_remote_error(e))
+  expect_false(mizu_is_remote_error(errorCondition("boom")))
+  expect_false(mizu_is_remote_error(42))
+  expect_identical(conditionMessage(e), "ValueError: boom")
+  raised <- tryCatch(mizu_raise(e), mizu_error_remote = identity)
+  expect_identical(raised, e)
+  also <- tryCatch(mizu_raise(e), mizu_error = identity)
+  expect_identical(also, e)
+  expect_error(mizu_raise(errorCondition("boom")), "mizu_error_remote")
+})

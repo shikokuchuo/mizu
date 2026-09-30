@@ -962,6 +962,165 @@ size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
   return w.total;
 }
 
+// Err streams ----------------------------------------------------------------------
+
+/* The err tag (0x11) framer: a condition as the bounded top-level error
+   value (DESIGN.md's Interchange codec section). Bounded by truncation —
+   type past 128 bytes, message past half the inline budget (the task
+   flatten's share), detail past what remains, each cut at a UTF-8
+   boundary — so the frame fits the slot by construction and stamps INLINE
+   with the keeperless claim: the writer cannot fail. Two modes: a
+   mizu_error_remote keeps its origin fields (remote_type, message,
+   detail, index — a relay preserves the original type); any other
+   condition writes its most-specific class, its raw message field, and
+   its call as the detail text. Serves the peer shim's uncaught-error send
+   (the stage hook's pointer match) and Phase 4's ERR publish. */
+
+/* magic + version + tag + flags + index + three counted lengths. */
+#define MIZU_IX_ERR_OVERHEAD 25
+#define MIZU_IX_ERR_TYPE_SHARE 128
+
+/* The UTF-8-boundary floor of n bytes within share (s must be valid UTF-8;
+   ix_char_utf8 has already guaranteed it). */
+static size_t ix_err_floor(const unsigned char *s, size_t n, size_t share) {
+  if (n <= share) return n;
+  size_t len = share;
+  while (len > 0 && (s[len] & 0xC0) == 0x80) len--;
+  return len;
+}
+
+/* One named element of a VECSXP condition, or R_NilValue. */
+static SEXP ix_cond_field(SEXP cond, const char *name) {
+  if (TYPEOF(cond) != VECSXP) return R_NilValue;
+  SEXP names = Rf_getAttrib(cond, R_NamesSymbol);
+  if (TYPEOF(names) != STRSXP) return R_NilValue;
+  R_xlen_t n = XLENGTH(cond);
+  if (n > XLENGTH(names)) n = XLENGTH(names);
+  for (R_xlen_t i = 0; i < n; i++) {
+    SEXP nm = STRING_ELT(names, i);
+    if (nm != NA_STRING && strcmp(CHAR(nm), name) == 0)
+      return VECTOR_ELT(cond, i);
+  }
+  return R_NilValue;
+}
+
+/* A length-1 string field's UTF-8 bytes, or NULL (absent, NA, or not
+   writable as UTF-8). */
+static const char *ix_cond_str(SEXP cond, const char *name, int32_t *n) {
+  SEXP f = ix_cond_field(cond, name);
+  if (TYPEOF(f) != STRSXP || XLENGTH(f) != 1 || STRING_ELT(f, 0) == NA_STRING)
+    return NULL;
+  int ok;
+  const char *s = ix_char_utf8(STRING_ELT(f, 0), &ok, n);
+  return ok ? s : NULL;
+}
+
+/* The call element as the detail text: deparse1 (a language or symbol
+   call only — anything else is no detail). Returns a CHARSXP. */
+static SEXP ix_err_call_text(SEXP call) {
+  if (TYPEOF(call) != LANGSXP && TYPEOF(call) != SYMSXP)
+    return Rf_mkChar("");
+  SEXP q = PROTECT(Rf_lang2(Rf_install("quote"), call));
+  SEXP d = PROTECT(Rf_lang2(Rf_install("deparse1"), q));
+  SEXP s = PROTECT(Rf_eval(d, R_BaseEnv));
+  SEXP out = Rf_mkChar("");
+  if (TYPEOF(s) == STRSXP && XLENGTH(s) == 1 && STRING_ELT(s, 0) != NA_STRING)
+    out = STRING_ELT(s, 0);
+  UNPROTECT(3);
+  return out;
+}
+
+/* Frame cond as an 'I' err stream: dst has inline_max bytes; the return
+   is the stream size, always within inline_max (the truncations above
+   guarantee it), so the caller stamps INLINE with the keeperless claim.
+   NULL dst sizes only (the test hook's two-pass). */
+size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
+                              SEXP cond) {
+  const char *type = "", *msg = "", *detail = "";
+  int32_t type_n = 0, msg_n = 0, detail_n = 0;
+  int has_index = 0;
+  uint64_t index = 0;
+
+  /* remote mode: a mizu_error_remote keeps its origin fields (a relay
+     preserves the original error's type) */
+  SEXP klass = PROTECT(Rf_getAttrib(cond, R_ClassSymbol));
+  int remote = 0;
+  if (TYPEOF(klass) == STRSXP) {
+    for (R_xlen_t i = 0; i < XLENGTH(klass); i++) {
+      SEXP cs = STRING_ELT(klass, i);
+      if (cs != NA_STRING && strcmp(CHAR(cs), "mizu_error_remote") == 0) {
+        remote = 1;
+        break;
+      }
+    }
+  }
+  if (remote) {
+    const char *t = ix_cond_str(cond, "remote_type", &type_n);
+    const char *m = ix_cond_str(cond, "message", &msg_n);
+    const char *d = ix_cond_str(cond, "detail", &detail_n);
+    if (t != NULL && m != NULL && d != NULL) {
+      type = t;
+      msg = m;
+      detail = d;
+      SEXP ix = ix_cond_field(cond, "index");
+      if ((TYPEOF(ix) == INTSXP || TYPEOF(ix) == REALSXP) &&
+          XLENGTH(ix) == 1) {
+        const double v = Rf_asReal(ix);
+        if (!ISNA(v) && v >= 1 && v <= 9007199254740992.0) {
+          has_index = 1;
+          index = (uint64_t) v - 1;             /* wire is 0-based */
+        }
+      }
+    } else {
+      remote = 0;    /* a malformed hand-built one falls to local mode */
+    }
+  }
+  if (!remote) {
+    if (TYPEOF(klass) == STRSXP && XLENGTH(klass) > 0 &&
+        STRING_ELT(klass, 0) != NA_STRING) {
+      int ok;
+      const char *t = ix_char_utf8(STRING_ELT(klass, 0), &ok, &type_n);
+      if (ok) {
+        type = t;
+      } else {
+        type = "error";
+        type_n = 5;
+      }
+    } else {
+      type = "error";
+      type_n = 5;
+    }
+    const char *m = ix_cond_str(cond, "message", &msg_n);
+    if (m != NULL) msg = m;
+    SEXP call = ix_cond_field(cond, "call");
+    if (call != R_NilValue) {
+      int ok;
+      const char *d = ix_char_utf8(ix_err_call_text(call), &ok, &detail_n);
+      if (ok) detail = d;
+    }
+  }
+
+  const size_t budget = inline_max;
+  size_t avail = budget > MIZU_IX_ERR_OVERHEAD ?
+    budget - MIZU_IX_ERR_OVERHEAD : 0;
+  size_t cap = avail < MIZU_IX_ERR_TYPE_SHARE ? avail : MIZU_IX_ERR_TYPE_SHARE;
+  const size_t tn = ix_err_floor((const unsigned char *) type,
+                                 (size_t) type_n, cap);
+  cap = budget / 2;
+  if (cap > avail - tn) cap = avail - tn;
+  const size_t mn = ix_err_floor((const unsigned char *) msg,
+                                 (size_t) msg_n, cap);
+  const size_t dn = ix_err_floor((const unsigned char *) detail,
+                                 (size_t) detail_n, avail - tn - mn);
+
+  size_t n = mizu_ix_put_header(dst);
+  n += mizu_ix_put_err(dst != NULL ? dst + n : NULL, has_index, index,
+                       type, (uint32_t) tn, msg, (uint32_t) mn,
+                       detail, (uint32_t) dn);
+  UNPROTECT(1);                    /* klass */
+  return n;
+}
+
 // Reader ---------------------------------------------------------------------------
 
 static NORET void mizu_stop_interop(const char *fmt, ...)
@@ -1228,6 +1387,47 @@ SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate) {
   return value;
 }
 
+/* The err tag's R home: a mizu_error_remote condition as a *value* — the
+   channel's remote-error discipline is that user code decides to raise
+   (mizu_raise). Fields: message, remote_type, detail, and index (1-based)
+   when the flags carry one. The cursor has validated the three bare
+   strings as UTF-8; they are never NA. */
+static SEXP ixr_err(const mizu_ix_item *it) {
+  static const char *const fnames[4] =
+    { "message", "remote_type", "detail", "index" };
+  static const int order[3] = { 1, 0, 2 };   /* wire: type, message, detail */
+  const int has_index = (it->err_flags & 1u) != 0;
+  const R_xlen_t n = has_index ? 4 : 3;
+  SEXP cond = PROTECT(Rf_allocVector(VECSXP, n));
+  SEXP names = PROTECT(Rf_allocVector(STRSXP, n));
+  SEXP klass = PROTECT(Rf_allocVector(STRSXP, 4));
+  for (int i = 0; i < 3; i++) {
+    SEXP s = PROTECT(Rf_allocVector(STRSXP, 1));
+    SET_STRING_ELT(s, 0,
+                   Rf_mkCharLenCE((const char *) it->err_str[order[i]].ptr,
+                                  (int) it->err_str[order[i]].len, CE_UTF8));
+    SET_VECTOR_ELT(cond, i, s);
+    SET_STRING_ELT(names, i, Rf_mkChar(fnames[i]));
+    UNPROTECT(1);
+  }
+  if (has_index) {
+    const uint64_t w = it->err_index;
+    SET_VECTOR_ELT(cond, 3,
+                   w < (uint64_t) INT32_MAX ?
+                     Rf_ScalarInteger((int) w + 1) :
+                     Rf_ScalarReal((double) w + 1.0));
+    SET_STRING_ELT(names, 3, Rf_mkChar(fnames[3]));
+  }
+  SET_STRING_ELT(klass, 0, Rf_mkChar("mizu_error_remote"));
+  SET_STRING_ELT(klass, 1, Rf_mkChar("mizu_error"));
+  SET_STRING_ELT(klass, 2, Rf_mkChar("error"));
+  SET_STRING_ELT(klass, 3, Rf_mkChar("condition"));
+  Rf_setAttrib(cond, R_NamesSymbol, names);
+  Rf_classgets(cond, klass);
+  UNPROTECT(3);
+  return cond;
+}
+
 static SEXP ixr_value(mizu_ix *cur) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK) ixr_stop_tls();
@@ -1311,7 +1511,7 @@ static SEXP ixr_value(mizu_ix *cur) {
     return value;
   }
   case MIZU_IX_ERR:
-    mizu_stop_interop("an interop err is not a value");
+    return ixr_err(&it);
   case MIZU_IX_TASK:
     mizu_stop_interop("an interop task is not a value");
   default:
@@ -1352,6 +1552,21 @@ SEXP mizu_interop_write_call(SEXP object) {
 SEXP mizu_interop_read_call(SEXP bytes) {
   if (TYPEOF(bytes) != RAWSXP) Rf_error("mizu: expected a raw vector");
   return mizu_interop_read(RAW(bytes), (size_t) XLENGTH(bytes));
+}
+
+/* The err framer, two-pass behind a budget argument (240 is the default
+   slot's inline budget). */
+SEXP mizu_interop_write_err_call(SEXP cond, SEXP budget) {
+  const int cap = Rf_asInteger(budget);
+  if (cap < 0) Rf_error("mizu: budget must be non-negative");
+  size_t n = mizu_interop_write_err(NULL, (uint32_t) cap, cond);
+  SEXP out = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
+  if (mizu_interop_write_err(RAW(out), (uint32_t) cap, cond) != n) {
+    UNPROTECT(1);
+    mizu_stop_interop("interop err write mismatch");
+  }
+  UNPROTECT(1);
+  return out;
 }
 
 /* The whole-dispatch read over a synthetic channel context (the decline

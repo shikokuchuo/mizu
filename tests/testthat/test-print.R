@@ -74,3 +74,20 @@ test_that("a prepared map prints its staging", {
   expect_output(print(pm), "inline blob", fixed = TRUE)
   pool_end(p)
 })
+
+test_that("a remote error prints one line leading with type: message", {
+  e <- .Call(
+    mizu:::mizu_interop_read_call,
+    as.raw(c(
+      0x49, 0x01, 0x11, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00,
+      as.integer(charToRaw("ValueError")),
+      0x04, 0x00, 0x00, 0x00, as.integer(charToRaw("boom")),
+      0x00, 0x00, 0x00, 0x00
+    ))
+  )
+  expect_output(
+    print(e),
+    "<mizu_error_remote: ValueError: boom>",
+    fixed = TRUE
+  )
+})
