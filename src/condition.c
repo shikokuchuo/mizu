@@ -149,7 +149,7 @@ NORET void mizu_stop_died(int slot, double pid, const char *fmt, ...) {
 SEXP mizu_cond_python_payload(void) {
   return mizu_cond_msg(
     "mizu_error_python_payload", NULL, 0,
-    "mizu: Python payload (no codec interop) - send R values from a mizu peer"
+    "mizu: a payload an R reader cannot interpret (a language-private stream) - send values from the portable interchange subset"
   );
 }
 
@@ -157,8 +157,30 @@ SEXP mizu_cond_python_payload(void) {
    channel, not a transport state. */
 NORET void mizu_stop_python_payload(void) {
   Rf_error(
-    "mizu: Python payload (no codec interop) - send R values from a mizu peer"
+    "mizu: a payload an R reader cannot interpret (a language-private stream) - send values from the portable interchange subset"
   );
+}
+
+/* The foreign-handle send-time decline: the interop writer's size pass
+   found the first non-portable node, and a private stream would be
+   unreadable by that peer by definition, so the value cannot cross —
+   named with the walk's path, the reason, and where a one-line rewrite
+   exists the remedy. */
+NORET void mizu_stop_not_portable(const char *path, const char *reason,
+                                  const char *remedy) {
+  static const char *fnames[] = { "path", "reason", "remedy" };
+  char msg[1024];
+  snprintf(msg, sizeof msg, "mizu: value is not portable to the peer "
+           "(%s at %s)", reason, path);
+  SEXP cond = PROTECT(mizu_cond_msg("mizu_error_not_portable", fnames, 3,
+                                    msg));
+  SET_VECTOR_ELT(cond, 2, Rf_mkString(path));
+  SET_VECTOR_ELT(cond, 3, Rf_mkString(reason));
+  SET_VECTOR_ELT(cond, 4,
+                 remedy != NULL && remedy[0] != '\0' ?
+                   Rf_mkString(remedy) : Rf_allocVector(STRSXP, 0));
+  mizu_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
 }
 
 SEXP mizu_caught_died(int slot, double pid, const char *fmt, ...) {

@@ -212,6 +212,124 @@ int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total) {
   return 1;
 }
 
+// The foreign zero-copy gate ---------------------------------------------------------
+
+/* The generic-tree half of the filter: every leaf an attribute-free
+   atomic, a class-only integer64, a string vector (MIZS-gated), a plain
+   factor (ATTRS-gated), or such a tree; names under the dict-key rules
+   (ATTRS-gated); a serialized leaf or a nested view rejects the tree
+   (the interop writer takes it as a copy, or declines it at send). */
+static int mizu_zc_tree_caps_walk(SEXP x, uint32_t caps) {
+  switch (TYPEOF(x)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    if (!ANY_ATTRIB(x)) return !mizu_view_check(x);
+    if (mizu_view_is_int64(x)) return 1;
+    if (caps & MIZU_CAP_ATTRS)
+      return mizu_interop_attrs_qualify(x) == MIZU_IXQ_FACTOR;
+    return 0;
+  case STRSXP:
+    return !ANY_ATTRIB(x) && (caps & MIZU_CAP_MIZS) &&
+           mizu_interop_strings_utf8(x);
+  case VECSXP: {
+    if (Rf_isS4(x) || mizu_view_check(x)) return 0;
+    SEXP names = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
+    if (names != R_NilValue &&
+        (!(caps & MIZU_CAP_ATTRS) || TYPEOF(names) != STRSXP ||
+         !mizu_interop_names_ok(names))) {
+      UNPROTECT(1);
+      return 0;
+    }
+    int ok = 1;
+    for (R_xlen_t i = 0; ok && i < XLENGTH(x); i++)
+      ok = mizu_zc_tree_caps_walk(VECTOR_ELT(x, i), caps);
+    UNPROTECT(1);
+    return ok;
+  }
+  default:
+    return 0;
+  }
+}
+
+static int mizu_zc_tree_caps(SEXP x, uint32_t caps) {
+  return (caps & MIZU_CAP_MIZL) && mizu_zc_tree_caps_walk(x, caps);
+}
+
+
+/* The foreign-handle SHM_VEC filter: a reader is never sent a layout it
+   cannot wrap (its identity word's capability mask is the sender's
+   contract), so a value past the floor outside the peer's set takes the
+   interop writer as a copy instead of failing one hop late at receive.
+   The baseline needs no bit: an attribute-free MIZH atomic — ALTREP
+   admitted here, unlike the same-language gate, the layout write copying
+   through *_GET_REGION — or a class-only integer64. */
+int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
+                             uint32_t caps) {
+  const int type = TYPEOF(x);
+  const size_t elt = mizu_view_sizeof_elt(type);
+  if (elt != 0) {
+    if (Rf_isS4(x)) return 0;
+    if (!ANY_ATTRIB(x) || mizu_view_is_int64(x)) {
+      /* the baseline MIZH, any representation */
+      size_t data = (size_t) XLENGTH(x) * elt;
+      if (data <= (size_t) inline_max || data < MIZU_ZC_FLOOR) return 0;
+      size_t total = MIZU_HEADER_SIZE + data;
+      if (total <= (size_t) inline_max) return 0;
+      *out_total = total;
+      return 1;
+    }
+    /* an attributed MIZH root: the whitelisted shapes, ATTRS-gated */
+    if (!(caps & MIZU_CAP_ATTRS)) return 0;
+    const int q = mizu_interop_attrs_qualify(x);
+    if (q == MIZU_IXQ_NONE || q == MIZU_IXQ_ENCODABLE) return 0;
+    return mizu_zc_eligible(x, inline_max, out_total);
+  }
+  if (type == STRSXP) {
+    /* MIZS, gated on the bit and every element crossing as UTF-8 (a
+       latin1 vector takes the 'I' copy, which translates it; a
+       bytes-marked one declines there) */
+    if (!(caps & MIZU_CAP_MIZS) || !mizu_interop_strings_utf8(x))
+      return 0;
+    return mizu_zc_eligible(x, inline_max, out_total);
+  }
+  if (type != VECSXP) return 0;
+  /* a plain data.frame: ATTRS + MIZL, plus MIZS when any column is a
+     string; a generic tree: MIZL, plus MIZS for a string leaf and ATTRS
+     for the names blob or a factor leaf — a peer short of any one bit
+     gets the whole value as an attr copy */
+  const int q = mizu_interop_attrs_qualify(x);
+  if (q == MIZU_IXQ_FRAME) {
+    uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL;
+    for (R_xlen_t i = 0; i < XLENGTH(x); i++)
+      if (TYPEOF(VECTOR_ELT(x, i)) == STRSXP) need |= MIZU_CAP_MIZS;
+    if ((caps & need) != need) return 0;
+    return mizu_zc_eligible(x, inline_max, out_total);
+  }
+  return mizu_zc_tree_caps(x, caps) &&
+    mizu_zc_eligible(x, inline_max, out_total);
+}
+
+/* The REF half of the filter: a view re-sent top-level crosses by
+   reference only when the peer wraps its layout (the claim marks the
+   region REFHELD, so the filter runs ahead of mizu_zc_ref_stage). */
+int mizu_zc_ref_foreign_ok(SEXP x, uint32_t caps) {
+  if (!mizu_view_check(x)) return 1;   /* not a view: REF never claims it */
+  switch (TYPEOF(x)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    if (!ANY_ATTRIB(x) || mizu_view_is_int64(x)) return 1;
+    return (caps & MIZU_CAP_ATTRS) != 0;
+  case STRSXP: {
+    const uint32_t need = ANY_ATTRIB(x) ?
+      MIZU_CAP_MIZS | MIZU_CAP_ATTRS : MIZU_CAP_MIZS;
+    return (caps & need) == need;
+  }
+  default: {
+    const uint32_t need = ANY_ATTRIB(x) ?
+      MIZU_CAP_MIZL | MIZU_CAP_ATTRS : MIZU_CAP_MIZL;
+    return (caps & need) == need;
+  }
+  }
+}
+
 // Stage ----------------------------------------------------------------------------
 
 /* Stage x as SHM_VEC: one layout write into a spill region (free-list pop

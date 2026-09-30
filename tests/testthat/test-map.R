@@ -765,7 +765,7 @@ test_that("zero live workers floors R at 1; a rejoined worker drains it", {
   st <- mizu:::map_stage(p[["ctrl"]], 1:6, function(i) i + 1L, list())
   expect_identical(st[["R"]], 1L)
   mizu:::map_submit(p[["ctrl"]], st) # queues in the injection ring
-  wk <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L)
+  wk <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
   .Call(mizu:::mizu_pool_set_eval, wk)
   while (pool_step(p, wk = wk) == 1L) {
     NULL

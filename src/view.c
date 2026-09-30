@@ -1139,7 +1139,10 @@ static size_t mizh_size(SEXP x) {
 }
 
 /* MIZH write: header (reserved bytes zeroed) + bare data + attrs. Header
-   fields are written last, once the counted attr write reports its size. */
+   fields are written last, once the counted attr write reports its size.
+   An ALTREP with no readable pointer (a top-level ALTREP atomic admitted
+   on a foreign handle, zc.c's baseline) copies through *_GET_REGION —
+   never expanded on the sender. */
 static void mizh_write(unsigned char *base, SEXP x) {
 
   int int64 = mizu_view_is_int64(x);
@@ -1148,7 +1151,25 @@ static void mizh_write(unsigned char *base, SEXP x) {
   size_t data_size = (size_t) n * mizu_view_sizeof_elt(type);
 
   memset(base, 0, MIZU_HEADER_SIZE);
-  memcpy(base + MIZU_HEADER_SIZE, DATAPTR_RO(x), data_size);
+  if (ALTREP(x) && DATAPTR_OR_NULL(x) == NULL) {
+    switch (type) {
+    case LGLSXP:
+    case INTSXP:
+      INTEGER_GET_REGION(x, 0, n, (int *) (base + MIZU_HEADER_SIZE));
+      break;
+    case REALSXP:
+      REAL_GET_REGION(x, 0, n, (double *) (base + MIZU_HEADER_SIZE));
+      break;
+    case CPLXSXP:
+      COMPLEX_GET_REGION(x, 0, n, (Rcomplex *) (base + MIZU_HEADER_SIZE));
+      break;
+    default:
+      RAW_GET_REGION(x, 0, n, (Rbyte *) (base + MIZU_HEADER_SIZE));
+      break;
+    }
+  } else {
+    memcpy(base + MIZU_HEADER_SIZE, DATAPTR_RO(x), data_size);
+  }
 
   size_t attrs_size = 0;
   if (!int64) {

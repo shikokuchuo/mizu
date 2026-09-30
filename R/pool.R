@@ -764,7 +764,7 @@ worker_main <- function(token, slot) {
     attachNamespace("mizu")
   }
   .Call(mizu_tune_malloc)
-  h <- .Call(mizu_pool_worker_join, token, slot)
+  h <- .Call(mizu_pool_worker_join, token, slot, NULL)
   .Call(mizu_pool_set_eval, h)
   status <- 0L
   rc <- -1L

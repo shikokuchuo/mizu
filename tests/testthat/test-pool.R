@@ -107,8 +107,14 @@ test_that("worker join is lock-before-CAS and rejects a held or taken slot", {
   p <- pool_pair()
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
   # slot 0 is held by p$wk in this same process: the flock fails first
-  expect_error(.Call(mizu:::mizu_pool_worker_join, suffix, 0L), "already held")
-  expect_error(.Call(mizu:::mizu_pool_worker_join, suffix, 1L), "out of range")
+  expect_error(
+    .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL),
+    "already held"
+  )
+  expect_error(
+    .Call(mizu:::mizu_pool_worker_join, suffix, 1L, NULL),
+    "out of range"
+  )
   pool_end(p)
 })
 
@@ -393,7 +399,8 @@ test_that("worker-only entry points reject unfit handles", {
   wk <- .Call(
     mizu:::mizu_pool_worker_join,
     .Call(mizu:::mizu_pool_suffix, ctrl),
-    0L
+    0L,
+    NULL
   )
   expect_error(.Call(mizu:::mizu_pool_step, wk, 0), "no evaluator registered")
   .Call(mizu:::mizu_pool_leave, wk)

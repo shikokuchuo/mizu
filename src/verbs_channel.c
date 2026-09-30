@@ -243,9 +243,18 @@ SEXP mizu_channel_suffix(SEXP xp) {
 /* Startup rendezvous: the host waits for the peer's ready word. Returns
    FALSE on deadline expiry — the caller walks the channel back. */
 SEXP mizu_channel_ready_wait_call(SEXP xp, SEXP timeout) {
-  mizu_channel *c = chan_core(xp);
+  mizu_r_handle *h = chan_get(xp);
+  mizu_channel *c = (mizu_channel *) h->core;
   mizu_status st = mizu_channel_ready_wait(c, mizu_timeout_ms(Rf_asReal(timeout)));
   if (st == MIZU_ERR) chan_raise(c);
+  if (st == MIZU_OK) {
+    /* the host learns its peer's reader before its first public send:
+       language byte and capability mask ride the handle for the stage
+       hook's foreign dispatch */
+    uint64_t ident = mizu_channel_peer_ident(c);
+    h->peer_lang = (uint32_t) (ident & 0xff);
+    h->peer_caps = (uint32_t) (ident >> 32);
+  }
   return Rf_ScalarLogical(st == MIZU_OK);
 }
 
@@ -260,7 +269,7 @@ SEXP mizu_channel_destroy_call(SEXP xp) {
 
 // Attach (peer) -------------------------------------------------------------------
 
-SEXP mizu_channel_attach_call(SEXP suffix_sexp) {
+SEXP mizu_channel_attach_call(SEXP suffix_sexp, SEXP ident_sexp) {
   if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
     Rf_error("mizu: expected a region-name suffix");
   const char *suffix = CHAR(STRING_ELT(suffix_sexp, 0));
@@ -269,6 +278,14 @@ SEXP mizu_channel_attach_call(SEXP suffix_sexp) {
   if (h == NULL) Rf_error("mizu: allocation failure");
   mizu_binding b;
   chan_binding(h, &b);
+  /* test-only identity override (helper.R's harnesses): an integer
+     c(lang, caps) pair replaces this build's word — NULL is the build's */
+  if (ident_sexp != R_NilValue) {
+    if (TYPEOF(ident_sexp) != INTSXP || XLENGTH(ident_sexp) != 2)
+      Rf_error("mizu: expected an identity pair c(lang, caps)");
+    b.ident = MIZU_IDENT((uint32_t) INTEGER(ident_sexp)[0],
+                         (uint32_t) INTEGER(ident_sexp)[1]);
+  }
   mizu_channel *c;
   if (mizu_channel_attach(&c, suffix, &b) != MIZU_OK) {
     free(h);
@@ -276,6 +293,10 @@ SEXP mizu_channel_attach_call(SEXP suffix_sexp) {
   }
   h->core = (mizu_handle *) c;
   h->self_pid = mizu_self_pid();
+  /* the peer learns the host's reader at attach */
+  uint64_t peer = mizu_channel_peer_ident(c);
+  h->peer_lang = (uint32_t) (peer & 0xff);
+  h->peer_caps = (uint32_t) (peer >> 32);
 
   SEXP xp = PROTECT(chan_wrap(h));
 

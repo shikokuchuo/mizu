@@ -290,7 +290,8 @@ SEXP mizu_pool_destroy_call(SEXP xp) {
 
 // Worker / submitter join -----------------------------------------------------------
 
-SEXP mizu_pool_worker_join_call(SEXP suffix_sexp, SEXP slot_sexp) {
+SEXP mizu_pool_worker_join_call(SEXP suffix_sexp, SEXP slot_sexp,
+                                SEXP ident_sexp) {
   if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
     Rf_error("mizu: expected a region-name suffix");
   const char *suffix = CHAR(STRING_ELT(suffix_sexp, 0));
@@ -300,6 +301,14 @@ SEXP mizu_pool_worker_join_call(SEXP suffix_sexp, SEXP slot_sexp) {
   if (h == NULL) Rf_error("mizu: allocation failure");
   mizu_binding b;
   pool_binding(h, &b, 1);
+  /* test-only identity override (helper.R's pool_pair): an integer
+     c(lang, caps) pair replaces this build's word — NULL is the build's */
+  if (ident_sexp != R_NilValue) {
+    if (TYPEOF(ident_sexp) != INTSXP || XLENGTH(ident_sexp) != 2)
+      Rf_error("mizu: expected an identity pair c(lang, caps)");
+    b.ident = MIZU_IDENT((uint32_t) INTEGER(ident_sexp)[0],
+                         (uint32_t) INTEGER(ident_sexp)[1]);
+  }
   mizu_pool *p;
   if (mizu_pool_worker_join(&p, suffix, slot, &b) != MIZU_OK) {
     free(h);

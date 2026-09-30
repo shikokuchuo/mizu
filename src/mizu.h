@@ -62,6 +62,9 @@ typedef struct mizu_r_handle_s {
                                stashed condition, R_NilValue when empty) */
   uint32_t pins_dead;       /* tombstoned pin cells awaiting splice */
   uint32_t pins_total;      /* pin chain length (live + dead) */
+  uint32_t peer_lang;       /* channel: the peer's MIZU_LANG_* byte (0 unset;
+                               pools are same-language by construction) */
+  uint32_t peer_caps;       /* channel: the peer's reader-capability mask */
   mizu_zc_cache zoc;        /* the R-side zc view cache */
 } mizu_r_handle;
 
@@ -92,6 +95,54 @@ SEXP mizu_codec_read(const unsigned char *buf, size_t len);
 int mizu_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
                          SEXP *args);
 SEXP mizu_empty_args(void);
+
+// Interchange codec (interop.c) ----------------------------------------------------
+
+/* The 'I' interchange stream (DESIGN.md's Interchange codec section), R
+   half over the core's cursor/emitters: the writer runs on foreign
+   handles only, where a decline (0) raises mizu_error_not_portable with
+   the recorded path and reason; the reader builds over the core cursor.
+   The attr qualification is the inline writer's gate and the §3.5
+   layout blob's; the attr builder has a validating mode (the inline
+   tag's whitelisted shapes) and an apply-as-is mode (the layout blob). */
+typedef struct mizu_ix_decline_s {
+  int decline;
+  char path[128];
+  char reason[160];
+  char remedy[96];         /* empty when no one-line rewrite exists */
+} mizu_ix_decline;
+
+/* The attr qualification results: 0 not encodable; the whitelisted
+   shapes; MIZU_IXQ_ENCODABLE an encodable attribute set outside the
+   whitelist (the §3.5 layout blob's R-peer answer — the inline writer,
+   foreign-only, requires a whitelisted shape). */
+enum {
+  MIZU_IXQ_NONE = 0,
+  MIZU_IXQ_FACTOR,
+  MIZU_IXQ_FRAME,
+  MIZU_IXQ_DIM,
+  MIZU_IXQ_DATE,
+  MIZU_IXQ_POSIXCT,
+  MIZU_IXQ_ENCODABLE
+};
+
+size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
+                          mizu_ix_decline *rec);
+SEXP mizu_interop_read(const unsigned char *buf, size_t len);
+int mizu_interop_attrs_qualify(SEXP x);
+SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate);
+/* The dict-key rules on a names vector (non-NA, UTF-8-writable, unique
+   after translation), and the foreign MIZS string gate (every element
+   ASCII, CE_UTF8, or native that validates as UTF-8) — shared with the
+   zero-copy filter in zc.c. */
+int mizu_interop_names_ok(SEXP names);
+int mizu_interop_strings_utf8(SEXP x);
+/* The foreign STR1: the top-level length-1 string tier, normalized to
+   UTF-8 (latin1 translated, CE_BYTES declined). 1 staged, 0 not a
+   length-1 string, -1 decline (the record filled). */
+int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
+                              uint32_t inline_max, SEXP x,
+                              mizu_ix_decline *rec);
 
 // Payload framing (payload.c) -----------------------------------------------------
 
@@ -143,6 +194,16 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
 SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
                        uint32_t inline_max, mizu_read_ctx *ctx,
                        int consume_foreign);
+/* The one first-byte dispatch of the serialize tiers (the codec registry
+   in DESIGN.md): 'I' the interchange stream, 'R' the compact codec, 'B' /
+   'X' / 'A' R native streams, anything else ('P', pickle, or unlisted) the
+   informative decline — consumed on the channel, raised in place on the
+   pool. Covers the INLINE / ARENA / SHM_RAW read sites and Phase 4's task
+   decode (its tag check branches ahead of the 'I' case). */
+SEXP mizu_stream_read(const unsigned char *buf, size_t len,
+                      mizu_read_ctx *ctx, int consume_foreign);
+void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
+                                SEXP x, size_t n, mizu_handle *h);
 /* Foreign-stream detection on the serialize tiers: a pymizu compact-codec
    stream opens with 'P' (DESIGN.md's codec registry allocates 'R' to mizu
    and 'P' to pymizu), and anything past its subset rides pickle (0x80 then a
@@ -190,6 +251,16 @@ void mizu_zc_stage(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
                    size_t total, mizu_handle *h, void *ctx);
 int mizu_zc_ref_stage(mizu_slot_hdr *hdr, unsigned char *payload,
                       uint32_t inline_max, SEXP x);
+/* The foreign-handle SHM_VEC gate: the baseline layouts (an
+   attribute-free atomic — ALTREP admitted, the layout write copying
+   through *_GET_REGION — or a class-only integer64) plus whatever the
+   peer's capability mask advertises. A value past the floor outside the
+   peer's set takes the interop writer instead. */
+int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
+                             uint32_t caps);
+/* The REF half of the filter: a view re-sent top-level crosses by
+   reference only when the peer wraps its layout. */
+int mizu_zc_ref_foreign_ok(SEXP x, uint32_t caps);
 SEXP mizu_zc_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
                   int *gone, mizu_zc_cache *oc);
 SEXP mizu_zc_ref_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
@@ -214,6 +285,8 @@ NORET void mizu_stop_shm(double bytes, const char *fmt, ...)
 NORET void mizu_stop_died(int slot, double pid, const char *fmt, ...)
   R_PRINTF_FORMAT(3, 4);
 NORET void mizu_stop_python_payload(void) MIZU_COLD;
+NORET void mizu_stop_not_portable(const char *path, const char *reason,
+                                  const char *remedy) MIZU_COLD;
 SEXP mizu_cond_python_payload(void);
 NORET void mizu_cond_signal(SEXP cond);
 SEXP mizu_cond_set_index(SEXP cond, int index);
@@ -272,6 +345,7 @@ void mizu_channel_init(void);
 void mizu_pool_init(void);
 void mizu_map_init(void);
 void mizu_zc_init(void);
+void mizu_interop_init(void);
 void mizu_payload_fini(void);
 void mizu_channel_fini(void);
 void mizu_pool_fini(void);

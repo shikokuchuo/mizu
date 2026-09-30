@@ -179,6 +179,21 @@ void mizu_payload_spill_codec(mizu_slot_hdr *hdr, unsigned char *payload,
   mizu_stage_retain(h, shm);
 }
 
+/* The SHM_RAW spill of an interop stream (n from the counting first
+   pass): the region alone is retained — the stream is self-contained
+   (no view identifier can ride along, the codec discipline). */
+void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
+                                SEXP x, size_t n, mizu_handle *h) {
+  mizu_shm *shm = mizu_spill_get_raise(h, n);
+  if (mizu_interop_write((unsigned char *) shm->addr, shm->size, x, NULL) != n)
+    Rf_error("mizu: interop write mismatch");   /* the walk is deterministic */
+  hdr->kind = MIZU_KIND_SHM_RAW;
+  hdr->len = (uint32_t) shm->name_len;
+  hdr->aux = (uint64_t) n;
+  memcpy(payload, shm->name, shm->name_len);
+  mizu_stage_retain(h, shm);
+}
+
 /* The NIL, RAWVEC, and STR1 kinds retain nothing: their slot bytes are
    self-contained (RAWVEC and STR1 exclude ALTREP, attributes, and S4, so
    no hook-emitted identifier can ride along), unlike the serialize tiers,
@@ -231,6 +246,26 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
        copy: fall to SHM_RAW, whose region surrenders deterministically at
        consumer-done. */
     mizu_zc_stage(hdr, payload, x, total, h, ctx);
+    return;
+  }
+  /* the reader-language branch (one predicted check on the handle):
+     foreign handles write interop only — a decline raises at send,
+     naming the value and the reason; same-language handles keep the
+     private codec / R_Serialize path below unchanged. Pools are
+     homogeneous by construction, so this is never taken here — the
+     per-task foreign result of §4.2 rides the same branch. */
+  if (((mizu_r_handle *) ctx)->peer_lang != 0 &&
+      ((mizu_r_handle *) ctx)->peer_lang != MIZU_LANG_R) {
+    mizu_ix_decline rec;
+    size_t n = mizu_interop_write(payload, inline_max, x, &rec);
+    if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+    if (n <= inline_max) {
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
+      return;
+    }
+    mizu_payload_spill_interop(hdr, payload, x, n, h);
     return;
   }
   /* the compact codec ahead of R_Serialize: no per-call ref-table
@@ -306,16 +341,7 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
   case MIZU_KIND_INLINE:
     if (hdr->len > inline_max || hdr->len == 0)
       Rf_error("mizu: corrupt payload slot");
-    if (payload[0] == MIZU_CODEC_MAGIC)
-      return mizu_codec_read(payload, hdr->len);
-    if (mizu_is_python_payload(payload, hdr->len)) {
-      if (consume_foreign) {
-        mizu_decline_foreign(ctx);
-        return NULL;
-      }
-      mizu_stop_python_payload();
-    }
-    return mizu_view_unserialize_from((unsigned char *) payload, hdr->len);
+    return mizu_stream_read(payload, hdr->len, ctx, consume_foreign);
   case MIZU_KIND_RAWVEC: {
     int type = (int) hdr->aux;
     size_t elt = mizu_view_sizeof_elt(type);
@@ -359,18 +385,37 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
        stream it carries, and the slack bytes are a previous payload's */
     size_t len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
       (size_t) hdr->aux : shm->size;
-    unsigned char *stream = (unsigned char *) shm->addr;
-    if (stream[0] == MIZU_CODEC_MAGIC)
-      return mizu_codec_read(stream, len);
-    if (mizu_is_python_payload(stream, len)) {
-      if (consume_foreign) {
-        mizu_decline_foreign(ctx);
-        return NULL;
-      }
-      mizu_stop_python_payload();
-    }
-    return mizu_view_unserialize_from(stream, len);
+    return mizu_stream_read((unsigned char *) shm->addr, len, ctx,
+                            consume_foreign);
   }
   }
   Rf_error("mizu: corrupt payload slot");
+}
+
+// The stream dispatch ---------------------------------------------------------------
+
+/* The one first-byte dispatch of the serialize tiers (DESIGN.md's codec
+   registry): 'I' the interchange stream ahead of 'R' the compact codec,
+   then 'B'/'X'/'A' the R native streams. Anything else — 'P', pickle, or
+   an unlisted byte — is the informative decline: consumed with the
+   interned condition on the channel (a plain failure would wedge the
+   ring behind the slot), raised in place on the pool (a pool is R-only,
+   so a foreign stream there is corruption). */
+SEXP mizu_stream_read(const unsigned char *buf, size_t len,
+                      mizu_read_ctx *ctx, int consume_foreign) {
+  if (len == 0) Rf_error("mizu: corrupt payload stream");
+  switch (buf[0]) {
+  case MIZU_INTEROP_MAGIC:
+    return mizu_interop_read(buf, len);
+  case MIZU_CODEC_MAGIC:
+    return mizu_codec_read(buf, len);
+  case 'B': case 'X': case 'A':
+    return mizu_view_unserialize_from((unsigned char *) buf, len);
+  default:
+    if (consume_foreign) {
+      mizu_decline_foreign(ctx);
+      return NULL;
+    }
+    mizu_stop_python_payload();
+  }
 }

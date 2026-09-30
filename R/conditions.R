@@ -36,9 +36,17 @@
 #'   anywhere on the surface. Field `bytes`: the requested size of a
 #'   region that was not created, `NA` when a region was not opened.
 #' * `mizu_error_python_payload` — [mizu_recv()] or [mizu_recv_batch()]
-#'   on a channel message written by a Python peer that R cannot read
-#'   back (only vectors and strings cross). The declined message is
+#'   on a channel message written in a language-private stream (a pymizu
+#'   codec or pickle payload) that this reader cannot interpret. The
+#'   portable interchange subset crosses; the declined message is
 #'   consumed, so the channel keeps flowing.
+#' * `mizu_error_not_portable` — [mizu_send()] on a channel whose peer is
+#'   a foreign-language process, of a value outside the portable
+#'   interchange subset (a named atomic vector, an environment, a
+#'   closure, an S4 object, an ordered factor, a data frame subclass,
+#'   and the like). Fields `path` (where in the value the walk
+#'   declined), `reason`, and `remedy` (a one-line rewrite where one
+#'   exists, else `character(0)`).
 #'
 #' Errors of misuse (unnamed task arguments, out-of-range slots, operations
 #' on a closed handle) stay plain errors: the classed hierarchy covers the

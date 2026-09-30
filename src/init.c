@@ -47,6 +47,9 @@ SEXP mizu_bounded_call(SEXP, SEXP);
 SEXP mizu_unserialize_call(SEXP);
 SEXP mizu_codec_write_call(SEXP);
 SEXP mizu_codec_read_call(SEXP);
+SEXP mizu_interop_write_call(SEXP);
+SEXP mizu_interop_read_call(SEXP);
+SEXP mizu_stream_read_call(SEXP);
 SEXP mizu_region_create(SEXP);
 SEXP mizu_region_open(SEXP, SEXP);
 SEXP mizu_region_name(SEXP);
@@ -70,7 +73,7 @@ SEXP mizu_channel_create_call(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_channel_suffix(SEXP);
 SEXP mizu_channel_ready_wait_call(SEXP, SEXP);
 SEXP mizu_channel_destroy_call(SEXP);
-SEXP mizu_channel_attach_call(SEXP);
+SEXP mizu_channel_attach_call(SEXP, SEXP);
 SEXP mizu_channel_ready_set_call(SEXP);
 SEXP mizu_channel_send_call(SEXP, SEXP);
 SEXP mizu_channel_send_batch_call(SEXP, SEXP);
@@ -86,7 +89,7 @@ SEXP mizu_pool_create_call(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_pool_suffix(SEXP);
 SEXP mizu_pool_ready_wait_call(SEXP, SEXP, SEXP);
 SEXP mizu_pool_destroy_call(SEXP);
-SEXP mizu_pool_worker_join_call(SEXP, SEXP);
+SEXP mizu_pool_worker_join_call(SEXP, SEXP, SEXP);
 SEXP mizu_pool_leave_call(SEXP);
 SEXP mizu_pool_lame_duck_call(SEXP);
 SEXP mizu_pool_retire_call(SEXP, SEXP);
@@ -153,6 +156,9 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_bounded_call",           (DL_FUNC) &mizu_bounded_call,              2},
   {"mizu_unserialize_call",       (DL_FUNC) &mizu_unserialize_call,          1},
   {"mizu_codec_write_call",       (DL_FUNC) &mizu_codec_write_call,          1},
+  {"mizu_interop_write_call",     (DL_FUNC) &mizu_interop_write_call,        1},
+  {"mizu_interop_read_call",      (DL_FUNC) &mizu_interop_read_call,         1},
+  {"mizu_stream_read_call",       (DL_FUNC) &mizu_stream_read_call,          1},
   {"mizu_codec_read_call",        (DL_FUNC) &mizu_codec_read_call,           1},
   {"mizu_region_create",          (DL_FUNC) &mizu_region_create,             1},
   {"mizu_region_open",            (DL_FUNC) &mizu_region_open,               2},
@@ -177,7 +183,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_channel_suffix",         (DL_FUNC) &mizu_channel_suffix,            1},
   {"mizu_channel_ready_wait",     (DL_FUNC) &mizu_channel_ready_wait_call,   2},
   {"mizu_channel_destroy",        (DL_FUNC) &mizu_channel_destroy_call,      1},
-  {"mizu_channel_attach",         (DL_FUNC) &mizu_channel_attach_call,       1},
+  {"mizu_channel_attach",         (DL_FUNC) &mizu_channel_attach_call,       2},
   {"mizu_channel_ready_set",      (DL_FUNC) &mizu_channel_ready_set_call,    1},
   {"mizu_channel_send",           (DL_FUNC) &mizu_channel_send_call,         2},
   {"mizu_channel_send_batch",     (DL_FUNC) &mizu_channel_send_batch_call,   2},
@@ -193,7 +199,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_pool_suffix",            (DL_FUNC) &mizu_pool_suffix,               1},
   {"mizu_pool_ready_wait",        (DL_FUNC) &mizu_pool_ready_wait_call,      3},
   {"mizu_pool_destroy",           (DL_FUNC) &mizu_pool_destroy_call,         1},
-  {"mizu_pool_worker_join",       (DL_FUNC) &mizu_pool_worker_join_call,     2},
+  {"mizu_pool_worker_join",       (DL_FUNC) &mizu_pool_worker_join_call,     3},
   {"mizu_pool_leave",             (DL_FUNC) &mizu_pool_leave_call,           1},
   {"mizu_pool_lame_duck",         (DL_FUNC) &mizu_pool_lame_duck_call,       1},
   {"mizu_pool_retire",            (DL_FUNC) &mizu_pool_retire_call,          2},
@@ -265,6 +271,7 @@ void R_init_mizu(DllInfo *dll) {
   mizu_pool_init();
   mizu_map_init();
   mizu_zc_init();
+  mizu_interop_init();
   mizu_view_altrep_init(dll);
 }
 

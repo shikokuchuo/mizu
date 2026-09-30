@@ -136,7 +136,7 @@ test_that("a departed worker's stats are exact; a rejoining one resets them", {
   expect_identical(mizu_pool_stats(p[["ctrl"]])[["workers"]][["tasks"]], 1)
 
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
-  wk2 <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L)
+  wk2 <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
   expect_identical(mizu_pool_stats(p[["ctrl"]])[["workers"]][["tasks"]], 0)
   .Call(mizu:::mizu_pool_leave, wk2)
   .Call(mizu:::mizu_pool_destroy, p[["ctrl"]])

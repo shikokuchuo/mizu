@@ -28,6 +28,12 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
                          unsigned char *payload, uint32_t inline_max,
                          mizu_handle *h, void *ctx) {
   SEXP x = (SEXP) obj;
+  mizu_r_handle *rh = (mizu_r_handle *) ctx;
+  /* the reader-language state (one predicted branch per stage): foreign
+     handles write interop only, filter the zero-copy tiers by the peer's
+     capability mask, and stage top-level length-1 atomics as the 'I'
+     scalar tags; same-language handles run today's path unchanged */
+  const int foreign = rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
   size_t total;
   uint64_t off;
   unsigned char *chunk;
@@ -43,11 +49,30 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
     hdr->aux = 0;
     return 0;
   }
-  if (mizu_zc_ref_stage(hdr, payload, inline_max, x)) {
+  if (foreign && rawtype == 0 && XLENGTH(x) == 1 && !ANY_ATTRIB(x) &&
+      !Rf_isS4(x) && TYPEOF(x) != RAWSXP && TYPEOF(x) != STRSXP &&
+      (TYPEOF(x) == LGLSXP || TYPEOF(x) == INTSXP ||
+       TYPEOF(x) == REALSXP || TYPEOF(x) == CPLXSXP)) {
+    /* a top-level length-1 attribute-free atomic stages as the 'I'
+       scalar tag (inline at RAWVEC's cost) — R scalars reach Python as
+       scalars, top level and nested alike */
+    size_t n = mizu_interop_write(payload, inline_max, x, NULL);
+    if (n == 0 || n > inline_max)
+      Rf_error("mizu: interop scalar staging failed");
+    hdr->kind = MIZU_KIND_INLINE;
+    hdr->len = (uint32_t) n;
+    hdr->aux = MIZU_AUX_F_KEEPERLESS;
+    return 0;
+  }
+  if ((!foreign || mizu_zc_ref_foreign_ok(x, rh->peer_caps)) &&
+      mizu_zc_ref_stage(hdr, payload, inline_max, x)) {
     /* a mizu-native view crosses by reference (REF) at any size — required
        once SHM_VEC views exist: the serialize-hook fallback resolves
        uncounted, and the producer could recycle under the far side's view;
-       the pin is the view itself */
+       the pin is the view itself. The foreign filter runs ahead of the
+       claim (the claim marks the region REFHELD): a view whose layout the
+       peer cannot wrap takes the interop writer below as a value copy
+       off the shared pages. */
     mizu_r_pin(h, ctx, x);
     return 0;
   }
@@ -63,10 +88,16 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
       memcpy(dst, mizu_vec_ptr(x), rawlen);
       return 0;
     }
-  } else if (mizu_str1_stage(hdr, payload, inline_max, x)) {
+  } else if (foreign) {
+    mizu_ix_decline rec = { 0, "", "", "" };
+    int s1 = mizu_interop_str1_foreign(hdr, payload, inline_max, x, &rec);
+    if (s1 > 0) return 0;
+    if (s1 < 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+  }
+  if (!foreign && mizu_str1_stage(hdr, payload, inline_max, x)) {
     /* a length-1 string's bytes are self-contained: pin nothing */
     return 0;
-  } else if (mizu_zc_eligible(x, inline_max, &total) &&
+  } else if (!foreign && mizu_zc_eligible(x, inline_max, &total) &&
              !mizu_handle_churn(h)) {
     /* eligible objects past the budget go straight to SHM_VEC, skipping
        the arena: arena receive pays a full unserialize and a chunk can
@@ -77,6 +108,43 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
        per message would pile up in the ledger */
     mizu_stage_reap(h);
     mizu_zc_stage(hdr, payload, x, total, h, ctx);
+    return 0;
+  } else if (foreign &&
+             mizu_zc_eligible_foreign(x, inline_max, &total, rh->peer_caps) &&
+             !mizu_handle_churn(h)) {
+    /* the foreign zero-copy gate: the baseline layouts plus whatever the
+       peer's capability mask advertises */
+    mizu_stage_reap(h);
+    mizu_zc_stage(hdr, payload, x, total, h, ctx);
+    return 0;
+  }
+  if (foreign) {
+    /* interop only on a foreign handle: a decline raises at send with
+       the walk's record (the private streams are unreadable by that
+       peer by definition). Within the inline budget the stream pins
+       nothing and claims keeperless; past it, the arena then a region
+       retain like any codec stream. */
+    mizu_ix_decline rec;
+    size_t n = mizu_interop_write(payload, inline_max, x, &rec);
+    if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+    if (n <= inline_max) {
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
+      return 0;
+    }
+    if ((chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off)) != NULL) {
+      if (mizu_interop_write(chunk, n, x, NULL) != n)
+        Rf_error("mizu: interop write mismatch");
+      hdr->kind = MIZU_KIND_ARENA;
+      hdr->len = 0;
+      hdr->aux = off;
+      uint64_t n64 = (uint64_t) n;
+      memcpy(payload, &n64, sizeof(n64));
+      return 0;
+    }
+    mizu_stage_reap(h);
+    mizu_payload_spill_interop(hdr, payload, x, n, h);
     return 0;
   }
   /* the compact codec ahead of R_Serialize (payload.c): a codec stream
@@ -151,13 +219,7 @@ void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
                           mizu_read_ctx *ctx) {
   if (hdr->kind == MIZU_KIND_ARENA) {
     /* resolved stream bytes; limit is the arena-validated length */
-    if (payload[0] == MIZU_CODEC_MAGIC)
-      return (void *) mizu_codec_read(payload, limit);
-    if (mizu_is_python_payload(payload, limit)) {
-      mizu_decline_foreign(ctx);
-      return NULL;
-    }
-    return (void *) mizu_view_unserialize_from((unsigned char *) payload, limit);
+    return (void *) mizu_stream_read(payload, limit, ctx, 1);
   }
   if (hdr->kind == MIZU_KIND_RAWSPILL) {
     /* resolved RAWVEC bytes (the pool's region framing of this kind is

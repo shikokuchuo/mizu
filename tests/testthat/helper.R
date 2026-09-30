@@ -161,7 +161,8 @@ channel_pair <- function(
   capacity = 64L,
   slot_size = 256L,
   arena_size = 4096,
-  spin = FALSE
+  spin = FALSE,
+  ident = NULL
 ) {
   host <- .Call(
     mizu:::mizu_channel_create,
@@ -173,7 +174,8 @@ channel_pair <- function(
   )
   att <- .Call(
     mizu:::mizu_channel_attach,
-    .Call(mizu:::mizu_channel_suffix, host)
+    .Call(mizu:::mizu_channel_suffix, host),
+    ident
   )
   peer <- att[[1L]]
   .Call(mizu:::mizu_channel_ready_set, peer)
@@ -218,7 +220,8 @@ pool_pair <- function(
   injection_cap = 64L,
   per_worker_cap = 64L,
   result_slots = 64L,
-  slot_size = 512L
+  slot_size = 512L,
+  ident = NULL
 ) {
   ctrl <- .Call(
     mizu:::mizu_pool_create,
@@ -231,7 +234,7 @@ pool_pair <- function(
   )
   suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)
   wks <- lapply(seq_len(workers) - 1L, function(slot) {
-    wk <- .Call(mizu:::mizu_pool_worker_join, suffix, slot)
+    wk <- .Call(mizu:::mizu_pool_worker_join, suffix, slot, ident)
     .Call(mizu:::mizu_pool_set_eval, wk)
     wk
   })

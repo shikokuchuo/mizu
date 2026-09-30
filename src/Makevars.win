@@ -2,10 +2,11 @@
 # The R-side sources (including the first-class view layer: view.o and
 # serialize.o) plus the vendored libmizu core (the transport + region layer).
 # Vendored files come from tools/vendor-libmizu.sh — never edited in place.
-OBJECTS = bounded.o codec.o condition.o entity.o init.o liveness.o map.o \
+OBJECTS = bounded.o codec.o condition.o entity.o init.o interop.o liveness.o map.o \
           payload.o preamble.o rng.o serialize.o stage_r.o verbs_channel.o \
           verbs_pool.o view.o wrap.o zc.o \
           vendor/libmizu/api.o vendor/libmizu/bytes.o vendor/libmizu/channel.o \
+          vendor/libmizu/interop.o \
           vendor/libmizu/morsel.o vendor/libmizu/stage_raw.o \
           vendor/libmizu/err.o vendor/libmizu/err_tls.o vendor/libmizu/ext.o \
           vendor/libmizu/liveness.o \

@@ -292,7 +292,7 @@ peer_main <- function(token) {
     attachNamespace("mizu")
   }
   .Call(mizu_tune_malloc)
-  att <- .Call(mizu_channel_attach, token)
+  att <- .Call(mizu_channel_attach, token, NULL)
   ch <- att[[1L]]
   expr <- att[[2L]]
   .Call(mizu_channel_ready_set, ch)

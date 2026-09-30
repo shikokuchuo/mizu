@@ -52,13 +52,13 @@ test_that("a fresh channel reports its layout and state", {
 })
 
 test_that("attach validates the region: absent, malformed, or not a channel", {
-  expect_error(.Call(mizu:::mizu_channel_attach, "0_0"), "cannot open")
+  expect_error(.Call(mizu:::mizu_channel_attach, "0_0", NULL), "cannot open")
   expect_error(
-    .Call(mizu:::mizu_channel_attach, "evil'; echo pwned"),
+    .Call(mizu:::mizu_channel_attach, "evil'; echo pwned", NULL),
     "malformed region-name suffix"
   )
   expect_error(
-    .Call(mizu:::mizu_channel_attach, strrep("a", 40)),
+    .Call(mizu:::mizu_channel_attach, strrep("a", 40), NULL),
     "malformed region-name suffix"
   )
 
@@ -72,7 +72,7 @@ test_that("attach validates the region: absent, malformed, or not a channel", {
   }
   suffix <- substr(nm, nchar(prefix) + 1L, nchar(nm))
   expect_error(
-    .Call(mizu:::mizu_channel_attach, suffix),
+    .Call(mizu:::mizu_channel_attach, suffix, NULL),
     "invalid channel region"
   )
 })
