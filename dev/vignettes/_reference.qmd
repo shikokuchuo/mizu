@@ -194,8 +194,15 @@ Atomic vectors cross without serialization: an R `numeric`, `integer`, or `raw` 
 An `integer64` vector crosses as a NumPy `int64` array both ways — bit64's exact layout, constructed without bit64 — with `NA` at `INT64_MIN` in each direction.
 A large vector arrives as a zero-copy read-only view over the shared pages — the same ALTREP mechanism as between R processes, surfaced on the Python side as a NumPy array that maps the region.
 Strings cross as strings in both directions; `NA_character_` reads as `None` in Python, and `None` comes back as `NULL`.
-Anything else Python sends — scalars and containers ride its compact codec, other objects pickle — is declined with a "Python payload" error.
-The declined message is consumed, so the channel keeps flowing; keep the conversation to vectors and strings.
+
+Scalars, lists, and dicts with string keys cross both ways as R's own logical/integer/double/complex/character/list values.
+A `Date` arrives as `datetime64[D]`, a `POSIXct` as naive `datetime64[us]`, a factor as `list[str | None]` (a dictionary-encoded column inside a frame), and a matrix as a Fortran-order array — the data never transposes.
+A `difftime`, `POSIXlt`, a named vector, and S4 objects stay on R's side: sending one on a Python channel raises at `mizu_send()`.
+
+A data frame crosses as a `pymizu.Frame` — column dict on one side, `pl.from_arrow(f)` / `pa.table(f)` on the way into polars or pyarrow — and a polars, pyarrow, or pandas frame arrives back as a `data.frame`.
+Past a size floor the frame travels as one shared-memory region both directions: no copy, no parse, numeric columns read in place.
+An unmodified R → polars → R round trip moves zero payload bytes at all — the return hop is a reference to the region R itself staged.
+The full contract, with the NA-sentinel and widening rules per dtype, is the dtype matrix in the pymizu README; a value outside the portable subset raises at send time on either side, naming the path and reason.
 
 ## Benchmarks
 

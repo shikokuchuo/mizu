@@ -205,8 +205,15 @@ Atomic vectors cross without serialization: an R `numeric`, `integer`, or `raw` 
 An `integer64` vector crosses as a NumPy `int64` array both ways — bit64’s exact layout, constructed without bit64 — with `NA` at `INT64_MIN` in each direction.
 A large vector arrives as a zero-copy read-only view over the shared pages — the same ALTREP mechanism as between R processes, surfaced on the Python side as a NumPy array that maps the region.
 Strings cross as strings in both directions; `NA_character_` reads as `None` in Python, and `None` comes back as `NULL`.
-Anything else Python sends — scalars and containers ride its compact codec, other objects pickle — is declined with a “Python payload” error.
-The declined message is consumed, so the channel keeps flowing; keep the conversation to vectors and strings.
+
+Scalars, lists, and dicts with string keys cross both ways as R’s own logical/integer/double/complex/character/list values.
+A `Date` arrives as `datetime64[D]`, a `POSIXct` as naive `datetime64[us]`, a factor as `list[str | None]` (a dictionary-encoded column inside a frame), and a matrix as a Fortran-order array — the data never transposes.
+A `difftime`, `POSIXlt`, a named vector, and S4 objects stay on R’s side: sending one on a Python channel raises at `mizu_send()`.
+
+A data frame crosses as a `pymizu.Frame` — column dict on one side, `pl.from_arrow(f)` / `pa.table(f)` on the way into polars or pyarrow — and a polars, pyarrow, or pandas frame arrives back as a `data.frame`.
+Past a size floor the frame travels as one shared-memory region both directions: no copy, no parse, numeric columns read in place.
+An unmodified R → polars → R round trip moves zero payload bytes at all — the return hop is a reference to the region R itself staged.
+The full contract, with the NA-sentinel and widening rules per dtype, is the dtype matrix in the pymizu README; a value outside the portable subset raises at send time on either side, naming the path and reason.
 
 ## Benchmarks
 
@@ -248,11 +255,11 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu        243.7µs 343.29µs     2655.   546.5KB     40.1
-#> 2 mirai        7.32ms   7.61ms      128.    3.81MB     21.4
+#> 1 mizu       249.44µs 409.14µs     2057.  474.84KB     25.8
+#> 2 mirai        7.49ms   7.97ms      125.    3.81MB     21.6
 ```
 
-End to end, mizu is **22x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
+End to end, mizu is **19x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
 
 **Two thousand small tasks.**
 Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece.
@@ -275,9 +282,9 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      17.65ms  17.65ms     56.7     30.8MB  1247.  
-#> 2 mizu         5.18ms   5.74ms    147.      52.1KB     2.01
-#> 3 mirai      204.19ms  204.3ms      4.89      19MB     2.45
+#> 1 serial      17.87ms   17.9ms     56.0     30.8MB  1231.  
+#> 2 mizu         5.01ms    5.7ms    140.      51.3KB     0   
+#> 3 mirai      204.45ms  204.5ms      4.89      19MB     9.78
 ```
 
 mizu turns the four workers into a **3.1x** gain over the serial loop, and runs **36x** ahead of mirai (medians).
