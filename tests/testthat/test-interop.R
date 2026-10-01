@@ -67,6 +67,25 @@ test_that("per-tag identical() round-trips over a foreign channel", {
   expect_identical(ix_rt(p, ldf), ldf)
 })
 
+test_that("automatic row.names canonicalize off the ALTREP sequence", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+
+  # R >= 4.6 stores automatic row.names as an ALTREP compact sequence;
+  # the writer reads the 1:n verdict off its info instead of scanning
+  df <- data.frame(x = c(1, 2))
+  expect_identical(ix_write(df), unname(ix_corpus()[["frame-1col"]]))
+  expect_identical(ix_rt(p, df), df)
+
+  # a compact sequence that is not 1:n writes as-is
+  off <- data.frame(x = 1:3)
+  row.names(off) <- 2:4
+  ref <- data.frame(x = 1:3)
+  attr(ref, "row.names") <- c(2L, 3L, 4L)
+  expect_identical(ix_write(off), ix_write(ref))
+  expect_identical(ix_rt(p, off), off)
+})
+
 test_that("the dim shape round-trips", {
   skip_if_not_installed("bit64")
   p <- foreign_pair()

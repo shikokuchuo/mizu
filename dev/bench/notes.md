@@ -742,3 +742,17 @@ us/elt across plain/template/.seed/prepared, ~10us 5.3 ms wall, skewed
 
 Status: full suite 2961 pass, 0 fail (3 expected macOS skips); rchk
 zero findings; R CMD check 0/0/0.
+
+## 2026-10-01 — the O(1) ALTREP row.names check (F6)
+
+R >= 4.6's automatic row.names ride an ALTREP compact integer sequence,
+whose info is REALSXP c(length, first, incr): the 'I' writer's exact
+1:n verdict is now three reads off the info (shape-gated, the scan the
+fallback) instead of an O(n) GET_REGION pass per send — the 3.5a
+record's one same-language regression closed.
+
+Results (the 3.5a row, 16 MB frame (1e6 rows) R->R, before -> after):
+round trip 1.20 -> 0.80 ms (the pre-3.5a baseline), send-only 1.05 ->
+0.77 ms.
+
+Status: full suite 2852 pass, 0 fail (expected skips).

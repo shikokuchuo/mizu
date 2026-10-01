@@ -720,6 +720,17 @@ static size_t ix_seq_buf_n;
 
 static int ix_int_is_seq1n(SEXP rn, R_xlen_t n) {
   if (XLENGTH(rn) != n || n <= 0) return 0;
+  if (ALTREP(rn)) {
+    /* R's compact integer sequence: the info is REALSXP c(length, first,
+       incr) (R >= 4.4; R >= 4.6's automatic row.names ride it), so the
+       1:n verdict is three reads. Shape-gated — a mismatch is some other
+       ALTREP class and falls to the scan, never a wrong verdict. */
+    SEXP info = R_altrep_data1(rn);
+    if (TYPEOF(info) == REALSXP && !ALTREP(info) && XLENGTH(info) == 3) {
+      const double *d = REAL(info);
+      if (d[0] == (double) n && d[1] == 1 && d[2] == 1) return 1;
+    }
+  }
   if (n <= 8192 || n > (R_xlen_t) 1 << 28)
     return ix_int_is_seq1n_chunked(rn, n);
   /* one flat pass: the GET_REGION fill and the compare are both
