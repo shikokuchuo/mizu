@@ -1,0 +1,28 @@
+# Authors and Citation
+
+## Authors
+
+- **Charlie Gao**. Author, maintainer.
+  [](https://orcid.org/0000-0002-0750-061X)
+
+- **Posit Software, PBC**. Copyright holder, funder.
+  [![ROR](https://raw.githubusercontent.com/ror-community/ror-logos/main/ror-icon-rgb.svg)](https://ror.org/03wc8by49)
+
+- **Pierre L'Ecuyer**. Copyright holder.  
+  RngStreams library
+
+## Citation
+
+Source:
+[`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/main/DESCRIPTION)
+
+Gao C (2026). *mizu: Lock-Free Shared-Memory Parallelism for R*. R
+package version 0.0.0.9000, <https://shikokuchuo.github.io/mizu/>.
+
+    @Manual{,
+      title = {mizu: Lock-Free Shared-Memory Parallelism for R},
+      author = {Charlie Gao},
+      year = {2026},
+      note = {R package version 0.0.0.9000},
+      url = {https://shikokuchuo.github.io/mizu/},
+    }

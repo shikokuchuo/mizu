@@ -1,0 +1,541 @@
+# NA
+
+## This package
+
+mizu is an R package for lock-free shared-memory IPC between R processes
+on one machine: an SPSC channel (`R/channel.R`) and a work-stealing task
+pool (`R/pool.R`) over POSIX shm / Win32 file mappings. The transport,
+region layer, and wire formats are the vendored **libmizu** core
+(`src/vendor/libmizu/`) — a standalone, language-agnostic C11 library in
+its own upstream repo; this package is its R binding: a `.Call` veneer
+(`src/verbs_channel.c`, `src/verbs_pool.c`), the SEXP staging/eval hooks
+(`src/stage_r.c`), and the R-only subsystems (the compact codec,
+[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md),
+the ALTREP view layer). The Python binding is **pymizu** (sibling repo
+`../pymizu`, outside this workspace — editing its files needs the file
+open in an editor or the folder added as a workspace root). 64-bit only;
+Linux needs kernel \>= 5.3 (`pidfd_open`, no fallback).
+
+### Commands
+
+``` sh
+R CMD INSTALL .                       # build + install
+Rscript -e 'devtools::build_readme()' # regenerate README.md from README.Rmd — edit the .Rmd, never README.md directly
+Rscript dev/vignettes/precompile.R    # regenerate vignettes/{name}.qmd from dev/vignettes/_{name}.qmd — edit the _-prefixed source, never vignettes/ directly
+bash tools/vendor-libmizu.sh           # re-vendor src/vendor/libmizu/ (the core)
+```
+
+``` r
+
+# Executing code
+devtools::load_all()
+
+# Tests
+devtools::test() # all tests
+devtools::test(filter = "^{name}") # tests for files starting with {name}
+devtools::test_active_file("R/{name}.R") # tests for R/{name}.R
+devtools::test_active_file("R/{name}.R", desc = 'blah') # single test with exact description "blah" (no regexp)
+
+# Test coverage
+devtools::test_coverage() # all files
+devtools::test_coverage_active_file("R/{name}.R") # coverage for R/{name}.R
+
+# Documentation
+devtools::document() # redocument package
+
+# Run complete R CMD check
+devtools::check()
+```
+
+Cross-process tests spawn fresh `Rscript` children that
+[`library(mizu)`](https://shikokuchuo.github.io/mizu/) from the
+*installed* library. Under a bare `load_all()` they skip via
+`skip_if_no_child_mizu()`; with a stale installed copy the children run
+different code than the test process. **After changing `src/` or `R/`,
+run `R CMD INSTALL .` before the test suite.**
+
+`compile_commands.json` for clangd is regenerated on install
+(`Config/build/compilation-database` in DESCRIPTION). All files are
+air-formatted — the IDE formats on save; accept its \>80-col rewraps in
+test files you touch, don’t fight them.
+
+The reference vignette is pre-computed (mirai-style, but quarto instead
+of litedown): `precompile.R` renders `dev/vignettes/_reference.qmd` to
+static markdown as `vignettes/reference.qmd` (engine `quarto::html`; no
+chunks execute at build time, but the quarto CLI must be present).
+Re-run it after editing the `_`-prefixed source; it needs the installed
+package (it spawns children) plus bench/mirai/ggplot2 for the benchmark
+chunks.
+
+### Architecture
+
+The design authority is upstream: `libmizu/include/mizu.h` (the stable
+public API contract — vendored verbatim as `src/vendor/libmizu/mizu.h`),
+`libmizu/include/mizu_ext.h` (the binding-author tier — version-pinned
+per libmizu minor release, may change without deprecation; vendored as
+`src/vendor/libmizu/mizu_ext.h`), and `libmizu/DESIGN.md` (the
+invariants the implementation maintains: wire format, parker protocol,
+payload tiers, binding seam, retain table, zero-copy, crash atomicity,
+pool mechanics). `src/mizu.h` is the R-internal header: R-coupled
+declarations only — the `mizu_r_handle` per-handle context (core
+handle + prot chain + zc view cache), the `mizu_r_*` binding hooks, the
+veneer prototypes.
+
+One vendor layer, generated — **never edit by hand**; changes go
+upstream and land here by re-running the script (default: the pinned
+ref):
+
+- `src/vendor/libmizu/` — the whole core (mizu.h + mizu_ext.h +
+  internal.h + all TUs), zero substitutions (`tools/vendor-libmizu.sh`;
+  the namespaces coincide by design). The package’s own TUs compile
+  against `mizu_ext.h` — never `internal.h`, which only the vendored
+  core TUs and the view layer include (the view layer manages
+  embedder-owned regions through the heap-form region API).
+
+The flow reverses for the view layer: `src/view.h`, `src/view.c`,
+`src/serialize.c` (the ALTREP consumer classes, the MIZH/MIZS/MIZL
+layout oracle/writer, the exact-size serialize streams) are first-class
+sources — mizu is their upstream, and mori vendors them from this repo
+(`tools/vendor-mizu.sh` there), applying the reverse substitution set
+(`mizu_view_` → `mori_`, the libmizu region names → mori’s vendored
+names, and the class names / extptr tags / error prefix onto mori’s
+namespace).
+
+The seam: the core moves opaque `(hdr, payload)` frames and never sees a
+SEXP. The binding registers callbacks per handle at create/attach/join
+(`chan_binding()` / `pool_binding()` fill a `mizu_binding`):
+`stage`/`read` (SEXP ↔︎ framed bytes), `exec` (pool task eval), `check`
+(interrupt poll — wraps `R_CheckUserInterrupt()`), `sweep` (idle cache
+drop), `drop` (pin release — the pin is a cons cell pushed on the
+handle’s prot-anchored chain at stage, tombstoned in the hook: no
+allocation, finalizer-safe), `park` NULL (R has no global lock). Staging
+is transactional: the core mutates no shared state before `stage`
+returns, so a mid-stage raise (the codec’s ALTREP rejection, an
+allocation longjmp) leaves the handle consistent. The `mizu_r_*` hook
+implementations live in `src/stage_r.c`.
+
+The `.Call` veneer (`src/verbs_channel.c`, `src/verbs_pool.c`) keeps arg
+validation, the extptr handle (`mizu_r_handle` wrapping the opaque core
+handle), and the `mizu_status` → sentinel / classed-error mapping.
+Registration strings are plain `mizu_*`; where a core verb already owns
+the name, the C function carries a `_call` suffix
+(`{"mizu_channel_create", &mizu_channel_create_call, ...}`).
+
+Cross-cutting invariants (shared by channel and pool):
+
+- **Sentinels, not errors**: terminal states (ring full, timeout,
+  orderly close, peer death) return class-tagged sentinels inheriting
+  `"mizu_sentinel"` (`mizu_full`, `mizu_timeout`, `mizu_closed`,
+  `mizu_peer_gone`) so hot loops stay branch-cheap.
+  [`mizu_is_sentinel()`](https://shikokuchuo.github.io/mizu/reference/mizu_is_sentinel.md)
+  is an identity test against the four interned singletons — a class
+  test alone can’t distinguish a genuine sentinel from a forwarded
+  look-alike payload. The complement is the classed-error hierarchy
+  (`R/conditions.R`, `src/condition.c`): constructors and
+  [`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+  raise `mizu_error_*` subclasses with structured fields on failure. The
+  split follows the shape of the call — the hot verbs that move payloads
+  and wait with a bound
+  (`mizu_send`/`mizu_recv`/`mizu_collect`/`mizu_map`) return sentinels
+  for transport states; a raised condition means stop and deal with it.
+  Misuse stays a plain error.
+- **Liveness lock is the death verdict**: a kernel-released exclusive
+  flock/LockFileEx held for the process lifetime (core-side:
+  `vendor/libmizu/liveness.c`; the R-side `src/liveness.c` keeps only
+  the `*_call` wrappers), fd-scoped so PID reuse can’t fake “alive”.
+  Per-platform death listeners (`wait_linux.c` pidfd+epoll,
+  `wait_macos.c` dispatch sources, `wait_win32.c` thread-pool waits —
+  all core-side) are *wake triggers only* — the lock probe decides.
+- **Parker protocol**: one epoch word per waiting entity (core-side
+  `parker.c` + platform waiters: futex / `__ulock` / `WaitOnAddress` +
+  named events). Every park site follows snapshot → announce → re-check
+  → sleep-bounded; this handshake is the sole guarantee against lost
+  wakeups — there is no watchdog behind it.
+- **Payload framing tiers** (`src/payload.c`, `src/stage_r.c` — the tier
+  dispatch is the R binding’s `stage` hook; the mechanics are
+  core-side): 16-byte `mizu_slot_hdr` then bytes. `NIL` (`R_NilValue`
+  immediate in the header — no bytes move), `STR1` (a length-1 string:
+  CHARSXP bytes in the payload, cetype in aux — no serialize), `RAWVEC`
+  (attribute-free — or class-only integer64 — non-ALTREP atomic vectors,
+  serialization-free), `RAWSPILL` (the same vectors past the inline
+  budget as bare bytes — a channel arena chunk (offset in the payload)
+  or a pool spill region (name in the payload, length in aux \>\> 8); no
+  serialize, no parse; retained like SHM_RAW minus the payload pin). The
+  raw-tier reservation itself — the RAWVEC / arena-RAWSPILL /
+  region-RAWSPILL / flat-SHM_VEC decision tree — is core-owned
+  (`mizu_stage_raw`, vendored `stage_raw.c`; the inline RAWVEC stamp is
+  the mizu_ext.h dual-form fast path): the channel claims the arena
+  ahead of SHM_VEC up to `MIZU_ZC_FLOOR_RAW` (256 KiB — the arena copy
+  has no region machinery to amortize) and at any size under churn (the
+  arena is churn-immune), the pool only below `MIZU_ZC_FLOOR` (its raw
+  spill is a region too, so the view’s no-copy receive wins from 64
+  KiB); a declined reservation (arena full below the gate, churn, region
+  failure) degrades to the serialized tiers, `INLINE` (complete
+  serialized stream), `ARENA` (channel-only spill arena), `SHM_RAW` (a
+  serialized stream in a spill region — the consumer copies out before
+  its done signal, so surrender to the producer’s free list is
+  deterministic). The three serialize tiers carry the compact codec
+  (`src/codec.c`) ahead of R_Serialize: a self-describing framing (first
+  byte `MIZU_CODEC_MAGIC` where an R stream carries ‘B’, so readers
+  dispatch on it and the slot header is untouched) for NULL, symbols,
+  atomic vectors (attributes included), strings, list/vector trees,
+  calls, closures, S4 objects (slots ride the attribute pairs, the S4
+  bit a tag flag or the S4SXP node), and primitives as values (by name —
+  a resolve flag on the symbol framing, reverse-looked-up against base
+  on write) — R_Serialize’s per-call VECSXP(1099) ref hash table (and
+  R_Unserialize’s read table) is the fixed cost it removes. The writer
+  rejects ALTREP anywhere in the graph, so a codec stream carries no
+  view identifier and pins no retain entry (`mizu_keeperless`, core-side
+  — the collect-side keeperless-wake gate keys on it). Closures cross
+  with the environment by reference (global/base/empty by kind byte, a
+  package namespace by name — base’s `..getNamespace` on read:
+  R_Unserialize’s own discipline, so a namespace that will not load
+  substitutes `.GlobalEnv`, it does not fail), attributes trailing
+  formals/body so the reader constructs with `R_mkClosure` first;
+  keep.source srcrefs are dropped on write via a stripped copy
+  (`mizu_strip_srcref()` for closures, `mizu_strip_lang()` for language
+  trees, both in map.c — the srcfile cannot cross processes;
+  identical()‘s ignore.srcref discipline). Environments, ALTREP,
+  closures over local environments, bytecode bodies, language nodes with
+  non-srcref attributes, and over-deep graphs fall back to R_Serialize.
+  The gp/LEVELS word is not carried (identical() never compares it);
+  attributes travel as (name, value) pairs via
+  `R_getAttributes`/`Rf_setAttrib`, class last through `Rf_classgets`.
+  `SHM_VEC` (a spill region holding a view-layout object — atomic
+  vector, string vector, or list tree — wrapped ALTREP at receive: no
+  copy, no parse), `REF` (the `/mizu_` identifier of an object already
+  in shm, resolved to a view). int64 is a native wire type
+  (`MIZU_TYPE_INT64` = 32, outside SEXPTYPE space; bit64’s exact
+  REALSXP + `class = "integer64"` layout, constructed without bit64 —
+  bit64 stays in Suggests): class-only integer64 stages on the raw tiers
+  and SHM_VEC, `mizu_raw_type()` is the single per-stage raw gate
+  (`mizu_raw_eligible`’s double probe is gone), and `mizu_wire_alloc()`
+  owns wire-type → SEXP allocation at receive, re-applying the class. NA
+  is INT64_MIN both directions (a documented sentinel — no per-element
+  scan). Attributed (names/dim) integer64 keeps the codec tier.
+  `bounded.c` does a single-pass serialize that flips to count-only on
+  overflow, so tier choice needs no second pass. Payload lifetime is
+  explicit: a per-handle retain table in the core (region pointer +
+  kind + an opaque pin — for R, a cons cell on the handle’s
+  prot-anchored pin chain via `mizu_r_pin()` at stage: O(1) push, dead
+  cells spliced lazily past `MIZU_SPLICE_MIN`, tombstoned through the
+  binding’s `drop` hook at the core’s release points:
+  reap/collect/slot-reuse/sweep/rollback/teardown; only the init-time
+  singletons stay on R’s precious list). SHM_VEC regions instead recycle
+  only when the view refcount hits zero — release rides the views’
+  finalizers, so it is GC-gated on every holder process — and a spill
+  miss whose full ledger sweep reclaims nothing sets the handle’s
+  `churn` flag (Linux only — the core pre-faults fresh regions there,
+  while macOS/Windows creates are lazy, so SHM_VEC stays cheaper than
+  the copy tiers even under churn): staging falls back to the copy tiers
+  (pool SHM_RAW; channel arena/SHM_RAW) until a sweep or force-reclaim
+  returns a lent region (views are flowing again). The Linux THP
+  collapse runs at free-list insert rather than fresh create, so only
+  regions that completed a consumer-done cycle pay for it.
+- **Zero-copy views** (`src/zc.c`; the protocol invariants are
+  DESIGN.md’s): a layout-eligible object past
+  `max(inline budget, MIZU_ZC_FLOOR)` stages as SHM_VEC — one layout
+  write into a spill region (the MIZH/MIZS/MIZL layouts, written by
+  `mizu_view_layout_write`), and the consumer wraps the mapped pages as
+  an ALTREP view (the `view.c` classes) instead of unserializing.
+  Eligibility: atomic vectors gate on the O(1) data size; strings and
+  list trees gate on a cheap lower-bound probe
+  (`mizu_view_layout_size`’s per-leaf serialize counts would otherwise
+  tax every small pool task payload), and a mizu view anywhere in a list
+  tree rejects it — nested views must cross by reference, not be copied
+  into the layout. ALTREP inputs are rejected unless
+  `mizu_view_altrep_readable` (view.h) passes: R’s S4 data-part wrappers
+  qualify (an atomic-vector-backed S4 object forwards to a non-ALTREP
+  data1 of the same type sharing its data pointer; R \>= 4.6.1 patched /
+  4.7 consolidates a shared data part in place on the pointer request,
+  so the probe takes the wrapper’s pointer first and re-reads data1);
+  lazy ALTREPs, compact sequences (materialized or not), and
+  extptr-data1 foreign views never pass — the tier choice depends on the
+  value, never its materialization history. The S4 object bit rides the
+  layouts: a flags word at header offset 32 (bytes \[24-31\] stay mizu’s
+  refcount/flags) on MIZH/MIZS/MIZL roots, and bit 30 of the MIZL
+  directory entry’s sexptype on vector/string leaves — applied with
+  `Rf_asS4` after attributes land (`mizu_view_apply_s4`;
+  `mizu_view_list_wrap` applies it internally, `mizu_zc_wrap0` calls it
+  on MIZH/MIZS roots). Top-level pairlists stay on the serialize tiers
+  (MIZL coerces LISTSXP to VECSXP; an S4 pairlist would lose the bit in
+  the coercion). Lifetime is a cross-process refcount in the region
+  header’s reserved bytes \[24-31\] (a mizu-owned offset convention —
+  the view layer never reads them): producer stores 1 at stage, consumer
+  adds 1 at wrap before its consumer-done signal, and the view’s
+  once-only release callback (the layer’s embedder release hook — fires
+  at COW materialization or finalization; finalizer-only for list views,
+  whose extracted element views keep referencing the region) subs 1. The
+  producer drops its loan at the core’s retain release points;
+  zero-count regions rejoin the spill free list, others wait in a
+  per-handle lent-region ledger (quota-bounded sweeps on busy reap
+  paths, full sweeps on idle / free-list miss). A consumer death leaks
+  its counts; the producer’s death verdict force-reclaims lent regions
+  (REFHELD-flagged ones — regions whose identifier escaped by reference,
+  whose holder set is wider — leak + unlink instead). The consumer maps
+  page 0 RW (the refcount word) and the rest RO. A view re-sent
+  top-level stages as REF (zero bytes move; vector/string views only
+  while unmaterialized — data2 set means COW’d, so by value — while list
+  views REF at any time: their data2 is the read-only element cache); a
+  view nested in a larger payload (e.g. a pool task’s argument list)
+  rides the serialize-hook path, kept in-protocol by the layer’s wire
+  hooks (`mizu_view_set_wire_hooks`, set at load): emit marks the region
+  REFHELD, resolve does the counted add inside `R_Unserialize` against
+  the view layer’s process-global consumer-mapping cache (name-keyed
+  LRU, `MIZU_VIEW_CACHE_MAX` slots — one mapping per region, not two per
+  reference; Linux’s `vm.max_map_count` forces the dedup), whose misses
+  open through the embedder’s open hook — mizu registers `mizu_zc_open`
+  (`mizu_view_set_open_hook`, page-0 RW / tail RO, the prep path’s
+  split) — so the release record pins no mapping of its own and subs
+  through the shared cached one. Eviction never unmaps (a live view pins
+  the cached wrap through its keeper chain), and the sub through that
+  shared mapping relies on same-cycle GC order: the mapping wrap is
+  registered before every view over it, and finalizers run in reverse
+  registration order. Foreign mori objects never touch the hooks (class
+  identity is per-DLL) and ride mori’s own serialize-hook path. String
+  views have no `Set_elt` (upstream ALTSTRING limitation): in-place
+  element assignment errors; mutating a NAMED-bumped duplicate
+  materializes a plain copy.
+- **Crash atomicity**: all cross-process claims are copy-then-CAS
+  (core-side), so a death mid-operation can’t wedge a queue; workers
+  announce their claim (`in_flight_rs`) *before* CASing it, so a reaper
+  (serialized by the liveness lock) fails exactly the tasks the dead
+  worker had claimed.
+- **rchk-clean C**: zero bcheck findings in package code is the baseline
+  (the “too many states” ERRORs are R’s own `R.bc` functions); treat any
+  new finding as a regression. Helpers return fresh SEXPs UNPROTECTED —
+  the caller wraps the call in `PROTECT(...)`, and nothing allocates
+  between. `UNPROTECT` takes a compile-time constant; a conditional
+  PROTECT’s match lives in the same branch. Fresh SEXPs leave helpers as
+  return values, never `SEXP *` out-params. Conditions are signalled
+  through NORET helpers ending in `Rf_error` (`mizu_cond_signal()`,
+  `mizu_stop*()`), never a bare `Rf_eval` of
+  [`stop()`](https://rdrr.io/r/base/stop.html). Verify on a copy of the
+  tree (the build litters `src/`) with `rchk.sh` from the
+  `ghcr.io/r-hub/containers/rchk` image.
+
+Process model: children are spawned through a static `Rscript` runner
+(`R/spawn.R`, `inst/scripts/mizu-child.R`); the entry expression and
+host library paths cross hex-encoded in argv. Entry points:
+`mizu:::peer_main(suffix)` (channel peer) and
+`mizu:::worker_main(suffix, slot)` (pool worker). Handles are
+process-private and do not survive `fork()`.
+
+Python interop: a channel peer can be a Python process running pymizu —
+[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+takes the peer program as a source string plus a `launcher`.
+[`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md)
+(`R/spawn.R`, the mirror of pymizu’s `r_launcher()`) probes the
+interpreter with `import pymizu.child` (successes cached per
+interpreter), so a missing interpreter or package errors before the
+channel is created. Pools mix too (Tier A): a foreign submitter drives
+homogeneous workers of the other language through
+[`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+/
+[`mizu_submit_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+(`R/call.R`): the spec stages as the `'I'` task stream (tag 0x12 —
+target byte, kind, the submitter identity word, then
+code/positional/named off the spec components), the worker’s exec hook
+dispatches on it ahead of the private frame decode (a SHM_RAW entry is
+opened first; the byte-3 misroute guard; a foreign private frame — `'P'`
+or pickle — gets the neutral err stream), and the task stream’s
+submitter identity keys the result and ERR formats (foreign → the
+foreign writer policy with the capability-mask zc filter / the err
+stream, stashed per-task in `mizu_curpool_ident`; same-language → the
+private paths).
+[`mizu_py_pool_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_pool_launcher.md)
+is the worker spawn (the probe generalized per module); the pool word
+(`mizu_pool_worker_ident`, cached on the handle, re-read while 0) is the
+worker language, and a plain
+[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+on a foreign pool errors locally naming the spec verb. Only vectors and
+strings cross a channel; anything else from Python is declined with a
+“Python payload” error, consumed rather than wedging the ring.
+
+Pool specifics: per-submitter SPSC injection rings + per-worker
+Chase-Lev deques + result slots, no dispatcher process (“pool” always
+means the worker pool; the result-slot array is “result slots”). Workers
+seek work in tier order: fairness tick, own deque, random-victim steal,
+injection scan. Nested `mizu_submit(mizu_current_pool(), ...)` inside a
+task pushes to the worker’s own deque; a worker blocked in nested
+[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+helps (executes/steals) instead of sleeping.
+[`mizu_collect_any()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_any.md)
+waits on a list of task handles and returns `list(index, value)` for the
+first to reach a terminal state (raised outcomes gain a 1-based `index`
+field; the other handles stay collectible) — it parks on the submitter’s
+single parker, woken directly by any publishing worker.
+[`mizu_collect_all()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_all.md)
+is the batch counterpart on the same mechanics: one overall deadline,
+results in input order with names carried over, the first erroring
+handle by position re-raising with `index` (only that handle consumed,
+the rest collectible), a timeout consuming nothing.
+[`mizu_pool_dump()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_dump.md)
+is the first tool when a pool hangs. A task error never crosses as the
+caught condition itself: the ERR publish flattens it to a transport
+condition via `mizu_condition_flatten()` (`src/condition.c`) — original
+classes, the raw `message` field (custom `conditionMessage` methods
+bypassed; truncated at a UTF-8 boundary past half the budget), `call`,
+and every named field the codec carries within the result slot’s inline
+budget, priority message → call → fields → `dropped_fields` (which names
+what was dropped) — framed INLINE so the publish cannot raise: fail the
+task, never the worker. A task whose expression is a value type (eval is
+the identity there) binds no arguments and skips the per-task fresh
+environment on the worker. The channel’s per-verb retain reap is gated
+on outstanding retains / arena bytes / lent regions — keeperless traffic
+skips the cross-core head load. Handle teardown: the task finalizer
+calls `mizu_pool_task_release` (the explicit
+[`mizu_cancel()`](https://shikokuchuo.github.io/mizu/reference/mizu_cancel.md)
+verb stays cancel-only — a completed-uncollected slot is freed by the
+finalizer, not by cancel); `mizu_channel_destroy` signals close first,
+so a peer’s clean [`quit()`](https://rdrr.io/r/base/quit.html) reads
+CLOSED, not PEER_GONE (peer-death coverage uses a hard kill).
+
+[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md)
+(`R/map.R`, `src/map.c`, `src/rng.c`) stages f/`...`/x once per call —
+into one map region (header + single descriptor stream + optional
+bare-bytes RAWVEC x section + optional template output area), or
+entirely inline in the chunk payloads when small — and submits one
+runner task per worker (`map_runner()` worker-side), each
+self-scheduling contiguous morsel batches off a shared cursor in the
+region; small inline maps ride ordinary chunk tasks (`map_chunk()`)
+instead. The stages (`map_stage`/`map_submit`/`map_collect`) are
+composable so the `pool_pair()` harness can interleave `pool_step()`.
+Workers cache map contexts on their handle’s prot\[2\], cleared whole by
+the idle sweep. The x section admits class-only integer64
+(`map_x_attrs_ok()` gates the attribute shape on the R side; the
+[`as.list()`](https://rdrr.io/r/base/list.html) coercion keeps every
+other object) — slices arrive classed, and `mizu_map_batch` re-classes
+the per-element scalars it hands to f. An integer64 `.template` stamps
+the output area `MIZU_TYPE_INT64`: results must be exact integer64 of
+the template’s length (int64 joins no widening lattice), value collect
+routes through `mizu_wire_alloc`, view collect inherits the class from
+the vec wrap, and `map_swap_x` compares the mapped wire type (int64 and
+double share typeof). `.seed` derives per-element L’Ecuyer-CMRG streams
+(the jump kernel is core-side `vendor/libmizu/rng_jump.c`, with
+RngStreams attribution — see LICENSE.note) and accepts `c(seed, offset)`
+to shift every element’s stream by `offset`; results are batching- and
+steal-order-invariant. f is srcref-stripped at stage time by the C-level
+`mizu_strip_srcref` (`src/map.c` — the package has no Imports), and
+result assembly runs in C. The map region’s protocol half — the 128-byte
+header, the CLAIM-word claim CAS, AIMD batch sizing, reset/trim, and the
+lost-set scan — is the core’s morsel module (vendored `morsel.c`,
+`mizu_morsel_*`; magic `MIZM`); `src/map.c` keeps the descriptor stream,
+the x-section slices, the batch eval loop, and the gather. A view x (a
+received channel/pool view, a
+[`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector)
+rides the descriptor as its identifier via the wire hooks, and the batch
+loop reads elements straight off the shared pages (a `DATAPTR_OR_NULL`
+gate in `mizu_map_batch` — the writable accessors would COW-materialize
+the whole vector per worker). `.collect = "view"` wraps the template
+output area as an ALTREP view instead of the gather memcpy: the retain
+entry is the map handle itself (collector and producer are one process,
+so GC pinning — not the zc refcount — gates teardown), names/dim are
+applied in C (R’s setters would duplicate the view, and the default
+ALTREP duplicate materializes), and a view-collected prepared run
+restages into a fresh region. With no mori-shm hop in its retain chain,
+a re-sent map view degrades to a materializing copy. A
+[`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+spec as `f` is the cross-language map (Phase 5): it always stages a
+region (the blob path’s chunk tasks are private frames), its descriptor
+the `'I'` form `list[task, x | nil]` (`mizu_interop_write_map_desc`, the
+spec a nested kind 0/1 task tag — `map_ctx` picks the reader on the
+descriptor’s first byte, classed `"mizu_map_ix"`), and its runners
+kind-2 task streams (`mizu_interop_write_runner` / the
+`mizu_pool_submit_map_runner` veneer riding the `h->spec` seam with
+`MIZU_ENTRY_RUNNER`: region name, `ordinal * 2^32 + generation` in one
+i64, seed nil or the `(seed, offset)` i64 pair from `map_seed_pair`).
+The exec hook dispatches kind 2 (`pool_task_runner` → `map_runner_ix`,
+so the runner is always same-language as the worker — the exec/decode
+path shares `ixt_call` with kind 0/1, source kind a closure whose `...`
+carries the positional args so `..N` resolves, the element its formal
+`x`), and the runner result publishes under the §4.2 foreign policy
+(`pool_result_gate`). A foreign collect normalizes the worker language’s
+runner shape: pymizu’s (element-range, values) pairs via `map_splice_ix`
+/ `map_hist_ix` (`st[["pymap"]]`), a remote error’s element index read
+off `mizu_error_remote`’s `index` field (`map_err_index`); the err
+writer’s local mode stamps a runner’s `mizu_map_index` as the err index.
+
+### Testing
+
+`tests/testthat/helper.R` provides the two deterministic in-process
+harnesses — use them for protocol/ring mechanics instead of spawning
+processes:
+
+- `channel_pair()` — both ends of one channel attached from the test
+  process.
+- `pool_pair()` — controller + worker handles in one process;
+  `pool_step()` drives the worker loop one claim at a time; `pool_end()`
+  tears down.
+
+Also in helper.R: `kill_hard()` / `pid_alive()` (use these —
+[`tools::SIGKILL`](https://rdrr.io/r/tools/pskill.html) is NA on Windows
+and `pskill(pid, 0)` *kills* there; `pid_alive()` is zombie-aware via
+`pid_zombie()`), `wait_until()`, `echo_expr` (the canonical peer echo
+loop) with `channel_end()` for orderly channel teardown, `pool_pull()`
+(moves injection entries onto a worker’s own deque), and
+`skip_if_no_reaper()` (the
+[`mizu_prune()`](https://shikokuchuo.github.io/mizu/reference/mizu_prune.md)
+orphan-reaping tests need a PID 1 that reaps).
+
+`helper-crosslang.R` provides `skip_if_no_pymizu()` (guards on a
+`python3` with pymizu and NumPy importable) and `py_echo` (the Python
+echo peer); the cross-language tests spawn real Python peers through the
+exported `mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)`.
+
+`test-benchmark.R` is report-only: it prints timings for eyeballing in
+CI logs against the baselines and outcome records in
+`dev/bench/notes.md` (best-known table on top — swap only on a new best,
+dated per row; dated run log at the bottom — append new records there)
+and asserts nothing about the numbers (CI runner timing is too variable;
+oldrel-2 jobs run on slow runners).
+
+Conventions:
+
+- Tests for `R/{name}.R` go in `tests/testthat/test-{name}.R`.
+- All new code should have an accompanying test.
+- If there are existing tests, place new tests next to similar existing
+  tests.
+- Strive to keep your tests minimal with few comments.
+- Never put code in a `test-{name}.R` file outside of a `test_that()`
+  block. Instead, use `tests/testthat/helper.R` or
+  `tests/testthat/helper-{name}.R`.
+- Avoid `expect_true()` and `expect_false()` in favor of specific
+  expectations with better failure messages — e.g. newer
+  `expect_all_true()`, `expect_all_equal()`, `expect_r6_class()`.
+- For errors and warnings, prefer `expect_snapshot(error = TRUE)` /
+  `expect_snapshot()` so the full text stays reviewable; use
+  `expect_error()` / `expect_warning()` only when the condition has a
+  known class.
+- On R \< 4.6 [`identical()`](https://rdrr.io/r/base/identical.html)
+  materializes ALTREP views (writable `DATAPTR`), firing the zc release
+  early — assert view refcounts before deep value comparisons, never
+  after. And holding many live views trips the Linux churn fallback
+  (later sends degrade to the copy tiers), so multi-view scenarios gate
+  with `skip_on_os("linux")`.
+- Avoid the `.package` argument to `local_mocked_bindings()` (it
+  modifies another package’s namespace); instead create a mockable
+  version of the function in this package. See `?local_mocked_bindings`.
+
+## Package development
+
+### Running R
+
+In rough order of desirability: `executeCode()` if available
+(user-shared session); an R REPL tool such as `mcp__r__repl` (sandboxed:
+no network, no file access outside the working directory) or
+`btw::run_r`; otherwise `Rscript -e "code"`.
+
+### Documentation
+
+- Export and roxygen2-document every user-facing function; internal
+  functions get no roxygen documentation.
+- Wrap roxygen2 comments to 80 characters.
+- Always re-document the package after changing a roxygen2 comment.
+- There is no pkgdown site (`_pkgdown.yml`) to maintain.
+
+## Git
+
+- Commit messages: single-line subject only, no body.
+- The package has no `NEWS.md` — don’t add change bullets.
+- Only push when the user explicitly requests it.
