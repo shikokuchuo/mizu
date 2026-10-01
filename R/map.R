@@ -829,7 +829,15 @@ map_stage <- function(
       desc <- .Call(
         mizu_interop_map_desc_call,
         f,
-        if (st[["xraw"]]) NULL else as.list(x),
+        if (st[["xraw"]]) {
+          NULL
+        } else if (.Call(mizu_zc_view_check, x)) {
+          # a view x crosses as one ref leaf (F1's D6): the workers read
+          # the resolved view off the shared pages, never an element walk
+          x
+        } else {
+          as.list(x)
+        },
         ident[[1L]]
       )
       sr <- .Call(

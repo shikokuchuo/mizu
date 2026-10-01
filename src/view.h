@@ -187,6 +187,21 @@ int mizu_view_parse_id(const char *s, char *name_out, size_t name_out_size,
                   int32_t *path_out, int *path_len);
 SEXP mizu_view_walk_path(unsigned char *base, int64_t region_size,
                     const int32_t *path, int path_len, SEXP keeper);
+/* The one resolve path behind every identifier resolve (the serialize
+   consumer's Unserialize methods and the 'I' ref leaf alike): parse the
+   identifier, open-or-cache the consumer mapping through the embedder
+   open hook, wrap the root or walk the path, fire the resolve hook.
+   keeper, when not R_NilValue, replaces the cached mapping wrap as the
+   view's chain anchor — the caller's own composition, which must then
+   keep the mapping alive (the default anchor pins it through the cache).
+   R_NilValue on a malformed identifier; a gone region errors in the
+   open. */
+SEXP mizu_view_resolve_id(const char *id, SEXP keeper);
+/* Fire a view's armed release record now, ahead of the GC (once-only: a
+   no-op when unarmed or already fired). For a deterministic-release
+   protocol — the caller's invariant is that nothing live can still read
+   the pages without its own count. */
+void mizu_view_release_now(SEXP x);
 
 /* Embedder wire hooks (optional; set once at embedder load): `emit` fires
    from the Serialized_state methods when an identifier — not a

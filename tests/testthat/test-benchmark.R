@@ -342,6 +342,74 @@ test_that("guard: partial read of a wide matrix pays full unserialize today", {
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("foreign pool task args by reference report the copy removed (F1)", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+
+  n <- 1024L * 1024L # 8 MiB float64
+  x <- runif(n)
+  # same-language flat check: the private task frames are untouched
+  q <- mizu_pool(2L)
+  expect_equal(
+    mizu_collect(mizu_submit_call(q, mizu_call("base::mean", x)), 60),
+    mean(x)
+  ) # warm-up
+  best <- Inf
+  for (r in 1:3) {
+    t0 <- proc.time()[[3]]
+    for (i in 1:4) {
+      mizu_collect(mizu_submit_call(q, mizu_call("base::mean", x)), 60)
+    }
+    best <- min(best, proc.time()[[3]] - t0)
+  }
+  same <- best / 4
+  expect_true(mizu_pool_stop(q))
+
+  # the F1 row: a fresh array stages one SHM_VEC layout write where the
+  # pre-F1 wire paid a full copy each way (~the payload rows' cost)
+  expect_equal(
+    mizu_collect(mizu_submit_call(p, mizu_call("numpy.mean", x)), 60),
+    mean(x)
+  ) # warm-up + correctness
+  best <- Inf
+  for (r in 1:3) {
+    t0 <- proc.time()[[3]]
+    for (i in 1:8) {
+      mizu_collect(mizu_submit_call(p, mizu_call("numpy.mean", x)), 60)
+    }
+    best <- min(best, proc.time()[[3]] - t0)
+  }
+  zc <- best / 8
+  # a received view re-sent: REF — zero payload bytes for the argument
+  ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
+  mizu_send(ch$host, x)
+  xv <- mizu_recv(ch$peer, Inf)
+  expect_equal(
+    mizu_collect(mizu_submit_call(p, mizu_call("numpy.mean", xv)), 60),
+    mean(x)
+  )
+  best <- Inf
+  for (r in 1:3) {
+    t0 <- proc.time()[[3]]
+    for (i in 1:8) {
+      mizu_collect(mizu_submit_call(p, mizu_call("numpy.mean", xv)), 60)
+    }
+    best <- min(best, proc.time()[[3]] - t0)
+  }
+  ref <- best / 8
+  channel_end(ch)
+  cat(sprintf(
+    "\n8 MiB float64 foreign task arg (F1): SHM_VEC %.2f ms, REF %.2f ms (same-language flat %.2f ms; the pre-F1 copy ~1.5 ms)\n",
+    zc * 1e3,
+    ref * 1e3,
+    same * 1e3
+  ))
+  expect_true(mizu_pool_stop(p))
+})
+
 test_that("guard: held results do not pin payload regions today", {
   skip_on_cran()
   skip_if_no_child_mizu()

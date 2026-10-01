@@ -39,25 +39,115 @@
 static SEXP mizu_rel_tag;      /* the release-record extptr */
 static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminus */
 
-/* Set when the emit hook marks a view REFHELD during a serialize pass: the
-   payload carries a reference, so the stage must pin and cannot claim
-   keeperless. Process-global — the hook signature carries no ctx; safe
+/* The by-reference traffic record (F1's retain protocol). Two small
+   process-global lists, preserved containers refilled per pass — safe
    because R staging is single-threaded per process (pool workers are
-   separate processes). Set-only between resets: a stage that serializes
-   twice (the bounded pass, then the spill's mizu_view_serialize_into)
-   accumulates, and conservative (pin when unsure) is the correct failure
-   direction. */
-static int mizu_zc_ref_used;
+   separate processes):
 
-void mizu_zc_ref_reset(void) { mizu_zc_ref_used = 0; }
-int mizu_zc_ref_fired(void) { return mizu_zc_ref_used; }
+   - the mark list: every view a by-reference emission marked REFHELD
+     since the last reset (the REF tier's claim, the serialize fallback's
+     wire-hook emissions, the 'I' ref gate's). Non-empty is the stage's
+     pin-and-no-keeperless signal (conservative — pin when unsure — is
+     the correct failure direction), and the worker's emitted-set for the
+     argument-loan release pass: the release pass keeps a loan whose view
+     the outcome write emitted, from whatever graph position, by whichever
+     writer, at whatever depth — coverage is definitional because every
+     emission funnels through the one mark.
+   - the resolve list: every view the wire resolve hook armed while
+     recording (armed at a task-stream decode, sealed at its end). The
+     worker's release pass force-fires the once-only release record of
+     each decoded argument view absent from the mark list — R's GC would
+     otherwise linger the counted adds across tasks, accumulating lent
+     regions. Membership is pointer identity, not region identity: two
+     view objects over one region each hold a count, so force-firing the
+     argument's object is safe even when the write emitted a different
+     object over the same region.
 
-static void mizu_zc_ref_mark(SEXP x);
+   Reset clears the count only; stale slots beyond it stay valid (the
+   container is preserved) and once-only release records make a stale
+   entry's re-fire a no-op, so a nested task's reset degrades the outer
+   task's pass to the GC-gated behavior, never to a wrong fire. */
+static SEXP mizu_zc_marks;
+static int mizu_zc_nmarks;
+static SEXP mizu_zc_resolved;
+static int mizu_zc_nresolved;
+static int mizu_zc_resolved_armed;
+
+static void zc_list_clear(SEXP list, int *pn) {
+  const int n = *pn;
+  for (int i = 0; i < n; i++)
+    SET_VECTOR_ELT(list, i, R_NilValue);
+  *pn = 0;
+}
+
+void mizu_zc_ref_reset(void) { zc_list_clear(mizu_zc_marks, &mizu_zc_nmarks); }
+int mizu_zc_ref_fired(void) { return mizu_zc_nmarks > 0; }
+
+void mizu_zc_resolved_reset(void) {
+  zc_list_clear(mizu_zc_resolved, &mizu_zc_nresolved);
+  mizu_zc_resolved_armed = 1;
+}
+
+int mizu_zc_resolved_count(void) { return mizu_zc_nresolved; }
+
+/* Append to a preserved list, doubling on growth. The pushed view is
+   always anchored elsewhere already (the decode product, the staged
+   object), so the list is a record, never the last reference. */
+static SEXP zc_list_push(SEXP list, int *pn, SEXP x) {
+  const int n = *pn;
+  if (n >= XLENGTH(list)) {
+    SEXP bigger = PROTECT(Rf_allocVector(VECSXP, n == 0 ? 8 : 2 * n));
+    for (int i = 0; i < n; i++)
+      SET_VECTOR_ELT(bigger, i, VECTOR_ELT(list, i));
+    R_PreserveObject(bigger);
+    R_ReleaseObject(list);
+    UNPROTECT(1);
+    list = bigger;
+  }
+  SET_VECTOR_ELT(list, n, x);
+  *pn = n + 1;
+  return list;
+}
+
+static int zc_list_has(SEXP list, int n, SEXP x) {
+  for (int i = 0; i < n; i++)
+    if (VECTOR_ELT(list, i) == x) return 1;
+  return 0;
+}
+
+void mizu_zc_ref_mark(SEXP x);
 static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm);
+
+/* The outcome-write pass (D5): force-fire the once-only release record
+   of each decoded argument view the write did not emit, [0, seal) of the
+   resolve list (the decode-end snapshot — eval-time resolves, a nested
+   collect's, are not argument loans). ALTLIST views keep their
+   finalizer-only discipline: extracted element views ride the list's
+   single loan, so an early fire could drop the count under a live
+   element — they stay GC-gated. Ends disarmed with both lists cleared:
+   the marks' last consumer is this pass (the stage's pin decision and
+   the emitted-set diff are both done), and the records hold views — a
+   count-only reset would keep them alive indefinitely. */
+void mizu_zc_args_release(int seal) {
+  const int n = seal < mizu_zc_nresolved ? seal : mizu_zc_nresolved;
+  for (int i = 0; i < n; i++) {
+    SEXP v = VECTOR_ELT(mizu_zc_resolved, i);
+    if (TYPEOF(v) == VECSXP) continue;
+    if (!zc_list_has(mizu_zc_marks, mizu_zc_nmarks, v))
+      mizu_view_release_now(v);
+  }
+  zc_list_clear(mizu_zc_resolved, &mizu_zc_nresolved);
+  zc_list_clear(mizu_zc_marks, &mizu_zc_nmarks);
+  mizu_zc_resolved_armed = 0;
+}
 
 void mizu_zc_init(void) {
   mizu_rel_tag = Rf_install("mizu_view_release");
   mizu_shm_tag_sym = Rf_install(MIZU_VIEW_TAG_SHM);
+  mizu_zc_marks = Rf_allocVector(VECSXP, 0);
+  R_PreserveObject(mizu_zc_marks);
+  mizu_zc_resolved = Rf_allocVector(VECSXP, 0);
+  R_PreserveObject(mizu_zc_resolved);
   mizu_view_set_wire_hooks(mizu_zc_ref_mark, mizu_zc_wire_resolve);
   /* the vendored resolve cache opens through mizu's split open, so every
      consumer mapping — cached or prep-path — has a writable page 0 */
@@ -589,11 +679,14 @@ static SEXP mizu_view_terminus(SEXP x) {
 
 /* Mark a view's region REFHELD (the holder set widens beyond the direct
    peer, so the producer's death backstop must leak + unlink rather than
-   force-reclaim). Every mizu consumer mapping has a writable page 0 — the
-   prep path's split open and the vendored cache's hook open alike — so the
-   flag store goes straight through the chain terminus. */
-static void mizu_zc_ref_mark(SEXP x) {
-  mizu_zc_ref_used = 1;
+   force-reclaim) and record the view on the mark list — the funnel every
+   by-reference emission (the REF tier's claim below, the serialize
+   fallback's wire hooks, the 'I' ref gate) goes through. Every mizu
+   consumer mapping has a writable page 0 — the prep path's split open
+   and the vendored cache's hook open alike — so the flag store goes
+   straight through the chain terminus. */
+void mizu_zc_ref_mark(SEXP x) {
+  mizu_zc_marks = zc_list_push(mizu_zc_marks, &mizu_zc_nmarks, x);
   SEXP terminus = mizu_view_terminus(x);
   if (terminus == R_NilValue) return;
   mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(terminus);
@@ -707,6 +800,12 @@ static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm) {
   o->release_arg = rel;
   mizu_zc_ref(shm);
   rel->armed = 1;
+  /* the F1 argument-loan record: a worker's task-stream decode arms this
+     so the release pass can fire the loan deterministically at the
+     outcome write; submits and collects never arm */
+  if (mizu_zc_resolved_armed)
+    mizu_zc_resolved =
+      zc_list_push(mizu_zc_resolved, &mizu_zc_nresolved, view);
 }
 
 // Test / debug surface --------------------------------------------------------------

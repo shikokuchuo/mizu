@@ -75,6 +75,8 @@ mizu_pool_stop(p)
 Unnamed arguments map to the positional list and named ones to the named dict, matching Python's `*args, **kwargs`; a `source =` task evaluates in a fresh namespace with the named arguments bound as names and the result as the trailing expression's value.
 The workers' language comes from the pool itself — a plain `mizu_submit()` on a foreign pool errors locally naming `mizu_submit_call()`, a bare unqualified name errors at submit, and a non-portable argument raises `mizu_error_not_portable` at submit.
 Task errors cross as `mizu_error_remote` conditions with the remote type preserved, and a result without a portable home fails the task with one naming the type.
+Large arguments cross by reference rather than by copy: a fresh array past the zero-copy floor stages one layout write into a shared region and the worker reads a view over it, and an argument that is already a shared view (received from a channel, a pool result, or a `mori::share()`d vector) crosses as its identifier alone — a received view re-sent as an argument moves zero payload bytes.
+A pool whose workers predate the ref reader declines such arguments locally at submit, naming the remedy.
 The reverse direction mirrors: `pymizu.Pool.create()` with `pymizu.r_pool_launcher()`, and `Pool.submit()` with `pymizu.call()` specs.
 
 ## The cross-language map

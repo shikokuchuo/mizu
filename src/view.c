@@ -1023,6 +1023,7 @@ static size_t mizu_view_string_data_size(SEXP x) {
 // Recursive size/write helpers for nested list regions -----------------------
 
 static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign);
+static int mizu_view_na_present(int type, const void *src, uint64_t n);
 static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign);
 
 /* Total bytes occupied by a MIZL region for VECSXP x, including header,
@@ -1222,8 +1223,12 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
         continue;
       }
       size_t off = MIZU_VIEW_ALIGN64(cur);
-      int64_t nulls = (int64_t) mizu_na_build(
-        tag, base + off, base + entry.data_offset, (uint64_t) entry.length, 0);
+      int64_t nulls = mizu_view_na_present(
+        tag, base + entry.data_offset, (uint64_t) entry.length) ?
+        (int64_t) mizu_na_build(
+          tag, base + off, base + entry.data_offset,
+          (uint64_t) entry.length, 0) :
+        0;
       if (nulls > 0) {
         tab[2 * i] = (int64_t) off;
         tab[2 * i + 1] = nulls;
@@ -1311,6 +1316,45 @@ static size_t mizh_size(SEXP x, int foreign) {
    its size. An ALTREP with no readable pointer (a top-level ALTREP
    atomic admitted on a foreign handle, zc.c's baseline) copies through
    *_GET_REGION — never expanded on the sender. */
+/* The validity section's cheap gate: any NA at all (early exit). Most
+   vectors are NA-free — the bitmap build's per-element read-modify-write
+   then collapses to the {0, -1} stamp, and the gate is a plain read scan
+   the compiler vectorizes where the build could not. Only a vector that
+   carries an NA pays the build. */
+static int mizu_view_na_present(int type, const void *src, uint64_t n) {
+  switch (type) {
+  case LGLSXP:
+  case INTSXP: {
+    const int32_t *v = (const int32_t *) src;
+    for (uint64_t i = 0; i < n; i++)
+      if (v[i] == MIZU_NA_INT32) return 1;
+    return 0;
+  }
+  case REALSXP: {
+    const uint64_t *v = (const uint64_t *) src;
+    for (uint64_t i = 0; i < n; i++)
+      /* one shift + compare in the hot loop: a NaN or Inf exponent
+         gates the precise payload test */
+      if ((v[i] >> 52) == 0x7FF && mizu_ext_na_real_bits(v[i])) return 1;
+    return 0;
+  }
+  case CPLXSXP: {
+    const uint64_t *v = (const uint64_t *) src;
+    for (uint64_t i = 0; i < 2 * n; i++)
+      if ((v[i] >> 52) == 0x7FF && mizu_ext_na_real_bits(v[i])) return 1;
+    return 0;
+  }
+  case MIZU_VIEW_TYPE_INT64: {
+    const int64_t *v = (const int64_t *) src;
+    for (uint64_t i = 0; i < n; i++)
+      if (v[i] == MIZU_NA_INT64) return 1;
+    return 0;
+  }
+  default:
+    return 0;
+  }
+}
+
 static size_t mizh_write(unsigned char *base, SEXP x, int foreign) {
 
   int int64 = mizu_view_is_int64_any(x);
@@ -1362,9 +1406,12 @@ static size_t mizh_write(unsigned char *base, SEXP x, int foreign) {
   size_t total = MIZU_HEADER_SIZE + data_size + attrs_size;
   if (foreign && type != RAWSXP) {
     size_t off = MIZU_VIEW_ALIGN64(total);
-    uint64_t nulls = mizu_na_build(
-      int64 ? MIZU_TYPE_INT64 : type, base + off,
-      base + MIZU_HEADER_SIZE, (uint64_t) n, 0);
+    uint64_t nulls = mizu_view_na_present(
+      int64 ? MIZU_TYPE_INT64 : type, base + MIZU_HEADER_SIZE,
+      (uint64_t) n) ?
+      mizu_na_build(int64 ? MIZU_TYPE_INT64 : type, base + off,
+                    base + MIZU_HEADER_SIZE, (uint64_t) n, 0) :
+      0;
     if (nulls > 0) {
       mizu_mizh_validity_set(base, (int64_t) off, (int64_t) nulls);
       total = off + ((size_t) n + 7) / 8;
@@ -1606,10 +1653,6 @@ static SEXP mizu_view_dispatch_by_magic(SEXP shm_ptr, const char *err_name) {
            err_name != NULL ? err_name : "");
 }
 
-/* Forward declaration for the path-form branch below. */
-static SEXP mizu_view_open_path_c(const char *name,
-                             const int32_t *path, int path_len);
-
 /* Open SHM by name, inspect magic, dispatch to appropriate wrapper.
    Malformed input (wrong type/length, NA, or not a recognized SHM identifier)
    returns NULL silently. A well-formed identifier that fails to open or
@@ -1622,26 +1665,7 @@ SEXP mizu_view_shm_open_and_wrap(SEXP name) {
   SEXP nm_sxp = STRING_ELT(name, 0);
   if (nm_sxp == NA_STRING)
     return R_NilValue;
-  const char *s = CHAR(nm_sxp);
-
-  char shm_name[MIZU_NAME_MAX];
-  int32_t path[MIZU_VIEW_MAX_PATH];
-  int path_len = 0;
-  int rc = mizu_view_parse_id(s, shm_name, sizeof(shm_name), path, &path_len);
-  if (rc < 0) return R_NilValue;        /* probe miss */
-
-  if (rc == 0) {
-    SEXP shm_ptr = PROTECT(mizu_view_open_consumer(shm_name));
-    SEXP result = PROTECT(mizu_view_dispatch_by_magic(shm_ptr, shm_name));
-    if (mizu_view_resolve_hook != NULL)
-      mizu_view_resolve_hook(result,
-                            (mizu_shm *) R_ExternalPtrAddr(shm_ptr));
-    UNPROTECT(2);
-    return result;
-  }
-
-  /* Path form: 0-based indices, route through C-level core. */
-  return mizu_view_open_path_c(shm_name, path, path_len);
+  return mizu_view_resolve_id(CHAR(nm_sxp), R_NilValue);
 }
 
 /* C-level view check: ALTREP with a mizu_view_owned-tagged data1. */
@@ -1856,19 +1880,45 @@ SEXP mizu_view_walk_path(unsigned char *base, int64_t region_size,
   return result;
 }
 
-/* Open parent SHM (through the consumer cache) and walk the path,
-   returning the leaf element. */
-static SEXP mizu_view_open_path_c(const char *name,
-                             const int32_t *path, int path_len) {
-
-  SEXP shm_ptr = PROTECT(mizu_view_open_consumer(name));
+/* The one resolve path behind every identifier resolve: parse, open (the
+   process-global consumer cache, the embedder open hook on a miss), wrap
+   the root or walk the path, fire the resolve hook. keeper (R_NilValue
+   on every current caller) replaces the cached mapping wrap as the
+   view's chain anchor when given — the caller's own composition, which
+   must then keep the mapping alive (the default anchor pins it through
+   the cache). Returns R_NilValue on a malformed identifier (the caller
+   shapes the error); a well-formed identifier whose region is gone
+   errors in the open. */
+SEXP mizu_view_resolve_id(const char *id, SEXP keeper) {
+  char shm_name[MIZU_NAME_MAX];
+  int32_t path[MIZU_VIEW_MAX_PATH];
+  int path_len = 0;
+  int rc = mizu_view_parse_id(id, shm_name, sizeof(shm_name), path,
+                              &path_len);
+  if (rc < 0) return R_NilValue;
+  SEXP shm_ptr = PROTECT(mizu_view_open_consumer(shm_name));
   mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(shm_ptr);
-  SEXP result = PROTECT(mizu_view_walk_path(
-    (unsigned char *) shm->addr, (int64_t) shm->size, path, path_len, shm_ptr
-  ));
+  SEXP anchor = keeper != R_NilValue ? keeper : shm_ptr;
+  SEXP result = PROTECT(rc == 0 ?
+    mizu_view_dispatch_by_magic(anchor, shm_name) :
+    mizu_view_walk_path((unsigned char *) shm->addr, (int64_t) shm->size,
+                        path, path_len, anchor));
   if (mizu_view_resolve_hook != NULL) mizu_view_resolve_hook(result, shm);
   UNPROTECT(2);
   return result;
+}
+
+/* Fire a view's armed release record now, ahead of the GC: the
+   once-only discipline (a no-op when the view is not a view, unarmed, or
+   already fired — a COW-materialized view fired at materialization). The
+   deterministic-release paths (the F1 worker's argument-loan release)
+   call it only on views provably dead to the R side from here — the
+   release subs the region's count while the pages stay mapped, so a live
+   reader of the same pages must hold its own count. */
+void mizu_view_release_now(SEXP x) {
+  if (!mizu_view_check(x)) return;
+  mizu_view_owned *o = (mizu_view_owned *) R_ExternalPtrAddr(R_altrep_data1(x));
+  if (o != NULL) mizu_view_release_once(o);
 }
 
 /* Vec and list classes: a STRSXP state is always an SHM identifier (their

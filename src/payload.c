@@ -196,13 +196,17 @@ void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
 
 /* The SHM_RAW spill of a task stream past the inline budget (n from the
    counting first pass): the ordinary SHM_RAW retain, no keeperless claim
-   — a task entry pins nothing the collect-side gate would read (§4.0). */
+   — a task entry pins nothing the collect-side gate would read (§4.0).
+   Refs stay on with no_zc forced (a REF leaf needs no checkout, and the
+   single-checkout rule keeps a spilled stream free of SHM_VEC checkouts). */
 void mizu_payload_spill_task(mizu_slot_hdr *hdr, unsigned char *payload,
                              SEXP spec, uint32_t target, uint64_t ident,
-                             size_t n, mizu_handle *h) {
+                             size_t n, mizu_handle *h, uint32_t caps,
+                             uint32_t inline_max) {
   mizu_shm *shm = mizu_spill_get_raise(h, n);
   if (mizu_interop_write_task((unsigned char *) shm->addr, shm->size, spec,
-                              target, ident, NULL) != n)
+                              target, ident, NULL, h, caps, inline_max,
+                              R_NilValue, 1) != n)
     Rf_error("mizu: task write mismatch");   /* the walk is deterministic */
   hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
@@ -443,7 +447,9 @@ SEXP mizu_stream_read(const unsigned char *buf, size_t len,
   if (len == 0) Rf_error("mizu: corrupt payload stream");
   switch (buf[0]) {
   case MIZU_INTEROP_MAGIC:
-    return mizu_interop_read(buf, len);
+    /* the pool's collect-side result reader resolves a 0x13 leaf (a
+       foreign result may carry one); the channel value reader declines */
+    return mizu_interop_read_mode(buf, len, !consume_foreign);
   case MIZU_CODEC_MAGIC:
     return mizu_codec_read(buf, len);
   case 'B': case 'X': case 'A':

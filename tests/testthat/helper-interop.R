@@ -183,6 +183,7 @@ ix_value <- function(st) {
     "bytes",
     "err",
     "task",
+    "ref",
     "nil"
   )) {
     if (startsWith(rest, nm)) {
@@ -297,6 +298,12 @@ ix_value <- function(st) {
         positional = positional,
         named = named
       )
+    },
+    "ref" = {
+      ix_expect(st, "(")
+      v <- ix_string(st)
+      ix_expect(st, ")")
+      structure(v, class = "mizu_ix_ref")
     },
     "strv" = {
       ix_expect(st, "[")
@@ -482,11 +489,12 @@ ix_read_task <- function(hex) {
   .Call(mizu:::mizu_interop_read_task_call, ix_hex_to_raw(hex))
 }
 
-ix_write_task <- function(x) {
+ix_write_task <- function(x, no_zc = FALSE) {
   ix_raw_to_hex(.Call(
     mizu:::mizu_interop_write_task_call,
     list(x$code, x$kind, x$positional, x$named),
     x$target,
-    x$ident
+    x$ident,
+    no_zc
   ))
 }

@@ -58,7 +58,7 @@ Channels move values; pools move computation — a pool’s workers can be Pytho
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.3181808 0.5472723 0.7789377
+#> [1] 0.2174899 0.5210226 0.6924690
 s <- mizu_submit_call(p, mizu_call(source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -68,6 +68,8 @@ mizu_pool_stop(p)
 Unnamed arguments map to the positional list and named ones to the named dict, matching Python’s `*args, **kwargs`; a `source =` task evaluates in a fresh namespace with the named arguments bound as names and the result as the trailing expression’s value.
 The workers’ language comes from the pool itself — a plain `mizu_submit()` on a foreign pool errors locally naming `mizu_submit_call()`, a bare unqualified name errors at submit, and a non-portable argument raises `mizu_error_not_portable` at submit.
 Task errors cross as `mizu_error_remote` conditions with the remote type preserved, and a result without a portable home fails the task with one naming the type.
+Large arguments cross by reference rather than by copy: a fresh array past the zero-copy floor stages one layout write into a shared region and the worker reads a view over it, and an argument that is already a shared view (received from a channel, a pool result, or a `mori::share()`d vector) crosses as its identifier alone — a received view re-sent as an argument moves zero payload bytes.
+A pool whose workers predate the ref reader declines such arguments locally at submit, naming the remedy.
 The reverse direction mirrors: `pymizu.Pool.create()` with `pymizu.r_pool_launcher()`, and `Pool.submit()` with `pymizu.call()` specs.
 
 ## The cross-language map
@@ -79,24 +81,23 @@ The element fills the spec’s first positional slot (name kind) or binds as `x`
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.7724511 0.7724511
+#> [1] 0.9279031 0.9279031
 #> 
 #> [[2]]
-#> [1] 0.8653996 0.8653996
+#> [1] 0.9918925 0.9918925
 #> 
 #> [[3]]
-#> [1] 0.5271068 0.5271068
+#> [1] 0.3354761 0.3354761
 #> 
 #> [[4]]
-#> [1] 0.1906892 0.1906892
+#> [1] 0.3144808 0.3144808
 #> 
 #> [[5]]
-#> [1] 0.1823673 0.1823673
+#> [1] 0.06464515 0.06464515
 #> 
 #> [[6]]
-#> [1] 0.413085 0.413085
+#> [1] 0.1061663 0.1061663
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -0.7844778134 -0.5534328490 -0.3096273288 -0.0772215168 -0.0009697156
-#> [6] -0.9201307651
+#> [1] -0.3368437 -0.2800911 -1.3426865 -1.8264110 -0.2308441 -0.1567522
 mizu_pool_stop(p)
 ```

@@ -39,6 +39,15 @@
 #'   fails the task with one naming the value's type. On a same-language
 #'   pool the spec verb keeps the rich private error format.
 #'
+#'   Large arguments cross to foreign workers by reference rather than by
+#'   copy: one fresh value past the zero-copy floor stages a single
+#'   layout write into a shared region (the worker reads a view over it),
+#'   and an argument that is already a shared view (received from a
+#'   channel, a pool result, or a `mori::share()`d vector) crosses as its
+#'   identifier alone — zero payload bytes. On a pool whose workers
+#'   predate the ref reader, such a task declines locally at submit
+#'   naming the remedy.
+#'
 #' @examples
 #' p <- mizu_pool()
 #' # same-language pools take specs too
@@ -56,13 +65,11 @@
 #' @export
 mizu_call <- function(name = NULL, ..., source = NULL) {
   if (is.null(name) == is.null(source)) {
-    stop("mizu: exactly one of 'name' or 'source' must be given",
-         call. = FALSE)
+    stop("mizu: exactly one of 'name' or 'source' must be given", call. = FALSE)
   }
   code <- if (is.null(source)) name else source
   if (!is.character(code) || length(code) != 1L || is.na(code)) {
-    stop("mizu: 'name' and 'source' must be a single string",
-         call. = FALSE)
+    stop("mizu: 'name' and 'source' must be a single string", call. = FALSE)
   }
   args <- list(...)
   nms <- names(args)

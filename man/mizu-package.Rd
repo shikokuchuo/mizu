@@ -35,6 +35,7 @@ If you have set 'GLIBC_TUNABLES', mizu respects your values.
 \seealso{
 Useful links:
 \itemize{
+  \item \url{https://shikokuchuo.net/mizu/}
   \item \url{https://github.com/shikokuchuo/mizu}
   \item Report bugs at \url{https://github.com/shikokuchuo/mizu/issues}
 }

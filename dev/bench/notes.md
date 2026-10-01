@@ -756,3 +756,30 @@ round trip 1.20 -> 0.80 ms (the pre-3.5a baseline), send-only 1.05 ->
 0.77 ms.
 
 Status: full suite 2852 pass, 0 fail (expected skips).
+
+## 2026-10-01 — task arguments by reference (F1)
+
+The 'I' task stream gains the ref leaf (0x13): a received view re-sent
+as an argument crosses as its identifier (REFHELD at emit, the spec
+pinned to the claim-side release), and one fresh layout-eligible
+argument stages a single SHM_VEC checkout — D3's size-pass-first picks
+the first candidate whose remainder fits inline. The worker force-fires
+its argument loans after the outcome write (D5: keyed on what the write
+emitted, never reachability), and emission gates on the new
+MIZU_CAP_TASKREF (bit 3). The foreign layout write's validity build
+gained a pre-scan gate along the way: NA-free vectors now skip the
+bitmap pass entirely (they are the common case), only a vector carrying
+an NA pays it.
+
+Results (8 MB float64 argument to a foreign-pool task, best-of per the
+suite row): R submitter -> Python workers — REF (a received view
+re-sent) 0.12 ms/task (the pre-F1 wire copied both ways, ~0.38 ms);
+SHM_VEC (a fresh array) 0.50 ms — the layout write plus the Arrow-ready
+validity scan against 0.38 ms for the copy (the scan's residual cost,
+halved from ~1.0 ms by the gate); same-language spec flat at 1.50 ms
+(private frames untouched). Python submitter -> R workers — SHM_VEC
+1.14, REF 1.03 against the pre-F1 copy's 1.59/1.51 ms; Python pool flat
+at 0.23 ms.
+
+Status: full suite 3029 pass, 0 fail (3 expected macOS skips); pymizu
+358 pass, 5 skip.

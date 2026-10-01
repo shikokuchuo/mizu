@@ -99,3 +99,148 @@ test_that("a dead Python worker surfaces as the died condition", {
   cnd <- tryCatch(mizu_collect(t), mizu_error_worker_died = function(c) c)
   expect_s3_class(cnd, "mizu_error_worker_died")
 })
+
+test_that("a large array argument crosses to Python workers by reference", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  big <- runif(200000L) # 1.6 MB — one SHM_VEC layout write, zero stream bytes
+  t1 <- mizu_submit_call(p, mizu_call("numpy.mean", big))
+  expect_equal(mizu_collect(t1), mean(big))
+  # the worker proves the zero-copy arrival: the array's .base is the view
+  t2 <- mizu_submit_call(
+    p,
+    mizu_call(NULL, big, source = "type(_1.base).__name__")
+  )
+  expect_identical(mizu_collect(t2), "_ShmView")
+
+  # a received view re-sent as an argument: REF, REFHELD, the loan balanced
+  ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
+  mizu_send(ch$host, big)
+  xv <- mizu_recv(ch$peer, Inf)
+  rc0 <- .Call(mizu:::mizu_zc_refcount, xv)
+  t3 <- mizu_submit_call(p, mizu_call("numpy.mean", xv))
+  expect_equal(mizu_collect(t3), mean(big))
+  rc1 <- .Call(mizu:::mizu_zc_refcount, xv)
+  expect_identical(rc1[2L], 1L) # REFHELD
+  expect_identical(rc1[1L], rc0[1L])
+
+  # result-is-the-arg: arrives intact, a view, elevated by our own add
+  t4 <- mizu_submit_call(p, mizu_call(NULL, xv, source = "_1"))
+  res <- mizu_collect(t4)
+  expect_true(.Call(mizu:::mizu_zc_view_check, res))
+  expect_identical(.Call(mizu:::mizu_zc_refcount, res)[1L], rc1[1L] + 1L)
+  expect_identical(res, big)
+  channel_end(ch)
+})
+
+test_that("multiple ref args and a nested view cross to Python workers", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  a <- matrix(runif(40000L), nrow = 200L)
+  b <- matrix(runif(40000L), nrow = 200L)
+  ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
+  mizu_send(ch$host, a)
+  va <- mizu_recv(ch$peer, Inf)
+  mizu_send(ch$host, b)
+  vb <- mizu_recv(ch$peer, Inf)
+  # two positional REFs and a fresh SHM_VEC, one nested in a list
+  big <- runif(100000L)
+  t1 <- mizu_submit_call(p, mizu_call("numpy.dot", va, vb))
+  expect_equal(mizu_collect(t1), a %*% b)
+  # the fresh array arrives as a _ShmView; the attributed matrix views
+  # arrive as arrays over their regions (.base set — zero-copy)
+  t2 <- mizu_submit_call(
+    p,
+    mizu_call(
+      NULL,
+      list(va),
+      big,
+      z = vb,
+      source = paste(
+        "type(_2.base).__name__ + '/' + ",
+        "str(_1[0].base is not None) + '/' + str(z.base is not None)"
+      )
+    )
+  )
+  expect_identical(mizu_collect(t2), "_ShmView/True/True")
+  channel_end(ch)
+})
+
+test_that("a list-tree view arg resolves to the element view on Python workers", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(1L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  big <- replicate(2000L, runif(100L), simplify = FALSE)
+  ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
+  mizu_send(ch$host, big)
+  lv <- mizu_recv(ch$peer, Inf)
+  ev <- lv[[2L]]
+  expect_true(.Call(mizu:::mizu_zc_view_check, ev))
+  expect_true(grepl("[", .Call(mizu:::mizu_zc_view_name, ev), fixed = TRUE))
+  t <- mizu_submit_call(p, mizu_call("numpy.mean", ev))
+  expect_equal(mizu_collect(t), mean(big[[2L]]))
+  channel_end(ch)
+})
+
+test_that("a worker killed mid-task leaks one bounded count, REFHELD set", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  big <- runif(200000L)
+  ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
+  mizu_send(ch$host, big)
+  xv <- mizu_recv(ch$peer, Inf)
+  rc0 <- .Call(mizu:::mizu_zc_refcount, xv)
+  t1 <- mizu_submit_call(
+    p,
+    mizu_call(NULL, xv, source = "import time\ntime.sleep(30)")
+  )
+  expect_true(wait_until(any(
+    mizu_pool_dump(p)[["workers"]][["in_flight"]] != -1L
+  )))
+  d <- mizu_pool_dump(p)[["workers"]]
+  pid <- d[["pid"]][which(d[["in_flight"]] != -1L)[1L]]
+  kill_hard(pid)
+  cnd <- tryCatch(mizu_collect(t1), mizu_error_worker_died = function(c) c)
+  expect_s3_class(cnd, "mizu_error_worker_died")
+  rc1 <- .Call(mizu:::mizu_zc_refcount, xv)
+  expect_identical(rc1[1L], rc0[1L] + 1L) # the dead worker's add leaks one
+  expect_identical(rc1[2L], 1L) # REFHELD
+  # no free-list corruption: the surviving worker runs the next task
+  t2 <- mizu_submit_call(p, mizu_call("numpy.mean", xv))
+  expect_equal(mizu_collect(t2), mean(big))
+  channel_end(ch)
+})
+
+test_that("a view x crosses to foreign map workers as a ref (D6)", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  big <- runif(100000L)
+  ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
+  mizu_send(ch$host, big)
+  xv <- mizu_recv(ch$peer, Inf)
+  rc0 <- .Call(mizu:::mizu_zc_refcount, xv)
+  res <- mizu_map(p, xv, mizu_call("numpy.square"))
+  expect_equal(unlist(res), big^2)
+  rc1 <- .Call(mizu:::mizu_zc_refcount, xv)
+  expect_identical(rc1[2L], 1L) # REFHELD
+  # the workers' map contexts hold their resolved x views (pymizu's ctx
+  # cache releases at map-context eviction or worker teardown — the
+  # deterministic balance row is the in-process R-worker row in
+  # test-call.R)
+  expect_true(.Call(mizu:::mizu_zc_refcount, xv)[1L] > rc0[1L])
+  channel_end(ch)
+})

@@ -50,7 +50,7 @@ SEXP mizu_codec_read_call(SEXP);
 SEXP mizu_interop_write_call(SEXP);
 SEXP mizu_interop_read_call(SEXP);
 SEXP mizu_interop_write_err_call(SEXP, SEXP);
-SEXP mizu_interop_write_task_call(SEXP, SEXP, SEXP);
+SEXP mizu_interop_write_task_call(SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_interop_map_desc_call(SEXP, SEXP, SEXP);
 SEXP mizu_interop_runner_call(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_interop_read_task_call(SEXP);
@@ -170,7 +170,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_interop_write_call",     (DL_FUNC) &mizu_interop_write_call,        1},
   {"mizu_interop_read_call",      (DL_FUNC) &mizu_interop_read_call,         1},
   {"mizu_interop_write_err_call", (DL_FUNC) &mizu_interop_write_err_call,    2},
-  {"mizu_interop_write_task_call", (DL_FUNC) &mizu_interop_write_task_call,  3},
+  {"mizu_interop_write_task_call", (DL_FUNC) &mizu_interop_write_task_call,  4},
   {"mizu_interop_map_desc_call",  (DL_FUNC) &mizu_interop_map_desc_call,     3},
   {"mizu_interop_runner_call",    (DL_FUNC) &mizu_interop_runner_call,       5},
   {"mizu_interop_read_task_call", (DL_FUNC) &mizu_interop_read_task_call,    1},

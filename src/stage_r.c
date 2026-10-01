@@ -299,18 +299,63 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
       return 0;
     }
     mizu_ix_decline rec;
+    SEXP zc_node = R_NilValue;
+    int has_ref = 0;
+    /* D3's size-pass-first: the pre-scan finds the ref/zc candidates
+       (and doubles as the D2 detector); with a zc candidate the write
+       stages the single checkout, inline-fitting by construction */
+    size_t planned = mizu_interop_task_plan(spec, target, rh->spec_ident,
+                                            h, (uint32_t) (rh->worker_ident >> 32),
+                                            inline_max, &zc_node,
+                                            &has_ref, &rec);
+    if (planned == 0 && rec.decline)
+      mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+    if ((has_ref || zc_node != R_NilValue) &&
+        !((uint32_t) (rh->worker_ident >> 32) & MIZU_CAP_TASKREF))
+      /* D2: fail locally rather than remotely — a remote failure loses
+         the work to a task error stream */
+      mizu_stop_not_portable(
+        "args",
+        "the pool's workers cannot read by-reference task arguments",
+        "upgrade the workers' binding");
+    if (zc_node != R_NilValue) {
+      n = mizu_interop_write_task(payload, inline_max, spec, target,
+                                  rh->spec_ident, &rec, h,
+                                  (uint32_t) (rh->worker_ident >> 32),
+                                  inline_max, zc_node, 0);
+      if (n != SIZE_MAX) {
+        if (n == 0)
+          mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
+        hdr->kind = MIZU_KIND_INLINE;
+        hdr->len = (uint32_t) n;
+        hdr->aux = 0;      /* no keeperless claim: inert on task entries */
+        if (mizu_zc_ref_fired())
+          mizu_r_pin(h, ctx, spec);   /* D4: the submit-side handoff */
+        return 0;
+      }
+      /* a mid-write checkout failure (a churn race): re-run by value,
+         never a partial stream */
+      zc_node = R_NilValue;
+    }
     n = mizu_interop_write_task(payload, inline_max, spec, target,
-                                rh->spec_ident, &rec);
+                                rh->spec_ident, &rec, h,
+                                (uint32_t) (rh->worker_ident >> 32),
+                                inline_max, R_NilValue, 1);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     if (n <= inline_max) {
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
       hdr->aux = 0;        /* no keeperless claim: inert on task entries */
+      if (mizu_zc_ref_fired())
+        mizu_r_pin(h, ctx, spec);
       return 0;
     }
     mizu_stage_reap(h);
     mizu_payload_spill_task(hdr, payload, spec, target, rh->spec_ident,
-                            n, h);
+                            n, h, (uint32_t) (rh->worker_ident >> 32),
+                            inline_max);
+    if (mizu_zc_ref_fired())
+      mizu_r_pin(h, ctx, spec);
     return 0;
   }
   mizu_payload_stage(hdr, payload, inline_max, (SEXP) obj, h, ctx);
@@ -382,6 +427,7 @@ struct mizu_task_ctx {
   int fail;                       /* test-only: a decode failure on demand */
   int died;                       /* decode: the enqueuer's region is gone */
   int ok;                         /* 0 once the catch handler has fired */
+  int nresolved;                  /* the decode's ref-resolve seal (F1) */
 };
 
 static SEXP pool_task_handler(SEXP cond, void *data) {
@@ -462,7 +508,12 @@ static SEXP pool_task_spec(struct mizu_task_ctx *c,
   if (TYPEOF(base) != ENVSXP)
     Rf_error("mizu: no evaluator registered on this worker handle");
   int kind;
+  /* the F1 argument-loan record: arm the resolve list at the decode and
+     seal it at its end — the release pass (mizu_r_exec_pool, after the
+     outcome write) fires the loans the write did not re-emit */
+  mizu_zc_resolved_reset();
   SEXP task = PROTECT(mizu_interop_exec_task(bytes, blen, base, &kind));
+  c->nresolved = mizu_zc_resolved_count();
   SEXP value = R_NilValue;
   if (kind == 0) {
     value = Rf_eval(task, R_GlobalEnv);
@@ -667,7 +718,7 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   mizu_pool *p = sink->p;
   mizu_r_handle *rh = (mizu_r_handle *) ctx->binding_ctx;
   struct mizu_task_ctx c =
-    { rh->prot, hdr, payload, limit, ctx, sink, rh->exec_fail, 0, 1 };
+    { rh->prot, hdr, payload, limit, ctx, sink, rh->exec_fail, 0, 1, 0 };
   if (!catching)
     mizu_pool_eval_mark(p, 1);
   /* the current-pool global rides the task body only: the catching = 0
@@ -688,6 +739,11 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
     return 0;
   }
   SEXP v = PROTECT(value);
+  /* the D5 outcome sequence: one mark-list reset for the whole write
+     (the §4.2 result write, or the ERR flatten inside the containment),
+     then the release pass — the worker's argument loans cross
+     deterministically instead of lingering to the next GC */
+  mizu_zc_ref_reset();
   if (c.ok) {
     /* a foreign submitter's result stages under the §4.2 foreign writer
        policy (the capability mask rides the handle through the publish);
@@ -705,6 +761,10 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   } else {
     mizu_r_publish_err(sink, v);
   }
+  /* the D5 release pass: force-fire the once-only release record of each
+     decoded argument view the write did not emit (a no-op when the
+     decode resolved no refs — the common case) */
+  mizu_zc_args_release(c.nresolved);
   UNPROTECT(1);                    /* v */
   return 0;
 }

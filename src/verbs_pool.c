@@ -742,10 +742,17 @@ SEXP mizu_pool_run_outcome(SEXP xp, SEXP cond) {
   mizu_r_handle *h = pool_get_worker(xp);
   if (TYPEOF(cond) == INTSXP)
     return cond;
+  /* the eval longjmp skipped the exec hook's restore: outside a task the
+     current-pool binding reads NULL (a stepped task re-sets it) */
+  mizu_curpool_xp = R_NilValue;
   mizu_result_sink sink;
   if (!mizu_pool_unwind_sink((mizu_pool *) h->core, &sink))
     return Rf_ScalarInteger(1);
+  /* the D5 outcome sequence on the unwind path: the task failed, so its
+     argument loans are all releasable — the flatten emits no refs */
+  mizu_zc_ref_reset();
   mizu_r_publish_err(&sink, cond);
+  mizu_zc_args_release(mizu_zc_resolved_count());
   return Rf_ScalarInteger(0);
 }
 

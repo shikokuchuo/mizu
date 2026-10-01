@@ -88,7 +88,8 @@ typedef struct mizu_r_handle_s {
 
 /* This build's identity word, the one binding fill (channel and pool). */
 #define MIZU_R_IDENT \
-  MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS)
+  MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS | \
+             MIZU_CAP_TASKREF)
 
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */
@@ -159,6 +160,11 @@ enum {
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
                           mizu_ix_decline *rec);
 SEXP mizu_interop_read(const unsigned char *buf, size_t len);
+/* The refs mode of the value reader: with refs, a 0x13 leaf resolves to
+   a view (the task decode, the map descriptor reader, and the pool's
+   collect-side result reader); without, it raises the builder decline
+   (the channel value reader). */
+SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs);
 /* The err tag (0x11) framer: cond as the bounded top-level error value —
    truncated to fit inline_max by construction, so the caller stamps INLINE
    with the keeperless claim (the writer cannot fail). A mizu_error_remote
@@ -182,10 +188,30 @@ int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
                               mizu_ix_decline *rec);
 /* The task stream (0x12) writer: emits off the spec's components (code,
    positional, named) — two-pass, NULL dst sizes and qualifies (0 = a
-   non-portable argument, the record filled). */
+   non-portable argument, the record filled). Refs are always on (F1): a
+   REF-qualifying view in the argument trees emits a ref leaf (0x13) and
+   marks the region REFHELD. With h != NULL the zc_node recorded by
+   mizu_interop_task_plan stages one SHM_VEC checkout mid-write (the
+   write pass only — the size pass counts a conservative reservation);
+   a mid-write checkout failure returns SIZE_MAX, the caller re-running
+   with no_zc = 1. inline_max is the zc floor gate. */
 size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t target, uint64_t ident,
-                               mizu_ix_decline *rec);
+                               mizu_ix_decline *rec, mizu_handle *h,
+                               uint32_t caps, uint32_t inline_max,
+                               SEXP zc_node, int no_zc);
+/* D3's size-pass-first over the spec's argument trees: *out_has_ref set
+   when a REF-qualifying view rides the trees (the D2 detector); the zc
+   node is the first layout-eligible fresh value in document order
+   (positional in order, then named, depth-first) whose remainder fits
+   inline_max — *out_zc records it and the size pass's conservative total
+   is returned. No fitting candidate: 0 with *out_zc = R_NilValue (the
+   no_zc flow — refs still emit). h is the staging handle (churn read,
+   pool-word caps). */
+size_t mizu_interop_task_plan(SEXP spec, uint32_t target, uint64_t ident,
+                              mizu_handle *h, uint32_t caps,
+                              uint32_t inline_max, SEXP *out_zc,
+                              int *out_has_ref, mizu_ix_decline *rec);
 /* The exec-hook decode of a task stream: validates the header and the
    per-kind shape off the cursor, stashes the submitter identity in
    mizu_curpool_ident, and builds in place — name kind: a LANGSXP (the
@@ -276,10 +302,13 @@ SEXP mizu_stream_read(const unsigned char *buf, size_t len,
 void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
                                 SEXP x, size_t n, mizu_handle *h);
 /* The SHM_RAW spill of a task stream (a pool has no arena): the ordinary
-   SHM_RAW retain, no keeperless claim (§4.0). */
+   SHM_RAW retain, no keeperless claim (§4.0). Refs stay on (a REF leaf
+   needs no checkout) with no_zc forced — the fresh values cross by
+   value. */
 void mizu_payload_spill_task(mizu_slot_hdr *hdr, unsigned char *payload,
                              SEXP spec, uint32_t target, uint64_t ident,
-                             size_t n, mizu_handle *h);
+                             size_t n, mizu_handle *h, uint32_t caps,
+                             uint32_t inline_max);
 /* Foreign-stream detection on the serialize tiers: a pymizu compact-codec
    stream opens with 'P' (DESIGN.md's codec registry allocates 'R' to mizu
    and 'P' to pymizu), and anything past its subset rides pickle (0x80 then a
@@ -309,12 +338,26 @@ static inline void mizu_decline_foreign(mizu_read_ctx *ctx) {
 // Zero-copy payload tiers (zc.c) ---------------------------------------------------
 
 void mizu_zc_init(void);
-/* The REF-used flag: whether the emit hook fired since the last reset — a
-   serialize pass then in flight carried a view by reference, so its stage
-   must pin and cannot claim keeperless (MIZU_AUX_F_KEEPERLESS). Reset
-   before a stage's first serialize pass; read after it. */
+/* The by-reference emission record: the mark list holds every view a
+   by-reference emission marked REFHELD since the last reset — the stage's
+   pin-and-no-keeperless signal (a payload carrying a reference must pin
+   and cannot claim MIZU_AUX_F_KEEPERLESS) and the worker's emitted-set
+   for the argument-loan release pass. Reset at a stage's entry; read
+   after it. */
 void mizu_zc_ref_reset(void);
 int mizu_zc_ref_fired(void);
+/* The funnel every by-reference emission goes through: mark the view's
+   region REFHELD and record it on the mark list. The REF tier, the
+   serialize fallback's wire hooks, and the 'I' ref gate all call it. */
+void mizu_zc_ref_mark(SEXP x);
+/* The F1 argument-loan record (the worker's D5 release): reset arms the
+   resolve list at a task-stream decode; count seals it at the decode's
+   end; the release pass force-fires the once-only release record of each
+   decoded argument view in [0, seal) absent from the mark list, after
+   the outcome stream is written. */
+void mizu_zc_resolved_reset(void);
+int mizu_zc_resolved_count(void);
+void mizu_zc_args_release(int seal);
 /* The consumer split open (page 0 RW, the tail RO): registered as the view
    layer's embedder open hook, so the wire-resolve cache's mappings carry the
    same protection split as the prep path's, which calls it directly. */

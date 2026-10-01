@@ -42,7 +42,7 @@ SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
 
 static SEXP ix_tzone_sym;
 static SEXP ix_date_class, ix_posixct_class, ix_factor_class,
-  ix_frame_class, ix_ordered_class;
+  ix_frame_class, ix_ordered_class, ix_ref_marker_class;
 
 static int ix_int_is_seq1n(SEXP rn, R_xlen_t n);
 
@@ -513,6 +513,19 @@ typedef struct mizu_ixw_s {
   mizu_ix_decline *rec;  /* the send-time decline record, or NULL */
   char path[128];        /* the walk's current path (for the record) */
   size_t path_len;
+  /* the F1 refs state: with refs, a REF-qualifying view emits a 0x13
+     leaf (the caps filter read off h's pool word, skipped when h is
+     NULL); zc_node records the plan's SHM_VEC candidate (first encounter
+     stages the stream's one checkout; a mid-write checkout failure sets
+     abandon and unwinds — the caller re-runs with no_zc = 1) */
+  mizu_handle *h;
+  uint32_t caps;
+  uint32_t inline_max;
+  int refs;
+  int no_zc;
+  SEXP zc_node;
+  int zc_spent;
+  int abandon;
 } mizu_ixw;
 
 /* One emit: the put helpers count with a NULL dst; past the limit the
@@ -825,6 +838,12 @@ static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
 }
 
 static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
+  /* the ref gate never fires inside an attr shape: the whitelisted
+     shapes are value-exact byte contracts (a frame's columns, a factor's
+     levels), and the F1 readers home no views there — a view in an
+     attribute crosses by value (GET_REGION) as before */
+  const int saved_refs = w->refs;
+  w->refs = 0;
   if (q == MIZU_IXQ_NONE || q == MIZU_IXQ_ENCODABLE) {
     SEXP names = Rf_getAttrib(x, R_NamesSymbol);
     if (names != R_NilValue && TYPEOF(names) == STRSXP &&
@@ -838,6 +857,7 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
       ixw_decline(w, "an attribute set outside the portable whitelist",
                   NULL);
     }
+    w->refs = saved_refs;
     return;
   }
   IXW_PUT(w, mizu_ix_put_attr);
@@ -845,7 +865,7 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
   case MIZU_IXQ_FACTOR:
     ixw_atomic_put(w, MIZU_TYPE_INT, x);
     ixw_attr_dict(w, x, q);
-    return;
+    break;
   case MIZU_IXQ_FRAME: {
     const R_xlen_t nc = XLENGTH(x);
     IXW_PUT(w, mizu_ix_put_list_begin, (uint64_t) nc);
@@ -855,11 +875,11 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
       ixw_path_push(w, j + 1);
       ixw_node(w, VECTOR_ELT(x, j));
       ixw_path_pop(w, saved);
-      if (w->depth < 0) return;
+      if (w->depth < 0) break;
     }
-    w->depth--;
-    ixw_attr_dict(w, x, q);
-    return;
+    if (w->depth > 0) w->depth--;
+    if (w->depth >= 0) ixw_attr_dict(w, x, q);
+    break;
   }
   case MIZU_IXQ_DIM: {
     const int code = ix_is_int64(x) ? MIZU_TYPE_INT64 :
@@ -869,17 +889,51 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
       TYPEOF(x) == CPLXSXP ? MIZU_TYPE_CPLX : MIZU_TYPE_RAW;
     ixw_atomic_put(w, code, x);
     ixw_attr_dict(w, x, q);
-    return;
+    break;
   }
   default:
     /* Date and POSIXct: the realv days / epoch seconds, then the dict */
     ixw_atomic_put(w, MIZU_TYPE_REAL, x);
     ixw_attr_dict(w, x, q);
-    return;
+    break;
   }
+  w->refs = saved_refs;
 }
 
 // The value walk ---------------------------------------------------------------------
+
+/* The plan's SHM_VEC candidate: one layout write into the stream's single
+   spill checkout, the producer-loan retain, and the ref leaf carrying the
+   fresh region's name (F1's D1: the one tag serves both by-reference
+   cases). The size pass counts the conservative reservation — the fresh
+   region's name length is known only at the checkout, so the plan's fit
+   decision uses MIZU_NAME_MAX - 1 and the actual write never exceeds it.
+   A checkout failure (a churn race) abandons: nothing is retained yet,
+   the caller re-runs with no_zc = 1. */
+static void ixw_zc_leaf(mizu_ixw *w, SEXP x) {
+  if (w->dst == NULL) {
+    w->total += 2 + (MIZU_NAME_MAX - 1);
+    return;
+  }
+  size_t total;
+  if (!mizu_zc_eligible_foreign(x, w->inline_max, &total, w->caps)) {
+    /* the plan and the write cannot disagree (eligibility is a pure
+       function and no verbs run between the passes) — treat as a caller
+       bug, never a wrong stream */
+    ixw_decline(w, "the recorded zero-copy node is no longer eligible",
+                NULL);
+    return;
+  }
+  mizu_shm *shm = NULL;
+  if (mizu_stage_spill_get(w->h, total, &shm) != MIZU_OK) {
+    w->abandon = 1;
+    w->depth = -1;
+    return;
+  }
+  mizu_view_layout_write((unsigned char *) shm->addr, x, 1);
+  mizu_stage_retain_zc(w->h, shm);
+  IXW_PUT(w, mizu_ix_put_ref, shm->name, (uint32_t) shm->name_len);
+}
 
 static void ixw_node(mizu_ixw *w, SEXP x) {
   if (w->depth < 0) return;
@@ -888,6 +942,46 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
     return;
   }
   R_CheckStack();
+
+  if (w->refs && x != R_NilValue) {
+    /* the F1 ref gate: the plan's zc node first (first encounter only —
+       one checkout per stream), then a re-referenceable view. A
+       materialized vector view (data2 set — the copy may hold mutations)
+       or a view whose layout the peer cannot wrap falls through to the
+       value write, the §4.2 filter behavior. */
+    if (x == w->zc_node && !w->zc_spent && w->h != NULL && !w->no_zc) {
+      w->zc_spent = 1;
+      ixw_zc_leaf(w, x);
+      return;
+    }
+    /* the corpus's marker (the hook writer, never a live stage): a
+       classed string stands in for a view so synthetic identifiers
+       round-trip through the conformance loop */
+    if (w->h == NULL && TYPEOF(x) == STRSXP && XLENGTH(x) == 1 &&
+        ix_class_is(x, ix_ref_marker_class)) {
+      SEXP cs = STRING_ELT(x, 0);
+      IXW_PUT(w, mizu_ix_put_ref, CHAR(cs), (uint32_t) LENGTH(cs));
+      return;
+    }
+    if (mizu_view_check(x) &&
+        (TYPEOF(x) == VECSXP || R_altrep_data2(x) == R_NilValue)) {
+      SEXP id = PROTECT(mizu_view_shm_name(x));
+      if (id != R_NilValue &&
+          (w->h == NULL || mizu_zc_ref_foreign_ok(x, w->caps))) {
+        const char *s = CHAR(STRING_ELT(id, 0));
+        const uint32_t len = (uint32_t) strlen(s);
+        /* the leaf's u8 length: a path identifier past 255 bytes takes
+           the value write like any unreferenceable view */
+        if (len > 0 && len <= 255) {
+          IXW_PUT(w, mizu_ix_put_ref, s, len);
+          mizu_zc_ref_mark(x);
+          UNPROTECT(1);
+          return;
+        }
+      }
+      UNPROTECT(1);
+    }
+  }
 
   if (x == R_NilValue) {
     IXW_PUT(w, mizu_ix_put_nil);
@@ -1057,7 +1151,11 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
    record filled); a real dst writes behind the size pass's total. */
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
                           mizu_ix_decline *rec) {
-  mizu_ixw w = { dst, limit, 0, 0, 0, rec, "x", 1 };
+  /* the value entry is the channel mode: refs off — a view nested in a
+     channel payload keeps the materialize behavior (the channel readers
+     decline 0x13), and nested attribute blobs inherit this bit */
+  mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
+                 .path = "x", .path_len = 1 };
   if (rec != NULL) {
     rec->decline = 0;
     rec->path[0] = '\0';
@@ -1131,12 +1229,18 @@ static void ixw_task_fields(mizu_ixw *w, SEXP spec) {
 }
 
 /* The two-pass task writer (0x12): the header fields through the core
-   emitters, then the spec's fields. A decline fills the record and
-   returns 0 — a foreign task with non-portable args can never run, so
-   there is no fallback. */
+   emitters, then the spec's fields. Refs on (F1): the ref gate emits
+   0x13 leaves and the plan's zc node stages the single checkout. A
+   decline fills the record and returns 0 — a foreign task with
+   non-portable args can never run, so there is no fallback. A mid-write
+   checkout failure returns SIZE_MAX — the caller re-runs with no_zc = 1,
+   never a partial stream (the core rolls an uncommitted checkout back at
+   the next verb entry). */
 size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t target, uint64_t ident,
-                               mizu_ix_decline *rec) {
+                               mizu_ix_decline *rec, mizu_handle *h,
+                               uint32_t caps, uint32_t inline_max,
+                               SEXP zc_node, int no_zc) {
   if (rec != NULL) {
     rec->decline = 0;
     rec->path[0] = '\0';
@@ -1147,12 +1251,100 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
     Rf_error("mizu: a malformed mizu_call spec");
   const int kind = INTEGER(VECTOR_ELT(spec, 1))[0];
 
-  mizu_ixw w = { dst, limit, 0, 0, 0, rec, "args", 4 };
+  mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
+                 .path = "args", .path_len = 4, .h = h, .caps = caps,
+                 .inline_max = inline_max, .refs = 1, .no_zc = no_zc,
+                 .zc_node = zc_node };
   IXW_PUT(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
+  if (w.abandon) return SIZE_MAX;
   if (w.depth < 0) return 0;
   return w.total;
+}
+
+/* The pre-scan's node probe (the document-order walk shares ixw_node's
+   shape): a REF-qualifying view sets *out_has_ref; a layout-eligible
+   fresh value past the floor is a zc candidate — the node itself first
+   (one layout write covers the tree, its view leaves riding the layout
+   write's wire hooks), the elements depth-first only past a decline. The
+   caps filter and the churn flag read off h. */
+static int ixp_probe(SEXP x, uint32_t caps, uint32_t inline_max, int churn,
+                     int *out_has_ref, SEXP *cand, int max_cand) {
+  if (x == R_NilValue) return 0;
+  if (mizu_view_check(x) &&
+      (TYPEOF(x) == VECSXP || R_altrep_data2(x) == R_NilValue)) {
+    SEXP id = PROTECT(mizu_view_shm_name(x));
+    const int refok = id != R_NilValue &&
+      XLENGTH(STRING_ELT(id, 0)) <= 255 &&
+      mizu_zc_ref_foreign_ok(x, caps);
+    UNPROTECT(1);
+    if (refok) {
+      *out_has_ref = 1;
+      return 0;                    /* refs for free — never the zc node */
+    }
+  }
+  size_t total;
+  if (!churn && mizu_zc_eligible_foreign(x, inline_max, &total, caps)) {
+    if (max_cand > 0) cand[0] = x;
+    return 1;
+  }
+  if (TYPEOF(x) == VECSXP && !mizu_view_check(x)) {
+    /* containers walk their elements depth-first (the named-list dict's
+       values are the elements — one walk covers both) */
+    int ncand = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(x) && ncand >= 0; i++) {
+      int got = ixp_probe(VECTOR_ELT(x, i), caps, inline_max, churn,
+                          out_has_ref, cand + ncand, max_cand - ncand);
+      ncand += got;
+      if (ncand >= max_cand) ncand = -1;
+    }
+    return ncand < 0 ? max_cand : ncand;
+  }
+  return 0;
+}
+
+/* D3's size-pass-first: walk the argument trees in document order; for
+   each zc candidate in turn, run the size pass with it recorded — the
+   first whose stream fits inline_max (the conservative reservation) is
+   the zc node. With none, *out_zc stays R_NilValue and the write runs
+   no_zc = 1 from the start. */
+size_t mizu_interop_task_plan(SEXP spec, uint32_t target, uint64_t ident,
+                              mizu_handle *h, uint32_t caps,
+                              uint32_t inline_max, SEXP *out_zc,
+                              int *out_has_ref, mizu_ix_decline *rec) {
+  *out_zc = R_NilValue;
+  *out_has_ref = 0;
+  if (rec != NULL) {
+    rec->decline = 0;
+    rec->path[0] = '\0';
+    rec->reason[0] = '\0';
+    rec->remedy[0] = '\0';
+  }
+  if (!ixw_spec_check(spec))
+    Rf_error("mizu: a malformed mizu_call spec");
+  const int churn = h != NULL && mizu_handle_churn(h);
+  SEXP cand[16];
+  int ncand = 0;
+  SEXP args[2] = { VECTOR_ELT(spec, 2), VECTOR_ELT(spec, 3) };
+  for (int a = 0; a < 2; a++)
+    for (R_xlen_t i = 0; i < XLENGTH(args[a]) && ncand >= 0; i++) {
+      int got = ixp_probe(VECTOR_ELT(args[a], i), caps, inline_max, churn,
+                          out_has_ref, cand + ncand, 16 - ncand);
+      ncand += got;
+      if (ncand >= 16) ncand = -1;
+    }
+  if (ncand < 0) ncand = 16;
+  for (int i = 0; i < ncand; i++) {
+    size_t n = mizu_interop_write_task(NULL, 0, spec, target, ident, rec,
+                                       h, caps, inline_max, cand[i], 0);
+    if (n == 0) return 0;          /* a decline — the record is filled */
+    if (n != SIZE_MAX && n <= (size_t) inline_max) {
+      *out_zc = cand[i];
+      return n;
+    }
+  }
+  return 0;
 }
 
 // Map descriptors and runner tasks (Phase 5) ---------------------------------------
@@ -1175,10 +1367,17 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
   if (!ixw_spec_check(spec))
     Rf_error("mizu: a malformed mizu_call spec");
   const int kind = INTEGER(VECTOR_ELT(spec, 1))[0];
-  if (x != R_NilValue && TYPEOF(x) != VECSXP)
+  if (x != R_NilValue && TYPEOF(x) != VECSXP && !mizu_view_check(x))
     Rf_error("mizu: a malformed map descriptor x");
 
-  mizu_ixw w = { dst, limit, 0, 0, 0, rec, "args", 4 };
+  /* refs on (F1's D6): the descriptor shares the value grammar, so a
+     view x crosses to foreign workers as a ref — the worker's map
+     context holds the resolved view between morsels and the idle sweep
+     releases it. No handle: no checkout (x rides its identifier) and no
+     caps filter — a layout the workers cannot wrap declines at the
+     descriptor read */
+  mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
+                 .path = "args", .path_len = 4, .refs = 1 };
   IXW_PUT(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_list_begin, 2);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
@@ -1186,6 +1385,13 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
   if (w.depth < 0) return 0;
   if (x == R_NilValue) {
     IXW_PUT(&w, mizu_ix_put_nil);
+  } else if (mizu_view_check(x)) {
+    /* a view x: one ref leaf, never an element walk — the worker's batch
+       loop reads the resolved view off the shared pages */
+    memcpy(w.path, "x", 2);
+    w.path_len = 1;
+    ixw_node(&w, x);
+    if (w.depth < 0) return 0;
   } else {
     const R_xlen_t n = XLENGTH(x);
     IXW_PUT(&w, mizu_ix_put_list_begin, (uint64_t) n);
@@ -1214,7 +1420,7 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
 size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
                                  SEXP name, double gen_field, SEXP seed,
                                  uint32_t target, uint64_t ident) {
-  mizu_ixw w = { dst, limit, 0, 0, 0, NULL, "x", 1 };
+  mizu_ixw w = { .dst = dst, .limit = limit, .path = "x", .path_len = 1 };
   IXW_PUT(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, 2, ident);
   SEXP cs = STRING_ELT(name, 0);
@@ -1421,7 +1627,7 @@ NORET static void ixr_stop_tls(void) {
   Rf_error("mizu: %s", mizu_last_error_message());
 }
 
-static SEXP ixr_value(mizu_ix *cur);
+static SEXP ixr_value(mizu_ix *cur, int refs);
 
 static void ixr_expect_str(mizu_ix *cur, mizu_ix_item *it) {
   if (mizu_ix_next(cur, it) != MIZU_OK) ixr_stop_tls();
@@ -1462,7 +1668,7 @@ static void ixr_keyset_init(ix_keyset *ks, uint64_t count) {
 }
 
 static void ixr_dict_into(mizu_ix *cur, SEXP out, SEXP names, uint64_t n,
-                          ix_keyset *ks) {
+                          ix_keyset *ks, int refs) {
   mizu_ix_item it;
   for (uint64_t i = 0; i < n; i++) {
     ixr_expect_str(cur, &it);
@@ -1473,7 +1679,7 @@ static void ixr_dict_into(mizu_ix *cur, SEXP out, SEXP names, uint64_t n,
     }
     SET_STRING_ELT(names, (R_xlen_t) i, key);
     UNPROTECT(1);
-    SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur));
+    SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur, refs));
   }
 }
 
@@ -1814,7 +2020,14 @@ static SEXP ixr_err(const mizu_ix_item *it) {
   return cond;
 }
 
-static SEXP ixr_value(mizu_ix *cur) {
+/* The value builder over the cursor. refs is the 0x13 mode: 0 declines
+   (the channel value reader — a ref never crosses as a channel value),
+   1 resolves to a view (the task decode, the map descriptor reader, and
+   the pool's collect-side result reader — the counted add lands in the
+   resolve, the consumer-mapping cache dedupes), 2 represents the
+   identifier as a classed string for the corpus's conformance loop (the
+   hook decode — never resolves, so synthetic identifiers round-trip). */
+static SEXP ixr_value(mizu_ix *cur, int refs) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK) ixr_stop_tls();
   R_CheckStack();
@@ -1875,7 +2088,7 @@ static SEXP ixr_value(mizu_ix *cur) {
   case MIZU_IX_LIST: {
     SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) it.count));
     for (uint64_t i = 0; i < it.count; i++)
-      SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur));
+      SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur, refs));
     UNPROTECT(1);
     return out;
   }
@@ -1884,20 +2097,42 @@ static SEXP ixr_value(mizu_ix *cur) {
     SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) it.count));
     ix_keyset ks = { NULL, 0 };
     if (it.count != 0) ixr_keyset_init(&ks, it.count);
-    ixr_dict_into(cur, out, names, it.count, it.count != 0 ? &ks : NULL);
+    ixr_dict_into(cur, out, names, it.count, it.count != 0 ? &ks : NULL,
+                  refs);
     Rf_setAttrib(out, R_NamesSymbol, names);
     UNPROTECT(2);
     return out;
   }
   case MIZU_IX_ATTR: {
-    SEXP value = PROTECT(ixr_value(cur));
-    SEXP attrs = PROTECT(ixr_value(cur));
+    SEXP value = PROTECT(ixr_value(cur, refs));
+    SEXP attrs = PROTECT(ixr_value(cur, refs));
     value = mizu_interop_attrs_build(value, attrs, 1);
     UNPROTECT(2);
     return value;
   }
   case MIZU_IX_ERR:
     return ixr_err(&it);
+  case MIZU_IX_REF: {
+    if (refs == 0)
+      mizu_stop_interop("an interop ref cannot cross as a channel value");
+    char idbuf[MIZU_VIEW_IDENTIFIER_MAX];
+    /* the cursor bounded the span to 1..255 */
+    memcpy(idbuf, it.ptr, it.len);
+    idbuf[it.len] = '\0';
+    if (refs == 2) {
+      SEXP out = PROTECT(Rf_ScalarString(
+        Rf_mkCharLenCE(idbuf, (int) it.len, CE_UTF8)));
+      SEXP klass = PROTECT(Rf_allocVector(STRSXP, 1));
+      SET_STRING_ELT(klass, 0, Rf_mkChar("mizu_ix_ref"));
+      Rf_setAttrib(out, R_ClassSymbol, klass);
+      UNPROTECT(2);
+      return out;
+    }
+    SEXP out = mizu_view_resolve_id(idbuf, R_NilValue);
+    if (out == R_NilValue)
+      mizu_stop_interop("a malformed interop ref identifier");
+    return out;
+  }
   case MIZU_IX_TASK:
     mizu_stop_interop("an interop task is not a value");
   default:
@@ -1999,7 +2234,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
     SEXP tail = out;
     for (uint64_t i = 0; i < pos.count; i++) {
       SEXP cell = PROTECT(Rf_cons(R_NilValue, R_NilValue));
-      SETCAR(cell, ixr_value(cur));
+      SETCAR(cell, ixr_value(cur, 1));
       SETCDR(tail, cell);
       tail = cell;
       UNPROTECT(1);
@@ -2017,7 +2252,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
       }
       SEXP cell = PROTECT(Rf_cons(R_NilValue, R_NilValue));
       SET_TAG(cell, Rf_installChar(cs));
-      SETCAR(cell, ixr_value(cur));
+      SETCAR(cell, ixr_value(cur, 1));
       SETCDR(tail, cell);
       tail = cell;
       UNPROTECT(2);
@@ -2035,7 +2270,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
      the named ones bound in the closure's frame */
   SEXP pos_args = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));
   for (uint64_t i = 0; i < pos.count; i++)
-    SET_VECTOR_ELT(pos_args, (R_xlen_t) i, ixr_value(cur));
+    SET_VECTOR_ELT(pos_args, (R_xlen_t) i, ixr_value(cur, 1));
   ixt_want_dict(cur, &named);
   ix_keyset ks = { NULL, 0 };
   if (named.count != 0) ixr_keyset_init(&ks, named.count);
@@ -2047,7 +2282,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
       UNPROTECT(1);
       mizu_stop_interop("malformed task stream: a duplicate dict key");
     }
-    SEXP v = PROTECT(ixr_value(cur));
+    SEXP v = PROTECT(ixr_value(cur, 1));
     Rf_defineVar(Rf_installChar(kc), v, env);
     UNPROTECT(2);
   }
@@ -2163,7 +2398,7 @@ SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
     mizu_stop_interop("malformed map descriptor: kind 0x%02X is not a "
                       "call spec", it.task_kind);
   SEXP task = PROTECT(ixt_call(&cur, (int) it.task_kind, base, 1));
-  SEXP x = PROTECT(ixr_value(&cur));
+  SEXP x = PROTECT(ixr_value(&cur, 1));
   if (mizu_ix_end(&cur) != MIZU_OK) {
     UNPROTECT(2);
     ixr_stop_tls();
@@ -2182,16 +2417,22 @@ SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
 }
 
 /* The builder entry: one value, then the cursor's finishing check. */
-SEXP mizu_interop_read(const unsigned char *buf, size_t len) {
+SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs) {
   mizu_ix cur;
   if (mizu_ix_open(&cur, buf, len) != MIZU_OK) ixr_stop_tls();
-  SEXP out = PROTECT(ixr_value(&cur));
+  SEXP out = PROTECT(ixr_value(&cur, refs));
   if (mizu_ix_end(&cur) != MIZU_OK) {
     UNPROTECT(1);
     ixr_stop_tls();
   }
   UNPROTECT(1);
   return out;
+}
+
+/* The channel mode entry: refs off — a 0x13 leaf raises the builder
+   decline. */
+SEXP mizu_interop_read(const unsigned char *buf, size_t len) {
+  return mizu_interop_read_mode(buf, len, 0);
 }
 
 // Test hooks (init.c) -----------------------------------------------------------------
@@ -2261,18 +2502,24 @@ SEXP mizu_stream_read_call(SEXP bytes) {
 }
 
 /* The task writer as a stream (target a language byte, ident the whole
-   submitter word as a double — the corpus's words are < 2^53). */
-SEXP mizu_interop_write_task_call(SEXP spec, SEXP target, SEXP ident) {
+   submitter word as a double — the corpus's words are < 2^53). h is
+   NULL (refs on, no checkout): a REF-qualifying view emits its ref leaf
+   and the corpus's marker strings round-trip; no_zc exercises the
+   degrade path. */
+SEXP mizu_interop_write_task_call(SEXP spec, SEXP target, SEXP ident,
+                                  SEXP no_zc) {
   const int t = Rf_asInteger(target);
   if (t < 0 || t > 255) Rf_error("mizu: expected a language byte");
   const uint64_t id = (uint64_t) Rf_asReal(ident);
+  const int nz = Rf_asLogical(no_zc) == 1;
   mizu_ix_decline rec;
-  size_t n = mizu_interop_write_task(NULL, 0, spec, (uint32_t) t, id, &rec);
+  size_t n = mizu_interop_write_task(NULL, 0, spec, (uint32_t) t, id, &rec,
+                                     NULL, 0, 240, R_NilValue, nz);
   if (n == 0)
     mizu_stop_interop("not portable at %s (%s)", rec.path, rec.reason);
   SEXP bytes = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
-  if (mizu_interop_write_task(RAW(bytes), n, spec, (uint32_t) t, id,
-                              NULL) != n) {
+  if (mizu_interop_write_task(RAW(bytes), n, spec, (uint32_t) t, id, NULL,
+                              NULL, 0, 240, R_NilValue, nz) != n) {
     UNPROTECT(1);
     mizu_stop_interop("task write mismatch");
   }
@@ -2331,7 +2578,7 @@ SEXP mizu_interop_read_task_call(SEXP bytes) {
   ixt_want_list(&cur, &pos);
   SEXP positional = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));
   for (uint64_t i = 0; i < pos.count; i++)
-    SET_VECTOR_ELT(positional, (R_xlen_t) i, ixr_value(&cur));
+    SET_VECTOR_ELT(positional, (R_xlen_t) i, ixr_value(&cur, 2));
   ixt_want_dict(&cur, &named);
   SEXP nn = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t) named.count));
   SEXP nv = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) named.count));
@@ -2346,7 +2593,7 @@ SEXP mizu_interop_read_task_call(SEXP bytes) {
       mizu_stop_interop("malformed task stream: a duplicate dict key");
     }
     SET_STRING_ELT(nn, (R_xlen_t) i, kc);
-    SET_VECTOR_ELT(nv, (R_xlen_t) i, ixr_value(&cur));
+    SET_VECTOR_ELT(nv, (R_xlen_t) i, ixr_value(&cur, 2));
     UNPROTECT(1);
   }
   Rf_setAttrib(nv, R_NamesSymbol, nn);
@@ -2429,6 +2676,9 @@ void mizu_interop_init(void) {
   SET_STRING_ELT(ix_ordered_class, 0, Rf_mkChar("ordered"));
   SET_STRING_ELT(ix_ordered_class, 1, Rf_mkChar("factor"));
   R_PreserveObject(ix_ordered_class);
+  ix_ref_marker_class = Rf_allocVector(STRSXP, 1);
+  SET_STRING_ELT(ix_ref_marker_class, 0, Rf_mkChar("mizu_ix_ref"));
+  R_PreserveObject(ix_ref_marker_class);
   /* the view layer's attribute blobs are 'I' streams from here (mori
      leaves the triple unset and keeps R_Serialize both ways) */
   mizu_view_set_attrs_hooks(mizu_interop_attrs_blob_size,
