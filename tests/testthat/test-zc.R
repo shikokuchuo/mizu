@@ -470,8 +470,17 @@ test_that("remote-leaf declines are corrupt-or-newer shaped", {
   x <- runif(50000)
 
   fx <- remote_leaf_pair(x) # dangling: a well-formed name that does not exist
-  poke_remote(fx, id = "/mizu_dead_beef", len = length(x))
-  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  id <- if (.Platform[["OS.type"]] == "windows") {
+    "Local\\mizu_dead_beef"
+  } else {
+    "/mizu_dead_beef"
+  }
+  poke_remote(fx, id = id, len = length(x))
+  expect_snapshot(
+    fx[["yb"]][[1L]],
+    error = TRUE,
+    transform = function(l) gsub("Local\\mizu_", "/mizu_", l, fixed = TRUE)
+  )
   channel_end(fx[["p"]])
 
   fx <- remote_leaf_pair(x) # length claim mismatch
