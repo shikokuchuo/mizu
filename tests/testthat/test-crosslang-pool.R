@@ -123,15 +123,18 @@ test_that("a large array argument crosses to Python workers by reference", {
   rc0 <- .Call(mizu:::mizu_zc_refcount, xv)
   t3 <- mizu_submit_call(p, mizu_call("numpy.mean", xv))
   expect_equal(mizu_collect(t3), mean(big))
+  # the worker's resolve release lands after its result publish
+  expect_true(wait_until(.Call(mizu:::mizu_zc_refcount, xv)[1L] == rc0[1L]))
   rc1 <- .Call(mizu:::mizu_zc_refcount, xv)
   expect_identical(rc1[2L], 1L) # REFHELD
-  expect_identical(rc1[1L], rc0[1L])
 
   # result-is-the-arg: arrives intact, a view, elevated by our own add
   t4 <- mizu_submit_call(p, mizu_call(NULL, xv, source = "_1"))
   res <- mizu_collect(t4)
   expect_true(.Call(mizu:::mizu_zc_view_check, res))
-  expect_identical(.Call(mizu:::mizu_zc_refcount, res)[1L], rc1[1L] + 1L)
+  expect_true(wait_until(
+    .Call(mizu:::mizu_zc_refcount, res)[1L] == rc1[1L] + 1L
+  ))
   expect_identical(res, big)
   channel_end(ch)
 })

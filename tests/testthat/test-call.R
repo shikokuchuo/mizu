@@ -358,10 +358,14 @@ test_that("the emitted set keeps loans: attribute and condition-field probes", {
   rc0 <- .Call(mizu:::mizu_zc_refcount, xv)
   t2 <- mizu_submit_call(
     p$ctrl,
-    mizu_call(NULL, xv, source = paste(
-      "stop(structure(list(message = \"boom\", payload = ..1),",
-      "class = c(\"myerr\", \"error\", \"condition\")))"
-    ))
+    mizu_call(
+      NULL,
+      xv,
+      source = paste(
+        "stop(structure(list(message = \"boom\", payload = ..1),",
+        "class = c(\"myerr\", \"error\", \"condition\")))"
+      )
+    )
   )
   pool_step(p)
   c2 <- tryCatch(mizu_collect(t2), error = function(e) e)
@@ -399,9 +403,16 @@ test_that("a view whose layout the peer cannot read crosses by value", {
 test_that("a ref to a vanished region fails the task informatively", {
   p <- pool_pair()
   on.exit(pool_end(p))
+  id <- if (.Platform[["OS.type"]] == "windows") {
+    "Local\\\\mizu_0_0" # notation-escaped; parses to Local\mizu_0_0
+  } else {
+    "/mizu_0_0"
+  }
   x <- ix_parse(paste0(
     "task(2, 0, 30064771075, str(\"base::mean\"), ",
-    "list(ref(\"/mizu_0_0\")), dict())"
+    "list(ref(\"",
+    id,
+    "\")), dict())"
   ))
   # a hand-crafted task stream rides a RAWVEC entry to the worker's
   # task-stream dispatch
