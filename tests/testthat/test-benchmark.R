@@ -1,6 +1,7 @@
 # Benchmarks-as-reports: each run prints its timings for eyeballing in the
 # CI log. The incumbent baselines, phase outcomes, and every dated
-# calibration record live in dev/bench/notes.md (append new ones there).
+# calibration record live in dev/bench/notes.md (the best-known table on
+# top, the dated log at the bottom — append new runs there).
 # Nothing asserts on the numbers — runner timing is too variable for
 # thresholds to hold reliably — so only the transport's correctness is
 # tested here. The pool reports double as the regression tripwire for

@@ -81,7 +81,7 @@ Also in helper.R: `kill_hard()` / `pid_alive()` (use these — `tools::SIGKILL` 
 
 `helper-crosslang.R` provides `skip_if_no_pymizu()` (guards on a `python3` with pymizu and NumPy importable) and `py_echo` (the Python echo peer); the cross-language tests spawn real Python peers through the exported `mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)`.
 
-`test-benchmark.R` is report-only: it prints timings for eyeballing in CI logs against the baselines and dated outcome records in `dev/bench/notes.md` (append new records there) and asserts nothing about the numbers (CI runner timing is too variable; oldrel-2 jobs run on slow runners).
+`test-benchmark.R` is report-only: it prints timings for eyeballing in CI logs against the baselines and outcome records in `dev/bench/notes.md` (best-known table on top — swap only on a new best, dated per row; dated run log at the bottom — append new records there) and asserts nothing about the numbers (CI runner timing is too variable; oldrel-2 jobs run on slow runners).
 
 Conventions:
 
