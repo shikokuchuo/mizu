@@ -248,8 +248,11 @@ Cross-cutting invariants (shared by channel and pool):
   list trees gate on a cheap lower-bound probe
   (`mizu_view_layout_size`’s per-leaf serialize counts would otherwise
   tax every small pool task payload), and a mizu view anywhere in a list
-  tree rejects it — nested views must cross by reference, not be copied
-  into the layout. ALTREP inputs are rejected unless
+  tree crosses by reference, never copied into the layout — a REF-able
+  one (`mizu_view_refable`: would REF top-level and unadorned) becomes a
+  remote leaf (MIZL directory tag 33, F2.5), while a materialized or
+  locally attributed one still rejects the tree (the serialize path’s
+  wire hooks carry it). ALTREP inputs are rejected unless
   `mizu_view_altrep_readable` (view.h) passes: R’s S4 data-part wrappers
   qualify (an atomic-vector-backed S4 object forwards to a non-ALTREP
   data1 of the same type sharing its data pointer; R \>= 4.6.1 patched /
@@ -282,15 +285,24 @@ Cross-cutting invariants (shared by channel and pool):
   page 0 RW (the refcount word) and the rest RO. A view re-sent
   top-level stages as REF (zero bytes move; vector/string views only
   while unmaterialized — data2 set means COW’d, so by value — while list
-  views REF at any time: their data2 is the read-only element cache); a
-  view nested in a larger payload (e.g. a pool task’s argument list)
-  rides the serialize-hook path, kept in-protocol by the layer’s wire
-  hooks (`mizu_view_set_wire_hooks`, set at load): emit marks the region
-  REFHELD, resolve does the counted add inside `R_Unserialize` against
-  the view layer’s process-global consumer-mapping cache (name-keyed
-  LRU, `MIZU_VIEW_CACHE_MAX` slots — one mapping per region, not two per
-  reference; Linux’s `vm.max_map_count` forces the dedup), whose misses
-  open through the embedder’s open hook — mizu registers `mizu_zc_open`
+  views REF at any time: their data2 is the read-only element cache);
+  nested in a layout tree or frame, a REF-able view crosses as a remote
+  leaf (MIZL directory tag 33 — the span is the view identifier, and
+  length / attrs_size / the validity claim describe the referenced
+  column as resolved, re-validated at resolve by
+  `mizu_view_unwrap_remote` in view.c; the writer is
+  `mizu_view_nested_write`’s remote branch with REFHELD via the emit
+  hook, and foreign frames gate per-frame on `MIZU_CAP_MIZL_REF` (bit 4)
+  — pymizu writes and reads them per column, mizu reads them everywhere
+  and writes view elements); any other view nested in a larger payload
+  (e.g. a pool task’s argument list) rides the serialize-hook path, kept
+  in-protocol by the layer’s wire hooks (`mizu_view_set_wire_hooks`, set
+  at load): emit marks the region REFHELD, resolve does the counted add
+  inside `R_Unserialize` against the view layer’s process-global
+  consumer-mapping cache (name-keyed LRU, `MIZU_VIEW_CACHE_MAX` slots —
+  one mapping per region, not two per reference; Linux’s
+  `vm.max_map_count` forces the dedup), whose misses open through the
+  embedder’s open hook — mizu registers `mizu_zc_open`
   (`mizu_view_set_open_hook`, page-0 RW / tail RO, the prep path’s
   split) — so the release record pins no mapping of its own and subs
   through the shared cached one. Eviction never unmaps (a live view pins
