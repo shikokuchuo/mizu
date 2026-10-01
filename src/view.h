@@ -35,6 +35,13 @@
    the embedder _Static_asserts the pin. */
 #define MIZU_VIEW_TYPE_INT64 32
 
+/* Remote-leaf wire tag on an MIZL directory entry: the column lives in
+   another region and crosses by reference — the data span is the view
+   layer's identifier string, and length / attrs_size / the validity claim
+   describe the referenced column as resolved (the vendored core's tag-33
+   checks; DESIGN.md's remote-leaf rules). Outside SEXPTYPE space. */
+#define MIZU_VIEW_TAG_REF 33
+
 // Types -----------------------------------------------------------------------
 
 typedef struct mizu_view_buf_s {

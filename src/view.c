@@ -606,6 +606,12 @@ SEXP mizu_view_str_wrap(const unsigned char *region_base, R_xlen_t n,
 
 // Element extraction helper (shared by list Elt and open_path) ----------------
 
+/* The remote-leaf (tag 33) reader, defined next to the one resolve path. */
+static SEXP mizu_view_unwrap_remote(unsigned char *base, int64_t region_size,
+                                    int32_t index, int s4,
+                                    int64_t data_offset, int64_t data_size,
+                                    int64_t length, int32_t attrs_size);
+
 static SEXP mizu_view_unwrap_element(unsigned char *base, int64_t region_size,
                                 int32_t index, SEXP keeper) {
 
@@ -622,7 +628,11 @@ static SEXP mizu_view_unwrap_element(unsigned char *base, int64_t region_size,
     Rf_error("mizu: invalid element data");
   if ((data_offset & 63) != 0)
     Rf_error("mizu: invalid element data");   /* entries are 64-aligned */
-  if (attrs_size < 0 || attrs_size > data_size)
+  /* A remote leaf's attrs_size describes the referenced column as resolved
+     — no relation to the local identifier span (the factor case: a 30-byte
+     span referencing a leaf with a 200-byte blob) */
+  if (attrs_size < 0 ||
+      (sexptype != MIZU_VIEW_TAG_REF && attrs_size > data_size))
     Rf_error("mizu: invalid element data");
 
   SEXP result;
@@ -637,6 +647,10 @@ static SEXP mizu_view_unwrap_element(unsigned char *base, int64_t region_size,
       NULL, NULL
     ));
     ((mizu_view_str *) R_ExternalPtrAddr(R_altrep_data1(result)))->index = index;
+  } else if (sexptype == MIZU_VIEW_TAG_REF) {
+    result = PROTECT(mizu_view_unwrap_remote(
+      base, region_size, index, s4, data_offset, data_size, length, attrs_size
+    ));
   } else if (sexptype != 0) {
     /* The claimed element data must fit within the directory entry's data
        region (minus trailing attributes) */
@@ -655,7 +669,11 @@ static SEXP mizu_view_unwrap_element(unsigned char *base, int64_t region_size,
     ));
   }
 
-  if (attrs_size > 0 && sexptype != 0 && sexptype != VECSXP) {
+  /* A remote leaf skips the local attr restore: its attrs_size describes
+     the referenced column, and the resolved view carries its own
+     attributes (the S4 tail needs no guard — s4 rejects on a remote leaf) */
+  if (attrs_size > 0 && sexptype != 0 && sexptype != VECSXP &&
+      sexptype != MIZU_VIEW_TAG_REF) {
     size_t attrs_off = (size_t)(data_offset + data_size - attrs_size);
     mizu_view_restore_attrs(result, base + attrs_off, (size_t) attrs_size);
   }
@@ -959,17 +977,24 @@ static void mizu_view_cache_store(const char *name, size_t len, SEXP wrap) {
    The resolve hook is the call sites', fired per resolve (the counted add
    belongs to the view, not the mapping) — never inside this miss branch, or
    a cache hit would skip it. Returns the wrap UNPROTECTED — the caller
-   PROTECTs (nothing allocates between). */
-static SEXP mizu_view_open_consumer(const char *name) {
+   PROTECTs (nothing allocates between). The _or_null form lets the caller
+   shape the gone-region error (the remote-leaf reader's decline). */
+static SEXP mizu_view_open_consumer_or_null(const char *name) {
   size_t len = strlen(name);
   SEXP wrap = mizu_view_cache_find(name, len);
   if (wrap != R_NilValue) return wrap;
   mizu_shm *shm = mizu_view_open_hook != NULL ?
     mizu_view_open_hook(name) : mizu_shm_open_heap(name);
-  if (shm == NULL)
-    Rf_error("mizu: shared memory region not found: '%s'", name);
+  if (shm == NULL) return R_NilValue;
   wrap = mizu_view_shm_wrap_consumer(shm);
   mizu_view_cache_store(name, len, wrap);
+  return wrap;
+}
+
+static SEXP mizu_view_open_consumer(const char *name) {
+  SEXP wrap = mizu_view_open_consumer_or_null(name);
+  if (wrap == R_NilValue)
+    Rf_error("mizu: shared memory region not found: '%s'", name);
   return wrap;
 }
 
@@ -1903,6 +1928,153 @@ SEXP mizu_view_resolve_id(const char *id, SEXP keeper) {
     mizu_view_dispatch_by_magic(anchor, shm_name) :
     mizu_view_walk_path((unsigned char *) shm->addr, (int64_t) shm->size,
                         path, path_len, anchor));
+  if (mizu_view_resolve_hook != NULL) mizu_view_resolve_hook(result, shm);
+  UNPROTECT(2);
+  return result;
+}
+
+// Remote-leaf (MIZL directory tag 33) reader ------------------------------------
+
+/* The resolved leaf's descriptor for a bare-name reference: length and
+   attrs-blob size off the (already validated) header, and whether the form
+   records known-NA-free — an MIZH header pair does; a bare MIZS root and
+   an MIZL root do not. */
+static void mizu_view_root_descriptor(const unsigned char *base,
+                                      int64_t *length, int64_t *attrs,
+                                      int *na_free) {
+  uint32_t magic;
+  memcpy(&magic, base, 4);
+  if (magic == MIZU_MAGIC_VEC) {
+    int64_t voff, vcount;
+    memcpy(length, base + 8, 8);
+    memcpy(attrs, base + 16, 8);
+    memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
+    memcpy(&vcount, base + MIZU_HDR_VALID_COUNT, 8);
+    *na_free = voff == 0 && vcount == -1;
+  } else if (magic == MIZU_MAGIC_STR) {
+    int32_t attrs32;
+    memcpy(&attrs32, base + 4, 4);
+    memcpy(length, base + 8, 8);
+    *attrs = attrs32;
+    *na_free = 0;
+  } else {   /* MIZU_MAGIC_LIST */
+    int32_t n;
+    memcpy(&n, base + 4, 4);
+    memcpy(attrs, base + 16, 8);
+    *length = n;
+    *na_free = 0;
+  }
+}
+
+/* The resolved leaf's descriptor for a path reference: the terminal
+   directory entry through the vendored mizu_mizl_elem — the view layer's
+   one read of MIZL leaf validity (R reads NA in-band otherwise). The
+   walked structure is trusted: the view-producing walk just validated it
+   over the same pages. A known-NA-free record exists only on an atomic
+   leaf's pair or a chained remote leaf's — STR, serialized and nested-list
+   entries record none. */
+static void mizu_view_path_descriptor(unsigned char *base, int64_t region_size,
+                                      const int32_t *path, int path_len,
+                                      int64_t *length, int64_t *attrs,
+                                      int *na_free) {
+  unsigned char *cur = base;
+  int64_t cur_size = region_size;
+  for (int k = 0; k < path_len - 1; k++) {
+    mizu_view_elem step;
+    memcpy(&step, cur + MIZU_HEADER_SIZE + 32 * (size_t) path[k],
+           sizeof(step));
+    cur += step.data_offset;
+    cur_size = step.data_size;
+  }
+  mizu_mizl_entry ent;
+  if (mizu_mizl_elem(cur, (size_t) cur_size, path[path_len - 1], &ent) != 0)
+    Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
+  int32_t tag = ent.sexptype & ~(int32_t) MIZU_MIZL_S4;
+  *length = ent.length;
+  *attrs = ent.attrs_size;
+  *na_free = ent.valid[0] == 0 && ent.valid[1] == -1 &&
+    (mizu_type_elt_size(tag) != 0 || tag == MIZU_VIEW_TAG_REF);
+}
+
+/* The remote-leaf reader: the column lives in another region and crosses
+   by reference — the entry's span is the identifier, and its length /
+   attrs_size / validity claim describe the referenced column as resolved.
+   Resolves through the one path (parse, the consumer-mapping cache, magic
+   dispatch or the path walk), validates the claims against the resolved
+   leaf, and only then fires the resolve hook (the counted add — a decline
+   holds no transient count). The resolved view chains to the
+   consumer-mapping wrap, not the parent: its region is not the parent's.
+   Every decline is the corrupt-or-newer shape — behind the capability
+   gate, meeting one unadvertised is exactly that. */
+static SEXP mizu_view_unwrap_remote(unsigned char *base, int64_t region_size,
+                                    int32_t index, int s4,
+                                    int64_t data_offset, int64_t data_size,
+                                    int64_t length, int32_t attrs_size) {
+
+  /* The core's tag-33 entry branch (mizu_ext_mizl_ent), restated: the S4
+     bit clear, the identifier span 1-255 bytes, the length non-negative. */
+  if (s4 || length < 0 || data_size < 1 || data_size > 255)
+    Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
+
+  /* The entry's own NA claim: the header pair, or its validity-table row.
+     A bitmap offset is region-local and cannot describe a remote column —
+     the row is the {0,0} / {0,-1} claim alone. */
+  int64_t voff, vcount;
+  memcpy(&voff, base + MIZU_HDR_VALID_OFF, 8);
+  memcpy(&vcount, base + MIZU_HDR_VALID_COUNT, 8);
+  int64_t claim = 0;
+  if (voff == 0) {
+    if (vcount != 0 && vcount != -1)
+      Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
+    claim = vcount;
+  } else {
+    int32_t n;
+    memcpy(&n, base + 4, 4);
+    if ((voff & 63) != 0 ||
+        mizu_view_oob(voff, 16 * (int64_t) n, region_size))
+      Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
+    int64_t loff, lcount;
+    memcpy(&loff, base + voff + 16 * (size_t) index, 8);
+    memcpy(&lcount, base + voff + 16 * (size_t) index + 8, 8);
+    if (loff != 0 || (lcount != 0 && lcount != -1))
+      Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
+    claim = lcount;
+  }
+
+  char id[256];
+  memcpy(id, base + data_offset, (size_t) data_size);
+  id[data_size] = '\0';
+
+  char shm_name[MIZU_NAME_MAX];
+  int32_t path[MIZU_VIEW_MAX_PATH];
+  int path_len = 0;
+  int rc = mizu_view_parse_id(id, shm_name, sizeof(shm_name), path, &path_len);
+  if (rc < 0)
+    Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
+
+  SEXP shm_ptr = PROTECT(mizu_view_open_consumer_or_null(shm_name));
+  if (shm_ptr == R_NilValue)
+    Rf_error("mizu: invalid MIZL remote leaf — referenced region not found: '%s'",
+             shm_name);
+  mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(shm_ptr);
+
+  int64_t rlength = 0, rattrs = 0;
+  int rna_free = 0;
+  SEXP result = PROTECT(rc == 0 ?
+    mizu_view_dispatch_by_magic(shm_ptr, shm_name) :
+    mizu_view_walk_path((unsigned char *) shm->addr, (int64_t) shm->size,
+                        path, path_len, shm_ptr));
+  if (rc == 0)
+    mizu_view_root_descriptor((unsigned char *) shm->addr, &rlength, &rattrs,
+                              &rna_free);
+  else
+    mizu_view_path_descriptor((unsigned char *) shm->addr, (int64_t) shm->size,
+                              path, path_len, &rlength, &rattrs, &rna_free);
+
+  if (rlength != length || rattrs != (int64_t) attrs_size ||
+      (claim == -1 && !rna_free))
+    Rf_error("mizu: invalid MIZL remote leaf — claims do not match the referenced region");
+
   if (mizu_view_resolve_hook != NULL) mizu_view_resolve_hook(result, shm);
   UNPROTECT(2);
   return result;

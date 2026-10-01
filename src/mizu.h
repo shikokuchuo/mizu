@@ -89,7 +89,7 @@ typedef struct mizu_r_handle_s {
 /* This build's identity word, the one binding fill (channel and pool). */
 #define MIZU_R_IDENT \
   MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS | \
-             MIZU_CAP_TASKREF)
+             MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF)
 
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */

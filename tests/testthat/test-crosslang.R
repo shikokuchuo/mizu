@@ -188,7 +188,7 @@ test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     "
-assert ch._h._peer_ident() == (2, 15)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF
+assert ch._h._peer_ident() == (2, 31)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF | MIZL_REF
 ch.send('ok')
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)

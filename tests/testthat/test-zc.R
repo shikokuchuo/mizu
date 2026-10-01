@@ -434,6 +434,86 @@ test_that("list trees cross as views (MORL): leaves arrive as views", {
   channel_end(p)
 })
 
+test_that("a remote leaf (tag 33) resolves to a view over its region", {
+  x <- runif(50000)
+  fx <- remote_leaf_pair(x)
+  poke_remote(fx, len = length(x))
+
+  before <- rc_of(fx[["ya"]])[1L]
+  btree <- rc_of(fx[["yb"]])[1L]
+  el <- fx[["yb"]][[1L]]
+  expect_true(is_view(el))
+  expect_identical(.Call(mizu:::mizu_zc_view_name, el), fx[["id"]])
+  expect_identical(rc_of(fx[["ya"]])[1L], before + 1L) # one loan per extraction
+  expect_identical(rc_of(fx[["yb"]])[1L], btree) # the tree loan unchanged
+  expect_identical(el, x) # last: identical() materializes views on R < 4.6
+  rm(el)
+  fx[["yb"]] <- NULL # the list view's element cache holds the extraction
+  invisible(gc())
+  expect_identical(rc_of(fx[["ya"]])[1L], before)
+  channel_end(fx[["p"]])
+})
+
+test_that("a remote leaf can reference a whole region (bare name)", {
+  x <- runif(50000)
+  fx <- remote_leaf_pair(x, wrap = FALSE)
+  poke_remote(fx, len = length(x))
+
+  el <- fx[["yb"]][[1L]]
+  expect_true(is_view(el))
+  expect_identical(.Call(mizu:::mizu_zc_view_name, el), fx[["id"]])
+  expect_identical(el, x)
+  channel_end(fx[["p"]])
+})
+
+test_that("remote-leaf declines are corrupt-or-newer shaped", {
+  x <- runif(50000)
+
+  fx <- remote_leaf_pair(x) # dangling: a well-formed name that does not exist
+  poke_remote(fx, id = "/mizu_dead_beef", len = length(x))
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # length claim mismatch
+  poke_remote(fx, len = length(x) - 1L)
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # attrs_size claim mismatch (past the span)
+  poke_remote(fx, len = length(x), attrs = 200L)
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # a {0,-1} claim the referenced leaf cannot back
+  poke_remote(fx, len = length(x))
+  .Call(
+    mizu:::mizu_poke,
+    fx[["rw"]],
+    48,
+    c(
+      writeBin(-1L, raw(), size = 4L, endian = "little"),
+      writeBin(-1L, raw(), size = 4L, endian = "little")
+    )
+  )
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # the S4 bit is never set on a remote leaf
+  poke_remote(fx, len = length(x), sxp = bitwOr(33L, 0x40000000L))
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # the identifier span is 1-255 bytes
+  poke_remote(fx, len = length(x), dsz = 0L)
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x)
+  poke_remote(fx, len = length(x), dsz = 256L)
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+})
+
 test_that("a data frame crosses as a view with its class and row names", {
   p <- channel_pair(arena_size = 0)
   x <- data.frame(a = runif(100000), b = paste0("s", 1:100000))

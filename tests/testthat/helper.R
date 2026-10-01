@@ -291,3 +291,60 @@ i64v <- function(r) {
 }
 
 align64 <- function(b) (b + 63) %/% 64 * 64
+
+# A poke-crafted remote-leaf (tag 33) fixture for the MIZL remote-leaf
+# reader: stage x (wrapped in a list by default) for region A and a
+# one-element list for region B through one channel pair, with an RW
+# mapping of B for poke_remote(), which rewrites B's directory entry 0 as
+# a remote leaf — the identifier span over the orphaned local leaf bytes
+# at offset 128 — so the consumer's lazy element extraction resolves it.
+remote_leaf_pair <- function(x, wrap = TRUE) {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], if (wrap) list(x) else x)
+  ya <- mizu_recv(p[["peer"]], 5)
+  aname <- .Call(mizu:::mizu_zc_view_name, ya)
+  mizu_send(p[["host"]], list(runif(40000)))
+  yb <- mizu_recv(p[["peer"]], 5)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, yb),
+    TRUE
+  )
+  list(
+    p = p,
+    ya = ya,
+    yb = yb,
+    rw = rw,
+    id = if (wrap) paste0(aname, "[1]") else aname
+  )
+}
+
+i64raw <- function(x) {
+  stopifnot(x >= 0 && x < 2^31)
+  c(
+    writeBin(as.integer(x), raw(), size = 4L, endian = "little"),
+    as.raw(rep(0L, 4L))
+  )
+}
+
+poke_remote <- function(
+  fx,
+  id = fx[["id"]],
+  len,
+  attrs = 0L,
+  sxp = 33L,
+  dsz = nchar(id, "bytes")
+) {
+  entry <- c(
+    i64raw(128L),
+    i64raw(dsz),
+    writeBin(as.integer(sxp), raw(), size = 4L, endian = "little"),
+    writeBin(as.integer(attrs), raw(), size = 4L, endian = "little"),
+    i64raw(len)
+  )
+  .Call(mizu:::mizu_poke, fx[["rw"]], 64, entry)
+  if (dsz > 0) {
+    .Call(mizu:::mizu_poke, fx[["rw"]], 128, charToRaw(id))
+  }
+  invisible(fx)
+}
