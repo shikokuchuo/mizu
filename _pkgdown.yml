@@ -1,4 +1,4 @@
-url: https://shikokuchuo.github.io/mizu/
+url: https://shikokuchuo.net/mizu/
 
 template:
   bootstrap: 5
@@ -48,3 +48,20 @@ reference:
     contents:
       - mizu_prune
       - print.mizu_channel
+
+articles:
+  - title: Guide
+    navbar: Guide
+    contents:
+      - channels
+      - pools
+      - map
+      - interop
+  - title: Performance
+    navbar: Performance
+    contents:
+      - benchmarks
+  - title: Operations
+    navbar: Operations
+    contents:
+      - operations
