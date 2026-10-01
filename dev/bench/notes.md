@@ -69,6 +69,8 @@ probes and A/B isolations stay in the log.
 | crosslang map trivial f, spec .seed | 1.8 us/elt | 2026-10-01 |
 | crosslang map trivial f, spec prepared | 0.22 us/elt | 2026-10-01 |
 | crosslang map ~10us tasks, spec | 3.2 ms wall | 2026-10-01 |
+| crosslang frame relay, unmodified REF | 0.004 ms/rt | 2026-10-01 |
+| crosslang frame relay, one computed col | 0.47 ms/rt | 2026-10-01 |
 
 ## Incumbent baselines (2026-07)
 
@@ -783,3 +785,28 @@ at 0.23 ms.
 
 Status: full suite 3029 pass, 0 fail (3 expected macOS skips); pymizu
 358 pass, 5 skip.
+
+## 2026-10-01 — the per-column frame REF (F2)
+
+MIZL directory tag 33 (the remote leaf) is normative: a frame whose
+columns match a registered export same-index crosses with one remote
+leaf per matched column — the identifier span, the referenced leaf's
+attrs size and validity claim as resolved — where pre-F2 every
+partially-mutated relay wrote every column. mizu reads remote leaves
+(the view layer's one resolve path plus the claim validation) and
+advertises MIZU_CAP_MIZL_REF (bit 4); pymizu writes them (the
+per-column provenance match, the conditional conjunction) and reads
+them (the frame path's per-column hold). Emission is per frame: a peer
+short of the bit gets full layout leaves for every column.
+
+Results (10-column frame, 1e6 rows of float64, R -> polars -> R,
+best-of per the suite row): the unmodified relay (the whole-frame REF,
+the regression guard) 0.004 ms/rt; one computed column via polars (1
+layout leaf + 9 remote leaves) 0.47 ms/rt against the pre-F2
+ten-column layout write (~4 ms/rt, the same-language flat row at
+4.00 ms). proc.time ticks at ~6 ms on this host at writing: the REF
+row's interval is kept >> tick by 500-rep loops. New rows on the
+best-known table.
+
+Status: full suite 3045 pass, 0 fail (3 expected macOS skips); pymizu
+363 pass, 5 skip; libmizu make test + test-fuzz + tidy clean.

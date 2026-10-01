@@ -184,6 +184,51 @@ test_that("a data.frame relays through the received Frame's own export", {
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a mutated frame relays hop-by-hop: unmodified columns as remote leaves", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  py <- skip_if_no_pymizu()
+  testthat::skip_if_not(
+    system2(
+      py,
+      c("-c", shQuote("import polars")),
+      stdout = FALSE,
+      stderr = FALSE
+    ) ==
+      0L,
+    "polars not available"
+  )
+  ch <- mizu_channel(
+    "
+import polars as pl
+f = ch.recv(60)
+df = pl.DataFrame(f).with_columns((pl.col('x') * 2).alias('x'))
+ch.send(df)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  df <- data.frame(i = 1:300000, x = runif(300000), l = 1:300000)
+  mizu_send(ch, df)
+  y <- mizu_recv(ch, 60)
+  # the unmodified columns: views over the sent frame's own region —
+  # views first, refcount/REFHELD before any identical() (R < 4.6
+  # materializes views on deep comparison)
+  expect_true(.Call(mizu:::mizu_zc_view_check, y[["i"]]))
+  expect_true(.Call(mizu:::mizu_zc_view_check, y[["l"]]))
+  nmi <- .Call(mizu:::mizu_zc_view_name, y[["i"]])
+  nml <- .Call(mizu:::mizu_zc_view_name, y[["l"]])
+  expect_true(grepl("[", nmi, fixed = TRUE))
+  expect_identical(sub("\\[.*", "", nmi), sub("\\[.*", "", nml)) # one source
+  yroot <- .Call(mizu:::mizu_zc_view_name, y)
+  expect_false(identical(sub("\\[.*", "", nmi), yroot)) # not y's own region
+  rc <- .Call(mizu:::mizu_zc_refcount, y[["i"]])
+  expect_true(rc[[1]] >= 2L) # the producer loan plus the resolved view
+  expect_identical(rc[[2]] %% 2L, 1L) # REFHELD
+  expect_identical(y[["i"]], df[["i"]])
+  expect_identical(y[["l"]], df[["l"]])
+  expect_identical(y[["x"]], 2 * df[["x"]]) # the computed column, laid out
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(

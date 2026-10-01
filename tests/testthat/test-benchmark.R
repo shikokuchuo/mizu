@@ -410,6 +410,89 @@ test_that("foreign pool task args by reference report the copy removed (F1)", {
   expect_true(mizu_pool_stop(p))
 })
 
+test_that("foreign frame relay: the per-column REF removes the copy (F2)", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  py <- skip_if_no_pymizu()
+  testthat::skip_if_not(
+    system2(
+      py,
+      c("-c", shQuote("import polars")),
+      stdout = FALSE,
+      stderr = FALSE
+    ) ==
+      0L,
+    "polars not available"
+  )
+  ch <- mizu_channel(
+    "
+import pymizu
+import polars as pl
+f = ch.recv(120)
+df = pl.DataFrame(f)
+mod = df.with_columns((pl.col('c10') * 2).alias('c10'))
+while True:
+    m = ch.recv(120)
+    if pymizu.is_sentinel(m):
+        break
+    ch.send(df if m else mod)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  df <- as.data.frame(matrix(runif(10 * 1000000), nrow = 1000000))
+  names(df) <- paste0("c", 1:10)
+  mizu_send(ch, df) # the frame crosses once: MIZL region in Python
+
+  # the unmodified relay: the whole-frame REF, zero payload bytes
+  mizu_send(ch, TRUE)
+  y <- mizu_recv(ch, 120)
+  expect_identical(y[], df)
+  # one computed column: 1 layout leaf + 9 remote leaves
+  mizu_send(ch, FALSE)
+  y <- mizu_recv(ch, 120)
+  expect_identical(y[["c10"]], 2 * df[["c10"]])
+  expect_identical(y[["c1"]], df[["c1"]])
+
+  timeit <- function(val, reps = 4L) {
+    best <- Inf
+    for (r in 1:3) {
+      t0 <- proc.time()[[3]]
+      for (i in seq_len(reps)) {
+        mizu_send(ch, val)
+        mizu_recv(ch, 120)
+      }
+      best <- min(best, proc.time()[[3]] - t0)
+    }
+    best / reps
+  }
+  unmod <- timeit(TRUE, 500L) # ~40 us/rt: the interval clears proc.time's
+  # tick (~6 ms on this host) only past ~150
+  one_mod <- timeit(FALSE, 30L)
+  expect_true(mizu_close(ch, timeout = 10))
+
+  # same-language flat check: the MIZL frame view is untouched
+  cp <- channel_pair(arena_size = 0)
+  mizu_send(cp[["host"]], df)
+  expect_identical(mizu_recv(cp[["peer"]], Inf)[], df) # warm-up
+  best <- Inf
+  for (r in 1:3) {
+    t0 <- proc.time()[[3]]
+    for (i in 1:4) {
+      mizu_send(cp[["host"]], df)
+      mizu_recv(cp[["peer"]], Inf)
+    }
+    best <- min(best, proc.time()[[3]] - t0)
+  }
+  same <- best / 4
+  channel_end(cp)
+  cat(sprintf(
+    "\n10-col 1e6-row frame relay (F2): unmodified REF %.3f ms/rt, one computed column %.3f ms/rt (same-language flat %.2f ms; pre-F2 the return hop wrote all 10 columns)\n",
+    unmod * 1e3,
+    one_mod * 1e3,
+    same * 1e3
+  ))
+})
+
 test_that("guard: held results do not pin payload regions today", {
   skip_on_cran()
   skip_if_no_child_mizu()
