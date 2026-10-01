@@ -34,6 +34,12 @@
 #define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
 #endif
 
+/* R_mkClosure() joined the C API in R 4.5.0; the definition is map.c's
+   backport on earlier R. */
+#if R_VERSION < R_Version(4, 5, 0)
+SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
+#endif
+
 static SEXP ix_tzone_sym;
 static SEXP ix_date_class, ix_posixct_class, ix_factor_class,
   ix_frame_class, ix_ordered_class;
