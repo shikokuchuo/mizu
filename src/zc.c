@@ -235,7 +235,23 @@ static size_t mizu_zc_str_probe(SEXP x) {
 static size_t mizu_zc_tree_probe(SEXP x, int *reject) {
   if (*reject) return 0;
   if (ALTREP(x)) {
-    if (mizu_view_check(x)) { *reject = 1; return 0; }
+    if (mizu_view_check(x)) {
+      /* a REF-able view element crosses as a remote leaf (F2.5): the
+         identifier span. A materialized, locally attributed or broken-
+         identifier view keeps rejecting — the serialize path's wire
+         hooks carry those, by reference or by value as before. */
+      if (mizu_view_refable(x)) {
+        SEXP id = PROTECT(mizu_view_shm_name(x));
+        if (id != R_NilValue) {
+          const size_t span = (size_t) LENGTH(STRING_ELT(id, 0));
+          UNPROTECT(1);
+          return span;
+        }
+        UNPROTECT(1);
+      }
+      *reject = 1;
+      return 0;
+    }
     if (!mizu_view_altrep_readable(x)) return 0;  /* lazy: the oracle vetoes */
   }
   int type = TYPEOF(x);
@@ -330,7 +346,9 @@ static int mizu_zc_tree_caps_walk(SEXP x, uint32_t caps) {
     }
     return 0;
   case STRSXP:
-    return !ANY_ATTRIB(x) && (caps & MIZU_CAP_MIZS) &&
+    /* a view leaf keeps rejecting on generic trees (remote leaves are the
+       frame gate's, F2.5) */
+    return !ANY_ATTRIB(x) && !mizu_view_check(x) && (caps & MIZU_CAP_MIZS) &&
            mizu_interop_strings_utf8(x);
   case VECSXP: {
     if (Rf_isS4(x) || mizu_view_check(x)) return 0;
@@ -402,8 +420,16 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
   const int q = mizu_interop_attrs_qualify(x);
   if (q == MIZU_IXQ_FRAME) {
     uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL;
-    for (R_xlen_t i = 0; i < XLENGTH(x); i++)
-      if (TYPEOF(VECTOR_ELT(x, i)) == STRSXP) need |= MIZU_CAP_MIZS;
+    int has_ref = 0;
+    for (R_xlen_t i = 0; i < XLENGTH(x); i++) {
+      SEXP col = VECTOR_ELT(x, i);
+      if (TYPEOF(col) == STRSXP) need |= MIZU_CAP_MIZS;
+      if (!has_ref && mizu_view_refable(col)) has_ref = 1;
+    }
+    /* a view column crosses as a remote leaf (F2.5): the conditional
+       conjunction — a peer short of the bit keeps the rejection (the
+       whole frame takes the 'I' copy) */
+    if (has_ref) need |= MIZU_CAP_MIZL_REF;
     if ((caps & need) != need) return 0;
     return mizu_zc_eligible(x, inline_max, out_total, 1);
   }

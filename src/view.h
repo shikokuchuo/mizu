@@ -189,6 +189,11 @@ size_t mizu_view_layout_write(unsigned char *base, SEXP x, int foreign);
    identifier parser, and a path walk over an already-open region (keeper
    flows to the returned view's chain). */
 int mizu_view_check(SEXP x);
+/* A view that would REF top-level, unadorned — the remote-leaf writer's
+   gate (the REF tier's predicate plus no local attributes: a remote leaf
+   carries the referenced column's own attributes, so a locally attributed
+   or COW-materialized view keeps the serialize path's wire hooks). */
+int mizu_view_refable(SEXP x);
 SEXP mizu_view_shm_name(SEXP x);
 int mizu_view_parse_id(const char *s, char *name_out, size_t name_out_size,
                   int32_t *path_out, int *path_len);

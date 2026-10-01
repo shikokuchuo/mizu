@@ -229,6 +229,31 @@ ch.send(df)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a frame with a view column crosses to Python as a remote leaf (F2.5)", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- runif(300000)
+  mizu_send(ch, x)
+  v <- mizu_recv(ch, 30) # the echo: a view of x's own region (REF)
+  df <- data.frame(a = runif(300000), b = seq_len(300000) + 0)
+  df[["b"]] <- v
+  mizu_send(ch, df)
+  z <- mizu_recv(ch, 30) # the echoed frame: the remote leaf chained back
+  zb <- z[["b"]]
+  expect_true(.Call(mizu:::mizu_zc_view_check, zb))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, zb),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
+  expect_identical(zb, x) # last: identical() materializes views on R < 4.6
+  expect_identical(z[["a"]], df[["a"]])
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(

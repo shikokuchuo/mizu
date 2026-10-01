@@ -1050,6 +1050,10 @@ static size_t mizu_view_string_data_size(SEXP x) {
 static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign);
 static int mizu_view_na_present(int type, const void *src, uint64_t n);
 static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign);
+/* The remote-leaf (tag 33) writer's descriptor helpers, defined with the
+   resolve path. */
+static int mizu_view_ref_descriptor(SEXP elt, SEXP id, int64_t *length,
+                                    int64_t *attrs, int *na_free);
 
 /* Total bytes occupied by a MIZL region for VECSXP x, including header,
    directory, elements (recursing into VECSXP/LISTSXP children), trailing
@@ -1072,6 +1076,7 @@ static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign) {
   size_t total = MIZU_VIEW_ALIGN64(MIZU_HEADER_SIZE + 32 * (size_t) n);
   size_t valid_reserve = 0;
   int any_na_atomic = 0;
+  int any_remote = 0;
 
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP elt = VECTOR_ELT(x, i);
@@ -1085,7 +1090,22 @@ static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign) {
     int type = TYPEOF(elt);
     size_t elt_size;
 
-    if (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt))) {
+    if (mizu_view_refable(elt)) {
+      SEXP id = PROTECT(mizu_view_shm_name(elt));
+      if (id != R_NilValue) {
+        /* a remote leaf (F2.5): the identifier span, no local bytes — the
+           bitmap reserve is the local leaves', the table reserve any
+           leaf's that may carry a claim */
+        elt_size = (size_t) LENGTH(STRING_ELT(id, 0));
+        any_remote = 1;
+      } else {
+        /* a view whose identifier broke: not remote-capable, and the copy
+           path must not duplicate a wire identity either */
+        if (ok != NULL) { *ok = 0; UNPROTECT(1); return 0; }
+        elt_size = mizu_view_serialize_count(elt);
+      }
+      UNPROTECT(1);
+    } else if (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt))) {
       SEXP coerced = (type == LISTSXP) ? Rf_coerceVector(elt, VECSXP) : elt;
       PROTECT(coerced);
       elt_size = mizu_view_nested_size(coerced, ok, foreign);
@@ -1120,7 +1140,7 @@ static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign) {
     mizu_view_attrs_size(x, attrs) : 0;
   UNPROTECT(1);
   total += MIZU_VIEW_ALIGN64(attrs_size);
-  if (any_na_atomic) valid_reserve += 63 + 16 * (size_t) n;
+  if (any_na_atomic || any_remote) valid_reserve += 63 + 16 * (size_t) n;
   return total + valid_reserve;
 }
 
@@ -1148,7 +1168,33 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
     mizu_view_elem entry;
     entry.data_offset = (int64_t) cur;
 
-    if (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt))) {
+    int is_remote = 0;
+    if (mizu_view_refable(elt)) {
+      SEXP id = PROTECT(mizu_view_shm_name(elt));
+      int64_t rlength = 0, rattrs = 0;
+      int rna_free = 0;
+      if (id != R_NilValue &&
+          mizu_view_ref_descriptor(elt, id, &rlength, &rattrs, &rna_free) == 0) {
+        /* the remote leaf (F2.5): the identifier span and the referenced
+           column's own length / attrs size as resolved; the emit hook
+           marks the region REFHELD (the holder set widens) */
+        size_t len = (size_t) LENGTH(STRING_ELT(id, 0));
+        memcpy(base + cur, CHAR(STRING_ELT(id, 0)), len);
+        entry.sexptype = MIZU_VIEW_TAG_REF;
+        entry.attrs_size = (int32_t) rattrs;
+        entry.length = rlength;
+        entry.data_size = (int64_t) len;
+        if (mizu_view_emit_hook != NULL) mizu_view_emit_hook(elt);
+        is_remote = 1;
+      }
+      UNPROTECT(1);
+      /* a broken identifier: the host path never meets it (the probe
+         rejects); the copy forms below take it */
+    }
+
+    if (is_remote) {
+      cur += MIZU_VIEW_ALIGN64((size_t) entry.data_size);
+    } else if (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt))) {
       SEXP coerced = (type == LISTSXP) ? Rf_coerceVector(elt, VECSXP) : elt;
       PROTECT(coerced);
       size_t written = mizu_view_nested_write(base + cur, coerced, foreign);
@@ -1227,15 +1273,36 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
     /* The validity tail: a bitmap per NA-capable atomic leaf, built from
        the just-written data and spent only where NAs are present, then
        the n-entry table — a clean run collapses to the header's
-       known-NA-free and no tail bytes. */
+       known-NA-free and no tail bytes, but only when every remote leaf
+       claims known-NA-free too (the header never speaks for a remote
+       column: no bitmap and no count from one). */
     int64_t *tab = (int64_t *) malloc(16 * (size_t) n);
     if (tab == NULL) Rf_error("mizu: allocation failure");
     int64_t total_nulls = 0;
+    int any_remote_unknown = 0;
     for (R_xlen_t i = 0; i < n; i++) {
       mizu_view_elem entry;
       memcpy(&entry, base + MIZU_HEADER_SIZE + 32 * (size_t) i,
              sizeof(mizu_view_elem));
       int32_t tag = entry.sexptype & ~MIZU_VIEW_ELEM_S4;
+      if (tag == MIZU_VIEW_TAG_REF) {
+        /* a remote leaf: the {0,0} / {0,-1} claim alone, upgraded per
+           the referenced leaf */
+        int64_t rlength = 0, rattrs = 0;
+        int rna_free = 0;
+        int64_t claim = 0;
+        SEXP ref_elt = VECTOR_ELT(x, i);
+        SEXP id = PROTECT(mizu_view_shm_name(ref_elt));
+        if (id != R_NilValue &&
+            mizu_view_ref_descriptor(ref_elt, id, &rlength, &rattrs,
+                                     &rna_free) == 0 && rna_free)
+          claim = -1;
+        UNPROTECT(1);
+        tab[2 * i] = 0;
+        tab[2 * i + 1] = claim;
+        if (claim != -1) any_remote_unknown = 1;
+        continue;
+      }
       if (mizu_view_sizeof_elt(tag) == 0) {
         tab[2 * i] = 0;   /* VEC / STR / serialized: the nested header or
                              the string block carries its own */
@@ -1264,7 +1331,7 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
         tab[2 * i + 1] = -1;
       }
     }
-    if (total_nulls > 0) {
+    if (total_nulls > 0 || any_remote_unknown) {
       size_t tab_off = MIZU_VIEW_ALIGN64(cur);
       memcpy(base + tab_off, tab, 16 * (size_t) n);
       mizu_mizh_validity_set(base, (int64_t) tab_off, total_nulls);
@@ -1701,6 +1768,18 @@ int mizu_view_check(SEXP x) {
     R_ExternalPtrTag(d1) == mizu_view_owned_tag;
 }
 
+/* The remote-leaf writer's gate (view.h): the REF tier's predicate — a
+   vector or string view only while unmaterialized (data2 set means
+   COW'd), a list view at any time (its data2 is the read-only element
+   cache) — plus no local attributes: a remote leaf carries the referenced
+   column's own attributes, so a locally attributed view would silently
+   downgrade. */
+int mizu_view_refable(SEXP x) {
+  if (!mizu_view_check(x)) return 0;
+  if (TYPEOF(x) != VECSXP && R_altrep_data2(x) != R_NilValue) return 0;
+  return !ANY_ATTRIB(x);
+}
+
 SEXP mizu_view_is_shared(SEXP x) {
   return Rf_ScalarLogical(mizu_view_check(x));
 }
@@ -1994,6 +2073,34 @@ static void mizu_view_path_descriptor(unsigned char *base, int64_t region_size,
   *attrs = ent.attrs_size;
   *na_free = ent.valid[0] == 0 && ent.valid[1] == -1 &&
     (mizu_type_elt_size(tag) != 0 || tag == MIZU_VIEW_TAG_REF);
+}
+
+/* A REF-able view's referenced-leaf descriptor for the remote-leaf write
+   (F2.5): the view's identifier resolved against its own region — the
+   chain terminus's MIZH/MIZS/MIZL header for a bare name, the terminal
+   directory entry for a path. -1 when the identifier or the terminus is
+   broken (the caller's copy path takes the element). */
+static int mizu_view_ref_descriptor(SEXP elt, SEXP id, int64_t *length,
+                                    int64_t *attrs, int *na_free) {
+  char shm_name[MIZU_NAME_MAX];
+  int32_t path[MIZU_VIEW_MAX_PATH];
+  int path_len = 0;
+  int rc = mizu_view_parse_id(CHAR(STRING_ELT(id, 0)), shm_name,
+                              sizeof(shm_name), path, &path_len);
+  if (rc < 0) return -1;
+  SEXP hop = R_ExternalPtrProtected(R_altrep_data1(elt));
+  while (TYPEOF(hop) == EXTPTRSXP && R_ExternalPtrTag(hop) != mizu_view_shm_tag)
+    hop = R_ExternalPtrProtected(hop);
+  if (TYPEOF(hop) != EXTPTRSXP) return -1;
+  mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(hop);
+  if (shm == NULL || shm->addr == NULL) return -1;
+  if (rc == 0)
+    mizu_view_root_descriptor((unsigned char *) shm->addr, length, attrs,
+                              na_free);
+  else
+    mizu_view_path_descriptor((unsigned char *) shm->addr, (int64_t) shm->size,
+                              path, path_len, length, attrs, na_free);
+  return 0;
 }
 
 /* The remote-leaf reader: the column lives in another region and crosses

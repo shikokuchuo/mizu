@@ -514,6 +514,22 @@ test_that("remote-leaf declines are corrupt-or-newer shaped", {
   channel_end(fx[["p"]])
 })
 
+
+test_that("a materialized or attributed view keeps the serialize path", {
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  mizu_send(p[["host"]], x)
+  v <- mizu_recv(p[["peer"]], 5)
+  v[1] <- -1 # COW: materialized, no longer remote-capable
+  y_in <- list(a = runif(100000), b = v)
+  mizu_send(p[["host"]], y_in)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_false(is_view(y)) # the serialize tiers, not MIZL
+  expect_identical(y[["b"]][1], -1)
+  expect_identical(y[["b"]][2], x[2])
+  channel_end(p)
+})
+
 test_that("a data frame crosses as a view with its class and row names", {
   p <- channel_pair(arena_size = 0)
   x <- data.frame(a = runif(100000), b = paste0("s", 1:100000))
@@ -662,12 +678,16 @@ test_that("a view nested in a big list tree keeps the tree on the serialize tier
   x <- runif(100000)
   mizu_send(p[["host"]], x)
   v <- mizu_recv(p[["peer"]], 5)
-  # the tree's eligible leaf (400 KB) would stage as MORL alone; the nested
-  # view rejects it — the view must cross by reference, never be copied in
+  # the tree's eligible leaf (400 KB) stages MORL; the nested REF-able view
+  # rides as a remote leaf (F2.5) — by reference, never copied in
   mizu_send(p[["peer"]], list(runif(50000), v))
   w <- mizu_recv(p[["host"]], 30)
-  expect_false(is_view(w))
+  expect_true(is_view(w))
   expect_true(is_view(w[[2L]]))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, w[[2L]]),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
   expect_identical(rc_of(v), c(2L, 1L))
   channel_end(p)
 })
