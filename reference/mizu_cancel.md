@@ -4,7 +4,7 @@ Advisory and discard-only, never preemptive. The worker skips a task
 that is still queued. A task already executing runs to completion, and
 its result is dropped. Collecting a cancelled handle raises
 `mizu_error_cancelled` (see
-[mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)).
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 ## Usage
 
@@ -17,7 +17,7 @@ mizu_cancel(task)
 - task:
 
   a task handle from
-  [`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md).
+  [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
 
 ## Value
 

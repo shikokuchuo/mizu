@@ -17,12 +17,12 @@ Source:
 [`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/main/DESCRIPTION)
 
 Gao C (2026). *mizu: Lock-Free Shared-Memory Parallelism for R*. R
-package version 0.0.0.9000, <https://shikokuchuo.github.io/mizu/>.
+package version 0.0.0.9000, <https://shikokuchuo.net/mizu/>.
 
     @Manual{,
       title = {mizu: Lock-Free Shared-Memory Parallelism for R},
       author = {Charlie Gao},
       year = {2026},
       note = {R package version 0.0.0.9000},
-      url = {https://shikokuchuo.github.io/mizu/},
+      url = {https://shikokuchuo.net/mizu/},
     }

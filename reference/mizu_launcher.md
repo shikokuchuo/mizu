@@ -1,10 +1,9 @@
 # Default Child Process Launcher
 
 Returns the launcher that
-[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md),
-[`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
-and
-[`mizu_spawn_workers()`](https://shikokuchuo.github.io/mizu/reference/mizu_spawn_workers.md)
+[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md),
+[`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md) and
+[`mizu_spawn_workers()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md)
 use unless given a custom one. It spawns a detached child R process
 through a static `Rscript` runner, with the entry expression and the
 [`.libPaths()`](https://rdrr.io/r/base/libPaths.html) of the host
@@ -35,11 +34,10 @@ mizu_launcher(stdout = "", stderr = "")
 ## Value
 
 A `function(token, slot)`.
-[`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
-and
-[`mizu_spawn_workers()`](https://shikokuchuo.github.io/mizu/reference/mizu_spawn_workers.md)
+[`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md) and
+[`mizu_spawn_workers()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md)
 call it with both arguments to spawn the worker for `slot`.
-[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
 calls it with `token` alone to spawn the peer.
 
 ## Containers
@@ -51,7 +49,7 @@ init when they exit. In a container whose PID 1 does not reap (a plain
 PID-table entries. This is harmless to mizu itself — death verdicts come
 from the liveness lock, never the PID — but PID-probe supervision
 misreads zombies as alive, and
-[`mizu_prune()`](https://shikokuchuo.github.io/mizu/reference/mizu_prune.md)
+[`mizu_prune()`](https://shikokuchuo.net/mizu/reference/mizu_prune.md)
 cannot reclaim a dead process's regions while its PID stays taken.
 
 ## Examples

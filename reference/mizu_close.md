@@ -20,7 +20,7 @@ mizu_close(ch, timeout = 5)
 - ch:
 
   a channel handle from
-  [`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+  [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
   (or the `ch` binding inside a peer expression).
 
 - timeout:

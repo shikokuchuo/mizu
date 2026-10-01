@@ -17,7 +17,7 @@ mizu_recv(ch, timeout = Inf)
 - ch:
 
   a channel handle from
-  [`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+  [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
   (or the `ch` binding inside a peer expression).
 
 - x:
@@ -55,7 +55,7 @@ as a class-tagged sentinel, not an error. Dispatch with
 
 `NULL` is a legal payload. Sentinels are ordinary values, identifiable
 by class alone, and never signalled conditions.
-[`mizu_is_sentinel()`](https://shikokuchuo.github.io/mizu/reference/mizu_is_sentinel.md)
+[`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/reference/mizu_is_sentinel.md)
 checks identity where payloads are untrusted. `NULL` crosses as an
 immediate: no serialization and no receive-side allocation. Length-1
 character vectors that fit the inline budget cross with a single byte
@@ -80,8 +80,8 @@ Python.
 From a non-R peer, only vectors and strings are legal payloads. Anything
 else (a pymizu codec stream or a pickle) is declined: the receive raises
 a classed `mizu_error_python_payload` error (see
-[mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)).
-The declined message is consumed, so the channel keeps flowing.
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)). The
+declined message is consumed, so the channel keeps flowing.
 
 ## Examples
 

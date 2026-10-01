@@ -2,9 +2,9 @@
 
 Per-worker and per-submitter counters, accumulated since each
 participant joined. They complement the point-in-time snapshots of
-[`mizu_pool_status()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_status.md)
+[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)
 and
-[`mizu_pool_dump()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_dump.md).
+[`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md).
 Nothing here costs the hot paths anything. The submitter counts are the
 monotonic positions of the injection rings themselves: submission writes
 nothing extra, and the spill counter moves only on the spill path, which
@@ -25,11 +25,11 @@ mizu_pool_stats(pool)
 - pool:
 
   a pool handle from
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
   or
-  [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md);
+  [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md);
   inside a task, the evaluating worker's own handle from
-  [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md).
+  [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
 ## Value
 
@@ -57,15 +57,15 @@ reset when a new joiner reuses a slot.
 p <- mizu_pool()
 t <- mizu_submit(p, runif(5))
 mizu_collect(t)
-#> [1] 0.5984032 0.6371036 0.6493735 0.5075190 0.8020509
+#> [1] 0.17489774 0.43823081 0.73339111 0.87124666 0.03639736
 mizu_pool_stats(p)
 #> $workers
 #>   slot status  pid tasks steals injections parks helps deque
-#> 1    0   live 7623     1      0          1     1     0     0
+#> 1    0   live 7569     1      0          1     1     0     0
 #> 
 #> $submitters
 #>   slot status  pid injected claimed spills spill_reuse queued
-#> 1    0   live 6921        1       1      0           0      0
+#> 1    0   live 6675        1       1      0           0      0
 #> 2    1   free    0        0       0      0           0      0
 #> 3    2   free    0        0       0      0           0      0
 #> 4    3   free    0        0       0      0           0      0

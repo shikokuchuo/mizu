@@ -6,7 +6,7 @@ error raised, cancelled, or its worker died. Among handles already
 terminal, the earliest in `tasks` is reported. The wait parks on the
 submitter's single parker: any publishing worker wakes it directly, with
 no polling. For the whole set at once,
-[`mizu_collect_all()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_all.md)
+[`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
 waits until every task is terminal and returns all results in input
 order.
 
@@ -21,7 +21,7 @@ mizu_collect_any(tasks, timeout = Inf)
 - tasks:
 
   a non-empty list of task handles from
-  [`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+  [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
   on the same pool handle.
 
 - timeout:
@@ -40,7 +40,7 @@ position of the task in `tasks` and its value. Otherwise the
 ## Outcomes
 
 As for
-[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md),
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
 but attributed to a handle by position:
 
 |  |  |  |

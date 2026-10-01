@@ -14,11 +14,11 @@ mizu_pool_status(pool)
 - pool:
 
   a pool handle from
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
   or
-  [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md);
+  [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md);
   inside a task, the evaluating worker's own handle from
-  [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md).
+  [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
 ## Value
 
@@ -34,7 +34,7 @@ err / cancel / died), `deque` (per-worker deque depths), and `shutdown`.
 p <- mizu_pool()
 mizu_pool_status(p)
 #> $name
-#> [1] "/mizu_1b09_736ac4a7"
+#> [1] "/mizu_1a13_a2f27dfb"
 #> 
 #> $role
 #> [1] "controller"

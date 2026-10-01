@@ -3,7 +3,7 @@
 `mizu_collect_all()` waits until every task in `tasks` reaches a
 terminal state and returns all results in input order — the batch
 counterpart of
-[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 for fire-then-collect patterns, with one R call boundary for the whole
 set instead of one per task. The wait parks on the submitter's single
 parker: any publishing worker wakes it directly, with no polling.
@@ -19,7 +19,7 @@ mizu_collect_all(tasks, timeout = Inf)
 - tasks:
 
   a non-empty list of task handles from
-  [`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+  [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
   on the same pool handle.
 
 - timeout:
@@ -37,7 +37,7 @@ A plain list of the task values in the order of `tasks`; the names of
 ## Details
 
 For homogeneous element-wise work,
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md)
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
 remains the right answer (it batches submission and staging, not just
 collection). `mizu_collect_all()` is for heterogeneous handle sets —
 different expressions and arguments — which is what the per-task API is
@@ -46,9 +46,9 @@ for.
 ## Outcomes
 
 As for
-[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md),
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
 attributed to a handle by position as in
-[`mizu_collect_any()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_any.md):
+[`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md):
 
 |  |  |  |
 |----|----|----|

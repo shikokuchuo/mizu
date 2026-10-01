@@ -1,7 +1,7 @@
 # Python Pool Worker Launcher
 
 Returns a launcher for
-[`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+[`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
 that spawns each worker as a Python process running
 `python -m pymizu.worker`, the worker entry of
 [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
@@ -25,26 +25,25 @@ mizu_py_pool_launcher(python = NULL, stdout = "", stderr = "")
 
   forwarded to [`system2()`](https://rdrr.io/r/base/system2.html) for
   the peer process, as in
-  [`mizu_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_launcher.md).
+  [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md).
 
 ## Value
 
 A `function(token, slot)` that spawns one worker process, for the
 `launcher` argument of
-[`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
-and
-[`mizu_spawn_workers()`](https://shikokuchuo.github.io/mizu/reference/mizu_spawn_workers.md).
+[`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md) and
+[`mizu_spawn_workers()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md).
 
 ## Details
 
 The first worker's join records the workers' language in the pool, so
 the launcher carries no language attribute: a pool of Python workers
 takes
-[`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+[`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 specifications through
-[`mizu_submit_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md),
+[`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md),
 and a native
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 errors locally naming the spec verb. A launcher that spawns the wrong
 language fails at join, not at the first task.
 

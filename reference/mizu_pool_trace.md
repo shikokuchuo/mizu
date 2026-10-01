@@ -14,11 +14,11 @@ mizu_pool_trace(pool, fn = NULL)
 - pool:
 
   a pool handle from
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
   or
-  [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md);
+  [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md);
   inside a task, the evaluating worker's own handle from
-  [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md).
+  [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
 - fn:
 

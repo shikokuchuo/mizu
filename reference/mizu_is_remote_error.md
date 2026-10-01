@@ -3,8 +3,8 @@
 A channel receive returns a remote error stream as a value, not a raised
 condition: an error in the peer is data until user code decides
 otherwise. The value is a `mizu_error_remote` condition (see
-[mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md))
-— an ordinary condition object, so it prints, and
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)) — an
+ordinary condition object, so it prints, and
 [`conditionMessage()`](https://rdrr.io/r/base/conditions.html) leads
 with `remote_type: message`.
 
@@ -22,9 +22,9 @@ mizu_raise(x)
 
   for `mizu_is_remote_error()`, any R object; for `mizu_raise()`, a
   `mizu_error_remote` condition as returned by
-  [`mizu_recv()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
+  [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
   or
-  [`mizu_recv_batch()`](https://shikokuchuo.github.io/mizu/reference/mizu_send_batch.md).
+  [`mizu_recv_batch()`](https://shikokuchuo.net/mizu/reference/mizu_send_batch.md).
 
 ## Value
 

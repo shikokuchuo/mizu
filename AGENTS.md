@@ -10,8 +10,8 @@ region layer, and wire formats are the vendored **libmizu** core
 its own upstream repo; this package is its R binding: a `.Call` veneer
 (`src/verbs_channel.c`, `src/verbs_pool.c`), the SEXP staging/eval hooks
 (`src/stage_r.c`), and the R-only subsystems (the compact codec,
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md),
-the ALTREP view layer). The Python binding is **pymizu** (sibling repo
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md), the
+ALTREP view layer). The Python binding is **pymizu** (sibling repo
 `../pymizu`, outside this workspace — editing its files needs the file
 open in an editor or the folder added as a workspace root). 64-bit only;
 Linux needs kernel \>= 5.3 (`pidfd_open`, no fallback).
@@ -48,8 +48,8 @@ devtools::check()
 ```
 
 Cross-process tests spawn fresh `Rscript` children that
-[`library(mizu)`](https://shikokuchuo.github.io/mizu/) from the
-*installed* library. Under a bare `load_all()` they skip via
+[`library(mizu)`](https://shikokuchuo.net/mizu/) from the *installed*
+library. Under a bare `load_all()` they skip via
 `skip_if_no_child_mizu()`; with a stale installed copy the children run
 different code than the test process. **After changing `src/` or `R/`,
 run `R CMD INSTALL .` before the test suite.**
@@ -59,13 +59,19 @@ run `R CMD INSTALL .` before the test suite.**
 air-formatted — the IDE formats on save; accept its \>80-col rewraps in
 test files you touch, don’t fight them.
 
-The reference vignette is pre-computed (mirai-style, but quarto instead
-of litedown): `precompile.R` renders `dev/vignettes/_reference.qmd` to
-static markdown as `vignettes/reference.qmd` (engine `quarto::html`; no
+The vignettes are pre-computed (mirai-style, but quarto instead of
+litedown): `precompile.R` renders each `dev/vignettes/_{name}.qmd` to
+static markdown as `vignettes/{name}.qmd` (engine `quarto::html`; no
 chunks execute at build time, but the quarto CLI must be present).
-Re-run it after editing the `_`-prefixed source; it needs the installed
+Re-run it after editing a `_`-prefixed source; it needs the installed
 package (it spawns children) plus bench/mirai/ggplot2 for the benchmark
-chunks.
+chunks. The set splits along pymizu’s docs page boundaries (decided
+2026-10): `mizu` (slim overview hub linking the rest), `channels`,
+`pools`, `map`, `interop`, `benchmarks`, `operations`; keep the
+`_pkgdown.yml` `articles:` grouping in sync when adding one (each
+section needs a `navbar:` field — without one on any section, pkgdown
+renders the navbar “Articles” entry as a flat link instead of a
+dropdown).
 
 ### Architecture
 
@@ -127,12 +133,12 @@ Cross-cutting invariants (shared by channel and pool):
   orderly close, peer death) return class-tagged sentinels inheriting
   `"mizu_sentinel"` (`mizu_full`, `mizu_timeout`, `mizu_closed`,
   `mizu_peer_gone`) so hot loops stay branch-cheap.
-  [`mizu_is_sentinel()`](https://shikokuchuo.github.io/mizu/reference/mizu_is_sentinel.md)
+  [`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/reference/mizu_is_sentinel.md)
   is an identity test against the four interned singletons — a class
   test alone can’t distinguish a genuine sentinel from a forwarded
   look-alike payload. The complement is the classed-error hierarchy
   (`R/conditions.R`, `src/condition.c`): constructors and
-  [`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+  [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
   raise `mizu_error_*` subclasses with structured fields on failure. The
   split follows the shape of the call — the hot verbs that move payloads
   and wait with a bound
@@ -322,17 +328,16 @@ host library paths cross hex-encoded in argv. Entry points:
 process-private and do not survive `fork()`.
 
 Python interop: a channel peer can be a Python process running pymizu —
-[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
 takes the peer program as a source string plus a `launcher`.
-[`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md)
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
 (`R/spawn.R`, the mirror of pymizu’s `r_launcher()`) probes the
 interpreter with `import pymizu.child` (successes cached per
 interpreter), so a missing interpreter or package errors before the
 channel is created. Pools mix too (Tier A): a foreign submitter drives
 homogeneous workers of the other language through
-[`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
-/
-[`mizu_submit_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+[`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md) /
+[`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 (`R/call.R`): the spec stages as the `'I'` task stream (tag 0x12 —
 target byte, kind, the submitter identity word, then
 code/positional/named off the spec components), the worker’s exec hook
@@ -343,11 +348,11 @@ submitter identity keys the result and ERR formats (foreign → the
 foreign writer policy with the capability-mask zc filter / the err
 stream, stashed per-task in `mizu_curpool_ident`; same-language → the
 private paths).
-[`mizu_py_pool_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_pool_launcher.md)
+[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
 is the worker spawn (the probe generalized per module); the pool word
 (`mizu_pool_worker_ident`, cached on the handle, re-read while 0) is the
 worker language, and a plain
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 on a foreign pool errors locally naming the spec verb. Only vectors and
 strings cross a channel; anything else from Python is declined with a
 “Python payload” error, consumed rather than wedging the ring.
@@ -358,19 +363,19 @@ means the worker pool; the result-slot array is “result slots”). Workers
 seek work in tier order: fairness tick, own deque, random-victim steal,
 injection scan. Nested `mizu_submit(mizu_current_pool(), ...)` inside a
 task pushes to the worker’s own deque; a worker blocked in nested
-[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 helps (executes/steals) instead of sleeping.
-[`mizu_collect_any()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_any.md)
+[`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md)
 waits on a list of task handles and returns `list(index, value)` for the
 first to reach a terminal state (raised outcomes gain a 1-based `index`
 field; the other handles stay collectible) — it parks on the submitter’s
 single parker, woken directly by any publishing worker.
-[`mizu_collect_all()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_all.md)
+[`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
 is the batch counterpart on the same mechanics: one overall deadline,
 results in input order with names carried over, the first erroring
 handle by position re-raising with `index` (only that handle consumed,
 the rest collectible), a timeout consuming nothing.
-[`mizu_pool_dump()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_dump.md)
+[`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)
 is the first tool when a pool hangs. A task error never crosses as the
 caught condition itself: the ERR publish flattens it to a transport
 condition via `mizu_condition_flatten()` (`src/condition.c`) — original
@@ -385,13 +390,13 @@ environment on the worker. The channel’s per-verb retain reap is gated
 on outstanding retains / arena bytes / lent regions — keeperless traffic
 skips the cross-core head load. Handle teardown: the task finalizer
 calls `mizu_pool_task_release` (the explicit
-[`mizu_cancel()`](https://shikokuchuo.github.io/mizu/reference/mizu_cancel.md)
+[`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
 verb stays cancel-only — a completed-uncollected slot is freed by the
 finalizer, not by cancel); `mizu_channel_destroy` signals close first,
 so a peer’s clean [`quit()`](https://rdrr.io/r/base/quit.html) reads
 CLOSED, not PEER_GONE (peer-death coverage uses a hard kill).
 
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md)
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
 (`R/map.R`, `src/map.c`, `src/rng.c`) stages f/`...`/x once per call —
 into one map region (header + single descriptor stream + optional
 bare-bytes RAWVEC x section + optional template output area), or
@@ -435,7 +440,7 @@ applied in C (R’s setters would duplicate the view, and the default
 ALTREP duplicate materializes), and a view-collected prepared run
 restages into a fresh region. With no mori-shm hop in its retain chain,
 a re-sent map view degrades to a materializing copy. A
-[`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+[`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 spec as `f` is the cross-language map (Phase 5): it always stages a
 region (the blob path’s chunk tasks are private frames), its descriptor
 the `'I'` form `list[task, x | nil]` (`mizu_interop_write_map_desc`, the
@@ -475,7 +480,7 @@ and `pskill(pid, 0)` *kills* there; `pid_alive()` is zombie-aware via
 loop) with `channel_end()` for orderly channel teardown, `pool_pull()`
 (moves injection entries onto a worker’s own deque), and
 `skip_if_no_reaper()` (the
-[`mizu_prune()`](https://shikokuchuo.github.io/mizu/reference/mizu_prune.md)
+[`mizu_prune()`](https://shikokuchuo.net/mizu/reference/mizu_prune.md)
 orphan-reaping tests need a PID 1 that reaps).
 
 `helper-crosslang.R` provides `skip_if_no_pymizu()` (guards on a
@@ -532,7 +537,11 @@ no network, no file access outside the working directory) or
   functions get no roxygen documentation.
 - Wrap roxygen2 comments to 80 characters.
 - Always re-document the package after changing a roxygen2 comment.
-- There is no pkgdown site (`_pkgdown.yml`) to maintain.
+- The pkgdown site (`_pkgdown.yml`, <https://shikokuchuo.net/mizu/>) is
+  the function index — keep its `reference:` grouping in sync when
+  adding exported functions. The vignettes deliberately carry no
+  functions-at-a-glance table (removed 2026-10; the site reference
+  covers it) — don’t re-add one.
 
 ## Git
 

@@ -4,7 +4,7 @@ Maps `f` over the elements of `x` on a pool and returns the results in
 input order. The result is a list by default, or an atomic vector (or
 matrix) with [`vapply()`](https://rdrr.io/r/base/lapply.html) semantics
 when `.template` is given. Unlike mapping with per-element
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 calls, one `mizu_map()` call serializes `f`, the constant arguments in
 `...`, and `x` exactly once. It submits one *runner* task per live
 worker, and each worker materializes that map context at most once. The
@@ -40,11 +40,11 @@ mizu_map(
 - pool:
 
   a pool handle from
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
   or
-  [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md);
+  [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md);
   inside a task, the evaluating worker's own handle from
-  [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md).
+  [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
 - x:
 
@@ -59,7 +59,7 @@ mizu_map(
   name) applied as `f(x[[i]], ...)`. Serialized once with its enclosing
   environment. Keep that environment small, as with any cross-process
   map. A
-  [`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+  [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
   specification maps over a pool of any worker language — see the
   Cross-language maps section.
 
@@ -159,7 +159,7 @@ Big shape-regular results belong on the template path: the generic
 results of a runner accumulate on the worker and publish once, so
 `.template` both caps worker memory and moves the values cross-process
 without serialization. Note for readers of
-[`mizu_pool_stats()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_stats.md):
+[`mizu_pool_stats()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stats.md):
 a map with large *generic* results publishes them through the ordinary
 result framing. Such a map can add a few result-slot `spills` per call
 even when the `slot_size` of the pool is right for its usual traffic.
@@ -173,7 +173,7 @@ erroring runner sets the shared cancel word of the map before it
 publishes. So every peer stops within about one batch instead of
 draining the remaining elements. If a worker dies mid-map, the map
 raises `mizu_error_worker_died` (see
-[mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)),
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)),
 carrying the lost elements as an `elements` field: a two-column matrix
 of inclusive `lo, hi` ranges. Loss is reported runner-granular and
 conservatively. The results of a dead runner publish only at the end, so
@@ -217,10 +217,10 @@ fan-outs.
 ## Cross-language maps
 
 `f` may be a
-[`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+[`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 specification instead of a function — the way to map over a foreign pool
 (one spawned with
-[`mizu_py_pool_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_pool_launcher.md),
+[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md),
 or any pool whose workers are not R). A spec `f` always stages a shared
 map region: the descriptor crosses in the interchange format and each
 runner task carries a region reference any worker language reads. The
@@ -228,8 +228,8 @@ map element fills the spec's first positional argument (name kind) or
 binds as `x` (source kind), and the spec's own constant arguments ride
 with it — so `...` must be empty with a spec `f`. Constants and elements
 must be portable values (the interchange subset documented in
-[`mizu_send()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md));
-a non-portable one raises `mizu_error_not_portable` at stage time.
+[`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)); a
+non-portable one raises `mizu_error_not_portable` at stage time.
 `.template` and `.collect` work unchanged — the output area is
 wire-typed slots gathered (or view-wrapped) by the submitter's own
 binding — and a per-element error crosses with its element index.

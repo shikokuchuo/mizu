@@ -44,7 +44,7 @@ pak::pak("shikokuchuo/mizu")
 ## Channels
 
 The essential function is
-[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md).
+[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md).
 It creates a two-way shared-memory channel — one lock-free ring per
 direction — and spawns a child R process connected to the other end. The
 child evaluates a quoted expression with `ch` bound to its side of the
@@ -70,13 +70,13 @@ mizu_close(ch)
 
 ## Task pools
 
-[`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+[`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
 spawns a pool of worker processes with work-stealing deques and no
 dispatcher in the loop.
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 captures an expression together with the values it needs and returns a
 task handle immediately.
-[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 waits for the result of that task:
 
 ``` r
@@ -92,10 +92,10 @@ mizu_pool_stop(p)
 
 ## Parallel map
 
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md)
-maps a function over a vector or list on the pool and returns the
-results in input order. The function and data cross into shared memory
-once; a handful of chunk tasks divide the elements, and each worker
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) maps
+a function over a vector or list on the pool and returns the results in
+input order. The function and data cross into shared memory once; a
+handful of chunk tasks divide the elements, and each worker
 self-schedules element ranges off a shared cursor.
 
 ``` r
@@ -130,7 +130,7 @@ A channel peer can be a Python process that runs
 [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
 the same core. Pass the peer program as a source string (instead of a
 quoted expression) and set the launcher to
-[`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md):
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md):
 
 ``` r
 
@@ -148,24 +148,23 @@ while True:
 
 mizu_send(ch, c(1.5, 2.5, 3.5)) # arrives in Python as a float64 NumPy array
 mizu_recv(ch, timeout = 5) # echoes back as a numeric vector
+#> [1] 3 5 7
 mizu_close(ch)
 ```
 
-[`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md)
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
 needs a `python3` with pymizu installed. A launcher is one function that
 takes the join token and spawns the peer process; for a different spawn
 method, write your own. The pymizu README shows the reverse direction: a
 Python host that spawns an R peer with `pymizu.r_launcher()`.
 
-## Reference vignette
+## Vignettes
 
-[`vignette("reference", package = "mizu")`](https://shikokuchuo.github.io/mizu/articles/reference.md)
-covers the full surface: batch operations and sentinel values, nested
-tasks and
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md),
-growing, attaching to, and observing a running pool, Python interop,
-benchmarks against mirai, sizing `/dev/shm` on Linux, tuning the Linux
-memory allocator, and crash semantics.
+[`vignette("mizu", package = "mizu")`](https://shikokuchuo.net/mizu/articles/mizu.md)
+is the overview hub, with topic vignettes on channels, task pools, the
+parallel map, Python interop, benchmarks against mirai, and operations
+(sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and
+crash semantics).
 
 ------------------------------------------------------------------------
 

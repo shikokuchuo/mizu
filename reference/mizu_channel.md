@@ -59,7 +59,7 @@ mizu_channel(
 
   a `function(token)` that spawns the peer process. For an R peer, it
   arranges for a process to call `mizu:::peer_main(token)`. The default
-  [`mizu_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_launcher.md)
+  [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
   spawns `Rscript` and propagates the
   [`.libPaths()`](https://rdrr.io/r/base/libPaths.html) of the host. Its
   `stdout` and `stderr` arguments direct the peer output, including the
@@ -67,14 +67,14 @@ mizu_channel(
   itself. For a peer in another language (a source-string `expr`), it
   spawns a program that attaches with `token` and speaks the wire
   protocol, such as `python3 -m pymizu.child` for a Python peer —
-  [`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md)
+  [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
   is the ready-made launcher for that case.
 
 - startup_timeout:
 
   seconds to wait for the peer to attach and signal ready. On expiry,
   mizu releases the channel and raises `mizu_error_startup` (see
-  [mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)).
+  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 ## Value
 
@@ -85,7 +85,7 @@ and do not survive `fork()`.
 
 `expr` is a quoted expression, not a closure. It captures nothing, and
 unlike
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 mizu does not capture it for you: pass it pre-quoted. The peer evaluates
 it in a fresh environment whose parent is the global environment of the
 child. `ch` (the peer-side channel handle) is the only binding that mizu

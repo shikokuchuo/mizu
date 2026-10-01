@@ -19,7 +19,7 @@ mizu_recv_batch(ch, n = 256L, timeout = Inf)
 - ch:
 
   a channel handle from
-  [`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+  [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
   (or the `ch` binding inside a peer expression).
 
 - xs:
@@ -40,16 +40,16 @@ mizu_recv_batch(ch, n = 256L, timeout = Inf)
 `mizu_send_batch()` returns the number of messages accepted. This is
 less than `length(xs)` when the ring filled or the channel closed
 midway. Send the next element with
-[`mizu_send()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
-to learn which. `mizu_recv_batch()` waits for the first message like
-[`mizu_recv()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
-and returns its sentinels on timeout, close, or peer death. It then
-returns a list of 1 to `n` already-published messages without waiting
-further. A batch that reaches a message it cannot read (a foreign Python
-payload) returns what it read before it, and the failure surfaces on the
-next receive, which raises like
-[`mizu_recv()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
-— as does the batch itself when the first message is the one declined.
+[`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) to
+learn which. `mizu_recv_batch()` waits for the first message like
+[`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) and
+returns its sentinels on timeout, close, or peer death. It then returns
+a list of 1 to `n` already-published messages without waiting further. A
+batch that reaches a message it cannot read (a foreign Python payload)
+returns what it read before it, and the failure surfaces on the next
+receive, which raises like
+[`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) —
+as does the batch itself when the first message is the one declined.
 
 ## Examples
 

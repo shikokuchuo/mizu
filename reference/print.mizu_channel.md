@@ -3,13 +3,13 @@
 One-line summaries. A channel prints its region name, side, and
 conversation state: `open`, `closed` once either side signalled close,
 or `peer gone` — the verdict of
-[`mizu_alive()`](https://shikokuchuo.github.io/mizu/reference/mizu_alive.md),
+[`mizu_alive()`](https://shikokuchuo.net/mizu/reference/mizu_alive.md),
 probed at print. A pool prints its region name, the role of this handle,
 live workers out of registry capacity, and pending (uncompleted) tasks.
 A task handle prints its state, probed without consuming the result. The
 state is `pending`, `ok`, `err`, `cancel`, or `died` in the result-slot
 vocabulary of
-[`mizu_pool_status()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_status.md).
+[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md).
 It is `collected` once the result is taken, or `dropped` when its pool
 is gone. Sentinels print as their class. The handle methods never error
 and never touch the rings. A handle whose resources are released (a
@@ -57,7 +57,7 @@ print(x, ...)
 ``` r
 p <- mizu_pool()
 p
-#> <mizu_pool /mizu_1b09_736ac4ae: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_1a13_a2f27e02: controller, 1/1 workers live, 0 pending>
 t <- mizu_submit(p, 1 + 1)
 t
 #> <mizu_task: ok>

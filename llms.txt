@@ -44,7 +44,7 @@ pak::pak("shikokuchuo/mizu")
 ## Channels
 
 The essential function is
-[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md).
+[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md).
 It creates a two-way shared-memory channel — one lock-free ring per
 direction — and spawns a child R process connected to the other end. The
 child evaluates a quoted expression with `ch` bound to its side of the
@@ -70,13 +70,13 @@ mizu_close(ch)
 
 ## Task pools
 
-[`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+[`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
 spawns a pool of worker processes with work-stealing deques and no
 dispatcher in the loop.
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 captures an expression together with the values it needs and returns a
 task handle immediately.
-[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 waits for the result of that task:
 
 ``` r
@@ -92,10 +92,10 @@ mizu_pool_stop(p)
 
 ## Parallel map
 
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md)
-maps a function over a vector or list on the pool and returns the
-results in input order. The function and data cross into shared memory
-once; a handful of chunk tasks divide the elements, and each worker
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) maps
+a function over a vector or list on the pool and returns the results in
+input order. The function and data cross into shared memory once; a
+handful of chunk tasks divide the elements, and each worker
 self-schedules element ranges off a shared cursor.
 
 ``` r
@@ -130,7 +130,7 @@ A channel peer can be a Python process that runs
 [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
 the same core. Pass the peer program as a source string (instead of a
 quoted expression) and set the launcher to
-[`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md):
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md):
 
 ``` r
 
@@ -148,24 +148,23 @@ while True:
 
 mizu_send(ch, c(1.5, 2.5, 3.5)) # arrives in Python as a float64 NumPy array
 mizu_recv(ch, timeout = 5) # echoes back as a numeric vector
+#> [1] 3 5 7
 mizu_close(ch)
 ```
 
-[`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md)
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
 needs a `python3` with pymizu installed. A launcher is one function that
 takes the join token and spawns the peer process; for a different spawn
 method, write your own. The pymizu README shows the reverse direction: a
 Python host that spawns an R peer with `pymizu.r_launcher()`.
 
-## Reference vignette
+## Vignettes
 
-[`vignette("reference", package = "mizu")`](https://shikokuchuo.github.io/mizu/articles/reference.md)
-covers the full surface: batch operations and sentinel values, nested
-tasks and
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md),
-growing, attaching to, and observing a running pool, Python interop,
-benchmarks against mirai, sizing `/dev/shm` on Linux, tuning the Linux
-memory allocator, and crash semantics.
+[`vignette("mizu", package = "mizu")`](https://shikokuchuo.net/mizu/articles/mizu.md)
+is the overview hub, with topic vignettes on channels, task pools, the
+parallel map, Python interop, benchmarks against mirai, and operations
+(sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and
+crash semantics).
 
 ------------------------------------------------------------------------
 
@@ -177,109 +176,119 @@ By participating in this project you agree to abide by its terms.
 
 ## Channels
 
-- [`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+- [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
   : Create a Channel and Spawn Its Peer
-- [`mizu_send()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
-  [`mizu_recv()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
-  : Send and Receive over a Channel
-- [`mizu_send_batch()`](https://shikokuchuo.github.io/mizu/reference/mizu_send_batch.md)
-  [`mizu_recv_batch()`](https://shikokuchuo.github.io/mizu/reference/mizu_send_batch.md)
+- [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
+  [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) :
+  Send and Receive over a Channel
+- [`mizu_send_batch()`](https://shikokuchuo.net/mizu/reference/mizu_send_batch.md)
+  [`mizu_recv_batch()`](https://shikokuchuo.net/mizu/reference/mizu_send_batch.md)
   : Batched Send and Receive
-- [`mizu_close()`](https://shikokuchuo.github.io/mizu/reference/mizu_close.md)
+- [`mizu_close()`](https://shikokuchuo.net/mizu/reference/mizu_close.md)
   : Close a Channel
-- [`mizu_alive()`](https://shikokuchuo.github.io/mizu/reference/mizu_alive.md)
+- [`mizu_alive()`](https://shikokuchuo.net/mizu/reference/mizu_alive.md)
   : Probe Peer Liveness
 
 ## Pools
 
-- [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
-  : Create a Task Pool and Spawn Its Workers
-- [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md)
+- [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md) :
+  Create a Task Pool and Spawn Its Workers
+- [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md)
   : Attach to a Pool as a Submitter
-- [`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
-  [`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+- [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
   : Submit a Task and Collect Its Result
-- [`mizu_submit_batch()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit_batch.md)
+- [`mizu_submit_batch()`](https://shikokuchuo.net/mizu/reference/mizu_submit_batch.md)
   : Submit a Batch of Tasks
-- [`mizu_collect_any()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_any.md)
+- [`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md)
   : Collect the First Available Result From Several Tasks
-- [`mizu_collect_all()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_all.md)
+- [`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
   : Collect the Results of Several Tasks, in Order
-- [`mizu_cancel()`](https://shikokuchuo.github.io/mizu/reference/mizu_cancel.md)
+- [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
   : Cancel a Task
-- [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md)
+- [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
   : The Evaluating Worker's Own Pool Handle
-- [`mizu_spawn_workers()`](https://shikokuchuo.github.io/mizu/reference/mizu_spawn_workers.md)
-  [`mizu_retire_worker()`](https://shikokuchuo.github.io/mizu/reference/mizu_spawn_workers.md)
+- [`mizu_spawn_workers()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md)
+  [`mizu_retire_worker()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md)
   : Grow or Shrink the Worker Set of a Pool
-- [`mizu_pool_stop()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_stop.md)
+- [`mizu_pool_stop()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stop.md)
   : Stop a Pool
 
 ## Parallel map
 
-- [`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md)
-  : Parallel Map Over a Pool
-- [`mizu_map_prepare()`](https://shikokuchuo.github.io/mizu/reference/mizu_map_prepare.md)
-  [`mizu_map_run()`](https://shikokuchuo.github.io/mizu/reference/mizu_map_prepare.md)
+- [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) :
+  Parallel Map Over a Pool
+- [`mizu_map_prepare()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
+  [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
   : Prepared Maps: Stage Once, Run Many
 
 ## Monitoring and debugging
 
-- [`mizu_pool_status()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_status.md)
+- [`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)
   : Inspect a Pool
-- [`mizu_pool_stats()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_stats.md)
+- [`mizu_pool_stats()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stats.md)
   : Cumulative Pool Counters
-- [`mizu_pool_dump()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_dump.md)
+- [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)
   : Dump the Distributed State of a Pool
-- [`mizu_pool_trace()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_trace.md)
+- [`mizu_pool_trace()`](https://shikokuchuo.net/mizu/reference/mizu_pool_trace.md)
   : Trace Task Lifecycle Events
 
 ## Cross-language interop
 
-- [`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
-  [`mizu_submit_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+- [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
+  [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
   : Call a Function in Another Language: the Task Specification
-- [`mizu_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_launcher.md)
+- [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
   : Default Child Process Launcher
-- [`mizu_py_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_launcher.md)
+- [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
   : Python Channel Peer Launcher
-- [`mizu_py_pool_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_pool_launcher.md)
+- [`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
   : Python Pool Worker Launcher
 
 ## Conditions and sentinels
 
-- [`mizu_error`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_submit_timeout`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_slots_exhausted`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_stopped`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_cancelled`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_worker_died`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_startup`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_shm`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_python_payload`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
-  [`mizu_error_remote`](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)
+- [`mizu_error`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_submit_timeout`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_slots_exhausted`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_stopped`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_cancelled`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_worker_died`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_startup`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_shm`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_python_payload`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_remote`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   : Error Conditions
-- [`mizu_is_remote_error()`](https://shikokuchuo.github.io/mizu/reference/mizu_is_remote_error.md)
-  [`mizu_raise()`](https://shikokuchuo.github.io/mizu/reference/mizu_is_remote_error.md)
+- [`mizu_is_remote_error()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md)
+  [`mizu_raise()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md)
   : Remote Errors
-- [`mizu_is_sentinel()`](https://shikokuchuo.github.io/mizu/reference/mizu_is_sentinel.md)
+- [`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/reference/mizu_is_sentinel.md)
   : Test for a mizu Sentinel
 
 ## Utilities
 
-- [`mizu_prune()`](https://shikokuchuo.github.io/mizu/reference/mizu_prune.md)
+- [`mizu_prune()`](https://shikokuchuo.net/mizu/reference/mizu_prune.md)
   : Remove Orphaned Shared Memory Regions
-- [`print(`*`<mizu_channel>`*`)`](https://shikokuchuo.github.io/mizu/reference/print.mizu_channel.md)
-  [`print(`*`<mizu_pool>`*`)`](https://shikokuchuo.github.io/mizu/reference/print.mizu_channel.md)
-  [`print(`*`<mizu_task>`*`)`](https://shikokuchuo.github.io/mizu/reference/print.mizu_channel.md)
-  [`print(`*`<mizu_map_prepared>`*`)`](https://shikokuchuo.github.io/mizu/reference/print.mizu_channel.md)
-  [`print(`*`<mizu_sentinel>`*`)`](https://shikokuchuo.github.io/mizu/reference/print.mizu_channel.md)
-  [`print(`*`<mizu_error_remote>`*`)`](https://shikokuchuo.github.io/mizu/reference/print.mizu_channel.md)
+- [`print(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_pool>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_map_prepared>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_sentinel>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_error_remote>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   : Print Methods for mizu Objects
 
 # Articles
 
-### All vignettes
+### Guide
 
-- [mizu -
-  Reference](https://shikokuchuo.github.io/mizu/articles/reference.md):
+- [Channels](https://shikokuchuo.net/mizu/articles/channels.md):
+- [Task pools](https://shikokuchuo.net/mizu/articles/pools.md):
+- [Parallel map](https://shikokuchuo.net/mizu/articles/map.md):
+- [Python interop](https://shikokuchuo.net/mizu/articles/interop.md):
+
+### Performance
+
+- [Benchmarks](https://shikokuchuo.net/mizu/articles/benchmarks.md):
+
+### Operations
+
+- [Operations](https://shikokuchuo.net/mizu/articles/operations.md):

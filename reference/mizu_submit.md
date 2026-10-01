@@ -22,16 +22,16 @@ mizu_collect(task, timeout = Inf)
 - pool:
 
   a pool handle from
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
   or
-  [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md);
+  [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md);
   inside a task, the evaluating worker's own handle from
-  [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md).
+  [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
 - expr:
 
   an expression, captured unevaluated. This differs from
-  [`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md),
+  [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md),
   which requires its expression pre-quoted. The expression sees only the
   arguments in `...` and the global environment of the worker. The
   expression itself must load any packages it needs.
@@ -76,7 +76,7 @@ within `timeout`, collection returns the `mizu_timeout` sentinel (class
 was cancelled (or whose pool was stopped) raises `mizu_error_cancelled`.
 Collecting a task whose executing worker died raises
 `mizu_error_worker_died`, carrying the slot and pid of the worker (see
-[mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)).
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 Worker death is detected at OS notification latency: a kernel-released
 lock is the verdict, with no heartbeats and no polling. The death fails
 exactly the tasks that the dead worker claimed, and the surviving
@@ -86,7 +86,7 @@ workers consume the work still queued on its deque.
 
 A timeout on collect is a normal outcome and is returned. Every
 exceptional outcome is raised as a classed condition (see
-[mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)):
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)):
 
 |  |  |  |
 |----|----|----|
@@ -105,10 +105,10 @@ original classes, `message`, `call`, and every named field the payload
 codec can carry within the result slot's inline budget, with anything
 untransportable dropped and named in a `dropped_fields` field. See the
 Task error transport section of
-[mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md).
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md).
 
 Inside a task,
-[`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md)
+[`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
 returns the handle of the evaluating worker, so a task can submit nested
 subtasks. `mizu_submit(mizu_current_pool(), ...)` inside a task pushes
 onto the work-stealing deque of the worker itself: no ring, no wait. A
@@ -123,9 +123,9 @@ A handle can be collected exactly once: the result slot is released to
 the pool as the value is returned. If an uncollected handle goes to the
 garbage collector, a still-queued task is cancelled and a published
 result is discarded. To wait on several handles at once,
-[`mizu_collect_any()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_any.md)
+[`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md)
 reports the first terminal task and
-[`mizu_collect_all()`](https://shikokuchuo.github.io/mizu/reference/mizu_collect_all.md)
+[`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
 returns every result in input order.
 
 ## Examples

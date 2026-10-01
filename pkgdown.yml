@@ -2,8 +2,14 @@ pandoc: 3.8.3
 pkgdown: 2.2.1
 pkgdown_sha: ~
 articles:
-  reference: reference.html
-last_built: 2026-10-01T09:22Z
+  benchmarks: benchmarks.html
+  channels: channels.html
+  interop: interop.html
+  map: map.html
+  mizu: mizu.html
+  operations: operations.html
+  pools: pools.html
+last_built: 2026-10-01T10:25Z
 urls:
-  reference: https://shikokuchuo.github.io/mizu/reference
-  article: https://shikokuchuo.github.io/mizu/articles
+  reference: https://shikokuchuo.net/mizu/reference
+  article: https://shikokuchuo.net/mizu/articles

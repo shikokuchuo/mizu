@@ -59,7 +59,7 @@ mizu_pool(
   2^20. A payload (task or result) that serializes past the inline
   budget travels in a fresh region per payload. This is an
   order-of-magnitude latency cliff, surfaced per submitter as
-  [`mizu_pool_stats()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_stats.md)`$submitters$spills`.
+  [`mizu_pool_stats()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stats.md)`$submitters$spills`.
   The default `512L` keeps typical expression-plus-arguments tasks
   inline. Pools that move only scalar payloads can drop to `256L`.
 
@@ -67,7 +67,7 @@ mizu_pool(
 
   a `function(token, slot)` that arranges for an R process to call
   `mizu:::worker_main(token, slot)`. The default
-  [`mizu_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_launcher.md)
+  [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
   spawns `Rscript` and propagates the
   [`.libPaths()`](https://rdrr.io/r/base/libPaths.html) of the host. Its
   `stdout` and `stderr` arguments direct the worker output. A custom
@@ -77,7 +77,7 @@ mizu_pool(
 
   seconds to wait for all workers to join. On expiry, mizu destroys the
   pool and raises `mizu_error_startup` (see
-  [mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)).
+  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 ## Value
 
@@ -88,13 +88,13 @@ are process-private and do not survive `fork()`.
 
 The lifetime of the pool is bound to the creating process, which holds
 submitter slot 0 of the returned handle. Use this handle directly with
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 and
-[`mizu_collect()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md).
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
 Other processes join as submitters through
-[`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md).
+[`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md).
 Dropping the handle (or exiting R) shuts the pool down as
-[`mizu_pool_stop()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_stop.md)
+[`mizu_pool_stop()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stop.md)
 does, but without the wait.
 
 Payload contents interoperate transparently with mori. A

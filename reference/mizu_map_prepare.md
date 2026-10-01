@@ -23,11 +23,11 @@ mizu_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 - pool:
 
   a pool handle from
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
   or
-  [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md);
+  [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md);
   inside a task, the evaluating worker's own handle from
-  [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md).
+  [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
 - x:
 
@@ -42,7 +42,7 @@ mizu_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
   name) applied as `f(x[[i]], ...)`. Serialized once with its enclosing
   environment. Keep that environment small, as with any cross-process
   map. A
-  [`mizu_call()`](https://shikokuchuo.github.io/mizu/reference/mizu_call.md)
+  [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
   specification maps over a pool of any worker language — see the
   Cross-language maps section.
 
@@ -92,8 +92,7 @@ mizu_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 ## Value
 
 `mizu_map_prepare()`: a prepared-map handle. `mizu_map_run()`: exactly
-what
-[`mizu_map()`](https://shikokuchuo.github.io/mizu/reference/mizu_map.md)
+what [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
 returns for the staged map — a list, a templated atomic vector, or the
 `mizu_timeout` sentinel.
 

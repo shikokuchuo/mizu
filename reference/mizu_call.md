@@ -5,7 +5,7 @@ string in the pool workers' language, plus the constant arguments.
 `mizu_submit_call()` stages it as a neutral task stream any worker
 language reads. This is how a foreign pool is driven: spawn the workers
 with
-[`mizu_py_pool_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_py_pool_launcher.md)
+[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
 and submit specs to them.
 
 ## Usage
@@ -32,7 +32,7 @@ mizu_submit_call(pool, spec, .timeout = Inf)
   argument list and named ones to the named argument dict, matching
   Python's `*args` and `**kwargs`. Arguments must be portable values
   (the interchange subset documented in
-  [`mizu_send()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)):
+  [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)):
   a non-portable argument raises `mizu_error_not_portable` at submit,
   never a fallback.
 
@@ -48,7 +48,7 @@ mizu_submit_call(pool, spec, .timeout = Inf)
 - pool:
 
   a pool handle (see
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)).
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)).
 
 - spec:
 
@@ -62,7 +62,7 @@ mizu_submit_call(pool, spec, .timeout = Inf)
 
 `mizu_call()`: a `"mizu_call"` specification (a classed list).
 `mizu_submit_call()`: a task handle (class `"mizu_task"`), exactly as
-[`mizu_submit()`](https://shikokuchuo.github.io/mizu/reference/mizu_submit.md)
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 returns.
 
 ## Details
@@ -74,7 +74,7 @@ from the pool itself, for attached submitters too, and a bare
 
 Results and errors cross in the submitter's own formats: a task error
 arrives as a `mizu_error_remote` condition (see
-[`mizu_is_remote_error()`](https://shikokuchuo.github.io/mizu/reference/mizu_is_remote_error.md)),
+[`mizu_is_remote_error()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md)),
 and a result that has no portable home fails the task with one naming
 the value's type. On a same-language pool the spec verb keeps the rich
 private error format.

@@ -2,9 +2,8 @@
 
 An explicit probe for supervisors. Reports whether the peer process
 holds its liveness lock, in about 1 microsecond with no waiting.
-[`mizu_recv()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
-and
-[`mizu_send()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)
+[`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) and
+[`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
 surface peer death automatically as `mizu_peer_gone`. Use this probe to
 ask without touching the rings. A peer that closed the channel but still
 runs reads as alive.
@@ -20,7 +19,7 @@ mizu_alive(ch)
 - ch:
 
   a channel handle from
-  [`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+  [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
   (or the `ch` binding inside a peer expression).
 
 ## Value

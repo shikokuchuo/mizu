@@ -1,7 +1,7 @@
 # Python Channel Peer Launcher
 
 Returns a launcher for
-[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md)
+[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
 that spawns the peer as a Python process running
 `python -m pymizu.child`, the peer entry of
 [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
@@ -25,13 +25,13 @@ mizu_py_launcher(python = NULL, stdout = "", stderr = "")
 
   forwarded to [`system2()`](https://rdrr.io/r/base/system2.html) for
   the peer process, as in
-  [`mizu_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_launcher.md).
+  [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md).
 
 ## Value
 
 A `function(token)` that spawns the peer process, for the `launcher`
 argument of
-[`mizu_channel()`](https://shikokuchuo.github.io/mizu/reference/mizu_channel.md).
+[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md).
 
 ## Details
 
@@ -39,7 +39,7 @@ The interpreter is probed for pymizu when the launcher is created, so a
 missing interpreter or package raises here, before the channel exists.
 The payload rules for a non-R peer apply: only vectors and strings cross
 (see
-[`mizu_send()`](https://shikokuchuo.github.io/mizu/reference/mizu_send.md)).
+[`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)).
 
 ## Examples
 

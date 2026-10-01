@@ -27,11 +27,11 @@ mizu_retire_worker(pool, slot)
 - pool:
 
   a pool handle from
-  [`mizu_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool.md)
+  [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
   or
-  [`mizu_pool_attach()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_attach.md);
+  [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md);
   inside a task, the evaluating worker's own handle from
-  [`mizu_current_pool()`](https://shikokuchuo.github.io/mizu/reference/mizu_current_pool.md).
+  [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
 - n:
 
@@ -41,7 +41,7 @@ mizu_retire_worker(pool, slot)
 
   a `function(token, slot)` that arranges for an R process to call
   `mizu:::worker_main(token, slot)`. The default
-  [`mizu_launcher()`](https://shikokuchuo.github.io/mizu/reference/mizu_launcher.md)
+  [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
   spawns `Rscript` and propagates the
   [`.libPaths()`](https://rdrr.io/r/base/libPaths.html) of the host. Its
   `stdout` and `stderr` arguments direct the worker output. A custom
@@ -51,12 +51,12 @@ mizu_retire_worker(pool, slot)
 
   seconds to wait for all workers to join. On expiry, mizu destroys the
   pool and raises `mizu_error_startup` (see
-  [mizu_error](https://shikokuchuo.github.io/mizu/reference/mizu_error.md)).
+  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 - slot:
 
   the slot index of the worker (0-based, as reported by
-  [`mizu_pool_dump()`](https://shikokuchuo.github.io/mizu/reference/mizu_pool_dump.md)).
+  [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)).
 
 ## Value
 
