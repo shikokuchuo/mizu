@@ -129,6 +129,7 @@ while True:
 
 mizu_send(ch, c(1.5, 2.5, 3.5)) # arrives in Python as a float64 NumPy array
 mizu_recv(ch, timeout = 5) # echoes back as a numeric vector
+#> [1] 3 5 7
 mizu_close(ch)
 ```
 
@@ -136,9 +137,9 @@ mizu_close(ch)
 A launcher is one function that takes the join token and spawns the peer process; for a different spawn method, write your own.
 The pymizu README shows the reverse direction: a Python host that spawns an R peer with `pymizu.r_launcher()`.
 
-## Reference vignette
+## Vignettes
 
-`vignette("reference", package = "mizu")` covers the full surface: batch operations and sentinel values, nested tasks and `mizu_map()`, growing, attaching to, and observing a running pool, Python interop, benchmarks against mirai, sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics.
+`vignette("mizu", package = "mizu")` is the overview hub, with topic vignettes on channels, task pools, the parallel map, Python interop, benchmarks against mirai, and operations (sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics).
 
 ------------------------------------------------------------------------
 

@@ -36,7 +36,7 @@ Cross-process tests spawn fresh `Rscript` children that `library(mizu)` from the
 
 `compile_commands.json` for clangd is regenerated on install (`Config/build/compilation-database` in DESCRIPTION). All files are air-formatted — the IDE formats on save; accept its >80-col rewraps in test files you touch, don't fight them.
 
-The reference vignette is pre-computed (mirai-style, but quarto instead of litedown): `precompile.R` renders `dev/vignettes/_reference.qmd` to static markdown as `vignettes/reference.qmd` (engine `quarto::html`; no chunks execute at build time, but the quarto CLI must be present). Re-run it after editing the `_`-prefixed source; it needs the installed package (it spawns children) plus bench/mirai/ggplot2 for the benchmark chunks.
+The vignettes are pre-computed (mirai-style, but quarto instead of litedown): `precompile.R` renders each `dev/vignettes/_{name}.qmd` to static markdown as `vignettes/{name}.qmd` (engine `quarto::html`; no chunks execute at build time, but the quarto CLI must be present). Re-run it after editing a `_`-prefixed source; it needs the installed package (it spawns children) plus bench/mirai/ggplot2 for the benchmark chunks. The set splits along pymizu's docs page boundaries (decided 2026-10): `mizu` (slim overview hub linking the rest), `channels`, `pools`, `map`, `interop`, `benchmarks`, `operations`; keep the `_pkgdown.yml` `articles:` grouping in sync when adding one (each section needs a `navbar:` field — without one on any section, pkgdown renders the navbar "Articles" entry as a flat link instead of a dropdown).
 
 ### Architecture
 
@@ -106,7 +106,7 @@ In rough order of desirability: `executeCode()` if available (user-shared sessio
 - Export and roxygen2-document every user-facing function; internal functions get no roxygen documentation.
 - Wrap roxygen2 comments to 80 characters.
 - Always re-document the package after changing a roxygen2 comment.
-- There is no pkgdown site (`_pkgdown.yml`) to maintain.
+- The pkgdown site (`_pkgdown.yml`, https://shikokuchuo.net/mizu/) is the function index — keep its `reference:` grouping in sync when adding exported functions. The vignettes deliberately carry no functions-at-a-glance table (removed 2026-10; the site reference covers it) — don't re-add one.
 
 ## Git
 

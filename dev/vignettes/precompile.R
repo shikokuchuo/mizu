@@ -1,6 +1,6 @@
 # Vignettes are pre-compiled: they spawn child processes and run benchmarks.
 # Run from the package root, with the package installed:
-#   Rscript dev/vignettes/precompile.R
+#   Rscript dev/vignettes/precompile.R [name ...]   # no args renders all
 
 # Renders a dev/vignettes/_{name}.qmd to static markdown and reassembles it as
 # vignettes/{name}.qmd: the source YAML front matter, then the rendered body
@@ -28,4 +28,20 @@ precompile <- function(name) {
   writeLines(c(yaml, "", body), out)
 }
 
-precompile("reference")
+vignettes <- c(
+  "mizu",
+  "channels",
+  "pools",
+  "map",
+  "interop",
+  "benchmarks",
+  "operations"
+)
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args)) {
+  stopifnot(args %in% vignettes)
+  vignettes <- args
+}
+for (name in vignettes) {
+  precompile(name)
+}
