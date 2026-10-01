@@ -29,6 +29,8 @@ If you have set 'GLIBC_TUNABLES', mizu respects your values.
 
 Useful links:
 
+- <https://shikokuchuo.net/mizu/>
+
 - <https://github.com/shikokuchuo/mizu>
 
 - Report bugs at <https://github.com/shikokuchuo/mizu/issues>

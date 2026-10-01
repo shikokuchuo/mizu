@@ -42,8 +42,8 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu       246.49µs 378.23µs     2343.  480.61KB     29.8
-#> 2 mirai        7.03ms   7.57ms      132.    3.81MB     22.8
+#> 1 mizu       258.42µs 394.46µs     2198.  480.61KB     27.7
+#> 2 mirai        7.31ms   7.92ms      125.    3.81MB     21.3
 ```
 
 End to end, mizu is **20x** faster: every timed run stages the frame,
@@ -74,13 +74,13 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      17.64ms  17.64ms     56.7     30.8MB  1247.  
-#> 2 mizu         4.99ms   5.62ms    144.     423.4KB     0   
-#> 3 mirai      210.13ms 210.13ms      4.76      19MB     9.52
+#> 1 serial      21.52ms   21.5ms     46.5     30.9MB   976.  
+#> 2 mizu         5.08ms    5.7ms    138.     424.6KB     1.91
+#> 3 mirai      204.99ms  205.4ms      4.87      19MB     2.43
 ```
 
-mizu turns the four workers into a **3.1x** gain over the serial loop,
-and runs **37x** ahead of mirai (medians).
+mizu turns the four workers into a **3.8x** gain over the serial loop,
+and runs **36x** ahead of mirai (medians).
 
 ``` r
 

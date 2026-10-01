@@ -79,6 +79,15 @@ and a result that has no portable home fails the task with one naming
 the value's type. On a same-language pool the spec verb keeps the rich
 private error format.
 
+Large arguments cross to foreign workers by reference rather than by
+copy: one fresh value past the zero-copy floor stages a single layout
+write into a shared region (the worker reads a view over it), and an
+argument that is already a shared view (received from a channel, a pool
+result, or a [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d
+vector) crosses as its identifier alone — zero payload bytes. On a pool
+whose workers predate the ref reader, such a task declines locally at
+submit naming the remedy.
+
 ## Examples
 
 ``` r
