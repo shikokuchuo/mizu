@@ -224,6 +224,17 @@ The workers' language comes from the pool itself — a plain `mizu_submit()` on 
 Task errors cross as `mizu_error_remote` conditions with the remote type preserved, and a result without a portable home fails the task with one naming the type.
 The reverse direction mirrors: `pymizu.Pool.create()` with `pymizu.r_pool_launcher()`, and `Pool.submit()` with `pymizu.call()` specs.
 
+A spec is also `mizu_map()`'s `f` — the cross-language map.
+The element fills the spec's first positional slot (name kind) or binds as `x` (source kind), the spec's own constants ride with it (so `...` stays empty), and `.template`, `.collect = "view"`, and `.seed` all work — the seed carrying as a neutral pair each worker language derives its own streams from, so invariance holds per worker language rather than identical draws across them:
+
+```{r python-map}
+#| eval: !expr nzchar(Sys.which("python3")) && system2("python3", c("-c", shQuote("import pymizu, numpy")), stdout = FALSE, stderr = FALSE) == 0L
+p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
+mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
+mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
+mizu_pool_stop(p)
+```
+
 ## Benchmarks
 
 Two head-to-head measurements against mirai, timed with [bench](https://bench.r-lib.org).

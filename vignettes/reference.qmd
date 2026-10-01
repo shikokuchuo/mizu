@@ -224,7 +224,7 @@ Channels move values; pools move computation — a pool’s workers can be Pytho
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.2180191 0.4444593 0.7222683
+#> [1] 0.2873424 0.5370203 0.7633585
 s <- mizu_submit_call(p, mizu_call(source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -235,6 +235,34 @@ Unnamed arguments map to the positional list and named ones to the named dict, m
 The workers’ language comes from the pool itself — a plain `mizu_submit()` on a foreign pool errors locally naming `mizu_submit_call()`, a bare unqualified name errors at submit, and a non-portable argument raises `mizu_error_not_portable` at submit.
 Task errors cross as `mizu_error_remote` conditions with the remote type preserved, and a result without a portable home fails the task with one naming the type.
 The reverse direction mirrors: `pymizu.Pool.create()` with `pymizu.r_pool_launcher()`, and `Pool.submit()` with `pymizu.call()` specs.
+
+A spec is also `mizu_map()`’s `f` — the cross-language map.
+The element fills the spec’s first positional slot (name kind) or binds as `x` (source kind), the spec’s own constants ride with it (so `...` stays empty), and `.template`, `.collect = "view"`, and `.seed` all work — the seed carrying as a neutral pair each worker language derives its own streams from, so invariance holds per worker language rather than identical draws across them:
+
+``` r
+p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
+mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
+#> [[1]]
+#> [1] 9.583985e-05 9.583985e-05
+#> 
+#> [[2]]
+#> [1] 0.842294 0.842294
+#> 
+#> [[3]]
+#> [1] 0.2724766 0.2724766
+#> 
+#> [[4]]
+#> [1] 0.2373779 0.2373779
+#> 
+#> [[5]]
+#> [1] 0.2157337 0.2157337
+#> 
+#> [[6]]
+#> [1] 0.9602542 0.9602542
+mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
+#> [1] -0.05049583 -3.92177410 -0.22473346 -1.77072570 -2.84057756 -1.51823328
+mizu_pool_stop(p)
+```
 
 ## Benchmarks
 
@@ -276,11 +304,11 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu       296.59µs 411.07µs     2063.  474.84KB     25.7
-#> 2 mirai        7.55ms   8.01ms      124.    3.81MB     23.2
+#> 1 mizu       226.03µs 375.19µs     2373.  474.84KB     30.6
+#> 2 mirai        7.05ms   7.35ms      135.    3.81MB     24.2
 ```
 
-End to end, mizu is **19x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
+End to end, mizu is **20x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
 
 **Two thousand small tasks.**
 Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece.
@@ -303,12 +331,12 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial       18.9ms     21ms     47.6     30.8MB   476.  
-#> 2 mizu         5.16ms    6.1ms    144.      51.7KB     1.98
-#> 3 mirai      208.29ms  208.3ms      4.80      19MB     9.60
+#> 1 serial      19.43ms  19.43ms     51.5     30.8MB  1287.  
+#> 2 mizu         5.33ms   5.47ms    143.      51.4KB     0   
+#> 3 mirai      212.19ms 212.19ms      4.71      19MB     9.43
 ```
 
-mizu turns the four workers into a **3.4x** gain over the serial loop, and runs **34x** ahead of mirai (medians).
+mizu turns the four workers into a **3.6x** gain over the serial loop, and runs **39x** ahead of mirai (medians).
 
 ``` r
 daemons(0L)

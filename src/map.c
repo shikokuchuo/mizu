@@ -260,8 +260,7 @@ SEXP mizu_map_open(SEXP name_sexp, SEXP writable_sexp) {
 
 SEXP mizu_map_desc(SEXP xp) {
   mizu_map_h *mh = map_h_get(xp);
-  const unsigned char *desc =
-    (const unsigned char *) mh->shm->addr + mh->h.desc_off;
+  unsigned char *desc = (unsigned char *) mh->shm->addr + mh->h.desc_off;
   /* the descriptor's codec identity rides its first byte: the 'I'
      interchange form (a spec map) or this binding's private stream — the
      one branch the Phase 5 reader dispatch needs */

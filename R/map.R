@@ -279,7 +279,7 @@ mizu_map <- function(
   if (spec) {
     if (length(dots)) {
       stop(
-        "mizu: constant arguments ride the mizu_call() spec — '...' must ",
+        "mizu: constant arguments ride the mizu_call() spec \u2014 '...' must ",
         "be empty with a spec 'f'",
         call. = FALSE
       )
@@ -371,7 +371,7 @@ mizu_map_prepare <- function(
   if (spec) {
     if (length(dots)) {
       stop(
-        "mizu: constant arguments ride the mizu_call() spec — '...' must ",
+        "mizu: constant arguments ride the mizu_call() spec \u2014 '...' must ",
         "be empty with a spec 'f'",
         call. = FALSE
       )
