@@ -1,0 +1,50 @@
+url: https://shikokuchuo.github.io/mizu/
+
+template:
+  bootstrap: 5
+
+reference:
+  - title: Channels
+    contents:
+      - mizu_channel
+      - mizu_send
+      - mizu_send_batch
+      - mizu_close
+      - mizu_alive
+  - title: Pools
+    contents:
+      - mizu_pool
+      - mizu_pool_attach
+      - mizu_submit
+      - mizu_submit_batch
+      - mizu_collect_any
+      - mizu_collect_all
+      - mizu_cancel
+      - mizu_current_pool
+      - mizu_spawn_workers
+      - mizu_pool_stop
+  - title: Parallel map
+    contents:
+      - mizu_map
+      - mizu_map_prepare
+  - title: Monitoring and debugging
+    contents:
+      - mizu_pool_status
+      - mizu_pool_stats
+      - mizu_pool_dump
+      - mizu_pool_trace
+  - title: Cross-language interop
+    contents:
+      - mizu_call
+      - mizu_launcher
+      - mizu_py_launcher
+      - mizu_py_pool_launcher
+  - title: Conditions and sentinels
+    contents:
+      - mizu_error
+      - mizu_is_remote_error
+      - mizu_is_sentinel
+  - title: Utilities
+    contents:
+      - mizu_prune
+      - print.mizu_channel

@@ -13,3 +13,6 @@
 ^.*\.Rproj$
 ^\.posit$
 ^AGENTS\.md$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$

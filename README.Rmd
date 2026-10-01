@@ -18,7 +18,10 @@ knitr::opts_chunk$set(
 # mizu 水
 
 <!-- badges: start -->
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 [![R-CMD-check](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml)
+[![Codecov test coverage](https://codecov.io/gh/shikokuchuo/mizu/graph/badge.svg)](https://codecov.io/gh/shikokuchuo/mizu)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 <!-- badges: end -->
 
 ```

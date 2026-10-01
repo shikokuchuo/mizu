@@ -15,5 +15,7 @@ compile_commands.json
 .claude/
 .cache/
 .posit/
+# pkgdown
+docs/
 # OS
 .DS_Store
