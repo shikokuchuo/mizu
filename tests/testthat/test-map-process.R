@@ -472,7 +472,7 @@ test_that("a pool-result view maps by reference; view collect across workers", {
   # a view-collected prepared run restages: v1's pages are never re-armed
   pm <- mizu_map_prepare(p, 1:100, function(i) i * 2.5, .template = numeric(1))
   v1 <- mizu_map_run(pm, .collect = "view", .timeout = 60)
-  v2 <- mizu_map_run(pm, x = (1:100) * 2, .collect = "view", .timeout = 60)
+  v2 <- mizu_map_run(pm, .x = (1:100) * 2, .collect = "view", .timeout = 60)
   expect_identical(as.numeric(v1), 1:100 * 2.5)
   expect_identical(as.numeric(v2), (1:100) * 2 * 2.5)
   expect_true(mizu_pool_stop(p))

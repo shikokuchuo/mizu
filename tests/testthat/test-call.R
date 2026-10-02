@@ -5,13 +5,22 @@ test_that("mizu_call builds name and source specs", {
   expect_identical(spec$kind, 0L)
   expect_identical(spec$positional, list(1:10))
   expect_identical(spec$named, list(probs = c(0.25, 0.75)))
-  src <- mizu_call(source = "x + 1", x = 41L)
+  src <- mizu_call(.source = "x + 1", x = 41L)
   expect_identical(src$kind, 1L)
   expect_identical(src$named, list(x = 41L))
   expect_identical(src$positional, list())
   expect_error(mizu_call(), "exactly one")
-  expect_error(mizu_call("f", source = "x"), "exactly one")
+  expect_error(mizu_call("f", .source = "x"), "exactly one")
   expect_error(mizu_call(1L), "single string")
+})
+
+test_that("spec constant names never collide with the formals ahead of ...", {
+  spec <- mizu_call("fn", n = 3L)
+  expect_identical(spec$code, "fn")
+  expect_identical(spec$named, list(n = 3L))
+  src <- mizu_call(.source = "x", source = 1L)
+  expect_identical(src$code, "x")
+  expect_identical(src$named, list(source = 1L))
 })
 
 test_that("spec tasks run on a same-language pool, errors stay rich", {
@@ -22,7 +31,7 @@ test_that("spec tasks run on a same-language pool, errors stay rich", {
     mizu_call("stats::quantile", 1:100, probs = c(0.25, 0.75), names = FALSE)
   )
   expect_equal(mizu_collect(t), c(25.75, 75.25))
-  s <- mizu_submit_call(p, mizu_call(source = "y <- x * 2\ny + 1", x = 20))
+  s <- mizu_submit_call(p, mizu_call(.source = "y <- x * 2\ny + 1", x = 20))
   expect_identical(mizu_collect(s), 41)
   e <- mizu_submit_call(p, mizu_call("base::log", "x"))
   cnd <- tryCatch(mizu_collect(e), error = function(c) c)
@@ -110,8 +119,8 @@ test_that("foreign-submitter tasks: results, err streams, the result gate", {
     .Call(mizu:::mizu_pool_submit_spec, p$ctrl, spec, Inf, ident)
   }
   t1 <- submit(mizu_call("base::sqrt", 16), c(3L, 7L))
-  t2 <- submit(mizu_call(source = "stop(\"boom\")"), c(3L, 7L))
-  t3 <- submit(mizu_call(source = "lm(mpg ~ wt, mtcars)"), c(3L, 7L))
+  t2 <- submit(mizu_call(.source = "stop(\"boom\")"), c(3L, 7L))
+  t3 <- submit(mizu_call(.source = "lm(mpg ~ wt, mtcars)"), c(3L, 7L))
   t4 <- submit(mizu_call("base::sqrt", 25), c(3L, 15L))
   pool_step(p)
   pool_step(p)
@@ -134,7 +143,7 @@ test_that("foreign-submitter tasks: results, err streams, the result gate", {
 test_that("a large foreign result is a view only when caps admit", {
   p <- pool_pair()
   x <- strrep("abcdefghij", 10000)
-  spec <- mizu_call(source = "strrep(\"abcdefghij\", 10000)")
+  spec <- mizu_call(.source = "strrep(\"abcdefghij\", 10000)")
   t1 <- .Call(mizu:::mizu_pool_submit_spec, p$ctrl, spec, Inf, c(3L, 7L))
   t2 <- .Call(mizu:::mizu_pool_submit_spec, p$ctrl, spec, Inf, c(3L, 0L))
   pool_step(p)
@@ -202,7 +211,7 @@ test_that("a foreign task nests a same-language submit", {
   t <- .Call(
     mizu:::mizu_pool_submit_spec,
     p$ctrl,
-    mizu_call(source = src),
+    mizu_call(.source = src),
     Inf,
     c(3L, 7L)
   )
@@ -216,15 +225,15 @@ test_that("collect_any and collect_all cross languages", {
   submit <- function(spec) {
     .Call(mizu:::mizu_pool_submit_spec, p$ctrl, spec, Inf, c(3L, 7L))
   }
-  t1 <- submit(mizu_call(source = "1 + 1"))
-  t2 <- submit(mizu_call(source = "stop(\"boom\")"))
+  t1 <- submit(mizu_call(.source = "1 + 1"))
+  t2 <- submit(mizu_call(.source = "stop(\"boom\")"))
   pool_step(p)
   pool_step(p)
   r <- mizu_collect_any(list(t1, t2))
   expect_identical(r[["index"]], 1L)
   expect_identical(r[["value"]], 2)
-  t3 <- submit(mizu_call(source = "1 + 1"))
-  t4 <- submit(mizu_call(source = "stop(\"boom\")"))
+  t3 <- submit(mizu_call(.source = "1 + 1"))
+  t4 <- submit(mizu_call(.source = "stop(\"boom\")"))
   pool_step(p)
   pool_step(p)
   cnd <- tryCatch(
@@ -281,7 +290,7 @@ test_that("multiple ref args and a nested view cross, loans balanced", {
       vb,
       x = list(va),
       y = vb,
-      source = "gc(); sum(..1) + sum(..2) + sum(x[[1]]) + sum(y)"
+      .source = "gc(); sum(..1) + sum(..2) + sum(x[[1]]) + sum(y)"
     )
   )
   pool_step(p)
@@ -343,7 +352,7 @@ test_that("the emitted set keeps loans: attribute and condition-field probes", {
   # emission keeps the loan — the view arrives intact, refcounts balanced
   t1 <- mizu_submit_call(
     p$ctrl,
-    mizu_call(NULL, xv, source = "structure(list(42), payload = ..1)")
+    mizu_call(NULL, xv, .source = "structure(list(42), payload = ..1)")
   )
   pool_step(p)
   r1 <- mizu_collect(t1)
@@ -361,7 +370,7 @@ test_that("the emitted set keeps loans: attribute and condition-field probes", {
     mizu_call(
       NULL,
       xv,
-      source = paste(
+      .source = paste(
         "stop(structure(list(message = \"boom\", payload = ..1),",
         "class = c(\"myerr\", \"error\", \"condition\")))"
       )

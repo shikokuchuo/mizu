@@ -10,10 +10,9 @@ mizu_collect_any(tasks, timeout = Inf)
 \item{tasks}{a non-empty list of task handles from \code{\link[=mizu_submit]{mizu_submit()}} on
 the same pool handle.}
 
-\item{timeout}{seconds to wait for injection-ring space before the
-call raises \code{mizu_error_submit_timeout}. Submission blocks only
-when the ring is full (back-pressure) and returns immediately
-otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
+\item{timeout}{seconds to wait for a task to reach a terminal state
+before the call returns the \code{mizu_timeout} sentinel. \code{Inf} (the
+default) waits indefinitely; \code{0} does not wait.}
 }
 \value{
 For a published result, \code{list(index = i, value = v)}: the

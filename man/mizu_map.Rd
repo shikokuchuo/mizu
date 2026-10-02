@@ -5,9 +5,9 @@
 \title{Parallel Map Over a Pool}
 \usage{
 mizu_map(
-  pool,
-  x,
-  f,
+  .pool,
+  .x,
+  .f,
   ...,
   .template = NULL,
   .chunks = NULL,
@@ -17,20 +17,22 @@ mizu_map(
 )
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+\item{.pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
 inside a task, the evaluating worker's own handle from
 \code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
-\item{x}{a vector (atomic or list) to map over. Anything else is
+\item{.x}{a vector (atomic or list) to map over. Anything else is
 coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
 
-\item{f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
-\code{f(x[[i]], ...)}. Serialized once with its enclosing environment.
+\item{.f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
+\code{.f(.x[[i]], ...)}. Serialized once with its enclosing environment.
 Keep that environment small, as with any cross-process map. A
 \code{\link[=mizu_call]{mizu_call()}} specification maps over a pool of any worker language —
 see the Cross-language maps section.}
 
-\item{...}{further constant arguments to \code{f}, staged once.}
+\item{...}{further constant arguments to \code{.f}, staged once. As in
+\code{\link[=mizu_submit]{mizu_submit()}}, the formals ahead of \code{...} are dot-prefixed, so an
+argument name passed here never collides with them.}
 
 \item{.template}{\code{NULL} for a list result, or a \code{\link[=vapply]{vapply()}}-style
 \code{FUN.VALUE}: an atomic vector template that each result must match.}
@@ -57,29 +59,29 @@ the map region alive until released, and re-sending it through a
 channel or pool crosses as a full copy, not by reference.}
 }
 \value{
-A list of the results of \code{f} in the order of \code{x}, with
-\code{names(x)} reapplied. With \code{.template}, an atomic vector of type
-\code{typeof(.template)} (an \code{m * length(x)} matrix when
+A list of the results of \code{.f} in the order of \code{.x}, with
+\code{names(.x)} reapplied. With \code{.template}, an atomic vector of type
+\code{typeof(.template)} (an \code{m * length(.x)} matrix when
 \code{length(.template) > 1}) — an owning vector, or a copy-on-write view
 over the shared output area with \code{.collect = "view"}. On \code{.timeout}
 expiry, the \code{mizu_timeout} sentinel.
 }
 \description{
-Maps \code{f} over the elements of \code{x} on a pool and returns the results in
+Maps \code{.f} over the elements of \code{.x} on a pool and returns the results in
 input order. The result is a list by default, or an atomic vector (or
 matrix) with \code{\link[=vapply]{vapply()}} semantics when \code{.template} is given. Unlike
 mapping with per-element \code{\link[=mizu_submit]{mizu_submit()}} calls, one \code{mizu_map()} call
-serializes \code{f}, the constant arguments in \code{...}, and \code{x} exactly once.
+serializes \code{.f}, the constant arguments in \code{...}, and \code{.x} exactly once.
 It submits one \emph{runner} task per live worker, and each worker
 materializes that map context at most once. The per-element residual
 cost is one R closure call, as in \code{\link[=lapply]{lapply()}}. Runners self-schedule:
 they claim contiguous element batches off a shared cursor in the map
 region and size each batch adaptively toward a fixed time target. A
-trivial \code{f} runs in large batches at near-zero scheduling overhead. An
-expensive or skewed \code{f} self-limits to fine claims that keep the
-workers balanced. An atomic, non-ALTREP \code{x} with no attributes beyond
+trivial \code{.f} runs in large batches at near-zero scheduling overhead. An
+expensive or skewed \code{.f} self-limits to fine claims that keep the
+workers balanced. An atomic, non-ALTREP \code{.x} with no attributes beyond
 names also travels as bare bytes. The workers slice their batches
-straight from shared memory without deserializing \code{x}, and no worker
+straight from shared memory without deserializing \code{.x}, and no worker
 ever materializes more than a batch of it.
 }
 \details{
@@ -89,7 +91,7 @@ every pool invariant applies unchanged. Between batches, a runner also
 answers a pool-wide doorbell. When the task of another submitter
 arrives with every worker busy inside a map, one runner picks it up at
 its next batch boundary. Foreign-task pickup latency is time-bounded
-and independent of \code{length(x)}. A runner claimed off the bell is not
+and independent of \code{length(.x)}. A runner claimed off the bell is not
 executed there: a runner is the join ticket of a map. The helper moves
 it onto its own deque instead, where the next free worker steals it and
 joins that map.
@@ -100,7 +102,7 @@ Elements are claimed in \emph{morsels}: contiguous ranges of
 \code{max(1, min(n \%/\% (workers * 256), 256))} elements. The morsel is the
 granularity floor for cancellation, help, and loss reporting. Morsels
 go to runners in adaptively sized batches of consecutive morsels.
-\code{.chunks} overrides the morsel count outright (\code{min(length(x), .chunks)}
+\code{.chunks} overrides the morsel count outright (\code{min(length(.x), .chunks)}
 morsels). With no per-morsel shared state, \code{.chunks = length(x)} is
 admissible at zero memory cost for pathological imbalance. A map
 submitted while no worker is live queues a single runner in the
@@ -122,7 +124,7 @@ zero result serializations. With \code{.collect = "view"}, the gather copy
 is skipped as well: the result is a copy-on-write view over the shared
 output area itself, for pipelines that immediately reduce. A template
 of length \code{m > 1} gathers an
-\code{m * length(x)} matrix, with the names of the template as row names, as
+\code{m * length(.x)} matrix, with the names of the template as row names, as
 \code{vapply()} does. Character templates are assembled through the generic
 result path instead. Their type checks then surface at assembly, not
 per element on the workers. Big shape-regular results belong on the
@@ -137,7 +139,7 @@ right for its usual traffic.
 
 \section{Errors, timeout, and cleanup}{
 
-An error raised by \code{f} signals again in the caller as the original
+An error raised by \code{.f} signals again in the caller as the original
 condition. A \code{mizu_map_index} field names the failing element: the first
 by element index among the elements that ran. Failure is fail-fast. The
 erroring runner sets the shared cancel word of the map before it
@@ -151,8 +153,8 @@ completed is reported lost alongside what it was executing, never the
 reverse. On \code{.timeout} expiry, mid-submit or mid-collect, the
 outstanding work is cancelled and the \code{mizu_timeout} sentinel is
 returned, never raised. Executing runners observe cancellation within
-about one batch (one element where \code{f} is expensive), independent of
-\code{length(x)}. The slot of a published-uncollected result is released
+about one batch (one element where \code{.f} is expensive), independent of
+\code{length(.x)}. The slot of a published-uncollected result is released
 only when the finalizer of the dropped handle runs at the next garbage
 collection. The staging region of the map is likewise unlinked at GC. A
 subsequent map absorbs this transient occupancy by clamping its runner
@@ -161,7 +163,7 @@ count.
 
 \section{Reproducible RNG}{
 
-By default nothing is guaranteed about random draws inside \code{f}: the
+By default nothing is guaranteed about random draws inside \code{.f}: the
 workers seed lazily and independently, and the fast path pays nothing
 for the option. \code{.seed} opts into reproducible per-element
 L'Ecuyer-CMRG streams: element \code{i} runs under the stream \code{i} jumps of
@@ -189,15 +191,15 @@ controller) at most 7 workers can nest concurrently. Raise
 
 \section{Cross-language maps}{
 
-\code{f} may be a \code{\link[=mizu_call]{mizu_call()}} specification instead of a function — the
+\code{.f} may be a \code{\link[=mizu_call]{mizu_call()}} specification instead of a function — the
 way to map over a foreign pool (one spawned with
 \code{\link[=mizu_py_pool_launcher]{mizu_py_pool_launcher()}}, or any pool whose workers are not R). A spec
-\code{f} always stages a shared map region: the descriptor crosses in the
+\code{.f} always stages a shared map region: the descriptor crosses in the
 interchange format and each runner task carries a region reference any
 worker language reads. The map element fills the spec's first
 positional argument (name kind) or binds as \code{x} (source kind), and the
 spec's own constant arguments ride with it — so \code{...} must be empty
-with a spec \code{f}. Constants and elements must be portable values (the
+with a spec \code{.f}. Constants and elements must be portable values (the
 interchange subset documented in \code{\link[=mizu_send]{mizu_send()}}); a non-portable one
 raises \code{mizu_error_not_portable} at stage time. \code{.template} and
 \code{.collect} work unchanged — the output area is wire-typed slots
@@ -217,14 +219,14 @@ inline budget, so pools created with \code{slot_size = 256L} (224-byte
 budget) fit it. The exception is \code{.seed}: its 6-word RNG state pushes
 the wrapper to about 270 bytes. Seeded maps on such pools work but
 spill a region per runner, so keep the default \code{slot_size} on pools
-meant for seeded maps. For a very large \code{x}, sharing it first is the
+meant for seeded maps. For a very large \code{.x}, sharing it first is the
 recommended path: a zero-copy view received from a channel or a pool
 result, or a \code{mori::share()}d vector, reduces to its ~30-byte
 identifier inside the staged descriptor, and workers read elements
 straight off the shared pages with OS demand paging — no worker copies
-any part of \code{x} (\code{mizu_map} itself never calls mori).
+any part of \code{.x} (\code{mizu_map} itself never calls mori).
 
-As in \code{\link[=lapply]{lapply()}}, \code{x} is indexed with \code{[[} on the workers after an
+As in \code{\link[=lapply]{lapply()}}, \code{.x} is indexed with \code{[[} on the workers after an
 \code{as.list()} coercion of anything that is not a plain vector. So a
 data.frame maps over its columns, and a factor over its elements.
 }

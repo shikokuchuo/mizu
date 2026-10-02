@@ -179,6 +179,35 @@ test_that("constant dots stage once and reach every element", {
   pool_end(p)
 })
 
+test_that("constant names never collide with the map formals ahead of ...", {
+  p <- pool_pair()
+  # an empty .x returns before the blocking run: mizu_map() itself matches
+  expect_identical(
+    mizu_map(p[["ctrl"]], list(), function(i, x) i + x, x = 10L),
+    list()
+  )
+  # values through mizu_map_prepare(), which shares the signature
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:3, function(i, x) i + x, x = 10L)
+  mizu:::map_submit(p[["ctrl"]], pm[["st"]])
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], pm[["st"]]), list(11L, 12L, 13L))
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:3, function(i, p) i * p, p = 2L)
+  mizu:::map_submit(p[["ctrl"]], pm[["st"]])
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], pm[["st"]]), list(2L, 4L, 6L))
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:3, function(i, f) i * f, f = 2L)
+  mizu:::map_submit(p[["ctrl"]], pm[["st"]])
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], pm[["st"]]), list(2L, 4L, 6L))
+  pool_end(p)
+})
+
 test_that("a data.frame x maps over its columns, as lapply", {
   p <- pool_pair()
   df <- data.frame(a = 1:3, b = 4:6)
@@ -1329,11 +1358,11 @@ test_that("spec constant arguments ride the spec, named and positional", {
     as.list(round(1:5, digits = 1L))
   )
   expect_identical(
-    run_map(p, 1:5, mizu_call(name = NULL, 10L, source = "x * ..1")),
+    run_map(p, 1:5, mizu_call(.name = NULL, 10L, .source = "x * ..1")),
     as.list(1:5 * 10L)
   )
   expect_identical(
-    run_map(p, as.list(1:5), mizu_call(source = "x + k", k = 5L)),
+    run_map(p, as.list(1:5), mizu_call(.source = "x + k", k = 5L)),
     as.list(1:5 + 5L)
   )
   pool_end(p)
@@ -1424,7 +1453,7 @@ test_that("a spec map stages the template path and gathers a view", {
 
 test_that("a spec map's seed matches the native derivation, chunk-invariant", {
   p <- pool_pair()
-  f <- mizu_call(source = "runif(1)")
+  f <- mizu_call(.source = "runif(1)")
   a <- run_map(p, 1:20, f, seed = 42)
   b <- run_map(p, 1:20, f, seed = 42, chunks = 7)
   expect_identical(a, b)
@@ -1440,7 +1469,7 @@ test_that("a spec map's seed matches the native derivation, chunk-invariant", {
 
 test_that("a prepared spec map re-runs under fresh seeds without restaging", {
   p <- pool_pair()
-  pm <- mizu_map_prepare(p[["ctrl"]], 1:12, mizu_call(source = "runif(1)"))
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:12, mizu_call(.source = "runif(1)"))
   st <- pm[["st"]]
   name1 <- st[["name"]]
   mizu:::map_rearm(p[["ctrl"]], st, 1)
@@ -1467,7 +1496,7 @@ test_that("a spec map error re-signals with the failing element's index", {
   st <- mizu:::map_stage(
     p[["ctrl"]],
     1:10,
-    mizu_call(source = "if (x == 7) stop(\"boom\") else x"),
+    mizu_call(.source = "if (x == 7) stop(\"boom\") else x"),
     list(),
     chunks = 2
   )

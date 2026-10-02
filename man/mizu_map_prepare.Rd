@@ -5,25 +5,27 @@
 \alias{mizu_map_run}
 \title{Prepared Maps: Stage Once, Run Many}
 \usage{
-mizu_map_prepare(pool, x, f, ..., .template = NULL, .chunks = NULL)
+mizu_map_prepare(.pool, .x, .f, ..., .template = NULL, .chunks = NULL)
 
-mizu_map_run(pm, x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
+mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+\item{.pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
 inside a task, the evaluating worker's own handle from
 \code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
-\item{x}{a vector (atomic or list) to map over. Anything else is
+\item{.x}{a vector (atomic or list) to map over. Anything else is
 coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
 
-\item{f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
-\code{f(x[[i]], ...)}. Serialized once with its enclosing environment.
+\item{.f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
+\code{.f(.x[[i]], ...)}. Serialized once with its enclosing environment.
 Keep that environment small, as with any cross-process map. A
 \code{\link[=mizu_call]{mizu_call()}} specification maps over a pool of any worker language —
 see the Cross-language maps section.}
 
-\item{...}{further constant arguments to \code{f}, staged once.}
+\item{...}{further constant arguments to \code{.f}, staged once. As in
+\code{\link[=mizu_submit]{mizu_submit()}}, the formals ahead of \code{...} are dot-prefixed, so an
+argument name passed here never collides with them.}
 
 \item{.template}{\code{NULL} for a list result, or a \code{\link[=vapply]{vapply()}}-style
 \code{FUN.VALUE}: an atomic vector template that each result must match.}
@@ -57,8 +59,8 @@ exactly what \code{\link[=mizu_map]{mizu_map()}} returns for the staged map — 
 templated atomic vector, or the \code{mizu_timeout} sentinel.
 }
 \description{
-\code{mizu_map_prepare()} stages a map — \code{f}, the constant arguments in
-\code{...}, and \code{x} — serialized once into a shared map region, without
+\code{mizu_map_prepare()} stages a map — \code{.f}, the constant arguments in
+\code{...}, and \code{.x} — serialized once into a shared map region, without
 running it. It returns a prepared-map handle. Each \code{mizu_map_run()}
 then costs only task submission and collection: no serialization and
 no region create. Because the region (and its name) stays alive across
@@ -72,7 +74,7 @@ Between runs, the shared scheduling state of the region is re-armed in
 O(1). The cursor and cancel word clear, and the run generation embedded
 in every claim word advances. A straggler task from a previous run can
 never issue against the cursor of the new run. After an unclean run — a
-\code{.timeout} expiry, an error in \code{f}, a worker death — the handle is
+\code{.timeout} expiry, an error in \code{.f}, a worker death — the handle is
 marked stale. The next \code{mizu_map_run()} restages into a fresh region
 transparently (the old one unlinks at garbage collection under any
 stragglers). A run collected with \code{.collect = "view"} restages
@@ -81,20 +83,20 @@ fresh rather than re-arming pages a held view still reads. A map small
 enough to ride entirely inline keeps its staged blob on the handle
 instead: runs resubmit it, still skipping the serialization.
 
-The prepared handle pins the staged \code{x} (for transparent restaging) and
+The prepared handle pins the staged \code{.x} (for transparent restaging) and
 the map region for its lifetime. Both release at garbage collection
 when the handle is dropped. The chunking geometry is fixed at prepare
 time. The runner count adapts to the live workers at each run.
 }
 \section{Replacing x between runs}{
 
-\code{mizu_map_run(pm, x = x2)} runs over a replacement \code{x}. When both the
-staged and the replacement \code{x} are bare-byte eligible (atomic,
+\code{mizu_map_run(pm, .x = x2)} runs over a replacement \code{.x}. When both the
+staged and the replacement \code{.x} are bare-byte eligible (atomic,
 non-ALTREP, no attributes beyond names) with identical type and length,
-the swap is in place. The new bytes are copied over the \code{x} section of
+the swap is in place. The new bytes are copied over the \code{.x} section of
 the region. This runs the iterate-over-same-shape loop (optimizer
 steps, simulation sweeps) at memcpy cost, skipping the region create
-and the re-attach of every worker. Any other change of \code{x} — a
+and the re-attach of every worker. Any other change of \code{.x} — a
 different shape or type, a list, a map staged inline — restages
 transparently on the next run.
 }

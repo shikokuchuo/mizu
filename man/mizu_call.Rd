@@ -5,12 +5,12 @@
 \alias{mizu_submit_call}
 \title{Call a Function in Another Language: the Task Specification}
 \usage{
-mizu_call(name = NULL, ..., source = NULL)
+mizu_call(.name = NULL, ..., .source = NULL)
 
 mizu_submit_call(pool, spec, .timeout = Inf)
 }
 \arguments{
-\item{name}{[character(1)] a qualified function name: \code{"pkg::fn"}
+\item{.name}{[character(1)] a qualified function name: \code{"pkg::fn"}
 (or \code{"pkg:::fn"}) for R workers, \code{"mod.fn"} for Python workers. The
 qualifier is required: a worker's global namespace is the runner
 module, never the submitter's, so the name resolves through the
@@ -23,7 +23,7 @@ values (the interchange subset documented in \code{\link[=mizu_send]{mizu_send()
 non-portable argument raises \code{mizu_error_not_portable} at submit,
 never a fallback.}
 
-\item{source}{[character(1)] source code in the workers' language.
+\item{.source}{[character(1)] source code in the workers' language.
 Evaluated in a fresh namespace (parented on the global environment in
 R, a fresh dict over \verb{__builtins__} in Python) with the named
 arguments bound as names and positional arguments bound as \code{..1},

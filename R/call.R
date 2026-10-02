@@ -11,7 +11,7 @@
 #' language from the pool itself, for attached submitters too, and a bare
 #' (unqualified) name errors at submit, not at spec construction.
 #'
-#' @param name \[character(1)\] a qualified function name: `"pkg::fn"`
+#' @param .name \[character(1)\] a qualified function name: `"pkg::fn"`
 #'   (or `"pkg:::fn"`) for R workers, `"mod.fn"` for Python workers. The
 #'   qualifier is required: a worker's global namespace is the runner
 #'   module, never the submitter's, so the name resolves through the
@@ -22,7 +22,7 @@
 #'   values (the interchange subset documented in [mizu_send()]): a
 #'   non-portable argument raises `mizu_error_not_portable` at submit,
 #'   never a fallback.
-#' @param source \[character(1)\] source code in the workers' language.
+#' @param .source \[character(1)\] source code in the workers' language.
 #'   Evaluated in a fresh namespace (parented on the global environment in
 #'   R, a fresh dict over `__builtins__` in Python) with the named
 #'   arguments bound as names and positional arguments bound as `..1`,
@@ -63,13 +63,16 @@
 #' }
 #'
 #' @export
-mizu_call <- function(name = NULL, ..., source = NULL) {
-  if (is.null(name) == is.null(source)) {
-    stop("mizu: exactly one of 'name' or 'source' must be given", call. = FALSE)
+mizu_call <- function(.name = NULL, ..., .source = NULL) {
+  if (is.null(.name) == is.null(.source)) {
+    stop(
+      "mizu: exactly one of '.name' or '.source' must be given",
+      call. = FALSE
+    )
   }
-  code <- if (is.null(source)) name else source
+  code <- if (is.null(.source)) .name else .source
   if (!is.character(code) || length(code) != 1L || is.na(code)) {
-    stop("mizu: 'name' and 'source' must be a single string", call. = FALSE)
+    stop("mizu: '.name' and '.source' must be a single string", call. = FALSE)
   }
   args <- list(...)
   nms <- names(args)
@@ -79,7 +82,7 @@ mizu_call <- function(name = NULL, ..., source = NULL) {
   structure(
     list(
       code = code,
-      kind = if (is.null(source)) 0L else 1L,
+      kind = if (is.null(.source)) 0L else 1L,
       positional = unname(args[nms == ""]),
       named = args[nms != ""]
     ),

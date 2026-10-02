@@ -165,6 +165,25 @@ test_that("batch submit shares the ... bindings across tasks", {
   pool_end(p)
 })
 
+test_that("task argument names never collide with the formals ahead of ...", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], e * 2L, e = 3L)
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 6L)
+  t <- mizu_submit(p[["ctrl"]], base^exp, base = 2, exp = 3)
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 8)
+  t <- mizu_submit(p[["ctrl"]], pool * 2L, pool = 4L)
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 8L)
+  ts <- mizu_submit_batch(p[["ctrl"]], list(quote(e * 2L)), e = 3L)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect_all(ts, timeout = 5), list(6L))
+  pool_end(p)
+})
+
 test_that("batch submit validates its inputs", {
   p <- pool_pair()
   expect_identical(mizu_submit_batch(p[["ctrl"]], list()), list())

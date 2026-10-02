@@ -19,13 +19,13 @@ test_that("an R submitter drives a Python worker pool (both kinds)", {
     "x.sum().item()",
     sep = "\n"
   )
-  t3 <- mizu_submit_call(p, mizu_call(source = src, x = 1:5))
+  t3 <- mizu_submit_call(p, mizu_call(.source = src, x = 1:5))
   expect_equal(mizu_collect(t3), 30)
   # statements only -> NULL
-  t4 <- mizu_submit_call(p, mizu_call(source = "y = 1"))
+  t4 <- mizu_submit_call(p, mizu_call(.source = "y = 1"))
   expect_null(mizu_collect(t4))
   # a Python list result crosses as an R list of scalars
-  t5 <- mizu_submit_call(p, mizu_call(source = "[1.5, 'two', None]"))
+  t5 <- mizu_submit_call(p, mizu_call(.source = "[1.5, 'two', None]"))
   expect_identical(mizu_collect(t5), list(1.5, "two", NULL))
 })
 
@@ -49,7 +49,7 @@ test_that("errors cross with remote_type, and result portability is gated", {
     "qualified name"
   )
   # a non-portable *result* fails the task with an error stream
-  t3 <- mizu_submit_call(p, mizu_call(source = "{1, 2, 3}"))
+  t3 <- mizu_submit_call(p, mizu_call(.source = "{1, 2, 3}"))
   c3 <- tryCatch(mizu_collect(t3), mizu_error_remote = function(c) c)
   expect_s3_class(c3, "mizu_error_remote")
   expect_equal(c3$remote_type, "DeclinedError")
@@ -61,17 +61,17 @@ test_that("errors cross with remote_type, and result portability is gated", {
     "t = pool.submit(abs, -42)\n",
     "t.collect()"
   )
-  t4 <- mizu_submit_call(p, mizu_call(source = src))
+  t4 <- mizu_submit_call(p, mizu_call(.source = src))
   expect_identical(mizu_collect(t4), 42L)
 
   # collect_any / collect_all across languages
-  t5 <- mizu_submit_call(p, mizu_call(source = "1 + 1"))
-  t6 <- mizu_submit_call(p, mizu_call(source = "raise ValueError('boom')"))
+  t5 <- mizu_submit_call(p, mizu_call(.source = "1 + 1"))
+  t6 <- mizu_submit_call(p, mizu_call(.source = "raise ValueError('boom')"))
   r <- mizu_collect_any(list(t5, t6))
   expect_identical(r[["index"]], 1L)
   expect_identical(r[["value"]], 2L)
-  t7 <- mizu_submit_call(p, mizu_call(source = "1 + 1"))
-  t8 <- mizu_submit_call(p, mizu_call(source = "raise ValueError('boom')"))
+  t7 <- mizu_submit_call(p, mizu_call(.source = "1 + 1"))
+  t8 <- mizu_submit_call(p, mizu_call(.source = "raise ValueError('boom')"))
   cnd2 <- tryCatch(
     mizu_collect_all(list(t7, t8)),
     mizu_error_remote = function(c) c
@@ -91,7 +91,7 @@ test_that("a dead Python worker surfaces as the died condition", {
   p <- mizu_pool(1L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
-  t <- mizu_submit_call(p, mizu_call(source = "import time\ntime.sleep(30)"))
+  t <- mizu_submit_call(p, mizu_call(.source = "import time\ntime.sleep(30)"))
   expect_true(wait_until(any(
     mizu_pool_dump(p)[["workers"]][["in_flight"]] != -1L
   )))
@@ -112,7 +112,7 @@ test_that("a large array argument crosses to Python workers by reference", {
   # the worker proves the zero-copy arrival: the array's .base is the view
   t2 <- mizu_submit_call(
     p,
-    mizu_call(NULL, big, source = "type(_1.base).__name__")
+    mizu_call(NULL, big, .source = "type(_1.base).__name__")
   )
   expect_identical(mizu_collect(t2), "_ShmView")
 
@@ -129,7 +129,7 @@ test_that("a large array argument crosses to Python workers by reference", {
   expect_identical(rc1[2L], 1L) # REFHELD
 
   # result-is-the-arg: arrives intact, a view, elevated by our own add
-  t4 <- mizu_submit_call(p, mizu_call(NULL, xv, source = "_1"))
+  t4 <- mizu_submit_call(p, mizu_call(NULL, xv, .source = "_1"))
   res <- mizu_collect(t4)
   expect_true(.Call(mizu:::mizu_zc_view_check, res))
   expect_true(wait_until(
@@ -172,7 +172,7 @@ test_that("multiple ref args and a nested view cross to Python workers", {
       list(va),
       big,
       z = vb,
-      source = paste(
+      .source = paste(
         "type(_2.base).__name__ + '/' + ",
         "str(_1[0].base is not None) + '/' + str(z.base is not None)"
       )
@@ -213,7 +213,7 @@ test_that("a worker killed mid-task leaks one bounded count, REFHELD set", {
   rc0 <- .Call(mizu:::mizu_zc_refcount, xv)
   t1 <- mizu_submit_call(
     p,
-    mizu_call(NULL, xv, source = "import time\ntime.sleep(30)")
+    mizu_call(NULL, xv, .source = "import time\ntime.sleep(30)")
   )
   expect_true(wait_until(any(
     mizu_pool_dump(p)[["workers"]][["in_flight"]] != -1L

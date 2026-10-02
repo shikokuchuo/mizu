@@ -127,7 +127,7 @@ mizu_pool <- function(
 #' reaped. So a pool can cycle workers within its registry capacity for
 #' its whole lifetime. Only the creating process can resize a pool.
 #'
-#' @inheritParams mizu_submit
+#' @inheritParams mizu_pool_stop
 #' @inheritParams mizu_pool
 #' @param n number of workers to spawn.
 #' @param slot the slot index of the worker (0-based, as reported by
@@ -216,7 +216,7 @@ mizu_pool_attach <- function(name) {
 
 #' Submit a Task and Collect Its Result
 #'
-#' `mizu_submit()` captures `expr` unevaluated, serializes it with its
+#' `mizu_submit()` captures `.expr` unevaluated, serializes it with its
 #' named arguments into the injection ring of the submitter, and returns a
 #' task handle immediately. Payloads past the inline budget travel in a
 #' fresh region. A worker evaluates the expression in a fresh environment
@@ -278,16 +278,17 @@ mizu_pool_attach <- function(name) {
 #' [mizu_collect_any()] reports the first terminal task and
 #' [mizu_collect_all()] returns every result in input order.
 #'
-#' @param pool a pool handle from [mizu_pool()] or [mizu_pool_attach()];
+#' @param .pool a pool handle from [mizu_pool()] or [mizu_pool_attach()];
 #'   inside a task, the evaluating worker's own handle from
 #'   [mizu_current_pool()].
-#' @param expr an expression, captured unevaluated. This differs from
+#' @param .expr an expression, captured unevaluated. This differs from
 #'   [mizu_channel()], which requires its expression pre-quoted. The
 #'   expression sees only the arguments in `...` and the global environment
 #'   of the worker. The expression itself must load any packages it needs.
 #' @param ... named values bound in the evaluation environment. The values
 #'   are serialized. `mori::share()`d objects reduce to identifiers and map
-#'   zero-copy on the worker.
+#'   zero-copy on the worker. The formals ahead of `...` are dot-prefixed,
+#'   so a name you pass through `...` can never collide with them.
 #' @param .timeout seconds to wait for injection-ring space before the
 #'   call raises `mizu_error_submit_timeout`. Submission blocks only
 #'   when the ring is full (back-pressure) and returns immediately
@@ -308,8 +309,15 @@ mizu_pool_attach <- function(name) {
 #' mizu_pool_stop(p)
 #'
 #' @export
-mizu_submit <- function(pool, expr, ..., .timeout = Inf) {
-  .Call(mizu_pool_submit_expr, pool, substitute(expr), list(...), .timeout, 0L)
+mizu_submit <- function(.pool, .expr, ..., .timeout = Inf) {
+  .Call(
+    mizu_pool_submit_expr,
+    .pool,
+    substitute(.expr),
+    list(...),
+    .timeout,
+    0L
+  )
 }
 
 #' @rdname mizu_submit
@@ -349,17 +357,17 @@ mizu_current_pool <- function() {
 
 #' Submit a Batch of Tasks
 #'
-#' `mizu_submit_batch()` submits one task per element of `exprs` in a
+#' `mizu_submit_batch()` submits one task per element of `.exprs` in a
 #' single `.Call`: one R boundary crossing and one wake-up sweep per
 #' batch instead of per task. At target rates the call boundary is a
 #' first-order cost, so a burst submitted this way reaches the workers
 #' sooner than the same burst looped through [mizu_submit()]. Pair with
 #' [mizu_collect_all()] to batch the collection side too.
 #'
-#' Each task's wire payload is the same `list(expr, args)` as
+#' Each task's wire payload is the same `list(.expr, args)` as
 #' [mizu_submit()]'s, with the `...` arguments shared by every task in
 #' the batch. Unlike `mizu_submit()`, expressions are not captured:
-#' the elements of `exprs` are pre-quoted (or plain values, which
+#' the elements of `.exprs` are pre-quoted (or plain values, which
 #' evaluate to themselves).
 #'
 #' Submission semantics per task are [mizu_submit()]'s, with one
@@ -370,11 +378,11 @@ mizu_current_pool <- function() {
 #' collectible.
 #'
 #' @inheritParams mizu_submit
-#' @param exprs a list of expressions, one per task. Quote them
+#' @param .exprs a list of expressions, one per task. Quote them
 #'   yourself: elements of a list cannot be captured unevaluated.
 #'
 #' @return A list of task handles (class `"mizu_task"`), one per
-#'   accepted task — shorter than `exprs` when the ring filled past
+#'   accepted task — shorter than `.exprs` when the ring filled past
 #'   `.timeout` mid-batch.
 #'
 #' @examples
@@ -384,8 +392,8 @@ mizu_current_pool <- function() {
 #' mizu_pool_stop(p)
 #'
 #' @export
-mizu_submit_batch <- function(pool, exprs, ..., .timeout = Inf) {
-  .Call(mizu_pool_submit_batch, pool, exprs, list(...), .timeout, 0L)
+mizu_submit_batch <- function(.pool, .exprs, ..., .timeout = Inf) {
+  .Call(mizu_pool_submit_batch, .pool, .exprs, list(...), .timeout, 0L)
 }
 
 #' Collect the First Available Result From Several Tasks
@@ -417,7 +425,9 @@ mizu_submit_batch <- function(pool, exprs, ..., .timeout = Inf) {
 #'
 #' @param tasks a non-empty list of task handles from [mizu_submit()] on
 #'   the same pool handle.
-#' @inheritParams mizu_submit
+#' @param timeout seconds to wait for a task to reach a terminal state
+#'   before the call returns the `mizu_timeout` sentinel. `Inf` (the
+#'   default) waits indefinitely; `0` does not wait.
 #'
 #' @return For a published result, `list(index = i, value = v)`: the
 #'   1-based position of the task in `tasks` and its value. Otherwise the
@@ -471,7 +481,9 @@ mizu_collect_any <- function(tasks, timeout = Inf) {
 #'
 #' @param tasks a non-empty list of task handles from [mizu_submit()] on
 #'   the same pool handle.
-#' @inheritParams mizu_submit
+#' @param timeout seconds to wait for every task to reach a terminal state
+#'   before the call returns the `mizu_timeout` sentinel. `Inf` (the
+#'   default) waits indefinitely; `0` does not wait.
 #'
 #' @return A plain list of the task values in the order of `tasks`; the
 #'   names of `tasks` carry over. On timeout, the `mizu_timeout`
@@ -498,7 +510,7 @@ mizu_collect_all <- function(tasks, timeout = Inf) {
 #' its result is dropped. Collecting a cancelled handle raises
 #' `mizu_error_cancelled` (see [mizu_error]).
 #'
-#' @inheritParams mizu_submit
+#' @param task a task handle from `mizu_submit()`.
 #'
 #' @return Invisibly, `TRUE` if this call cancelled the task. `FALSE` if
 #'   the call was too late: the task completed, was already cancelled, or
@@ -522,7 +534,9 @@ mizu_cancel <- function(task) invisible(.Call(mizu_pool_cancel, task))
 #' afterwards, and stopping it again is a no-op. Only the creating process
 #' can stop a pool.
 #'
-#' @inheritParams mizu_submit
+#' @param pool a pool handle from [mizu_pool()] or [mizu_pool_attach()];
+#'   inside a task, the evaluating worker's own handle from
+#'   [mizu_current_pool()].
 #' @param timeout seconds to wait for the clean exit of the workers.
 #'
 #' @return Invisibly, `TRUE` if all workers exited within the timeout.
@@ -553,7 +567,7 @@ mizu_pool_stop <- function(pool, timeout = 5) {
 #' A read-only snapshot of the pool region: registry states, parked-worker
 #' count, queued injection entries, and result-slot occupancy.
 #'
-#' @inheritParams mizu_submit
+#' @inheritParams mizu_pool_stop
 #'
 #' @return A list with elements `name`, `role`, `max_workers`,
 #'   `max_submitters`, `injection_cap`, `result_slots`, `slot_size`,
@@ -589,7 +603,7 @@ mizu_pool_status <- function(pool) {
 #' Each field is a consistent single read. The rows need not be mutually
 #' consistent.
 #'
-#' @inheritParams mizu_submit
+#' @inheritParams mizu_pool_stop
 #'
 #' @return A list with elements `name`, `shutdown`, `workers` (data frame:
 #'   slot, status, pid, park_state, parked, deque `top` and `bottom`, and
@@ -658,7 +672,7 @@ mizu_pool_dump <- function(pool) {
 #' can lag by up to 61 claims. The row is exact whenever that worker is
 #' parked or retired, or the pool is quiescent.
 #'
-#' @inheritParams mizu_submit
+#' @inheritParams mizu_pool_stop
 #'
 #' @return A list of two data frames. `workers`: one row per worker slot,
 #'   with `status`, `pid`, `tasks` (task evaluations run, help-mode and
@@ -732,7 +746,7 @@ mizu_pool_stats <- function(pool) {
 #' differs from the own error of a task, which is published as the ERR
 #' result of that task.
 #'
-#' @inheritParams mizu_submit
+#' @inheritParams mizu_pool_stop
 #' @param fn a `function(event, id)`, or `NULL` to remove a registered
 #'   hook.
 #'

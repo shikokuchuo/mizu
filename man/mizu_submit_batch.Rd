@@ -4,19 +4,20 @@
 \alias{mizu_submit_batch}
 \title{Submit a Batch of Tasks}
 \usage{
-mizu_submit_batch(pool, exprs, ..., .timeout = Inf)
+mizu_submit_batch(.pool, .exprs, ..., .timeout = Inf)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+\item{.pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
 inside a task, the evaluating worker's own handle from
 \code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
-\item{exprs}{a list of expressions, one per task. Quote them
+\item{.exprs}{a list of expressions, one per task. Quote them
 yourself: elements of a list cannot be captured unevaluated.}
 
 \item{...}{named values bound in the evaluation environment. The values
 are serialized. \code{mori::share()}d objects reduce to identifiers and map
-zero-copy on the worker.}
+zero-copy on the worker. The formals ahead of \code{...} are dot-prefixed,
+so a name you pass through \code{...} can never collide with them.}
 
 \item{.timeout}{seconds to wait for injection-ring space before the
 call raises \code{mizu_error_submit_timeout}. Submission blocks only
@@ -25,11 +26,11 @@ otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
 }
 \value{
 A list of task handles (class \code{"mizu_task"}), one per
-accepted task — shorter than \code{exprs} when the ring filled past
+accepted task — shorter than \code{.exprs} when the ring filled past
 \code{.timeout} mid-batch.
 }
 \description{
-\code{mizu_submit_batch()} submits one task per element of \code{exprs} in a
+\code{mizu_submit_batch()} submits one task per element of \code{.exprs} in a
 single \code{.Call}: one R boundary crossing and one wake-up sweep per
 batch instead of per task. At target rates the call boundary is a
 first-order cost, so a burst submitted this way reaches the workers
@@ -37,10 +38,10 @@ sooner than the same burst looped through \code{\link[=mizu_submit]{mizu_submit(
 \code{\link[=mizu_collect_all]{mizu_collect_all()}} to batch the collection side too.
 }
 \details{
-Each task's wire payload is the same \code{list(expr, args)} as
+Each task's wire payload is the same \code{list(.expr, args)} as
 \code{\link[=mizu_submit]{mizu_submit()}}'s, with the \code{...} arguments shared by every task in
 the batch. Unlike \code{mizu_submit()}, expressions are not captured:
-the elements of \code{exprs} are pre-quoted (or plain values, which
+the elements of \code{.exprs} are pre-quoted (or plain values, which
 evaluate to themselves).
 
 Submission semantics per task are \code{\link[=mizu_submit]{mizu_submit()}}'s, with one
