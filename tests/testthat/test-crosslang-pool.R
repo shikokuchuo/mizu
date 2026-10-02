@@ -155,7 +155,14 @@ test_that("multiple ref args and a nested view cross to Python workers", {
   # two positional REFs and a fresh SHM_VEC, one nested in a list
   big <- runif(100000L)
   t1 <- mizu_submit_call(p, mizu_call("numpy.dot", va, vb))
-  expect_equal(mizu_collect(t1), a %*% b)
+  # R's internal matprod: jammy's threaded OpenBLAS 0.3.20 can return a
+  # wrong product on some CI CPUs (OpenBLAS #5267)
+  expected <- local({
+    op <- options(matprod = "internal")
+    on.exit(options(op))
+    a %*% b
+  })
+  expect_equal(mizu_collect(t1), expected)
   # the fresh array arrives as a _ShmView; the attributed matrix views
   # arrive as arrays over their regions (.base set — zero-copy)
   t2 <- mizu_submit_call(
