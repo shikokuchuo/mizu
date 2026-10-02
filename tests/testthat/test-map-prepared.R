@@ -184,7 +184,7 @@ test_that("mizu_map_run validates .seed and surfaces rearm slot exhaustion", {
   pool_end(p)
 })
 
-test_that("phase B: mizu_map_run(pm, x =) round-trips end to end", {
+test_that("phase B: mizu_map_run(pm, .x =) round-trips end to end", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   x1 <- runif(64)
@@ -192,11 +192,11 @@ test_that("phase B: mizu_map_run(pm, x =) round-trips end to end", {
   name1 <- pm[["st"]][["name"]]
   expect_identical(mizu_map_run(pm), as.list(x1 + 1))
   x2 <- runif(64)
-  expect_identical(mizu_map_run(pm, x = x2), as.list(x2 + 1))
+  expect_identical(mizu_map_run(pm, .x = x2), as.list(x2 + 1))
   expect_identical(pm[["st"]][["name"]], name1) # swapped, not restaged
   # a shape change restages transparently and still answers
   x3 <- runif(32)
-  expect_identical(mizu_map_run(pm, x = x3), as.list(x3 + 1))
+  expect_identical(mizu_map_run(pm, .x = x3), as.list(x3 + 1))
   expect_false(identical(pm[["st"]][["name"]], name1))
   expect_true(mizu_pool_stop(p))
 })

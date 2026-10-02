@@ -10,22 +10,22 @@ test_that("name and source kinds return elements in order", {
   x <- c(1, 4, 9, 16)
   expect_equal(unlist(mizu_map(p, x, mizu_call("numpy.sqrt"))), sqrt(x))
   expect_identical(
-    unlist(mizu_map(p, 1:5, mizu_call(source = "x * 2"))),
+    unlist(mizu_map(p, 1:5, mizu_call(.source = "x * 2"))),
     1:5 * 2L
   )
   # the element binds as x; named constants as names; positional as _1
   expect_identical(
-    unlist(mizu_map(p, as.list(1:5), mizu_call(source = "x + k", k = 10L))),
+    unlist(mizu_map(p, as.list(1:5), mizu_call(.source = "x + k", k = 10L))),
     1:5 + 10L
   )
   expect_identical(
-    unlist(mizu_map(p, 1:3, mizu_call(name = NULL, 10L, source = "x * _1"))),
+    unlist(mizu_map(p, 1:3, mizu_call(.name = NULL, 10L, .source = "x * _1"))),
     1:3 * 10L
   )
   # a statement prefix runs per element; the trailing expression's value
   src <- paste("import math", "math.floor(x)", sep = "\n")
   expect_equal(
-    unlist(mizu_map(p, c(1.7, 2.3), mizu_call(source = src))),
+    unlist(mizu_map(p, c(1.7, 2.3), mizu_call(.source = src))),
     c(1, 2)
   )
 })
@@ -64,7 +64,7 @@ test_that("a per-element error crosses with its element index", {
 
   src <- paste("if x == 5:", "    raise ValueError('boom')", "x", sep = "\n")
   cnd <- tryCatch(
-    mizu_map(p, 1:10, mizu_call(source = src)),
+    mizu_map(p, 1:10, mizu_call(.source = src)),
     mizu_error_remote = function(c) c
   )
   expect_s3_class(cnd, "mizu_error_remote")
@@ -78,7 +78,7 @@ test_that("seed invariance holds within a worker language", {
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
-  f <- mizu_call(source = "import random\nrandom.random()")
+  f <- mizu_call(.source = "import random\nrandom.random()")
   a <- mizu_map(p, 1:30, f, .seed = 42)
   b <- mizu_map(p, 1:30, f, .seed = 42, .chunks = 7)
   expect_identical(a, b)
@@ -100,7 +100,7 @@ test_that("a prepared spec map re-runs under fresh seeds without restaging", {
   pm <- mizu_map_prepare(
     p,
     1:12,
-    mizu_call(source = "import random\nrandom.random()")
+    mizu_call(.source = "import random\nrandom.random()")
   )
   name <- pm[["st"]][["name"]]
   r1 <- mizu_map_run(pm, .seed = 1)
@@ -119,7 +119,7 @@ test_that("a killed Python worker's lost-set scan reports the elements", {
 
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
   src <- "import time\ntime.sleep(0.2)\nx"
-  st <- mizu:::map_stage(p, 1:40, mizu_call(source = src), list(), chunks = 8)
+  st <- mizu:::map_stage(p, 1:40, mizu_call(.source = src), list(), chunks = 8)
   mizu:::map_submit(p, st)
   # the kill must land after the runner's first issue: the lost set is
   # issued-minus-published, and an unissued runner loses nothing

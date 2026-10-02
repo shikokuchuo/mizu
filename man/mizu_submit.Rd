@@ -5,23 +5,24 @@
 \alias{mizu_collect}
 \title{Submit a Task and Collect Its Result}
 \usage{
-mizu_submit(pool, expr, ..., .timeout = Inf)
+mizu_submit(.pool, .expr, ..., .timeout = Inf)
 
 mizu_collect(task, timeout = Inf)
 }
 \arguments{
-\item{pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
+\item{.pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
 inside a task, the evaluating worker's own handle from
 \code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 
-\item{expr}{an expression, captured unevaluated. This differs from
+\item{.expr}{an expression, captured unevaluated. This differs from
 \code{\link[=mizu_channel]{mizu_channel()}}, which requires its expression pre-quoted. The
 expression sees only the arguments in \code{...} and the global environment
 of the worker. The expression itself must load any packages it needs.}
 
 \item{...}{named values bound in the evaluation environment. The values
 are serialized. \code{mori::share()}d objects reduce to identifiers and map
-zero-copy on the worker.}
+zero-copy on the worker. The formals ahead of \code{...} are dot-prefixed,
+so a name you pass through \code{...} can never collide with them.}
 
 \item{.timeout}{seconds to wait for injection-ring space before the
 call raises \code{mizu_error_submit_timeout}. Submission blocks only
@@ -40,7 +41,7 @@ the \code{mizu_timeout} sentinel. \code{Inf} (the default) waits indefinitely;
 sentinel.
 }
 \description{
-\code{mizu_submit()} captures \code{expr} unevaluated, serializes it with its
+\code{mizu_submit()} captures \code{.expr} unevaluated, serializes it with its
 named arguments into the injection ring of the submitter, and returns a
 task handle immediately. Payloads past the inline budget travel in a
 fresh region. A worker evaluates the expression in a fresh environment

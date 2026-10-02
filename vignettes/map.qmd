@@ -76,7 +76,7 @@ vapply(runs, \(r) r[[1L]], numeric(1))
 #> [1] 0.13109678 0.08153219 0.17986914 0.17683176
 ```
 
-`mizu_map_run(pm, x = x2)` replaces the staged data: an atomic vector of the same type and length swaps in place at memcpy cost; any other replacement restages transparently.
+`mizu_map_run(pm, .x = x2)` replaces the staged data: an atomic vector of the same type and length swaps in place at memcpy cost; any other replacement restages transparently.
 A run collected with `.collect = "view"` hands its region to the view, so the next run restages into a fresh one.
 The handle pins the staged data and the region for its lifetime; both release at garbage collection.
 

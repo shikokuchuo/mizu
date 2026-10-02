@@ -169,7 +169,7 @@ with_pool(4L, function(p) {
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, mizu_call(source = "x"), .seed = 42L)
+        mizu_map(p, x, mizu_call(.source = "x"), .seed = 42L)
       }
     },
     "us/elt"
@@ -197,7 +197,7 @@ cat("\n== 2. cross-language map compute (~10 us elements, n = 2000) ==\n")
 
 n <- 2000L
 g <- function(i) sum(runif(2e3))
-gspec <- mizu_call(source = "import numpy as np\nnp.random.random(2000).sum()")
+gspec <- mizu_call(.source = "import numpy as np\nnp.random.random(2000).sum()")
 
 note(
   "map ~10us tasks",

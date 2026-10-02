@@ -69,21 +69,21 @@ mono_time <- function() .Call(mizu_now_call)
 
 #' Parallel Map Over a Pool
 #'
-#' Maps `f` over the elements of `x` on a pool and returns the results in
+#' Maps `.f` over the elements of `.x` on a pool and returns the results in
 #' input order. The result is a list by default, or an atomic vector (or
 #' matrix) with [vapply()] semantics when `.template` is given. Unlike
 #' mapping with per-element [mizu_submit()] calls, one `mizu_map()` call
-#' serializes `f`, the constant arguments in `...`, and `x` exactly once.
+#' serializes `.f`, the constant arguments in `...`, and `.x` exactly once.
 #' It submits one *runner* task per live worker, and each worker
 #' materializes that map context at most once. The per-element residual
 #' cost is one R closure call, as in [lapply()]. Runners self-schedule:
 #' they claim contiguous element batches off a shared cursor in the map
 #' region and size each batch adaptively toward a fixed time target. A
-#' trivial `f` runs in large batches at near-zero scheduling overhead. An
-#' expensive or skewed `f` self-limits to fine claims that keep the
-#' workers balanced. An atomic, non-ALTREP `x` with no attributes beyond
+#' trivial `.f` runs in large batches at near-zero scheduling overhead. An
+#' expensive or skewed `.f` self-limits to fine claims that keep the
+#' workers balanced. An atomic, non-ALTREP `.x` with no attributes beyond
 #' names also travels as bare bytes. The workers slice their batches
-#' straight from shared memory without deserializing `x`, and no worker
+#' straight from shared memory without deserializing `.x`, and no worker
 #' ever materializes more than a batch of it.
 #'
 #' Runners are ordinary pool tasks: they are stolen and balanced like any
@@ -92,7 +92,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' answers a pool-wide doorbell. When the task of another submitter
 #' arrives with every worker busy inside a map, one runner picks it up at
 #' its next batch boundary. Foreign-task pickup latency is time-bounded
-#' and independent of `length(x)`. A runner claimed off the bell is not
+#' and independent of `length(.x)`. A runner claimed off the bell is not
 #' executed there: a runner is the join ticket of a map. The helper moves
 #' it onto its own deque instead, where the next free worker steals it and
 #' joins that map.
@@ -102,7 +102,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' `max(1, min(n %/% (workers * 256), 256))` elements. The morsel is the
 #' granularity floor for cancellation, help, and loss reporting. Morsels
 #' go to runners in adaptively sized batches of consecutive morsels.
-#' `.chunks` overrides the morsel count outright (`min(length(x), .chunks)`
+#' `.chunks` overrides the morsel count outright (`min(length(.x), .chunks)`
 #' morsels). With no per-morsel shared state, `.chunks = length(x)` is
 #' admissible at zero memory cost for pathological imbalance. A map
 #' submitted while no worker is live queues a single runner in the
@@ -122,7 +122,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' is skipped as well: the result is a copy-on-write view over the shared
 #' output area itself, for pipelines that immediately reduce. A template
 #' of length `m > 1` gathers an
-#' `m * length(x)` matrix, with the names of the template as row names, as
+#' `m * length(.x)` matrix, with the names of the template as row names, as
 #' `vapply()` does. Character templates are assembled through the generic
 #' result path instead. Their type checks then surface at assembly, not
 #' per element on the workers. Big shape-regular results belong on the
@@ -135,7 +135,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' right for its usual traffic.
 #'
 #' @section Errors, timeout, and cleanup:
-#' An error raised by `f` signals again in the caller as the original
+#' An error raised by `.f` signals again in the caller as the original
 #' condition. A `mizu_map_index` field names the failing element: the first
 #' by element index among the elements that ran. Failure is fail-fast. The
 #' erroring runner sets the shared cancel word of the map before it
@@ -149,15 +149,15 @@ mono_time <- function() .Call(mizu_now_call)
 #' reverse. On `.timeout` expiry, mid-submit or mid-collect, the
 #' outstanding work is cancelled and the `mizu_timeout` sentinel is
 #' returned, never raised. Executing runners observe cancellation within
-#' about one batch (one element where `f` is expensive), independent of
-#' `length(x)`. The slot of a published-uncollected result is released
+#' about one batch (one element where `.f` is expensive), independent of
+#' `length(.x)`. The slot of a published-uncollected result is released
 #' only when the finalizer of the dropped handle runs at the next garbage
 #' collection. The staging region of the map is likewise unlinked at GC. A
 #' subsequent map absorbs this transient occupancy by clamping its runner
 #' count.
 #'
 #' @section Reproducible RNG:
-#' By default nothing is guaranteed about random draws inside `f`: the
+#' By default nothing is guaranteed about random draws inside `.f`: the
 #' workers seed lazily and independently, and the fast path pays nothing
 #' for the option. `.seed` opts into reproducible per-element
 #' L'Ecuyer-CMRG streams: element `i` runs under the stream `i` jumps of
@@ -181,15 +181,15 @@ mono_time <- function() .Call(mizu_now_call)
 #' `max_submitters` for wider nested fan-outs.
 #'
 #' @section Cross-language maps:
-#' `f` may be a [mizu_call()] specification instead of a function — the
+#' `.f` may be a [mizu_call()] specification instead of a function — the
 #' way to map over a foreign pool (one spawned with
 #' [mizu_py_pool_launcher()], or any pool whose workers are not R). A spec
-#' `f` always stages a shared map region: the descriptor crosses in the
+#' `.f` always stages a shared map region: the descriptor crosses in the
 #' interchange format and each runner task carries a region reference any
 #' worker language reads. The map element fills the spec's first
 #' positional argument (name kind) or binds as `x` (source kind), and the
 #' spec's own constant arguments ride with it — so `...` must be empty
-#' with a spec `f`. Constants and elements must be portable values (the
+#' with a spec `.f`. Constants and elements must be portable values (the
 #' interchange subset documented in [mizu_send()]); a non-portable one
 #' raises `mizu_error_not_portable` at stage time. `.template` and
 #' `.collect` work unchanged — the output area is wire-typed slots
@@ -207,26 +207,28 @@ mono_time <- function() .Call(mizu_now_call)
 #' budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
 #' the wrapper to about 270 bytes. Seeded maps on such pools work but
 #' spill a region per runner, so keep the default `slot_size` on pools
-#' meant for seeded maps. For a very large `x`, sharing it first is the
+#' meant for seeded maps. For a very large `.x`, sharing it first is the
 #' recommended path: a zero-copy view received from a channel or a pool
 #' result, or a `mori::share()`d vector, reduces to its ~30-byte
 #' identifier inside the staged descriptor, and workers read elements
 #' straight off the shared pages with OS demand paging — no worker copies
-#' any part of `x` (`mizu_map` itself never calls mori).
+#' any part of `.x` (`mizu_map` itself never calls mori).
 #'
-#' As in [lapply()], `x` is indexed with `[[` on the workers after an
+#' As in [lapply()], `.x` is indexed with `[[` on the workers after an
 #' `as.list()` coercion of anything that is not a plain vector. So a
 #' data.frame maps over its columns, and a factor over its elements.
 #'
 #' @inheritParams mizu_submit
-#' @param x a vector (atomic or list) to map over. Anything else is
+#' @param .x a vector (atomic or list) to map over. Anything else is
 #'   coerced with `as.list()`, as [lapply()] does.
-#' @param f a function (or, as [match.fun()] accepts, its name) applied as
-#'   `f(x[[i]], ...)`. Serialized once with its enclosing environment.
+#' @param .f a function (or, as [match.fun()] accepts, its name) applied as
+#'   `.f(.x[[i]], ...)`. Serialized once with its enclosing environment.
 #'   Keep that environment small, as with any cross-process map. A
 #'   [mizu_call()] specification maps over a pool of any worker language —
 #'   see the Cross-language maps section.
-#' @param ... further constant arguments to `f`, staged once.
+#' @param ... further constant arguments to `.f`, staged once. As in
+#'   [mizu_submit()], the formals ahead of `...` are dot-prefixed, so an
+#'   argument name passed here never collides with them.
 #' @param .template `NULL` for a list result, or a [vapply()]-style
 #'   `FUN.VALUE`: an atomic vector template that each result must match.
 #' @param .chunks the morsel count of the map (its scheduling
@@ -247,9 +249,9 @@ mono_time <- function() .Call(mizu_now_call)
 #'   the map region alive until released, and re-sending it through a
 #'   channel or pool crosses as a full copy, not by reference.
 #'
-#' @return A list of the results of `f` in the order of `x`, with
-#'   `names(x)` reapplied. With `.template`, an atomic vector of type
-#'   `typeof(.template)` (an `m * length(x)` matrix when
+#' @return A list of the results of `.f` in the order of `.x`, with
+#'   `names(.x)` reapplied. With `.template`, an atomic vector of type
+#'   `typeof(.template)` (an `m * length(.x)` matrix when
 #'   `length(.template) > 1`) — an owning vector, or a copy-on-write view
 #'   over the shared output area with `.collect = "view"`. On `.timeout`
 #'   expiry, the `mizu_timeout` sentinel.
@@ -263,9 +265,9 @@ mono_time <- function() .Call(mizu_now_call)
 #'
 #' @export
 mizu_map <- function(
-  pool,
-  x,
-  f,
+  .pool,
+  .x,
+  .f,
   ...,
   .template = NULL,
   .chunks = NULL,
@@ -273,27 +275,27 @@ mizu_map <- function(
   .timeout = Inf,
   .collect = "value"
 ) {
-  map_check_native(pool, f)
-  spec <- inherits(f, "mizu_call")
+  map_check_native(.pool, .f)
+  spec <- inherits(.f, "mizu_call")
   dots <- list(...)
   if (spec) {
     if (length(dots)) {
       stop(
         "mizu: constant arguments ride the mizu_call() spec \u2014 '...' must ",
-        "be empty with a spec 'f'",
+        "be empty with a spec '.f'",
         call. = FALSE
       )
     }
   } else {
-    f <- match.fun(f)
+    .f <- match.fun(.f)
   }
   map_template_check(.template)
   map_collect_check(.collect, .template)
-  if (length(x) == 0L) {
-    return(map_empty(x, .template))
+  if (length(.x) == 0L) {
+    return(map_empty(.x, .template))
   }
-  st <- map_stage(pool, x, f, dots, .template, .chunks, .seed)
-  map_run(pool, st, .timeout, .collect)
+  st <- map_stage(.pool, .x, .f, dots, .template, .chunks, .seed)
+  map_run(.pool, st, .timeout, .collect)
 }
 
 # The one run path shared by mizu_map (stage + run on an anonymous state)
@@ -314,8 +316,8 @@ map_run <- function(pool, st, timeout, collect = "value") {
 
 #' Prepared Maps: Stage Once, Run Many
 #'
-#' `mizu_map_prepare()` stages a map — `f`, the constant arguments in
-#' `...`, and `x` — serialized once into a shared map region, without
+#' `mizu_map_prepare()` stages a map — `.f`, the constant arguments in
+#' `...`, and `.x` — serialized once into a shared map region, without
 #' running it. It returns a prepared-map handle. Each `mizu_map_run()`
 #' then costs only task submission and collection: no serialization and
 #' no region create. Because the region (and its name) stays alive across
@@ -328,7 +330,7 @@ map_run <- function(pool, st, timeout, collect = "value") {
 #' O(1). The cursor and cancel word clear, and the run generation embedded
 #' in every claim word advances. A straggler task from a previous run can
 #' never issue against the cursor of the new run. After an unclean run — a
-#' `.timeout` expiry, an error in `f`, a worker death — the handle is
+#' `.timeout` expiry, an error in `.f`, a worker death — the handle is
 #' marked stale. The next `mizu_map_run()` restages into a fresh region
 #' transparently (the old one unlinks at garbage collection under any
 #' stragglers). A run collected with `.collect = "view"` restages
@@ -337,7 +339,7 @@ map_run <- function(pool, st, timeout, collect = "value") {
 #' enough to ride entirely inline keeps its staged blob on the handle
 #' instead: runs resubmit it, still skipping the serialization.
 #'
-#' The prepared handle pins the staged `x` (for transparent restaging) and
+#' The prepared handle pins the staged `.x` (for transparent restaging) and
 #' the map region for its lifetime. Both release at garbage collection
 #' when the handle is dropped. The chunking geometry is fixed at prepare
 #' time. The runner count adapts to the live workers at each run.
@@ -358,50 +360,50 @@ map_run <- function(pool, st, timeout, collect = "value") {
 #'
 #' @export
 mizu_map_prepare <- function(
-  pool,
-  x,
-  f,
+  .pool,
+  .x,
+  .f,
   ...,
   .template = NULL,
   .chunks = NULL
 ) {
-  map_check_native(pool, f)
-  spec <- inherits(f, "mizu_call")
+  map_check_native(.pool, .f)
+  spec <- inherits(.f, "mizu_call")
   dots <- list(...)
   if (spec) {
     if (length(dots)) {
       stop(
         "mizu: constant arguments ride the mizu_call() spec \u2014 '...' must ",
-        "be empty with a spec 'f'",
+        "be empty with a spec '.f'",
         call. = FALSE
       )
     }
   } else {
-    f <- match.fun(f)
+    .f <- match.fun(.f)
   }
   map_template_check(.template)
   pm <- new.env(parent = emptyenv())
-  pm[["pool"]] <- pool
-  pm[["x"]] <- x
-  pm[["f"]] <- f
+  pm[["pool"]] <- .pool
+  pm[["x"]] <- .x
+  pm[["f"]] <- .f
   pm[["dots"]] <- dots
   pm[["template"]] <- .template
   pm[["chunks"]] <- .chunks
-  if (length(x) > 0L) {
-    pm[["st"]] <- map_stage(pool, x, f, dots, .template, .chunks)
+  if (length(.x) > 0L) {
+    pm[["st"]] <- map_stage(.pool, .x, .f, dots, .template, .chunks)
   }
   class(pm) <- "mizu_map_prepared"
   pm
 }
 
 #' @section Replacing x between runs:
-#' `mizu_map_run(pm, x = x2)` runs over a replacement `x`. When both the
-#' staged and the replacement `x` are bare-byte eligible (atomic,
+#' `mizu_map_run(pm, .x = x2)` runs over a replacement `.x`. When both the
+#' staged and the replacement `.x` are bare-byte eligible (atomic,
 #' non-ALTREP, no attributes beyond names) with identical type and length,
-#' the swap is in place. The new bytes are copied over the `x` section of
+#' the swap is in place. The new bytes are copied over the `.x` section of
 #' the region. This runs the iterate-over-same-shape loop (optimizer
 #' steps, simulation sweeps) at memcpy cost, skipping the region create
-#' and the re-attach of every worker. Any other change of `x` — a
+#' and the re-attach of every worker. Any other change of `.x` — a
 #' different shape or type, a list, a map staged inline — restages
 #' transparently on the next run.
 #'
@@ -410,7 +412,7 @@ mizu_map_prepare <- function(
 #' @export
 mizu_map_run <- function(
   pm,
-  x = NULL,
+  .x = NULL,
   .seed = NULL,
   .timeout = Inf,
   .collect = "value"
@@ -419,8 +421,8 @@ mizu_map_run <- function(
     stop("mizu: not a prepared-map handle", call. = FALSE)
   }
   map_collect_check(.collect, pm[["template"]])
-  if (!is.null(x)) {
-    map_swap_x(pm, x)
+  if (!is.null(.x)) {
+    map_swap_x(pm, .x)
   }
   if (length(pm[["x"]]) == 0L) {
     return(map_empty(pm[["x"]], pm[["template"]]))
@@ -616,7 +618,7 @@ map_check_native <- function(pool, f) {
   }
   stop(
     "mizu: this pool's workers are not R - mizu_map() needs a mizu_call() ",
-    "spec as 'f' on a foreign pool",
+    "spec as '.f' on a foreign pool",
     call. = FALSE
   )
 }
