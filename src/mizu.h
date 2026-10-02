@@ -405,8 +405,6 @@ NORET void mizu_stop(const char *subclass, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
 NORET void mizu_stop_shm(double bytes, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
-NORET void mizu_stop_died(int slot, double pid, const char *fmt, ...)
-  R_PRINTF_FORMAT(3, 4);
 NORET void mizu_stop_python_payload(void) MIZU_COLD;
 NORET void mizu_stop_not_portable(const char *path, const char *reason,
                                   const char *remedy) MIZU_COLD;

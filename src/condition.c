@@ -133,15 +133,6 @@ static SEXP mizu_cond_died(int slot, double pid, const char *fmt,
   return cond;   /* UNPROTECTED: the caller PROTECTs at the call site */
 }
 
-NORET void mizu_stop_died(int slot, double pid, const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  SEXP cond = PROTECT(mizu_cond_died(slot, pid, fmt, ap));
-  va_end(ap);
-  mizu_cond_signal(cond);
-  UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
-}
-
 /* The channel's foreign-payload decline record: one message, built once at
    load and interned (mizu_channel_init) — a constructor call per decline
    would allocate inside the read hook for a message that never changes.
