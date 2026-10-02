@@ -210,9 +210,11 @@ go to runners in adaptively sized batches of consecutive morsels.
 morsels). With no per-morsel shared state, <code>.chunks = length(x)</code> is
 admissible at zero memory cost for pathological imbalance. A map
 submitted while no worker is live queues a single runner in the
-injection ring and runs when a worker joins. If the result-slot
-subrange of the submitter is fully occupied by outstanding tasks,
-<code>mizu_map()</code> errors immediately, before it stages anything.</p>
+injection ring and runs when a worker joins. If no worker has ever
+joined the pool, <code>mizu_map()</code> errors instead, as <code><a href="mizu_call.html">mizu_submit_call()</a></code>
+does. If the result-slot subrange of the submitter is fully occupied
+by outstanding tasks, <code>mizu_map()</code> errors immediately, before it
+stages anything.</p>
     </div>
     <div class="section level2">
     <h2 id="templates">Templates<a class="anchor" aria-label="anchor" href="#templates"></a></h2>

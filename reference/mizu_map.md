@@ -137,9 +137,12 @@ overrides the morsel count outright (`min(length(.x), .chunks)`
 morsels). With no per-morsel shared state, `.chunks = length(x)` is
 admissible at zero memory cost for pathological imbalance. A map
 submitted while no worker is live queues a single runner in the
-injection ring and runs when a worker joins. If the result-slot subrange
-of the submitter is fully occupied by outstanding tasks, `mizu_map()`
-errors immediately, before it stages anything.
+injection ring and runs when a worker joins. If no worker has ever
+joined the pool, `mizu_map()` errors instead, as
+[`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
+does. If the result-slot subrange of the submitter is fully occupied by
+outstanding tasks, `mizu_map()` errors immediately, before it stages
+anything.
 
 ## Templates
 
