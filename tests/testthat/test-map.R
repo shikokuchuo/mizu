@@ -172,6 +172,19 @@ test_that("every atomic x type maps, RAWVEC or descriptor as gated", {
   pool_end(p)
 })
 
+test_that("an attribute-shaped atomic x coerces off the raw section", {
+  p <- pool_pair()
+  x <- matrix(seq_len(2000L), nrow = 40L) # dim: ineligible for bare bytes
+  st <- mizu:::map_stage(p[["ctrl"]], x, function(i) i * 2L, list())
+  expect_false(st[["xraw"]])
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], st), as.list(seq_len(2000L) * 2L))
+  pool_end(p)
+})
+
 test_that("constant dots stage once and reach every element", {
   p <- pool_pair()
   r <- run_map(p, list(1:3, 4:6), function(v, w) sum(v) + w, list(w = 100L))
@@ -819,6 +832,18 @@ test_that("a small map rides entirely inline, no region", {
   pool_end(p)
 })
 
+test_that("an inline map splits unevenly when n is not a chunk multiple", {
+  p <- pool_pair(workers = 2L)
+  st <- mizu:::map_stage(p[["ctrl"]], 1:5, identity, list(), chunks = 2)
+  expect_type(st[["blob"]], "raw") # 3 + 2 elements over two chunk tasks
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], st), as.list(1:5))
+  pool_end(p)
+})
+
 test_that("the region runner wrapper fits a slot_size = 256 entry budget", {
   p <- pool_pair(slot_size = 256L) # 224-byte entry inline budget
   st <- mizu:::map_stage(
@@ -957,6 +982,22 @@ test_that(".timeout expiring in collect cancels the outstanding chunks", {
   expect_true(all(
     mizu_pool_dump(p[["ctrl"]])[["tasks"]][["status"]] == "cancel"
   ))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(
+    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    rep(0L, 5L)
+  )
+  pool_end(p)
+})
+
+test_that(".timeout expiring in a region map's collect cancels the runners", {
+  p <- pool_pair()
+  st <- mizu:::map_stage(p[["ctrl"]], runif(100000), identity, list())
+  mizu:::map_submit(p[["ctrl"]], st)
+  r <- mizu:::map_collect(st, deadline = mizu:::mono_time() + 0.05)
+  expect_s3_class(r, "mizu_timeout")
   while (pool_step(p) == 1L) {
     NULL
   }

@@ -24,6 +24,10 @@ test_that("mizu_channel_create validates its parameters", {
     .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 100, FALSE),
     "arena_size must be a non-negative multiple of 64"
   )
+  expect_error(
+    .Call(mizu:::mizu_channel_create, c("a", "b"), 64L, 256L, 0, FALSE),
+    "a source drop must be a single non-NA string"
+  )
 })
 
 test_that("a fresh channel reports its layout and state", {
@@ -52,6 +56,10 @@ test_that("a fresh channel reports its layout and state", {
 })
 
 test_that("attach validates the region: absent, malformed, or not a channel", {
+  expect_error(
+    .Call(mizu:::mizu_channel_attach, 42, NULL),
+    "expected a region-name suffix"
+  )
   expect_error(.Call(mizu:::mizu_channel_attach, "0_0", NULL), "cannot open")
   expect_error(
     .Call(mizu:::mizu_channel_attach, "evil'; echo pwned", NULL),

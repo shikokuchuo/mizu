@@ -631,3 +631,154 @@ test_that("an err send crosses as a value on foreign and R channels alike", {
   mizu_send(p2$peer, 1L)
   expect_identical(mizu_recv(p2$host, timeout = 5), 1L)
 })
+
+test_that("the writer declines strings that are not writable as UTF-8", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  expect_error(
+    mizu_send(p$host, rawToChar(as.raw(0x80))),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, rawToChar(as.raw(c(0xf0, 0x80, 0x80, 0x80)))),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, rawToChar(as.raw(c(0xf5, 0x80, 0x80, 0x80)))),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, c("ok", rawToChar(as.raw(0xc3)))),
+    class = "mizu_error_not_portable"
+  )
+})
+
+test_that("the writer declines non-portable frames and S4 objects", {
+  methods::setClass("ixS4", contains = "integer")
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  expect_error(
+    mizu_send(p$host, data.frame()),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, data.frame(x = I(list(1, 2)))),
+    class = "mizu_error_not_portable"
+  )
+  df <- data.frame(x = 1:3)
+  attr(df, "row.names") <- c("a", "b") # length mismatch
+  expect_error(mizu_send(p$host, df), class = "mizu_error_not_portable")
+  expect_error(
+    mizu_send(p$host, methods::new("ixS4", 1:3)),
+    class = "mizu_error_not_portable"
+  )
+})
+
+test_that("chunked seq scans and ALTREP regions write through", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  d <- structure(as.double(1:600), class = "Date") # ALTREP, past the chunk
+  mizu_send(p$host, d)
+  expect_identical(mizu_recv(p$peer, 5), d)
+  big <- data.frame(x = seq_len(9000L)) # non-1:n row.names, past the chunk
+  attr(big, "row.names") <- c(2L, seq_len(8999L))
+  mizu_send(p$host, big)
+  expect_identical(mizu_recv(p$peer, 5), big)
+  x <- as.double(1:1e6) # compact real sequence: the GET_REGION write
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("dict keys and task fields decline at the writer", {
+  expect_error(
+    ix_write(structure(list(1), names = NA_character_)),
+    "not portable"
+  )
+  task <- list(
+    code = "base::sqrt",
+    kind = 0L,
+    target = 2L,
+    ident = 1,
+    positional = list(2),
+    named = list()
+  )
+  bad <- rawToChar(as.raw(0x80))
+  expect_error(
+    ix_write_task(modifyList(task, list(code = bad))),
+    "not portable"
+  )
+  named_bad <- structure(list(1), names = rawToChar(as.raw(0x80)))
+  expect_error(
+    ix_write_task(modifyList(task, list(named = named_bad))),
+    "not portable"
+  )
+  expect_error(
+    ix_write_task(modifyList(task, list(code = 42))),
+    "malformed mizu_call spec"
+  )
+})
+
+test_that("the err writer degrades and annotates", {
+  e1 <- ix_read(ix_write_err(errorCondition("boom", call = NULL)))
+  expect_identical(e1[["remote_type"]], "error")
+  expect_identical(e1[["detail"]], "")
+  e2 <- ix_read(ix_write_err(structure(
+    list(message = "m", call = NULL),
+    class = character(0)
+  )))
+  expect_identical(e2[["remote_type"]], "error")
+  e3 <- ix_read(ix_write_err(structure(
+    list(message = "m", call = NULL),
+    class = c(NA_character_, "error", "condition")
+  )))
+  expect_identical(e3[["remote_type"]], "error")
+  e4 <- ix_read(ix_write_err(structure(
+    list(message = "m", call = NULL, mizu_map_index = 4L),
+    class = c("error", "condition")
+  )))
+  expect_identical(e4[["index"]], 4L)
+  e5 <- ix_read(ix_write_err(structure(
+    list(message = "m", call = NULL),
+    class = c("mizu_error_remote", "mizu_error", "error", "condition")
+  )))
+  expect_identical(e5[["remote_type"]], "mizu_error_remote")
+})
+
+test_that("malformed task streams reject informatively", {
+  good <- ix_write_task(list(
+    code = "base::sqrt",
+    kind = 0L,
+    target = 2L,
+    ident = 1,
+    positional = list(2),
+    named = list(a1 = 1, a2 = 2)
+  ))
+  r <- ix_hex_to_raw(good)
+  dup <- r
+  dup[[tail(which(dup == as.raw(0x31)), 1L)]] <- as.raw(0x32) # "a1" -> "a2"
+  expect_error(ix_read_task(ix_raw_to_hex(dup)), "duplicate")
+  expect_error(ix_read_task(paste0(good, "00")), "mizu:")
+  kind <- r
+  kind[[5L]] <- as.raw(0x09) # the kind byte: 0x49, ?, 0x12, target, kind
+  expect_error(ix_read_task(ix_raw_to_hex(kind)), "mizu:")
+  expect_error(ix_read_task(ix_write(42L)), "mizu:")
+})
+
+test_that("the runner stream writes and rejects as a plain task", {
+  w <- .Call(mizu:::mizu_interop_runner_call, "/mizu_1_2", 1, NULL, 2L, 1)
+  expect_identical(w[[1L]], as.raw(0x49)) # 'I' magic
+  expect_identical(w[[3L]], as.raw(0x12)) # the task tag
+  expect_identical(w[[5L]], as.raw(0x02)) # kind 2: a map runner
+  expect_error(ix_read_task(ix_raw_to_hex(w)), "mizu:")
+})
+
+test_that("the stream read dispatches, declines and fails informatively", {
+  x <- list(a = 1:3, b = "s")
+  expect_identical(
+    .Call(mizu:::mizu_stream_read_call, ix_hex_to_raw(ix_write(x))),
+    x
+  )
+  r <- .Call(mizu:::mizu_stream_read_call, as.raw(c(0x50, 0x01, 0x02)))
+  expect_s3_class(r, "mizu_error_python_payload")
+  expect_error(.Call(mizu:::mizu_stream_read_call, raw(0)), "mizu:")
+})

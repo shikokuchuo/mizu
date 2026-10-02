@@ -74,7 +74,30 @@ test_that("a fresh pool reports its layout and registry state", {
   pool_end(p)
 })
 
+test_that("mizu_pool_attach validates the name", {
+  expect_error(mizu_pool_attach(42), "must be a character string")
+  expect_error(mizu_pool_attach(c("a", "b")), "must be a character string")
+  expect_error(mizu_pool_attach(NA_character_), "must be a character string")
+})
+
+test_that("mizu_pool_dump remaps the worker language", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+  expect_identical(mizu_pool_dump(ctrl)[["language"]], "none")
+  .Call(mizu:::mizu_pool_destroy, ctrl)
+  p <- pool_pair(ident = c(9L, 0L))
+  expect_identical(mizu_pool_dump(p[["ctrl"]])[["language"]], "unknown")
+  pool_end(p)
+})
+
 test_that("attach validates the region: absent, malformed, or not a pool", {
+  expect_error(
+    .Call(mizu:::mizu_pool_attach_call, 42),
+    "expected a region-name suffix"
+  )
+  expect_error(
+    .Call(mizu:::mizu_pool_worker_join, 42, 0L, NULL),
+    "expected a region-name suffix"
+  )
   expect_error(.Call(mizu:::mizu_pool_attach_call, "0_0"), "cannot open")
   expect_error(
     .Call(mizu:::mizu_pool_attach_call, "evil'; echo pwned"),

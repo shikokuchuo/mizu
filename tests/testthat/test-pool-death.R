@@ -30,6 +30,7 @@ test_that("a worker killed mid-task fails exactly that task", {
   # the empty-dequed slot frees without this process calling anything
   expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
   expect_true(wait_until(mizu_pool_status(p)[["workers"]][claimant] == "free"))
+  expect_identical(.Call(mizu:::mizu_pool_task_state, t), "died")
   err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
   expect_s3_class(err, "mizu_error_worker_died")
   expect_match(conditionMessage(err), "worker died")

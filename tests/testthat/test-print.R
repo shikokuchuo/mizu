@@ -75,14 +75,37 @@ test_that("a prepared map prints its staging", {
   pool_end(p)
 })
 
+test_that("a region-staged prepared map prints its region name", {
+  p <- pool_pair()
+  pm <- mizu_map_prepare(p[["ctrl"]], runif(100000), identity)
+  expect_output(print(pm), "100000 elements", fixed = TRUE)
+  expect_output(print(pm), pm[["st"]][["name"]], fixed = TRUE)
+  pool_end(p)
+})
+
 test_that("a remote error prints one line leading with type: message", {
   e <- .Call(
     mizu:::mizu_interop_read_call,
     as.raw(c(
-      0x49, 0x01, 0x11, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00,
+      0x49,
+      0x01,
+      0x11,
+      0x00,
+      0x00,
+      0x0a,
+      0x00,
+      0x00,
+      0x00,
       as.integer(charToRaw("ValueError")),
-      0x04, 0x00, 0x00, 0x00, as.integer(charToRaw("boom")),
-      0x00, 0x00, 0x00, 0x00
+      0x04,
+      0x00,
+      0x00,
+      0x00,
+      as.integer(charToRaw("boom")),
+      0x00,
+      0x00,
+      0x00,
+      0x00
     ))
   )
   expect_output(

@@ -471,3 +471,14 @@ test_that("a view x crosses as a ref on a spec map, read off the pages (D6)", {
   }))
   channel_end(ch)
 })
+
+test_that("mizu_submit_call validates the spec and the name shape", {
+  expect_error(mizu_submit_call(NULL, list()), "must be a mizu_call")
+  expect_error(mizu_submit_call(NULL, "base::sqrt"), "must be a mizu_call")
+  p <- pool_pair()
+  expect_error(
+    mizu_submit_call(p$ctrl, mizu_call("base::1bad", 1:3)),
+    "qualified name"
+  )
+  pool_end(p)
+})

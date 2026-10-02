@@ -181,6 +181,30 @@ test_that("COW materialization releases the region early (no GC needed)", {
   channel_end(p)
 })
 
+test_that("integer, logical, raw and complex views are copy-on-write too", {
+  p <- channel_pair(arena_size = 0)
+  cases <- list(
+    list(x = seq_len(100000) + 0L, mut = -1L),
+    list(x = runif(100000) > 0.5, mut = FALSE),
+    list(x = as.raw((seq_len(300000) - 1L) %% 256L), mut = as.raw(255L)),
+    list(x = complex(real = runif(50000), imaginary = runif(50000)), mut = 0i)
+  )
+  for (case in cases) {
+    x <- case[["x"]]
+    mizu_send(p[["host"]], x)
+    y <- mizu_recv(p[["peer"]], 5)
+    expect_true(is_view(y))
+    y[1] <- case[["mut"]] # COW: materializes a private copy
+    expect_identical(y[1], case[["mut"]])
+    expect_identical(y[2], x[2])
+    mizu_send(p[["host"]], x) # the region's next payload is undisturbed
+    expect_identical(mizu_recv(p[["peer"]], 5), x)
+    rm(y)
+    invisible(gc())
+  }
+  channel_end(p)
+})
+
 test_that("a received view re-sends as REF — zero bytes move", {
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
@@ -405,6 +429,16 @@ test_that("string views duplicate on mutation: the region is undisturbed", {
   expect_identical(y[1], x[1])
   mizu_send(p[["host"]], x)
   expect_identical(mizu_recv(p[["peer"]], 5), x)
+  channel_end(p)
+})
+
+test_that("in-place element assignment on a string view errors", {
+  p <- channel_pair(arena_size = 0)
+  x <- paste0("s", 1:50000)
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_error(y[1] <- "mutated", "Set_elt") # ALTSTRING provides no Set_elt
+  expect_identical(y[1], x[1]) # the view is untouched
   channel_end(p)
 })
 
@@ -679,6 +713,24 @@ test_that("an extracted element view pins the region past the root view's GC", {
   invisible(gc())
   mizu_send(p[["host"]], x) # count 0 -> free list
   expect_identical(chan_ledger(p[["host"]]), 0L)
+  channel_end(p)
+})
+
+test_that("list views duplicate on mutation; in-place assignment errors", {
+  p <- channel_pair(arena_size = 0)
+  x <- list(a = runif(100000), b = paste0("t", 1:5000))
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_error(y[["a"]] <- 0, "Set_elt") # ALTLIST provides no Set_elt
+  y2 <- y # NAMED bump: subassignment duplicates instead
+  y2[["a"]] <- 0
+  expect_false(is_view(y2))
+  expect_identical(y2[["a"]], 0)
+  expect_true(is_view(y))
+  expect_identical(as.numeric(y[["a"]]), x[["a"]])
+  mizu_send(p[["host"]], x) # the region's next payload is undisturbed
+  z <- mizu_recv(p[["peer"]], 5)
+  expect_identical(as.numeric(z[["a"]]), x[["a"]])
   channel_end(p)
 })
 
