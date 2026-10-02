@@ -39,7 +39,7 @@ test_that("spec tasks run on a same-language pool, errors stay rich", {
   expect_match(conditionMessage(cnd), "non-numeric")
 })
 
-test_that("a pool no worker has joined: spec errors, plain submit queues", {
+test_that("a pool no worker has joined: spec and map error, plain submit queues", {
   ctrl <- .Call(
     mizu:::mizu_pool_create,
     1L,
@@ -54,6 +54,9 @@ test_that("a pool no worker has joined: spec errors, plain submit queues", {
   spec <- mizu_call("base::sqrt", 2)
   expect_error(mizu_submit_call(ctrl, spec), "no worker has joined")
   expect_error(mizu_submit_call(att, spec), "no worker has joined")
+  expect_error(mizu_map(ctrl, 1:3, identity), "no worker has joined")
+  expect_error(mizu_map(ctrl, 1:3, spec), "no worker has joined")
+  expect_error(mizu_map_prepare(ctrl, 1:3, identity), "no worker has joined")
   t <- mizu_submit(ctrl, 1 + 1)
   wk <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
   .Call(mizu:::mizu_pool_set_eval, wk)

@@ -106,9 +106,11 @@ mono_time <- function() .Call(mizu_now_call)
 #' morsels). With no per-morsel shared state, `.chunks = length(x)` is
 #' admissible at zero memory cost for pathological imbalance. A map
 #' submitted while no worker is live queues a single runner in the
-#' injection ring and runs when a worker joins. If the result-slot
-#' subrange of the submitter is fully occupied by outstanding tasks,
-#' `mizu_map()` errors immediately, before it stages anything.
+#' injection ring and runs when a worker joins. If no worker has ever
+#' joined the pool, `mizu_map()` errors instead, as `mizu_submit_call()`
+#' does. If the result-slot subrange of the submitter is fully occupied
+#' by outstanding tasks, `mizu_map()` errors immediately, before it
+#' stages anything.
 #'
 #' @section Templates:
 #' `.template` gives `vapply()` semantics: every result must match its
@@ -599,21 +601,20 @@ map_rearm <- function(pool, st, seed) {
   invisible(st)
 }
 
-# The map guard for a foreign pool: a native f fails fast at the entry
-# point (its runner tasks are same-language private frames that would
-# otherwise each fail remotely, one error per runner). A spec f takes the
-# cross-language path on any pool (the 'I' descriptor and kind-2 runner
-# tasks), and needs the pool word already set: the descriptor's target
-# byte stages once, at stage time. Language byte 2 is R.
+# The map guard at the entry points: a pool no worker has ever joined
+# fails fast for any f (plain mizu_submit() queues by design, but a fused
+# submit+collect would park in collect forever). On a foreign pool a
+# native f fails fast too (its runner tasks are same-language private
+# frames that would otherwise each fail remotely, one error per runner);
+# a spec f takes the cross-language path on any pool, needing the pool
+# word already set: the descriptor's target byte stages once, at stage
+# time. Language byte 2 is R.
 map_check_native <- function(pool, f) {
   ident <- .Call(mizu_pool_ident, pool)
-  if (inherits(f, "mizu_call")) {
-    if (is.null(ident)) {
-      stop("mizu: no worker has joined this pool", call. = FALSE)
-    }
-    return(invisible())
+  if (is.null(ident)) {
+    stop("mizu: no worker has joined this pool", call. = FALSE)
   }
-  if (is.null(ident) || ident[[1L]] == 2L) {
+  if (inherits(f, "mizu_call") || ident[[1L]] == 2L) {
     return(invisible())
   }
   stop(
