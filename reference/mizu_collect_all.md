@@ -24,10 +24,9 @@ mizu_collect_all(tasks, timeout = Inf)
 
 - timeout:
 
-  seconds to wait for injection-ring space before the call raises
-  `mizu_error_submit_timeout`. Submission blocks only when the ring is
-  full (back-pressure) and returns immediately otherwise. `Inf` (the
-  default) waits indefinitely; `0` does not wait.
+  seconds to wait for every task to reach a terminal state before the
+  call returns the `mizu_timeout` sentinel. `Inf` (the default) waits
+  indefinitely; `0` does not wait.
 
 ## Value
 

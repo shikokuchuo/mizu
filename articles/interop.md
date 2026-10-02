@@ -74,8 +74,8 @@ Python processes, driven through a neutral task specification.
 spawns them (`python3 -m pymizu.worker`, probed like the channel
 launcher),
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-describes the task — a qualified `"mod.fn"` name or a `source =` string,
-plus the constant arguments — and
+describes the task — a qualified `"mod.fn"` name or a `.source =`
+string, plus the constant arguments — and
 [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 stages it:
 
@@ -84,15 +84,15 @@ stages it:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.2174899 0.5210226 0.6924690
-s <- mizu_submit_call(p, mizu_call(source = "y = x * 2\ny + 1", x = 20))
+#> [1] 0.2464043 0.5190650 0.7770645
+s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
 mizu_pool_stop(p)
 ```
 
 Unnamed arguments map to the positional list and named ones to the named
-dict, matching Python’s `*args, **kwargs`; a `source =` task evaluates
+dict, matching Python’s `*args, **kwargs`; a `.source =` task evaluates
 in a fresh namespace with the named arguments bound as names and the
 result as the trailing expression’s value. The workers’ language comes
 from the pool itself — a plain
@@ -118,10 +118,10 @@ specs.
 ## The cross-language map
 
 A spec is also
-[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)’s `f`
-— the cross-language map. The element fills the spec’s first positional
-slot (name kind) or binds as `x` (source kind), the spec’s own constants
-ride with it (so `...` stays empty), and `.template`,
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)’s
+`.f` — the cross-language map. The element fills the spec’s first
+positional slot (name kind) or binds as `x` (source kind), the spec’s
+own constants ride with it (so `...` stays empty), and `.template`,
 `.collect = "view"`, and `.seed` all work — the seed carrying as a
 neutral pair each worker language derives its own streams from, so
 invariance holds per worker language rather than identical draws across
@@ -132,23 +132,24 @@ them:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.9279031 0.9279031
+#> [1] 0.2004283 0.2004283
 #> 
 #> [[2]]
-#> [1] 0.9918925 0.9918925
+#> [1] 0.669775 0.669775
 #> 
 #> [[3]]
-#> [1] 0.3354761 0.3354761
+#> [1] 0.7837995 0.7837995
 #> 
 #> [[4]]
-#> [1] 0.3144808 0.3144808
+#> [1] 0.3570654 0.3570654
 #> 
 #> [[5]]
-#> [1] 0.06464515 0.06464515
+#> [1] 0.8268575 0.8268575
 #> 
 #> [[6]]
-#> [1] 0.1061663 0.1061663
+#> [1] 0.0729274 0.0729274
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -0.3368437 -0.2800911 -1.3426865 -1.8264110 -0.2308441 -0.1567522
+#> [1] -0.055749955 -0.001408526 -0.750381812 -2.018461687 -0.280050317
+#> [6] -2.092281007
 mizu_pool_stop(p)
 ```

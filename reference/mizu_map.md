@@ -1,31 +1,31 @@
 # Parallel Map Over a Pool
 
-Maps `f` over the elements of `x` on a pool and returns the results in
+Maps `.f` over the elements of `.x` on a pool and returns the results in
 input order. The result is a list by default, or an atomic vector (or
 matrix) with [`vapply()`](https://rdrr.io/r/base/lapply.html) semantics
 when `.template` is given. Unlike mapping with per-element
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-calls, one `mizu_map()` call serializes `f`, the constant arguments in
-`...`, and `x` exactly once. It submits one *runner* task per live
+calls, one `mizu_map()` call serializes `.f`, the constant arguments in
+`...`, and `.x` exactly once. It submits one *runner* task per live
 worker, and each worker materializes that map context at most once. The
 per-element residual cost is one R closure call, as in
 [`lapply()`](https://rdrr.io/r/base/lapply.html). Runners self-schedule:
 they claim contiguous element batches off a shared cursor in the map
 region and size each batch adaptively toward a fixed time target. A
-trivial `f` runs in large batches at near-zero scheduling overhead. An
-expensive or skewed `f` self-limits to fine claims that keep the workers
-balanced. An atomic, non-ALTREP `x` with no attributes beyond names also
-travels as bare bytes. The workers slice their batches straight from
-shared memory without deserializing `x`, and no worker ever materializes
-more than a batch of it.
+trivial `.f` runs in large batches at near-zero scheduling overhead. An
+expensive or skewed `.f` self-limits to fine claims that keep the
+workers balanced. An atomic, non-ALTREP `.x` with no attributes beyond
+names also travels as bare bytes. The workers slice their batches
+straight from shared memory without deserializing `.x`, and no worker
+ever materializes more than a batch of it.
 
 ## Usage
 
 ``` r
 mizu_map(
-  pool,
-  x,
-  f,
+  .pool,
+  .x,
+  .f,
   ...,
   .template = NULL,
   .chunks = NULL,
@@ -37,7 +37,7 @@ mizu_map(
 
 ## Arguments
 
-- pool:
+- .pool:
 
   a pool handle from
   [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
@@ -46,26 +46,29 @@ mizu_map(
   inside a task, the evaluating worker's own handle from
   [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
-- x:
+- .x:
 
   a vector (atomic or list) to map over. Anything else is coerced with
   [`as.list()`](https://rdrr.io/r/base/list.html), as
   [`lapply()`](https://rdrr.io/r/base/lapply.html) does.
 
-- f:
+- .f:
 
   a function (or, as
   [`match.fun()`](https://rdrr.io/r/base/match.fun.html) accepts, its
-  name) applied as `f(x[[i]], ...)`. Serialized once with its enclosing
-  environment. Keep that environment small, as with any cross-process
-  map. A
+  name) applied as `.f(.x[[i]], ...)`. Serialized once with its
+  enclosing environment. Keep that environment small, as with any
+  cross-process map. A
   [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
   specification maps over a pool of any worker language — see the
   Cross-language maps section.
 
 - ...:
 
-  further constant arguments to `f`, staged once.
+  further constant arguments to `.f`, staged once. As in
+  [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
+  the formals ahead of `...` are dot-prefixed, so an argument name
+  passed here never collides with them.
 
 - .template:
 
@@ -104,9 +107,9 @@ mizu_map(
 
 ## Value
 
-A list of the results of `f` in the order of `x`, with `names(x)`
+A list of the results of `.f` in the order of `.x`, with `names(.x)`
 reapplied. With `.template`, an atomic vector of type
-`typeof(.template)` (an `m * length(x)` matrix when
+`typeof(.template)` (an `m * length(.x)` matrix when
 `length(.template) > 1`) — an owning vector, or a copy-on-write view
 over the shared output area with `.collect = "view"`. On `.timeout`
 expiry, the `mizu_timeout` sentinel.
@@ -119,7 +122,7 @@ every pool invariant applies unchanged. Between batches, a runner also
 answers a pool-wide doorbell. When the task of another submitter arrives
 with every worker busy inside a map, one runner picks it up at its next
 batch boundary. Foreign-task pickup latency is time-bounded and
-independent of `length(x)`. A runner claimed off the bell is not
+independent of `length(.x)`. A runner claimed off the bell is not
 executed there: a runner is the join ticket of a map. The helper moves
 it onto its own deque instead, where the next free worker steals it and
 joins that map.
@@ -130,13 +133,13 @@ Elements are claimed in *morsels*: contiguous ranges of
 `max(1, min(n %/% (workers * 256), 256))` elements. The morsel is the
 granularity floor for cancellation, help, and loss reporting. Morsels go
 to runners in adaptively sized batches of consecutive morsels. `.chunks`
-overrides the morsel count outright (`min(length(x), .chunks)` morsels).
-With no per-morsel shared state, `.chunks = length(x)` is admissible at
-zero memory cost for pathological imbalance. A map submitted while no
-worker is live queues a single runner in the injection ring and runs
-when a worker joins. If the result-slot subrange of the submitter is
-fully occupied by outstanding tasks, `mizu_map()` errors immediately,
-before it stages anything.
+overrides the morsel count outright (`min(length(.x), .chunks)`
+morsels). With no per-morsel shared state, `.chunks = length(x)` is
+admissible at zero memory cost for pathological imbalance. A map
+submitted while no worker is live queues a single runner in the
+injection ring and runs when a worker joins. If the result-slot subrange
+of the submitter is fully occupied by outstanding tasks, `mizu_map()`
+errors immediately, before it stages anything.
 
 ## Templates
 
@@ -151,7 +154,7 @@ area and gathered in one copy: zero result serializations. With
 `.collect = "view"`, the gather copy is skipped as well: the result is a
 copy-on-write view over the shared output area itself, for pipelines
 that immediately reduce. A template of length `m > 1` gathers an
-`m * length(x)` matrix, with the names of the template as row names, as
+`m * length(.x)` matrix, with the names of the template as row names, as
 [`vapply()`](https://rdrr.io/r/base/lapply.html) does. Character
 templates are assembled through the generic result path instead. Their
 type checks then surface at assembly, not per element on the workers.
@@ -166,7 +169,7 @@ even when the `slot_size` of the pool is right for its usual traffic.
 
 ## Errors, timeout, and cleanup
 
-An error raised by `f` signals again in the caller as the original
+An error raised by `.f` signals again in the caller as the original
 condition. A `mizu_map_index` field names the failing element: the first
 by element index among the elements that ran. Failure is fail-fast. The
 erroring runner sets the shared cancel word of the map before it
@@ -181,8 +184,8 @@ everything it completed is reported lost alongside what it was
 executing, never the reverse. On `.timeout` expiry, mid-submit or
 mid-collect, the outstanding work is cancelled and the `mizu_timeout`
 sentinel is returned, never raised. Executing runners observe
-cancellation within about one batch (one element where `f` is
-expensive), independent of `length(x)`. The slot of a
+cancellation within about one batch (one element where `.f` is
+expensive), independent of `length(.x)`. The slot of a
 published-uncollected result is released only when the finalizer of the
 dropped handle runs at the next garbage collection. The staging region
 of the map is likewise unlinked at GC. A subsequent map absorbs this
@@ -190,7 +193,7 @@ transient occupancy by clamping its runner count.
 
 ## Reproducible RNG
 
-By default nothing is guaranteed about random draws inside `f`: the
+By default nothing is guaranteed about random draws inside `.f`: the
 workers seed lazily and independently, and the fast path pays nothing
 for the option. `.seed` opts into reproducible per-element L'Ecuyer-CMRG
 streams: element `i` runs under the stream `i` jumps of 2^127 steps from
@@ -216,18 +219,18 @@ fan-outs.
 
 ## Cross-language maps
 
-`f` may be a
+`.f` may be a
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 specification instead of a function — the way to map over a foreign pool
 (one spawned with
 [`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md),
-or any pool whose workers are not R). A spec `f` always stages a shared
+or any pool whose workers are not R). A spec `.f` always stages a shared
 map region: the descriptor crosses in the interchange format and each
 runner task carries a region reference any worker language reads. The
 map element fills the spec's first positional argument (name kind) or
 binds as `x` (source kind), and the spec's own constant arguments ride
-with it — so `...` must be empty with a spec `f`. Constants and elements
-must be portable values (the interchange subset documented in
+with it — so `...` must be empty with a spec `.f`. Constants and
+elements must be portable values (the interchange subset documented in
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)); a
 non-portable one raises `mizu_error_not_portable` at stage time.
 `.template` and `.collect` work unchanged — the output area is
@@ -246,15 +249,15 @@ inline budget, so pools created with `slot_size = 256L` (224-byte
 budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
 the wrapper to about 270 bytes. Seeded maps on such pools work but spill
 a region per runner, so keep the default `slot_size` on pools meant for
-seeded maps. For a very large `x`, sharing it first is the recommended
+seeded maps. For a very large `.x`, sharing it first is the recommended
 path: a zero-copy view received from a channel or a pool result, or a
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector,
 reduces to its ~30-byte identifier inside the staged descriptor, and
 workers read elements straight off the shared pages with OS demand
-paging — no worker copies any part of `x` (`mizu_map` itself never calls
-mori).
+paging — no worker copies any part of `.x` (`mizu_map` itself never
+calls mori).
 
-As in [`lapply()`](https://rdrr.io/r/base/lapply.html), `x` is indexed
+As in [`lapply()`](https://rdrr.io/r/base/lapply.html), `.x` is indexed
 with `[[` on the workers after an
 [`as.list()`](https://rdrr.io/r/base/list.html) coercion of anything
 that is not a plain vector. So a data.frame maps over its columns, and a

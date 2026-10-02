@@ -34,7 +34,7 @@ err / cancel / died), `deque` (per-worker deque depths), and `shutdown`.
 p <- mizu_pool()
 mizu_pool_status(p)
 #> $name
-#> [1] "/mizu_1d52_58a1f4fa"
+#> [1] "/mizu_1a01_19befec"
 #> 
 #> $role
 #> [1] "controller"

@@ -1,6 +1,6 @@
 # Submit a Task and Collect Its Result
 
-`mizu_submit()` captures `expr` unevaluated, serializes it with its
+`mizu_submit()` captures `.expr` unevaluated, serializes it with its
 named arguments into the injection ring of the submitter, and returns a
 task handle immediately. Payloads past the inline budget travel in a
 fresh region. A worker evaluates the expression in a fresh environment
@@ -12,14 +12,14 @@ collecting process.
 ## Usage
 
 ``` r
-mizu_submit(pool, expr, ..., .timeout = Inf)
+mizu_submit(.pool, .expr, ..., .timeout = Inf)
 
 mizu_collect(task, timeout = Inf)
 ```
 
 ## Arguments
 
-- pool:
+- .pool:
 
   a pool handle from
   [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
@@ -28,7 +28,7 @@ mizu_collect(task, timeout = Inf)
   inside a task, the evaluating worker's own handle from
   [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
-- expr:
+- .expr:
 
   an expression, captured unevaluated. This differs from
   [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md),
@@ -41,7 +41,9 @@ mizu_collect(task, timeout = Inf)
   named values bound in the evaluation environment. The values are
   serialized.
   [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d objects
-  reduce to identifiers and map zero-copy on the worker.
+  reduce to identifiers and map zero-copy on the worker. The formals
+  ahead of `...` are dot-prefixed, so a name you pass through `...` can
+  never collide with them.
 
 - .timeout:
 

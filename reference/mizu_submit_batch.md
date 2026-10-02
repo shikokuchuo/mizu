@@ -1,6 +1,6 @@
 # Submit a Batch of Tasks
 
-`mizu_submit_batch()` submits one task per element of `exprs` in a
+`mizu_submit_batch()` submits one task per element of `.exprs` in a
 single `.Call`: one R boundary crossing and one wake-up sweep per batch
 instead of per task. At target rates the call boundary is a first-order
 cost, so a burst submitted this way reaches the workers sooner than the
@@ -13,12 +13,12 @@ to batch the collection side too.
 ## Usage
 
 ``` r
-mizu_submit_batch(pool, exprs, ..., .timeout = Inf)
+mizu_submit_batch(.pool, .exprs, ..., .timeout = Inf)
 ```
 
 ## Arguments
 
-- pool:
+- .pool:
 
   a pool handle from
   [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
@@ -27,7 +27,7 @@ mizu_submit_batch(pool, exprs, ..., .timeout = Inf)
   inside a task, the evaluating worker's own handle from
   [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md).
 
-- exprs:
+- .exprs:
 
   a list of expressions, one per task. Quote them yourself: elements of
   a list cannot be captured unevaluated.
@@ -37,7 +37,9 @@ mizu_submit_batch(pool, exprs, ..., .timeout = Inf)
   named values bound in the evaluation environment. The values are
   serialized.
   [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d objects
-  reduce to identifiers and map zero-copy on the worker.
+  reduce to identifiers and map zero-copy on the worker. The formals
+  ahead of `...` are dot-prefixed, so a name you pass through `...` can
+  never collide with them.
 
 - .timeout:
 
@@ -49,16 +51,16 @@ mizu_submit_batch(pool, exprs, ..., .timeout = Inf)
 ## Value
 
 A list of task handles (class `"mizu_task"`), one per accepted task —
-shorter than `exprs` when the ring filled past `.timeout` mid-batch.
+shorter than `.exprs` when the ring filled past `.timeout` mid-batch.
 
 ## Details
 
-Each task's wire payload is the same `list(expr, args)` as
+Each task's wire payload is the same `list(.expr, args)` as
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)'s,
 with the `...` arguments shared by every task in the batch. Unlike
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
-expressions are not captured: the elements of `exprs` are pre-quoted (or
-plain values, which evaluate to themselves).
+expressions are not captured: the elements of `.exprs` are pre-quoted
+(or plain values, which evaluate to themselves).
 
 Submission semantics per task are
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)'s,

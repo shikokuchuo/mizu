@@ -11,14 +11,14 @@ and submit specs to them.
 ## Usage
 
 ``` r
-mizu_call(name = NULL, ..., source = NULL)
+mizu_call(.name = NULL, ..., .source = NULL)
 
 mizu_submit_call(pool, spec, .timeout = Inf)
 ```
 
 ## Arguments
 
-- name:
+- .name:
 
   \[character(1)\] a qualified function name: `"pkg::fn"` (or
   `"pkg:::fn"`) for R workers, `"mod.fn"` for Python workers. The
@@ -36,7 +36,7 @@ mizu_submit_call(pool, spec, .timeout = Inf)
   a non-portable argument raises `mizu_error_not_portable` at submit,
   never a fallback.
 
-- source:
+- .source:
 
   \[character(1)\] source code in the workers' language. Evaluated in a
   fresh namespace (parented on the global environment in R, a fresh dict
