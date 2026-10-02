@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="599356454c72322516291b1a5a58782b895f8511"  # libmizu: the 'I' ref leaf (0x13) for task arguments by reference
+PIN="1efb8839b7c0ffef614edeeb398a2f27b36f9518"  # libmizu: the MIZL remote leaf (directory tag 33) wire contract
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
