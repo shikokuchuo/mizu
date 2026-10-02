@@ -54,9 +54,12 @@ Scalars, lists, and dicts with string keys cross both ways as R’s own
 logical/integer/double/complex/character/list values. A `Date` arrives
 as `datetime64[D]`, a `POSIXct` as naive `datetime64[us]`, a factor as
 `list[str | None]` (a dictionary-encoded column inside a frame), and a
-matrix as a Fortran-order array — the data never transposes. A
-`difftime`, `POSIXlt`, a named vector, and S4 objects stay on R’s side:
-sending one on a Python channel raises at
+matrix as a Fortran-order array — the data never transposes. A large
+Fortran-order numpy array arrives as a zero-copy matrix view over the
+shared pages — one layout write, no copy or parse; C-order and strided
+arrays still cross value-exact by copy. A `difftime`, `POSIXlt`, a named
+vector, and S4 objects stay on R’s side: sending one on a Python channel
+raises at
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md).
 
 A data frame crosses as a `pymizu.Frame` — column dict on one side,
@@ -88,7 +91,7 @@ stages it:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.3411296 0.5548732 0.7805332
+#> [1] 0.3387805 0.5704322 0.7699057
 s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -136,23 +139,23 @@ them:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.3889474 0.3889474
+#> [1] 0.4734116 0.4734116
 #> 
 #> [[2]]
-#> [1] 0.6287351 0.6287351
+#> [1] 0.673698 0.673698
 #> 
 #> [[3]]
-#> [1] 0.5809136 0.5809136
+#> [1] 0.2863747 0.2863747
 #> 
 #> [[4]]
-#> [1] 0.290622 0.290622
+#> [1] 0.86397 0.86397
 #> 
 #> [[5]]
-#> [1] 0.7203353 0.7203353
+#> [1] 0.4032393 0.4032393
 #> 
 #> [[6]]
-#> [1] 0.7950029 0.7950029
+#> [1] 0.1486028 0.1486028
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -3.0374923 -0.8900561 -0.7107424 -1.3591337 -3.2862063 -0.8352683
+#> [1] -0.1312512 -2.0955744 -1.2864743 -2.6057958 -0.6011432 -0.2042145
 mizu_pool_stop(p)
 ```
