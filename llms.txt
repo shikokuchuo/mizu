@@ -17,8 +17,8 @@ Channels and work-stealing task pools run over POSIX shared memory
 A channel is a two-way message link between an R session and a helper
 process that it spawns. A pool is a set of worker processes that divide
 submitted tasks among themselves. In both, one process writes data and
-the other reads it in place, without it being copied through a socket,
-pipe, or file.
+the other reads it in place, without copying through a socket, pipe, or
+file.
 
 The hot path stays in user space: single-producer single-consumer rings
 with batched publication, spin-then-park waiting, and event-driven
