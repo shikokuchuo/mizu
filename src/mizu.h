@@ -445,6 +445,18 @@ int mizu_r_check(void *ctx);
 void mizu_r_drop(void *ctx, void *pin);
 void mizu_r_sweep(void *ctx);
 
+// The channel/pool veneer's shared helpers (verbs.c) -----------------------
+
+/* Raise a create/attach/join failure off the core's thread-local slot. */
+NORET void mizu_r_raise_tls(void) MIZU_COLD;
+int mizu_r_pow2(uint64_t v);
+const char *mizu_r_suffix_arg(SEXP suffix_sexp);
+uint64_t mizu_r_ident_override(SEXP ident_sexp, uint64_t dflt);
+/* The handle unwrap: tag check, released check (peek returns NULL), fork
+   guard. `what` ("channel" / "pool") composes the messages. */
+mizu_r_handle *mizu_r_handle_peek(SEXP xp, SEXP tag, const char *what);
+mizu_r_handle *mizu_r_handle_get(SEXP xp, SEXP tag, const char *what);
+
 // Pool-signal unwrap (verbs_pool.c; map.c's runner reads the words) -------
 
 mizu_pool_sig *mizu_pool_sig_get(SEXP xp);

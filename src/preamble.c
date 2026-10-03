@@ -12,8 +12,6 @@
 
 // .Call test surface -----------------------------------------------------------
 
-mizu_shm *mizu_region(SEXP xp);   /* wrap.c */
-
 SEXP mizu_preamble_write_call(SEXP xp, SEXP cap, SEXP slot, SEXP arena,
                              SEXP drop, SEXP livedir) {
   mizu_shm *shm = mizu_region(xp);

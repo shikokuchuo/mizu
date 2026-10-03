@@ -6,8 +6,6 @@
 #include <stdlib.h>
 #include "mizu.h"
 
-mizu_shm *mizu_region(SEXP xp);   /* wrap.c */
-
 static _Atomic uint32_t *mizu_entity_epoch(mizu_shm *shm, int entity) {
   if (entity != MIZU_ENTITY_HOST && entity != MIZU_ENTITY_PEER)
     Rf_error("mizu: invalid entity");

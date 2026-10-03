@@ -810,3 +810,25 @@ best-known table.
 
 Status: full suite 3045 pass, 0 fail (3 expected macOS skips); pymizu
 363 pass, 5 skip; libmizu make test + test-fuzz + tidy clean.
+
+## 2026-10-03 — the veneer helper extraction (no-regression A/B)
+
+The channel/pool veneer's duplicated statics — the thread-local
+create/attach raise, pow2, the suffix and identity-pair validations, and
+the handle peek/get unwrap — moved into one shared TU (src/verbs.c), with
+the R layer's own dedup alongside (the launch/startup paths, the state
+decodes, the map helpers). A cross-TU move on the verb boundary, so the
+read was the sequential-rt rows: with -flto the helpers inline back, and
+they read flat. Full mizu-bench.R back-to-back on one host, pre-change
+(before) against the working tree (after).
+
+Results (before -> after): sequential rt 1.0 -> 1.0 us channel / 1.5 ->
+1.5 pool; pipelined channel 912.7k -> 926.6k rt/s (batch 20.31M ->
+19.88M), pool 376.3k -> 377.4k tasks/s (batch 3.16M -> 3.43M); payloads
+2.8 / 77.4 / 416.2 -> 3.0 / 77.8 / 419.2 us; fan-out 366.1k -> 369.8k;
+streaming 43.75M -> 44.32M msg/s; map walls 5.3 / 11.2 -> 5.3 / 11.2 ms;
+serialize 3.5 -> 3.2 us, codec 2.7 -> 1.6 us. Every delta inside the
+run-to-run band; the after run's streaming, channel-batch and codec rows
+read above the best-known table, but as an A/B isolation they stay here.
+
+Status: full suite 3011 pass, 0 fail (expected macOS/pymizu skips).

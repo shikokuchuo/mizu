@@ -53,19 +53,11 @@ void mizu_channel_fini(void) {
 
 /* NULL when the handle has already been released (closed / destroyed). */
 static mizu_r_handle *chan_peek(SEXP xp) {
-  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mizu_chan_tag)
-    Rf_error("mizu: not a channel handle");
-  mizu_r_handle *h = (mizu_r_handle *) R_ExternalPtrAddr(xp);
-  if (h == NULL || h->core == NULL) return NULL;
-  if (h->self_pid != mizu_self_pid())
-    Rf_error("mizu: channel handles do not survive fork()");
-  return h;
+  return mizu_r_handle_peek(xp, mizu_chan_tag, "channel");
 }
 
 static mizu_r_handle *chan_get(SEXP xp) {
-  mizu_r_handle *h = chan_peek(xp);
-  if (h == NULL) Rf_error("mizu: channel handle is closed");
-  return h;
+  return mizu_r_handle_get(xp, mizu_chan_tag, "channel");
 }
 
 static mizu_channel *chan_core(SEXP xp) {
@@ -141,22 +133,6 @@ NORET static void chan_raise(mizu_channel *c) {
   mizu_stop("mizu_error", "mizu: %s", mizu_channel_error(c));
 }
 
-/* Raise a create/attach failure off the thread-local slot, where the core
-   composes the full message (size + hint included). Space/existence
-   failures carry the shm class; everything else is a plain error. */
-NORET static void chan_raise_tls(void) {
-  mizu_errcat cat = mizu_last_error_category();
-  const char *msg = mizu_last_error_message();
-  switch (cat) {
-  case MIZU_ERRCAT_NOSPACE:
-  case MIZU_ERRCAT_NOMEMORY:
-  case MIZU_ERRCAT_EXISTS:
-    mizu_stop_shm(NA_REAL, "mizu: %s", msg);
-  default:
-    Rf_error("mizu: %s", msg);
-  }
-}
-
 /* Provenance, not class: TRUE only for the interned singletons themselves,
    so a payload merely carrying the class never passes. */
 SEXP mizu_sentinel_check(SEXP x) {
@@ -166,18 +142,14 @@ SEXP mizu_sentinel_check(SEXP x) {
 
 // Create (host) -------------------------------------------------------------------
 
-static int mizu_pow2(uint64_t v) {
-  return v != 0 && (v & (v - 1)) == 0;
-}
-
 SEXP mizu_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
                          SEXP arena_sexp, SEXP spin) {
   uint64_t cap = (uint64_t) Rf_asInteger(cap_sexp);
   uint64_t slot = (uint64_t) Rf_asInteger(slot_sexp);
   double arena_in = Rf_asReal(arena_sexp);
-  if (!mizu_pow2(cap) || cap < 2 || cap > (1u << 24))
+  if (!mizu_r_pow2(cap) || cap < 2 || cap > (1u << 24))
     Rf_error("mizu: capacity must be a power of two between 2 and 2^24");
-  if (!mizu_pow2(slot) || slot < 64 || slot > (1u << 20))
+  if (!mizu_r_pow2(slot) || slot < 64 || slot > (1u << 20))
     Rf_error("mizu: slot_size must be a power of two between 64 and 2^20");
   if (!(arena_in >= 0) || arena_in > 1.1e12 ||
       (uint64_t) arena_in % 64 != 0)
@@ -225,7 +197,7 @@ SEXP mizu_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
   free(drop);
   if (st != MIZU_OK) {
     free(h);
-    chan_raise_tls();
+    mizu_r_raise_tls();
   }
   h->core = (mizu_handle *) c;
   h->self_pid = mizu_self_pid();
@@ -270,26 +242,17 @@ SEXP mizu_channel_destroy_call(SEXP xp) {
 // Attach (peer) -------------------------------------------------------------------
 
 SEXP mizu_channel_attach_call(SEXP suffix_sexp, SEXP ident_sexp) {
-  if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
-    Rf_error("mizu: expected a region-name suffix");
-  const char *suffix = CHAR(STRING_ELT(suffix_sexp, 0));
+  const char *suffix = mizu_r_suffix_arg(suffix_sexp);
 
   mizu_r_handle *h = calloc(1, sizeof(*h));
   if (h == NULL) Rf_error("mizu: allocation failure");
   mizu_binding b;
   chan_binding(h, &b);
-  /* test-only identity override (helper.R's harnesses): an integer
-     c(lang, caps) pair replaces this build's word — NULL is the build's */
-  if (ident_sexp != R_NilValue) {
-    if (TYPEOF(ident_sexp) != INTSXP || XLENGTH(ident_sexp) != 2)
-      Rf_error("mizu: expected an identity pair c(lang, caps)");
-    b.ident = MIZU_IDENT((uint32_t) INTEGER(ident_sexp)[0],
-                         (uint32_t) INTEGER(ident_sexp)[1]);
-  }
+  b.ident = mizu_r_ident_override(ident_sexp, b.ident);
   mizu_channel *c;
   if (mizu_channel_attach(&c, suffix, &b) != MIZU_OK) {
     free(h);
-    chan_raise_tls();
+    mizu_r_raise_tls();
   }
   h->core = (mizu_handle *) c;
   h->self_pid = mizu_self_pid();

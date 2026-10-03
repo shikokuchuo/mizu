@@ -40,19 +40,11 @@ void mizu_pool_fini(void) {
 // Handle access -------------------------------------------------------------------
 
 static mizu_r_handle *pool_peek(SEXP xp) {
-  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mizu_pool_tag)
-    Rf_error("mizu: not a pool handle");
-  mizu_r_handle *h = (mizu_r_handle *) R_ExternalPtrAddr(xp);
-  if (h == NULL || h->core == NULL) return NULL;
-  if (h->self_pid != mizu_self_pid())
-    Rf_error("mizu: pool handles do not survive fork()");
-  return h;
+  return mizu_r_handle_peek(xp, mizu_pool_tag, "pool");
 }
 
 static mizu_r_handle *pool_get(SEXP xp) {
-  mizu_r_handle *h = pool_peek(xp);
-  if (h == NULL) Rf_error("mizu: pool handle is closed");
-  return h;
+  return mizu_r_handle_get(xp, mizu_pool_tag, "pool");
 }
 
 static mizu_pool *pool_core(SEXP xp) {
@@ -172,27 +164,7 @@ NORET static void pool_raise(mizu_pool *p) {
   }
 }
 
-/* Raise a create/attach/join failure off the thread-local slot, where the
-   core composes the full message (size + hint included). Space/existence
-   failures carry the shm class; everything else is a plain error. */
-NORET static void pool_raise_tls(void) {
-  mizu_errcat cat = mizu_last_error_category();
-  const char *msg = mizu_last_error_message();
-  switch (cat) {
-  case MIZU_ERRCAT_NOSPACE:
-  case MIZU_ERRCAT_NOMEMORY:
-  case MIZU_ERRCAT_EXISTS:
-    mizu_stop_shm(NA_REAL, "mizu: %s", msg);
-  default:
-    Rf_error("mizu: %s", msg);
-  }
-}
-
 // Create (controller) ---------------------------------------------------------------
-
-static int mizu_pow2_u64(uint64_t v) {
-  return v != 0 && (v & (v - 1)) == 0;
-}
 
 SEXP mizu_pool_create_call(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
                       SEXP deque_sexp, SEXP rslots_sexp, SEXP slot_sexp) {
@@ -206,13 +178,13 @@ SEXP mizu_pool_create_call(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
     Rf_error("mizu: max_workers must be between 1 and %d", MIZU_MAX_WORKERS);
   if (maxs < 1 || maxs > 64)
     Rf_error("mizu: max_submitters must be between 1 and 64");
-  if (!mizu_pow2_u64(inj_cap) || inj_cap < 2 || inj_cap > (1u << 24))
+  if (!mizu_r_pow2(inj_cap) || inj_cap < 2 || inj_cap > (1u << 24))
     Rf_error("mizu: injection_cap must be a power of two between 2 and 2^24");
-  if (!mizu_pow2_u64(deque_cap) || deque_cap < 2 || deque_cap > (1u << 24))
+  if (!mizu_r_pow2(deque_cap) || deque_cap < 2 || deque_cap > (1u << 24))
     Rf_error("mizu: per_worker_cap must be a power of two between 2 and 2^24");
   /* floor 128: a result slot's inline budget (slot - 40) must hold a
      region name (up to 27 bytes on Windows) for an SHM_RAW spill */
-  if (!mizu_pow2_u64(slot) || slot < 128 || slot > (1u << 20))
+  if (!mizu_r_pow2(slot) || slot < 128 || slot > (1u << 20))
     Rf_error("mizu: slot_size must be a power of two between 128 and 2^20");
   if (rslots < maxs || rslots > (1u << 24))
     Rf_error("mizu: result_slots must be between max_submitters and 2^24");
@@ -234,7 +206,7 @@ SEXP mizu_pool_create_call(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
   mizu_pool *p;
   if (mizu_pool_create(&p, &opts, &b) != MIZU_OK) {
     free(h);
-    pool_raise_tls();
+    mizu_r_raise_tls();
   }
   h->core = (mizu_handle *) p;
   h->self_pid = mizu_self_pid();
@@ -303,27 +275,18 @@ SEXP mizu_pool_destroy_call(SEXP xp) {
 
 SEXP mizu_pool_worker_join_call(SEXP suffix_sexp, SEXP slot_sexp,
                                 SEXP ident_sexp) {
-  if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
-    Rf_error("mizu: expected a region-name suffix");
-  const char *suffix = CHAR(STRING_ELT(suffix_sexp, 0));
+  const char *suffix = mizu_r_suffix_arg(suffix_sexp);
   uint32_t slot = (uint32_t) Rf_asInteger(slot_sexp);
 
   mizu_r_handle *h = calloc(1, sizeof(*h));
   if (h == NULL) Rf_error("mizu: allocation failure");
   mizu_binding b;
   pool_binding(h, &b, 1);
-  /* test-only identity override (helper.R's pool_pair): an integer
-     c(lang, caps) pair replaces this build's word — NULL is the build's */
-  if (ident_sexp != R_NilValue) {
-    if (TYPEOF(ident_sexp) != INTSXP || XLENGTH(ident_sexp) != 2)
-      Rf_error("mizu: expected an identity pair c(lang, caps)");
-    b.ident = MIZU_IDENT((uint32_t) INTEGER(ident_sexp)[0],
-                         (uint32_t) INTEGER(ident_sexp)[1]);
-  }
+  b.ident = mizu_r_ident_override(ident_sexp, b.ident);
   mizu_pool *p;
   if (mizu_pool_worker_join(&p, suffix, slot, &b) != MIZU_OK) {
     free(h);
-    pool_raise_tls();
+    mizu_r_raise_tls();
   }
   h->core = (mizu_handle *) p;
   h->self_pid = mizu_self_pid();
@@ -333,9 +296,7 @@ SEXP mizu_pool_worker_join_call(SEXP suffix_sexp, SEXP slot_sexp,
 }
 
 SEXP mizu_pool_attach_call(SEXP suffix_sexp) {
-  if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
-    Rf_error("mizu: expected a region-name suffix");
-  const char *suffix = CHAR(STRING_ELT(suffix_sexp, 0));
+  const char *suffix = mizu_r_suffix_arg(suffix_sexp);
 
   mizu_r_handle *h = calloc(1, sizeof(*h));
   if (h == NULL) Rf_error("mizu: allocation failure");
@@ -344,7 +305,7 @@ SEXP mizu_pool_attach_call(SEXP suffix_sexp) {
   mizu_pool *p;
   if (mizu_pool_attach(&p, suffix, &b) != MIZU_OK) {
     free(h);
-    pool_raise_tls();
+    mizu_r_raise_tls();
   }
   h->core = (mizu_handle *) p;
   h->self_pid = mizu_self_pid();
@@ -574,13 +535,7 @@ SEXP mizu_pool_submit_spec(SEXP xp, SEXP spec, SEXP timeout,
     Rf_error("mizu: a name-kind task needs a qualified name ('pkg::fn' "
              "for R workers, 'mod.fn' for Python workers): '%s'",
              CHAR(STRING_ELT(code, 0)));
-  uint64_t ident = MIZU_R_IDENT;
-  if (ident_sexp != R_NilValue) {
-    if (TYPEOF(ident_sexp) != INTSXP || XLENGTH(ident_sexp) != 2)
-      Rf_error("mizu: expected an identity pair c(lang, caps)");
-    ident = MIZU_IDENT((uint32_t) INTEGER(ident_sexp)[0],
-                       (uint32_t) INTEGER(ident_sexp)[1]);
-  }
+  uint64_t ident = mizu_r_ident_override(ident_sexp, MIZU_R_IDENT);
   mizu_spec_submit c = { h, xp, timeout, R_NilValue };
   h->spec = spec;
   h->spec_ident = ident;
