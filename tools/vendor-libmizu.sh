@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="1efb8839b7c0ffef614edeeb398a2f27b36f9518"  # libmizu: the MIZL remote leaf (directory tag 33) wire contract
+PIN="909563b2f1c9f8a46f6b8ca243fb94408c0237c5"  # libmizu: deduplicate shared core helpers + the channel fork guard
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

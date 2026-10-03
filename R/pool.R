@@ -560,6 +560,11 @@ submitter_states <- c("free", "live", "reaping")
 slot_states <- c("free", "pending", "ok", "err", "cancel", "died")
 park_states <- c("running", "idle", "parked", "waking")
 
+# Recode a C registry enum vector onto its labels (C enums are 0-based).
+recode_states <- function(x, states) {
+  states[x + 1L]
+}
+
 #' Inspect a Pool
 #'
 #' A read-only snapshot of the pool region: registry states, parked-worker
@@ -582,8 +587,8 @@ park_states <- c("running", "idle", "parked", "waking")
 #' @export
 mizu_pool_status <- function(pool) {
   st <- .Call(mizu_pool_status_call, pool)
-  st[["workers"]] <- worker_states[st[["workers"]] + 1L]
-  st[["submitters"]] <- submitter_states[st[["submitters"]] + 1L]
+  st[["workers"]] <- recode_states(st[["workers"]], worker_states)
+  st[["submitters"]] <- recode_states(st[["submitters"]], submitter_states)
   names(st[["tasks"]]) <- slot_states[-1L]
   st
 }
@@ -636,14 +641,14 @@ mizu_pool_dump <- function(pool) {
     "unknown"
   }
   w <- d[["workers"]]
-  w[["status"]] <- worker_states[w[["status"]] + 1L]
-  w[["park_state"]] <- park_states[w[["park_state"]] + 1L]
+  w[["status"]] <- recode_states(w[["status"]], worker_states)
+  w[["park_state"]] <- recode_states(w[["park_state"]], park_states)
   d[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
   s <- d[["submitters"]]
-  s[["status"]] <- submitter_states[s[["status"]] + 1L]
+  s[["status"]] <- recode_states(s[["status"]], submitter_states)
   d[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
   tk <- lapply(d[["tasks"]], `[`, !is.na(d[["tasks"]][["slot"]]))
-  tk[["status"]] <- slot_states[tk[["status"]] + 1L]
+  tk[["status"]] <- recode_states(tk[["status"]], slot_states)
   d[["tasks"]] <- data.frame(tk)
   d
 }
@@ -694,10 +699,10 @@ mizu_pool_dump <- function(pool) {
 mizu_pool_stats <- function(pool) {
   st <- .Call(mizu_pool_stats_call, pool)
   w <- st[["workers"]]
-  w[["status"]] <- worker_states[w[["status"]] + 1L]
+  w[["status"]] <- recode_states(w[["status"]], worker_states)
   st[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
   s <- st[["submitters"]]
-  s[["status"]] <- submitter_states[s[["status"]] + 1L]
+  s[["status"]] <- recode_states(s[["status"]], submitter_states)
   s[["queued"]] <- s[["injected"]] - s[["claimed"]]
   st[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
   st

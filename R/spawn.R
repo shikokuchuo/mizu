@@ -57,11 +57,16 @@ child_prologue <- function() {
   invisible()
 }
 
+# The join token is the region name's <pid hex>_<counter hex> tail.
+valid_token <- function(token) {
+  grepl("^[0-9a-f]+_[0-9a-f]+$", token)
+}
+
 # Spawn the peer for a channel region. The join token — the region name's
 # <pid hex>_<counter hex> tail after the platform prefix — is carried in the
 # entry expression; the child prepends its own compiled-in prefix.
 spawn_peer <- function(token, stdout = "", stderr = "") {
-  if (!grepl("^[0-9a-f]+_[0-9a-f]+$", token)) {
+  if (!valid_token(token)) {
     stop("mizu: malformed join token", call. = FALSE)
   }
   mizu_spawn(
@@ -74,7 +79,7 @@ spawn_peer <- function(token, stdout = "", stderr = "") {
 # Spawn a pool worker: the join token and the host-assigned slot index
 # travel as argv, under the same rules as spawn_peer.
 spawn_worker <- function(token, slot, stdout = "", stderr = "") {
-  if (!grepl("^[0-9a-f]+_[0-9a-f]+$", token) || slot < 0) {
+  if (!valid_token(token) || slot < 0) {
     stop("mizu: malformed join token or slot", call. = FALSE)
   }
   mizu_spawn(

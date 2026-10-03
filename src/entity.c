@@ -16,14 +16,20 @@ static _Atomic uint32_t *mizu_entity_epoch(mizu_shm *shm, int entity) {
 
 // Parker ------------------------------------------------------------------------
 
+/* Attach the entity's parker or raise. */
+static void mizu_parker_attach_checked(mizu_parker *pk, mizu_shm *shm,
+                                       int entity, int create) {
+  if (mizu_parker_attach(pk, mizu_entity_epoch(shm, entity), shm->name,
+                         entity, create) != 0)
+    Rf_error("mizu: cannot attach parker");
+}
+
 SEXP mizu_park_call(SEXP xp, SEXP entity, SEXP timeout_ms, SEXP create) {
   mizu_shm *shm = mizu_region(xp);
   int ent = Rf_asInteger(entity);
 
   mizu_parker pk;
-  if (mizu_parker_attach(&pk, mizu_entity_epoch(shm, ent), shm->name, ent,
-                        Rf_asLogical(create) == TRUE) != 0)
-    Rf_error("mizu: cannot attach parker");
+  mizu_parker_attach_checked(&pk, shm, ent, Rf_asLogical(create) == TRUE);
   int rc = mizu_park(&pk, mizu_parker_snapshot(&pk),
                     (long) Rf_asInteger(timeout_ms));
   mizu_parker_detach(&pk);
@@ -35,9 +41,7 @@ SEXP mizu_unpark_call(SEXP xp, SEXP entity, SEXP create) {
   int ent = Rf_asInteger(entity);
 
   mizu_parker pk;
-  if (mizu_parker_attach(&pk, mizu_entity_epoch(shm, ent), shm->name, ent,
-                        Rf_asLogical(create) == TRUE) != 0)
-    Rf_error("mizu: cannot attach parker");
+  mizu_parker_attach_checked(&pk, shm, ent, Rf_asLogical(create) == TRUE);
   mizu_unpark(&pk);
   mizu_parker_detach(&pk);
   return R_NilValue;
