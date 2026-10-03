@@ -1,6 +1,6 @@
 Package: mizu
 Title: Lock-Free Shared-Memory Parallelism for R
-Version: 0.0.0.9000
+Version: 0.0.1.9000
 Authors@R: c(
     person("Charlie", "Gao", , "charlie.gao@posit.co", role = c("aut", "cre"),
            comment = c(ORCID = "0000-0002-0750-061X")),
