@@ -46,10 +46,10 @@ probes and A/B isolations stay in the log.
 | row | best | measured |
 |---|---|---|
 | sequential rt, channel | 1.0 us/rt | 2026-10-01 |
-| sequential rt, pool | 1.5 us/task | 2026-09-26 |
+| sequential rt, pool | 1.4 us/task | 2026-10-03 |
 | pipelined, channel | 981k rt/s | 2026-09-26 |
-| pipelined, channel batch | 19.4M rt/s | 2026-10-01 |
-| pipelined, pool | 599k tasks/s | 2026-09-26 |
+| pipelined, channel batch | 20.4M rt/s | 2026-10-03 |
+| pipelined, pool | 680k tasks/s | 2026-10-03 |
 | pipelined, pool batch | 4.07M tasks/s | 2026-10-01 |
 | payload 8,000 B | 2.8 us/task | 2026-09-30 |
 | payload 800,000 B | 75.5 us/task | 2026-09-26 |
@@ -832,3 +832,44 @@ run-to-run band; the after run's streaming, channel-batch and codec rows
 read above the best-known table, but as an A/B isolation they stay here.
 
 Status: full suite 3011 pass, 0 fail (expected macOS/pymizu skips).
+
+## 2026-10-03 — the core dedup + channel fork guard (no-regression A/B)
+
+The libmizu core's duplicated blocks moved into internal.h static
+inlines (mizu_binding_check, mizu_wait_ms, mizu_shm_set_name; the
+submit_many double clock read hoisted to one) and the channel gained
+the fork guard — one cached-pid compare per verb entry
+(chan_get/chan_forked; alive/peer_ident/drop answer empty, destroy
+unguarded) — vendored at libmizu 909563b. Static-inline moves with the
+fork compare the only added hot-path work, so the expectation was
+flat. A/B on one host, sequential runs, identical flags: baseline HEAD
+(core 1efb883) against the working tree (core 909563b plus the R-side
+recode_states/valid_token dedup, neither hot), one run each.
+
+Results (A -> B): sequential rt 1.0 -> 1.0 us channel / 1.5 -> 1.5
+pool; pipelined channel 894.0k -> 923.9k rt/s (batch 19.68M ->
+19.42M), pool 358.7k -> 352.5k tasks/s (batch 3.71M -> 4.34M);
+payloads 3.1 / 81.0 / 429.4 -> 3.0 / 77.8 / 429.7 us; fan-out 371.1k
+-> 371.3k; streaming 41.73M -> 41.95M msg/s; map walls 5.3 / 11.1 ->
+5.4 / 11.3 ms; serialize 3.2 -> 3.2 us, codec 1.7 -> 1.7 us. Every
+delta inside the run-to-run band; as an A/B isolation it stays here.
+
+Status: full suite 3171 pass, 0 fail (3 expected macOS skips).
+
+## 2026-10-03 — dedicated re-baseline attempt: codec tier, pool batch
+
+A best-of-3 re-baseline run (full mizu-bench.R x3 back-to-back, nothing
+else in flight, loadavg ~2.6-2.9; the working-tree build at libmizu
+909563b) after the day's A/B isolations read above best on two rows.
+Neither target reproduces at recording time: codec tier 2.6/2.5/2.4 us
+(best-of-3 2.4 — the record stands at 2.1 from 2026-10-01; the 1.6/1.7
+A/B reads needed a quieter machine) and pool batch 2.77M/2.99M/3.64M
+(best-of-3 3.64M — the record stands at 4.07M from 2026-10-01; the A/B
+day's 4.34M was the wide row's lucky draw). Three incidental rows did
+set bests, all in R2's quiet window, and swap onto the table: pipelined
+pool 372.7k/679.8k/376.7k -> 680k (a bimodal row — its band here runs
+~370k-680k), pipelined channel batch 20.0M/20.4M/19.8M -> 20.4M, and
+sequential rt pool 1.4 us at display precision (R1/R3 1.5). Map walls
+tie or below (best-of-3 5.3 / 11.3 against records 5.3 / 11.1).
+
+Status: full suite 3171 pass, 0 fail (3 expected macOS skips).
