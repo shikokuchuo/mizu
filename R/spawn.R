@@ -46,6 +46,17 @@ mizu_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
   invisible()
 }
 
+# The prologue of every spawned child (channel peer or pool worker): the
+# runner evaluates the entry expression with the namespace loaded but not
+# necessarily attached, and the allocator tuning applies to every child.
+child_prologue <- function() {
+  if (!any(search() == "package:mizu")) {
+    attachNamespace("mizu")
+  }
+  .Call(mizu_tune_malloc)
+  invisible()
+}
+
 # Spawn the peer for a channel region. The join token — the region name's
 # <pid hex>_<counter hex> tail after the platform prefix — is carried in the
 # entry expression; the child prepends its own compiled-in prefix.
@@ -155,7 +166,50 @@ pymizu_prober <- local({
   }
 })
 
-has_pymizu_child <- function(python) pymizu_prober(python, "child")
+# The shared preflight of the python launchers: resolve the interpreter
+# (defaulting to python3 on the PATH) and probe it for the pymizu entry
+# module, so a missing interpreter or package raises before anything exists.
+# `caller` names the exported launcher in the error messages.
+py_resolve <- function(python, module, caller) {
+  if (is.null(python)) {
+    python <- unname(Sys.which("python3"))
+    if (!nzchar(python)) {
+      stop(
+        sprintf(
+          "mizu: %s() needs python3 on the PATH (or pass python)",
+          caller
+        ),
+        call. = FALSE
+      )
+    }
+  }
+  if (!pymizu_prober(python, module)) {
+    stop(
+      sprintf(
+        "mizu: %s() needs the Python package 'pymizu' installed for %s",
+        caller,
+        python
+      ),
+      call. = FALSE
+    )
+  }
+  python
+}
+
+# The spawned process itself: `python -m <module> token [slot]`. The pool
+# verb calls the launcher with both arguments; the channel verb with token
+# alone (the same convention as mizu_launcher()).
+py_module_launcher <- function(python, module, stdout, stderr) {
+  force(stdout)
+  force(stderr)
+  function(token, slot) {
+    args <- c("-m", module, token)
+    if (!missing(slot)) {
+      args <- c(args, slot)
+    }
+    system2(python, args, wait = FALSE, stdout = stdout, stderr = stderr)
+  }
+}
 
 #' Python Channel Peer Launcher
 #'
@@ -198,38 +252,8 @@ has_pymizu_child <- function(python) pymizu_prober(python, "child")
 #'
 #' @export
 mizu_py_launcher <- function(python = NULL, stdout = "", stderr = "") {
-  if (is.null(python)) {
-    python <- unname(Sys.which("python3"))
-    if (!nzchar(python)) {
-      stop(
-        "mizu: mizu_py_launcher() needs python3 on the PATH (or pass python)",
-        call. = FALSE
-      )
-    }
-  }
-  if (!has_pymizu_child(python)) {
-    stop(
-      sprintf(
-        paste0(
-          "mizu: mizu_py_launcher() needs the Python package 'pymizu' ",
-          "installed for %s"
-        ),
-        python
-      ),
-      call. = FALSE
-    )
-  }
-  force(stdout)
-  force(stderr)
-  function(token) {
-    system2(
-      python,
-      c("-m", "pymizu.child", token),
-      wait = FALSE,
-      stdout = stdout,
-      stderr = stderr
-    )
-  }
+  python <- py_resolve(python, "child", "mizu_py_launcher")
+  py_module_launcher(python, "pymizu.child", stdout, stderr)
 }
 
 #' Python Pool Worker Launcher
@@ -264,39 +288,6 @@ mizu_py_launcher <- function(python = NULL, stdout = "", stderr = "") {
 #'
 #' @export
 mizu_py_pool_launcher <- function(python = NULL, stdout = "", stderr = "") {
-  if (is.null(python)) {
-    python <- unname(Sys.which("python3"))
-    if (!nzchar(python)) {
-      stop(
-        paste0(
-          "mizu: mizu_py_pool_launcher() needs python3 on the PATH ",
-          "(or pass python)"
-        ),
-        call. = FALSE
-      )
-    }
-  }
-  if (!pymizu_prober(python, "worker")) {
-    stop(
-      sprintf(
-        paste0(
-          "mizu: mizu_py_pool_launcher() needs the Python package 'pymizu' ",
-          "installed for %s"
-        ),
-        python
-      ),
-      call. = FALSE
-    )
-  }
-  force(stdout)
-  force(stderr)
-  function(token, slot) {
-    system2(
-      python,
-      c("-m", "pymizu.worker", token, slot),
-      wait = FALSE,
-      stdout = stdout,
-      stderr = stderr
-    )
-  }
+  python <- py_resolve(python, "worker", "mizu_py_pool_launcher")
+  py_module_launcher(python, "pymizu.worker", stdout, stderr)
 }

@@ -98,14 +98,7 @@ mizu_channel <- function(
   launcher(token)
   if (!.Call(mizu_channel_ready_wait, ch, startup_timeout)) {
     .Call(mizu_channel_destroy, ch)
-    stop_mizu(
-      "mizu_error_startup",
-      paste0(
-        "mizu: child failed to attach within ",
-        format(startup_timeout),
-        " seconds"
-      )
-    )
+    stop_startup("child", startup_timeout)
   }
   ch
 }
@@ -288,10 +281,7 @@ mizu_alive <- function(ch) .Call(mizu_channel_alive, ch)
 # the expression (and every region its identifiers name) alive exactly until
 # then. The epilogue is the peer half of the close protocol.
 peer_main <- function(token) {
-  if (!any(search() == "package:mizu")) {
-    attachNamespace("mizu")
-  }
-  .Call(mizu_tune_malloc)
+  child_prologue()
   att <- .Call(mizu_channel_attach, token, NULL)
   ch <- att[[1L]]
   expr <- att[[2L]]

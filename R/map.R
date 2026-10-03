@@ -278,19 +278,8 @@ mizu_map <- function(
   .collect = "value"
 ) {
   map_check_native(.pool, .f)
-  spec <- inherits(.f, "mizu_call")
   dots <- list(...)
-  if (spec) {
-    if (length(dots)) {
-      stop(
-        "mizu: constant arguments ride the mizu_call() spec \u2014 '...' must ",
-        "be empty with a spec '.f'",
-        call. = FALSE
-      )
-    }
-  } else {
-    .f <- match.fun(.f)
-  }
+  .f <- map_check_f(.f, dots)
   map_template_check(.template)
   map_collect_check(.collect, .template)
   if (length(.x) == 0L) {
@@ -370,19 +359,8 @@ mizu_map_prepare <- function(
   .chunks = NULL
 ) {
   map_check_native(.pool, .f)
-  spec <- inherits(.f, "mizu_call")
   dots <- list(...)
-  if (spec) {
-    if (length(dots)) {
-      stop(
-        "mizu: constant arguments ride the mizu_call() spec \u2014 '...' must ",
-        "be empty with a spec '.f'",
-        call. = FALSE
-      )
-    }
-  } else {
-    .f <- match.fun(.f)
-  }
+  .f <- map_check_f(.f, dots)
   map_template_check(.template)
   pm <- new.env(parent = emptyenv())
   pm[["pool"]] <- .pool
@@ -541,6 +519,23 @@ map_seed_pair <- function(seed) {
   c(s, offset)
 }
 
+# The worker-side RNG guard shared by map_chunk and map_runner: captures
+# the worker's own .Random.seed (possibly absent — workers seed lazily)
+# and returns the nullary restore the caller registers with on.exit, so a
+# seeded batch leaves the worker's RNG state exactly as it found it.
+rng_save <- function() {
+  os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
+  function() {
+    if (is.null(os)) {
+      if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
+        rm(".Random.seed", envir = globalenv())
+      }
+    } else {
+      assign(".Random.seed", os, envir = globalenv())
+    }
+  }
+}
+
 # One validation path for .seed, shared by map_stage and map_rearm: NULL
 # stays NULL (unseeded), a scalar derives the base CMRG state, and a
 # length-2 vector pre-seeks that base by seed[2] stream jumps — exact by
@@ -568,6 +563,34 @@ map_runner_count <- function(caps, nm = Inf) {
   as.integer(min(nm, max(1L, caps[[1L]]), caps[[2L]], caps[[3L]]))
 }
 
+# The slots-exhausted failure, raised at stage and rearm alike: before
+# any region exists, so the map leaves nothing behind.
+stop_slots_exhausted <- function() {
+  stop_mizu(
+    "mizu_error_slots_exhausted",
+    paste0(
+      "mizu: result slots exhausted \u2014 collect or cancel ",
+      "outstanding tasks first"
+    )
+  )
+}
+
+# The worker-death failure, raised from either collect path with the lost
+# element ranges attached (blob path: the chunk range; region path: the
+# lost-set scan's arithmetic).
+stop_worker_died <- function(slot, pid, elts) {
+  stop_mizu(
+    "mizu_error_worker_died",
+    sprintf(
+      "mizu: worker died while executing map elements %s",
+      map_ranges_label(elts)
+    ),
+    slot = slot,
+    pid = pid,
+    elements = elts
+  )
+}
+
 # Re-arm a staged map state for another run: per-run seed state (it rides
 # the runner payloads, never the region), a fresh runner count against
 # the live workers, and — on the region path — the O(1) shared-state
@@ -583,13 +606,7 @@ map_rearm <- function(pool, st, seed) {
   if (is.null(st[["blob"]])) {
     caps <- .Call(mizu_pool_map_caps, pool)
     if (caps[[2L]] == 0L) {
-      stop_mizu(
-        "mizu_error_slots_exhausted",
-        paste0(
-          "mizu: result slots exhausted \u2014 collect or ",
-          "cancel outstanding tasks first"
-        )
-      )
+      stop_slots_exhausted()
     }
     st[["gen"]] <- .Call(mizu_map_reset, st[["wrap"]])
     st[["R"]] <- map_runner_count(caps, st[["nm"]])
@@ -622,6 +639,23 @@ map_check_native <- function(pool, f) {
     "spec as '.f' on a foreign pool",
     call. = FALSE
   )
+}
+
+# The '.f' gate shared by the map entry points: a mizu_call() spec crosses
+# as-is (its constants ride the spec, so '...' must be empty), anything
+# else resolves as an ordinary function.
+map_check_f <- function(f, dots) {
+  if (inherits(f, "mizu_call")) {
+    if (length(dots)) {
+      stop(
+        "mizu: constant arguments ride the mizu_call() spec \u2014 '...' must ",
+        "be empty with a spec '.f'",
+        call. = FALSE
+      )
+    }
+    return(f)
+  }
+  match.fun(f)
 }
 
 map_collect_check <- function(collect, template) {
@@ -734,13 +768,7 @@ map_stage <- function(
   # any region is created
   caps <- .Call(mizu_pool_map_caps, pool)
   if (caps[[2L]] == 0L) {
-    stop_mizu(
-      "mizu_error_slots_exhausted",
-      paste0(
-        "mizu: result slots exhausted \u2014 collect or cancel ",
-        "outstanding tasks first"
-      )
-    )
+    stop_slots_exhausted()
   }
   if (!is.null(chunks)) {
     chunks <- as.numeric(chunks)
@@ -1015,16 +1043,7 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
           map_cancel(st)
           if (inherits(v, "mizu_error_worker_died")) {
             elts <- cbind(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]])
-            stop_mizu(
-              "mizu_error_worker_died",
-              sprintf(
-                "mizu: worker died while executing map elements %s",
-                map_ranges_label(elts)
-              ),
-              slot = v[["slot"]],
-              pid = v[["pid"]],
-              elements = elts
-            )
+            stop_worker_died(v[["slot"]], v[["pid"]], elts)
           }
           stop(v)
         }
@@ -1148,16 +1167,7 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
         st[["wrap"]],
         if (st[["pymap"]]) map_hist_ix(runs, st[["ms"]]) else runs
       )
-      stop_mizu(
-        "mizu_error_worker_died",
-        sprintf(
-          "mizu: worker died while executing map elements %s",
-          map_ranges_label(elts)
-        ),
-        slot = died[["slot"]],
-        pid = died[["pid"]],
-        elements = elts
-      )
+      stop_worker_died(died[["slot"]], died[["pid"]], elts)
     }
     if (length(errs)) {
       map_cancel(st)
@@ -1245,18 +1255,9 @@ map_chunk <- function(r, b, s = NULL) {
   sr <- NULL
   if (!is.null(s)) {
     # per-element streams: seek to element lo's stream in O(log lo), then
-    # one jump per element inside the batch loop; the worker's own RNG
-    # state (possibly absent — workers seed lazily) is restored either way
-    os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
-    on.exit(
-      if (is.null(os)) {
-        if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
-          rm(".Random.seed", envir = globalenv())
-        }
-      } else {
-        assign(".Random.seed", os, envir = globalenv())
-      }
-    )
+    # one jump per element inside the batch loop
+    restore_rng <- rng_save()
+    on.exit(restore_rng())
     sr <- .Call(mizu_map_rng_seek, s, lo)
   }
   # the element loop is one .Call (mizu_map_batch builds the f call once
@@ -1321,16 +1322,8 @@ map_runner <- function(n, a, s = NULL) {
   vals <- if (!tmpl) vector("list", 8L)
   nb <- 0L
   if (!is.null(s)) {
-    os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
-    on.exit(
-      if (is.null(os)) {
-        if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
-          rm(".Random.seed", envir = globalenv())
-        }
-      } else {
-        assign(".Random.seed", os, envir = globalenv())
-      }
-    )
+    restore_rng <- rng_save()
+    on.exit(restore_rng())
   }
   tryCatch(
     repeat {

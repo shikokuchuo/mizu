@@ -106,6 +106,21 @@ stop_mizu <- function(subclass, message, ...) {
   stop(errorCondition(message, ..., class = c(subclass, "mizu_error")))
 }
 
+# The startup-timeout failure shared by every constructor that spawns
+# children: `what` is "child" (a channel peer) or "workers" (a pool's).
+stop_startup <- function(what, timeout) {
+  stop_mizu(
+    "mizu_error_startup",
+    paste0(
+      "mizu: ",
+      what,
+      " failed to attach within ",
+      format(timeout),
+      " seconds"
+    )
+  )
+}
+
 #' Test for a mizu Sentinel
 #'
 #' Identity comparison against the four interned sentinel singletons —

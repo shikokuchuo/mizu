@@ -92,24 +92,29 @@ mizu_pool <- function(
     result_slots,
     slot_size
   )
-  token <- .Call(mizu_pool_suffix, p)
-  for (slot in seq_len(n_workers) - 1L) {
+  tryCatch(
+    launch_workers(p, seq_len(n_workers) - 1L, launcher, startup_timeout),
+    # a pool that never came up is destroyed, not left to its finalizer
+    mizu_error_startup = function(e) {
+      .Call(mizu_pool_destroy, p)
+      stop(e)
+    }
+  )
+  p
+}
+
+# Spawn the workers for `slots` through the launcher and await their join:
+# the one launch path shared by mizu_pool (initial set) and
+# mizu_spawn_workers (growth). Raises mizu_error_startup on timeout.
+launch_workers <- function(pool, slots, launcher, startup_timeout) {
+  token <- .Call(mizu_pool_suffix, pool)
+  for (slot in slots) {
     launcher(token, slot)
   }
-  if (
-    !.Call(mizu_pool_ready_wait, p, seq_len(n_workers) - 1L, startup_timeout)
-  ) {
-    .Call(mizu_pool_destroy, p)
-    stop_mizu(
-      "mizu_error_startup",
-      paste0(
-        "mizu: workers failed to attach within ",
-        format(startup_timeout),
-        " seconds"
-      )
-    )
+  if (!.Call(mizu_pool_ready_wait, pool, as.integer(slots), startup_timeout)) {
+    stop_startup("workers", startup_timeout)
   }
-  p
+  invisible(as.integer(slots))
 }
 
 #' Grow or Shrink the Worker Set of a Pool
@@ -162,22 +167,7 @@ mizu_spawn_workers <- function(
       call. = FALSE
     )
   }
-  slots <- free[seq_len(n)]
-  token <- .Call(mizu_pool_suffix, pool)
-  for (slot in slots) {
-    launcher(token, slot)
-  }
-  if (!.Call(mizu_pool_ready_wait, pool, as.integer(slots), startup_timeout)) {
-    stop_mizu(
-      "mizu_error_startup",
-      paste0(
-        "mizu: workers failed to attach within ",
-        format(startup_timeout),
-        " seconds"
-      )
-    )
-  }
-  invisible(as.integer(slots))
+  launch_workers(pool, free[seq_len(n)], launcher, startup_timeout)
 }
 
 #' @rdname mizu_spawn_workers
@@ -562,6 +552,14 @@ mizu_pool_stop <- function(pool, timeout = 5) {
   invisible(ok)
 }
 
+# The core registry enums, decoded to labels for the inspection verbs. One
+# source of truth: status, dump and stats index these with the raw region
+# codes + 1, so a core-side enum change touches exactly these lines.
+worker_states <- c("free", "claiming", "live", "leaving", "reaping")
+submitter_states <- c("free", "live", "reaping")
+slot_states <- c("free", "pending", "ok", "err", "cancel", "died")
+park_states <- c("running", "idle", "parked", "waking")
+
 #' Inspect a Pool
 #'
 #' A read-only snapshot of the pool region: registry states, parked-worker
@@ -584,11 +582,9 @@ mizu_pool_stop <- function(pool, timeout = 5) {
 #' @export
 mizu_pool_status <- function(pool) {
   st <- .Call(mizu_pool_status_call, pool)
-  st[["workers"]] <- c("free", "claiming", "live", "leaving", "reaping")[
-    st[["workers"]] + 1L
-  ]
-  st[["submitters"]] <- c("free", "live", "reaping")[st[["submitters"]] + 1L]
-  names(st[["tasks"]]) <- c("pending", "ok", "err", "cancel", "died")
+  st[["workers"]] <- worker_states[st[["workers"]] + 1L]
+  st[["submitters"]] <- submitter_states[st[["submitters"]] + 1L]
+  names(st[["tasks"]]) <- slot_states[-1L]
   st
 }
 
@@ -640,20 +636,14 @@ mizu_pool_dump <- function(pool) {
     "unknown"
   }
   w <- d[["workers"]]
-  w[["status"]] <- c("free", "claiming", "live", "leaving", "reaping")[
-    w[["status"]] + 1L
-  ]
-  w[["park_state"]] <- c("running", "idle", "parked", "waking")[
-    w[["park_state"]] + 1L
-  ]
+  w[["status"]] <- worker_states[w[["status"]] + 1L]
+  w[["park_state"]] <- park_states[w[["park_state"]] + 1L]
   d[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
   s <- d[["submitters"]]
-  s[["status"]] <- c("free", "live", "reaping")[s[["status"]] + 1L]
+  s[["status"]] <- submitter_states[s[["status"]] + 1L]
   d[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
   tk <- lapply(d[["tasks"]], `[`, !is.na(d[["tasks"]][["slot"]]))
-  tk[["status"]] <- c("free", "pending", "ok", "err", "cancel", "died")[
-    tk[["status"]] + 1L
-  ]
+  tk[["status"]] <- slot_states[tk[["status"]] + 1L]
   d[["tasks"]] <- data.frame(tk)
   d
 }
@@ -704,12 +694,10 @@ mizu_pool_dump <- function(pool) {
 mizu_pool_stats <- function(pool) {
   st <- .Call(mizu_pool_stats_call, pool)
   w <- st[["workers"]]
-  w[["status"]] <- c("free", "claiming", "live", "leaving", "reaping")[
-    w[["status"]] + 1L
-  ]
+  w[["status"]] <- worker_states[w[["status"]] + 1L]
   st[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
   s <- st[["submitters"]]
-  s[["status"]] <- c("free", "live", "reaping")[s[["status"]] + 1L]
+  s[["status"]] <- submitter_states[s[["status"]] + 1L]
   s[["queued"]] <- s[["injected"]] - s[["claimed"]]
   st[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
   st
@@ -782,10 +770,7 @@ mizu_pool_trace <- function(pool, fn = NULL) {
 # any task eval, which is infrastructure failure and takes the worker
 # down.
 worker_main <- function(token, slot) {
-  if (!any(search() == "package:mizu")) {
-    attachNamespace("mizu")
-  }
-  .Call(mizu_tune_malloc)
+  child_prologue()
   h <- .Call(mizu_pool_worker_join, token, slot, NULL)
   .Call(mizu_pool_set_eval, h)
   status <- 0L
