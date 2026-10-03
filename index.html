@@ -76,7 +76,7 @@
 <span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a> \<span class="sc">/</span>_______<span class="sc">/</span></span></code></pre></div>
 <p>mizu makes communication between R processes cheap enough to divide work at granularities usually reserved for threads.</p>
 <p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).</p>
-<p>A channel is a two-way message link between an R session and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves. In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.</p>
+<p>A channel is a two-way message link between an R session and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves. In both, one process writes data and the other reads it in place, without it being copied through a socket, pipe, or file.</p>
 <p>The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <p>Pre-release. The API is not stable and may change at any time before a release.</p>
@@ -197,7 +197,6 @@
 <span></span>
 <span><span class="fu"><a href="reference/mizu_send.html">mizu_send</a></span><span class="op">(</span><span class="va">ch</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1.5</span>, <span class="fl">2.5</span>, <span class="fl">3.5</span><span class="op">)</span><span class="op">)</span> <span class="co"># arrives in Python as a float64 NumPy array</span></span>
 <span><span class="fu"><a href="reference/mizu_send.html">mizu_recv</a></span><span class="op">(</span><span class="va">ch</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span> <span class="co"># echoes back as a numeric vector</span></span>
-<span><span class="co">#&gt; [1] 3 5 7</span></span>
 <span><span class="fu"><a href="reference/mizu_close.html">mizu_close</a></span><span class="op">(</span><span class="va">ch</span><span class="op">)</span></span></code></pre></div>
 <p><code><a href="reference/mizu_py_launcher.html">mizu_py_launcher()</a></code> needs a <code>python3</code> with pymizu installed. A launcher is one function that takes the join token and spawns the peer process; for a different spawn method, write your own. The pymizu README shows the reverse direction: a Python host that spawns an R peer with <code>pymizu.r_launcher()</code>.</p>
 </div>

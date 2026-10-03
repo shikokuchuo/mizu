@@ -125,15 +125,15 @@ a new joiner reuses a slot.</p>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_pool.html">mizu_pool</a></span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="fl">5</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="va">t</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.3067377 0.4237520 0.8744130 0.1477685 0.4625101</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.88395537 0.12931544 0.01702782 0.45842268 0.71063598</span>
 <span class="r-in"><span><span class="fu">mizu_pool_stats</span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $workers</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   slot status  pid tasks steals injections parks helps deque</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 7853     1      0          1     1     0     0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 7758     1      0          1     1     0     0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $submitters</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   slot status  pid injected claimed spills spill_reuse queued</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 6938        1       1      0           0      0</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 6865        1       1      0           0      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2    1   free    0        0       0      0           0      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 3    2   free    0        0       0      0           0      0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 4    3   free    0        0       0      0           0      0</span>

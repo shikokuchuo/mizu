@@ -8,8 +8,9 @@ pool (`R/pool.R`) over POSIX shm / Win32 file mappings. The transport,
 region layer, and wire formats are the vendored **libmizu** core
 (`src/vendor/libmizu/`) — a standalone, language-agnostic C11 library in
 its own upstream repo; this package is its R binding: a `.Call` veneer
-(`src/verbs_channel.c`, `src/verbs_pool.c`), the SEXP staging/eval hooks
-(`src/stage_r.c`), and the R-only subsystems (the compact codec,
+(`src/verbs_channel.c`, `src/verbs_pool.c`, their shared helpers in
+`src/verbs.c`), the SEXP staging/eval hooks (`src/stage_r.c`), and the
+R-only subsystems (the compact codec,
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md), the
 ALTREP view layer). The Python binding is **pymizu** (sibling repo
 `../pymizu`, outside this workspace — editing its files needs the file
@@ -122,9 +123,12 @@ implementations live in `src/stage_r.c`.
 
 The `.Call` veneer (`src/verbs_channel.c`, `src/verbs_pool.c`) keeps arg
 validation, the extptr handle (`mizu_r_handle` wrapping the opaque core
-handle), and the `mizu_status` → sentinel / classed-error mapping.
-Registration strings are plain `mizu_*`; where a core verb already owns
-the name, the C function carries a `_call` suffix
+handle), and the `mizu_status` → sentinel / classed-error mapping. The
+helpers both files need — the handle unwrap and fork guard, the
+create/attach/join thread-local raise, pow2, the suffix and
+identity-pair validations — live once in `src/verbs.c`, declared in
+`src/mizu.h`. Registration strings are plain `mizu_*`; where a core verb
+already owns the name, the C function carries a `_call` suffix
 (`{"mizu_channel_create", &mizu_channel_create_call, ...}`).
 
 Cross-cutting invariants (shared by channel and pool):
@@ -505,7 +509,12 @@ CI logs against the baselines and outcome records in
 `dev/bench/notes.md` (best-known table on top — swap only on a new best,
 dated per row; dated run log at the bottom — append new records there)
 and asserts nothing about the numbers (CI runner timing is too variable;
-oldrel-2 jobs run on slow runners).
+oldrel-2 jobs run on slow runners). For a real regression read, A/B
+`dev/bench/mizu-bench.R` back-to-back against the previous build
+(absolutes drift with host load; A/B isolations are recorded in the log
+only, never the best-known table). Local builds carry `-flto` from the
+user’s `~/.R/Makevars` (`LTO = -flto`) — strip it for a no-LTO
+comparison with an `R_MAKEVARS_USER` override setting `LTO =` empty.
 
 Conventions:
 
