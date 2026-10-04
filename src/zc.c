@@ -210,16 +210,46 @@ mizu_shm *mizu_zc_open(const char *name) {
 /* Lower bound on the MIZS layout size (header + the string block's fixed
    sections + packed string bytes; attrs excluded): 64 + the geometry's
    data offset + the CHARSXP bytes. Walks string lengths only — no
-   allocation, no serialize count. */
-static size_t mizu_zc_str_probe(SEXP x) {
+   allocation, no serialize count. The budget caps the walk: exact while
+   the running sum stays within it, a partial sum past it — the only
+   consumers are gate comparisons, and the fixed sections alone clear a
+   zero budget, so no caller needs the walk it skips. */
+static size_t mizu_zc_str_probe_budget(SEXP x, size_t budget) {
   R_xlen_t n = XLENGTH(x);
   const SEXP *base = mizu_view_str_base(x);
   size_t total = MIZU_HEADER_SIZE + mizu_view_str_geometry((size_t) n).data;
-  for (R_xlen_t i = 0; i < n; i++) {
+  for (R_xlen_t i = 0; i < n && total <= budget; i++) {
     SEXP s = mizu_view_str_elt(x, i, base);
     if (s != NA_STRING) total += (size_t) LENGTH(s);
   }
   return total;
+}
+
+static size_t mizu_zc_str_probe(SEXP x) {
+  return mizu_zc_str_probe_budget(x, SIZE_MAX);
+}
+
+/* The string-leaf body sums an eligibility walk has already measured,
+   handed to mizu_view_layout_size_sums so the size pass's string walks
+   retire (the foreign walks are verdict-bound — they visit every string
+   element regardless — so recording is free there; the same-language
+   probe keeps its budget cap and records nothing). exact goes 0 on any
+   leaf the size pass would walk but the walk didn't measure — a lazy
+   ALTREP container or string leaf the probe skips, or the buffer
+   filling — and the caller falls back to the plain size pass. */
+#define MIZU_ZC_SUMS_MAX 128
+typedef struct {
+  size_t v[MIZU_ZC_SUMS_MAX];
+  size_t n;
+  int exact;
+} mizu_zc_sums;
+
+static void mizu_zc_sums_record(mizu_zc_sums *sums, size_t body) {
+  if (sums->n == MIZU_ZC_SUMS_MAX) {
+    sums->exact = 0;
+    return;
+  }
+  sums->v[sums->n++] = body;
 }
 
 /* Lower bound on the MIZL layout size: layout-eligible leaf bytes only
@@ -232,8 +262,14 @@ static size_t mizu_zc_str_probe(SEXP x) {
    the oracle rejects the tree later. Serialized leaves cost 0 too,
    so a tree whose bulk is
    non-eligible (a big environment, a call) stays on the serialize tiers —
-   MIZL's win is the eligible leaves. */
-static size_t mizu_zc_tree_probe(SEXP x, int *reject) {
+   MIZL's win is the eligible leaves.
+   The return feeds only a `<= gate` comparison, so the budget (seeded
+   with that gate) caps it: exact while the tree's sum stays within
+   budget, a partial sum once it clears — both sides of the boundary
+   exact. The cap shortens string-leaf walks only; every node is still
+   visited, so a non-REF-able view past the clearing point rejects as the
+   uncapped walk did. */
+static size_t mizu_zc_tree_probe(SEXP x, size_t budget, int *reject) {
   if (*reject) return 0;
   if (ALTREP(x)) {
     if (mizu_view_check(x)) {
@@ -258,18 +294,22 @@ static size_t mizu_zc_tree_probe(SEXP x, int *reject) {
   int type = TYPEOF(x);
   size_t elt = mizu_view_sizeof_elt(type);
   if (elt != 0) return (size_t) XLENGTH(x) * elt;
-  if (type == STRSXP) return mizu_zc_str_probe(x);
+  if (type == STRSXP) return mizu_zc_str_probe_budget(x, budget);
   if (type == VECSXP) {
     R_xlen_t n = XLENGTH(x);
     size_t total = 0;
     for (R_xlen_t i = 0; i < n && !*reject; i++)
-      total += mizu_zc_tree_probe(VECTOR_ELT(x, i), reject);
+      total += mizu_zc_tree_probe(VECTOR_ELT(x, i),
+                                  total < budget ? budget - total : 0,
+                                  reject);
     return total;
   }
   if (type == LISTSXP) {
     size_t total = 0;
     for (SEXP s = x; s != R_NilValue && !*reject; s = CDR(s))
-      total += mizu_zc_tree_probe(CAR(s), reject);
+      total += mizu_zc_tree_probe(CAR(s),
+                                  total < budget ? budget - total : 0,
+                                  reject);
     return total;
   }
   return 0;
@@ -324,7 +364,7 @@ int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total,
     }
   } else if (type == VECSXP) {
     int reject = 0;
-    if (mizu_zc_tree_probe(x, &reject) <= gate || reject) return 0;
+    if (mizu_zc_tree_probe(x, gate, &reject) <= gate || reject) return 0;
   } else {
     return 0;
   }
@@ -336,53 +376,88 @@ int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total,
 
 // The foreign zero-copy gate ---------------------------------------------------------
 
-/* The generic-tree half of the filter: every leaf an attribute-free
-   atomic, a class-only integer64, a string vector (MIZS-gated), a plain
-   factor (ATTRS-gated), or such a tree; names under the dict-key rules
-   (ATTRS-gated); a serialized leaf or a nested view rejects the tree
-   (the interop writer takes it as a copy, or declines it at send). */
-static int mizu_zc_tree_caps_walk(SEXP x, uint32_t caps) {
+/* The generic-tree half of the filter, fused with the floor-gate probe:
+   every leaf an attribute-free atomic, a class-only integer64, a string
+   vector (MIZS-gated), a plain factor (ATTRS-gated), or such a tree;
+   names under the dict-key rules (ATTRS-gated); a serialized leaf or a
+   nested view rejects the tree (the interop writer takes it as a copy,
+   or declines it at send). Verdict before sum per leaf — a caps
+   rejection never pays a size walk — and the string verdict's walk
+   doubles as the probe's byte sum, so the tree is walked once where the
+   separate caps walk and probe walked it twice. Returns the probe sum
+   (unbudgeted: the verdict walks every string element regardless);
+   *reject carries the verdict, mizu_zc_tree_probe's view policy
+   preserved: a view passed by a whitelist shape rejects as the probe
+   did, and a lazy ALTREP costs 0 (the write copies it through
+   *_GET_REGION). The string leaves' body sums are recorded in pre-order
+   for the presized size pass — the verdict walk measured every one, a
+   lazy ALTREP string leaf's true bytes included. */
+static size_t mizu_zc_tree_walk_fx(SEXP x, uint32_t caps, int *reject,
+                                   mizu_zc_sums *sums) {
+  if (*reject) return 0;
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
-    if (!ANY_ATTRIB(x)) return !mizu_view_check(x);
-    if (mizu_view_is_int64(x)) return 1;
-    if (caps & MIZU_CAP_ATTRS) {
+    if (!ANY_ATTRIB(x)) {
+      if (mizu_view_check(x)) { *reject = 1; return 0; }
+    } else if (!mizu_view_is_int64(x)) {
+      if (!(caps & MIZU_CAP_ATTRS)) { *reject = 1; return 0; }
       /* the whitelisted leaf shapes a region-backed reader homes:
          factor, dim, Date, POSIXct, difftime (the 'I' leaf blob
          carries them) */
       const int q = mizu_interop_attrs_qualify(x);
-      return q == MIZU_IXQ_FACTOR || q == MIZU_IXQ_DIM ||
-             q == MIZU_IXQ_DATE || q == MIZU_IXQ_POSIXCT ||
-             q == MIZU_IXQ_DIFFTIME;
+      if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DIM &&
+          q != MIZU_IXQ_DATE && q != MIZU_IXQ_POSIXCT &&
+          q != MIZU_IXQ_DIFFTIME) { *reject = 1; return 0; }
     }
-    return 0;
-  case STRSXP:
+    if (ALTREP(x)) {
+      if (mizu_view_check(x)) { *reject = 1; return 0; }
+      if (!mizu_view_altrep_readable(x)) return 0;
+    }
+    return (size_t) XLENGTH(x) * mizu_view_sizeof_elt(TYPEOF(x));
+  case STRSXP: {
     /* a view leaf keeps rejecting on generic trees (remote leaves are the
        frame gate's, F2.5) */
-    return !ANY_ATTRIB(x) && !mizu_view_check(x) && (caps & MIZU_CAP_MIZS) &&
-           mizu_interop_strings_utf8(x, NULL);
+    if (ANY_ATTRIB(x) || mizu_view_check(x) || !(caps & MIZU_CAP_MIZS)) {
+      *reject = 1;
+      return 0;
+    }
+    size_t bytes = 0;
+    if (!mizu_interop_strings_utf8(x, &bytes)) { *reject = 1; return 0; }
+    const size_t body = mizu_view_str_geometry((size_t) XLENGTH(x)).data +
+      bytes;
+    mizu_zc_sums_record(sums, body);
+    if (ALTREP(x) && !mizu_view_altrep_readable(x)) return 0;
+    return MIZU_HEADER_SIZE + body;
+  }
   case VECSXP: {
-    if (Rf_isS4(x) || mizu_view_check(x)) return 0;
+    if (Rf_isS4(x) || mizu_view_check(x)) { *reject = 1; return 0; }
     SEXP names = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
     if (names != R_NilValue &&
         (!(caps & MIZU_CAP_ATTRS) || TYPEOF(names) != STRSXP ||
          !mizu_interop_names_ok(names))) {
       UNPROTECT(1);
+      *reject = 1;
       return 0;
     }
-    int ok = 1;
-    for (R_xlen_t i = 0; ok && i < XLENGTH(x); i++)
-      ok = mizu_zc_tree_caps_walk(VECTOR_ELT(x, i), caps);
+    /* a lazy ALTREP node costs the probe 0, but the caps walk still
+       verdicts its descendants (a latin1 string under one rejects the
+       tree); the size pass walks them too, so the recording stands */
+    if (ALTREP(x) && !mizu_view_altrep_readable(x)) {
+      for (R_xlen_t i = 0; !*reject && i < XLENGTH(x); i++)
+        mizu_zc_tree_walk_fx(VECTOR_ELT(x, i), caps, reject, sums);
+      UNPROTECT(1);
+      return 0;
+    }
+    size_t total = 0;
+    for (R_xlen_t i = 0; !*reject && i < XLENGTH(x); i++)
+      total += mizu_zc_tree_walk_fx(VECTOR_ELT(x, i), caps, reject, sums);
     UNPROTECT(1);
-    return ok;
+    return total;
   }
   default:
+    *reject = 1;
     return 0;
   }
-}
-
-static int mizu_zc_tree_caps(SEXP x, uint32_t caps) {
-  return (caps & MIZU_CAP_MIZL) && mizu_zc_tree_caps_walk(x, caps);
 }
 
 
@@ -459,20 +534,70 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
        whole frame takes the 'I' copy) */
     if (has_ref) need |= MIZU_CAP_MIZL_REF;
     if ((caps & need) != need) return 0;
-    /* a string column gates like a top-level vector: a latin1 column
-       takes the 'I' copy (which translates it), a bytes-marked one
-       declines there — ungated it would reach the reader one hop late.
-       A REF-able view column crosses by reference and is never walked. */
-    for (R_xlen_t i = 0; i < XLENGTH(x); i++) {
+    /* the root probe the tail call ran, inlined: a frame that is itself
+       a view (a REF-able one's span never clears the gate) or a lazy
+       ALTREP declines there */
+    if (ALTREP(x) &&
+        (mizu_view_check(x) || !mizu_view_altrep_readable(x)))
+      return 0;
+    /* one pass over the columns, the string-column gate fused with the
+       floor-gate probe: a string column gates like a top-level vector
+       (a latin1 column takes the 'I' copy, which translates it; a
+       bytes-marked one declines there — ungated it would reach the
+       reader one hop late), its verdict walk doubling as the probe's
+       byte sum. A REF-able view column crosses by reference and is
+       never walked; a non-REF-able view rejects through the probe, as
+       does one nested in a list column. Verdict before sum per column,
+       and every column visited: a late verdict decides as the early
+       one did. */
+    const size_t gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
+      (size_t) inline_max : MIZU_ZC_FLOOR;
+    size_t total = 0;
+    int reject = 0;
+    mizu_zc_sums sums = { .n = 0, .exact = 1 };
+    for (R_xlen_t i = 0; i < XLENGTH(x) && !reject; i++) {
       SEXP col = VECTOR_ELT(x, i);
-      if (TYPEOF(col) == STRSXP && !mizu_view_refable(col) &&
-          !mizu_interop_strings_utf8(col, NULL))
-        return 0;
+      if (TYPEOF(col) == STRSXP && !mizu_view_refable(col)) {
+        if (mizu_view_check(col)) { reject = 1; break; }
+        size_t bytes = 0;
+        if (!mizu_interop_strings_utf8(col, &bytes)) return 0;
+        const size_t body =
+          mizu_view_str_geometry((size_t) XLENGTH(col)).data + bytes;
+        mizu_zc_sums_record(&sums, body);
+        if (!(ALTREP(col) && !mizu_view_altrep_readable(col)))
+          total += MIZU_HEADER_SIZE + body;
+      } else {
+        /* ix_qualify_frame admits atomic and string columns only: the
+           probe here never meets a string leaf, so nothing records */
+        total += mizu_zc_tree_probe(col, total < gate ? gate - total : 0,
+                                    &reject);
+      }
     }
-    return mizu_zc_eligible(x, inline_max, out_total, 1);
+    if (reject || total <= gate) return 0;
+    total = 0;
+    if (sums.exact)
+      total = mizu_view_layout_size_sums(x, 1, sums.v, sums.n);
+    if (total == 0)
+      total = mizu_view_layout_size(x, 1);
+    if (total == 0) return 0;
+    *out_total = total;
+    return 1;
   }
-  return mizu_zc_tree_caps(x, caps) &&
-    mizu_zc_eligible(x, inline_max, out_total, 1);
+  if (!(caps & MIZU_CAP_MIZL)) return 0;
+  const size_t gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
+    (size_t) inline_max : MIZU_ZC_FLOOR;
+  int reject = 0;
+  mizu_zc_sums sums = { .n = 0, .exact = 1 };
+  if (mizu_zc_tree_walk_fx(x, caps, &reject, &sums) <= gate || reject)
+    return 0;
+  size_t total = 0;
+  if (sums.exact)
+    total = mizu_view_layout_size_sums(x, 1, sums.v, sums.n);
+  if (total == 0)
+    total = mizu_view_layout_size(x, 1);
+  if (total == 0) return 0;
+  *out_total = total;
+  return 1;
 }
 
 /* The REF half of the filter: a view re-sent top-level crosses by

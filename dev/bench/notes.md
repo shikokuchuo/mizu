@@ -1011,3 +1011,30 @@ duplicate walk plus frame overhead). pymizu pays two walks per nested
 string column — the parity target.
 
 Status: measurement only; suite state as the previous entry.
+
+## 2026-10-04 — MIZL nested string leaves: capped probe, fused walks, presized sums
+
+Landed the mizl-string-leaf-duplicate plan's three candidates (the
+plan's rows measured ad-hoc: foreign sink and same-language echo, the
+frame columns materialized — a compact ALTREP column takes the frame
+off the MIZL tier same-language). N1: the tree probe caps at the
+gate — exact within budget, partial past it; string-leaf walks shorten,
+but every node stays visited so a non-REF-able view past the clearing
+point still rejects. N2: the foreign caps walk and probe fused into one
+mizu_zc_tree_walk_fx, verdict before sum per leaf. N3: string-leaf body
+sums recorded in pre-order feed a new mizu_view_layout_size_sums,
+retiring the foreign size pass's string walks (a count mismatch falls
+back to the plain pass; same-language keeps the capped probe — already
+at its two-walk floor).
+
+Results (per-step A/B): the foreign frame with a 100k-string column
+843.7 -> 739.6 -> 742.4 -> 605.5 us/send (N2 ~0 — N1 had already cut
+the foreign probe to O(gate)); same-language 827.9 -> 716.6 -> 696.1
+us/rt. The column's marginal cost 0.93x the top-level send (target
+1.2x) — pymizu's two-walk parity; same-language 1.09x (target 1.1x).
+Guards unmoved.
+
+Status: full suite 3212 pass, 0 fail (3 expected macOS skips); pymizu
+398 pass / 5 skip plus 96 crosslang pass; mori re-vendored from this
+tree, 433 pass, 0 fail (23 expected macOS skips); rchk zero package
+findings; libmizu untouched.

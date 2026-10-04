@@ -468,6 +468,22 @@ test_that("list trees cross as views (MORL): leaves arrive as views", {
   channel_end(p)
 })
 
+test_that("the capped tree probe keeps decisions and values exact", {
+  p <- channel_pair(arena_size = 0)
+  leaf <- function(tag) sprintf("%s-%04d", tag, seq_len(2000))
+  under <- list(a = leaf("a")) # one ~30 KB leaf: just under the 32 KB floor
+  mizu_send(p[["host"]], under)
+  expect_false(is_view(mizu_recv(p[["peer"]], 5)))
+  # far past the floor: the first leaves clear the gate, the later
+  # leaves' probes short-circuit — the values cross intact
+  over <- lapply(c("a", "b", "c", "d", "e", "f"), leaf)
+  mizu_send(p[["host"]], over)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  expect_identical(y[], over)
+  channel_end(p)
+})
+
 test_that("a remote leaf (tag 33) resolves to a view over its region", {
   x <- runif(50000)
   fx <- remote_leaf_pair(x)

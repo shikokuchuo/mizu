@@ -497,6 +497,73 @@ test_that("the foreign zero-copy filter gates the layouts by capability", {
   channel_end(p)
 })
 
+test_that("the presized size pass aligns with the eligibility walk", {
+  # a string-columned frame: the recorded column sums retire the size
+  # pass's string walk
+  df <- data.frame(
+    s = sprintf("value-%05d", seq_len(20000)),
+    b = seq_len(20000) + 0L,
+    c = runif(20000)
+  )
+  p <- foreign_pair(caps = 7L)
+  got <- ix_rt(p, df)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(as.data.frame(got[]), df)
+  channel_end(p)
+
+  # a lazy ALTREP column: costs the probe 0, the foreign write copies it
+  # — the recording never covered it and the size pass doesn't ask
+  df_alt <- data.frame(s = sprintf("v%05d", seq_len(20000)))
+  df_alt[["n"]] <- seq_len(20000) # stays a compact ALTREP column
+  p <- foreign_pair(caps = 7L)
+  got <- ix_rt(p, df_alt)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(as.data.frame(got[]), df_alt)
+  channel_end(p)
+
+  # a list column: string leaves nested one level down — the generic
+  # walk records them in the size pass's own pre-order
+  df_lc <- data.frame(s = c("a", "b", "c"))
+  df_lc[["lc"]] <- lapply(
+    c("p", "q", "r"),
+    function(tag) sprintf("%s%05d", tag, seq_len(20000))
+  )
+  p <- foreign_pair(caps = 7L)
+  got <- ix_rt(p, df_lc)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got[["s"]][], df_lc[["s"]])
+  expect_identical(got[["lc"]][], df_lc[["lc"]])
+  channel_end(p)
+
+  # a view column crosses as a remote leaf: no local walk, no sum — the
+  # string columns' recorded sums keep their positions
+  q <- channel_pair()
+  mizu_send(q$host, sprintf("view-%05d", seq_len(20000)))
+  v <- mizu_recv(q$peer, 30)
+  df_ref <- data.frame(
+    s = sprintf("value-%05d", seq_len(20000)),
+    b = seq_len(20000) + 0L
+  )
+  df_ref[["v"]] <- v
+  p <- foreign_pair(caps = 23L) # MIZS | ATTRS | MIZL | MIZL_REF
+  got <- ix_rt(p, df_ref)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got[["s"]][], df_ref[["s"]])
+  expect_identical(got[["b"]], df_ref[["b"]])
+  expect_identical(got[["v"]][], v[])
+  channel_end(p)
+  channel_end(q)
+
+  # past the recorder's capacity the plain size pass takes over
+  big <- lapply(seq_len(130), function(i) sprintf("l%d-%04d", i, seq_len(600)))
+  names(big) <- paste0("e", seq_len(130))
+  p <- foreign_pair(caps = 7L)
+  got <- ix_rt(p, big)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got[], big)
+  channel_end(p)
+})
+
 test_that("interop traffic keeps the keeperless/reap discipline", {
   p <- foreign_pair()
   on.exit(channel_end(p))
