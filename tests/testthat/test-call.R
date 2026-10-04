@@ -487,11 +487,18 @@ test_that("mizu_submit_call validates the spec and the name shape", {
 })
 
 test_that("the zc-selection fold matches the legacy loop: candidate matrix", {
-  p <- pool_pair(ident = c(2L, 8L)) # TASKREF only: the exact-model caps
-  on.exit(pool_end(p))
+  # a fresh pool_pair per row: a pool's first zc submit always selects
+  # (the lent-region ledger is empty), keeping the rows deterministic
+  # under the Linux churn fallback
+  ident <- c(2L, 8L) # TASKREF only: the exact-model caps
+  p <- pool_pair(ident = ident)
   inline_max <- ix_inline_max(p)
+  pool_end(p)
   # the model's selection, the live view flags, and the values all agree
-  check <- function(got, want_sel) {
+  run <- function(positional, named, paths, want_sel) {
+    p <- pool_pair(ident = ident)
+    on.exit(pool_end(p))
+    got <- ix_run_probe(p, positional, named, paths, inline_max)
     expect_identical(got$expected, want_sel)
     want <- rep(FALSE, length(got$flags))
     if (want_sel > 0L) {
@@ -518,78 +525,45 @@ test_that("the zc-selection fold matches the legacy loop: candidate matrix", {
   t_tot <- inline_max + ix_node_size(cand) - ix_reserve
   fill <- strrep("a", t_tot - spec_total(list(cand, "")))
   stopifnot(spec_total(list(cand, fill)) == t_tot)
-  check(ix_run_probe(p, list(cand, fill), list(), "..1", inline_max), 1L)
-  check(
-    ix_run_probe(p, list(cand, paste0(fill, "a")), list(), "..1", inline_max),
-    0L
-  )
+  run(list(cand, fill), list(), "..1", 1L)
+  run(list(cand, paste0(fill, "a")), list(), "..1", 0L)
 
   # k = 1 at the middle and tail positions, and nested in a list
-  check(
-    ix_run_probe(p, list(runif(3L), cand, "x"), list(), "..2", inline_max),
-    1L
-  )
-  check(ix_run_probe(p, list(runif(3L)), list(n1 = cand), "n1", inline_max), 1L)
-  check(
-    ix_run_probe(
-      p,
-      list(list(runif(3L), cand)),
-      list(),
-      "..1[[2]]",
-      inline_max
-    ),
-    1L
-  )
+  run(list(runif(3L), cand, "x"), list(), "..2", 1L)
+  run(list(runif(3L)), list(n1 = cand), "n1", 1L)
+  run(list(list(runif(3L), cand)), list(), "..1[[2]]", 1L)
 
   # k >= 2 never selects (each adjusted total carries the other candidates
   # by value); 17 candidates exercise the record cap
-  check(
-    ix_run_probe(
-      p,
-      list(cand, runif(25000L)),
-      list(),
-      c("..1", "..2"),
-      inline_max
-    ),
-    0L
-  )
+  run(list(cand, runif(25000L)), list(), c("..1", "..2"), 0L)
   c17 <- lapply(seq_len(17L), function(i) runif(5120L + i))
-  check(
-    ix_run_probe(p, c17, list(), sprintf("..%d", seq_len(17L)), inline_max),
-    0L
-  )
+  run(c17, list(), sprintf("..%d", seq_len(17L)), 0L)
 
   # k = 0, inline and spilled by-value totals
-  check(
-    ix_run_probe(p, list(runif(3L), "abc"), list(), character(0L), inline_max),
-    0L
-  )
-  check(
-    ix_run_probe(
-      p,
-      list(runif(100L)),
-      list(n1 = strrep("y", 30000L)),
-      character(0L),
-      inline_max
-    ),
-    0L
-  )
+  run(list(runif(3L), "abc"), list(), character(0L), 0L)
+  run(list(runif(100L)), list(n1 = strrep("y", 30000L)), character(0L), 0L)
 })
 
 test_that("the zc-selection fold matches the legacy loop: randomized specs", {
-  p <- pool_pair(ident = c(2L, 8L)) # TASKREF only: the exact-model caps
-  on.exit(pool_end(p))
+  # one fresh pool_pair per spec — the first-submit guarantee (above)
+  ident <- c(2L, 8L) # TASKREF only: the exact-model caps
+  p <- pool_pair(ident = ident)
   inline_max <- ix_inline_max(p)
-  set.seed(20261004)
-  for (i in seq_len(24L)) {
-    spec <- ix_gen_spec(inline_max)
-    got <- ix_run_probe(
+  pool_end(p)
+  run_one <- function(spec) {
+    p <- pool_pair(ident = ident)
+    on.exit(pool_end(p))
+    ix_run_probe(
       p,
       spec$positional,
       spec$named,
       spec$paths,
       inline_max
     )
+  }
+  set.seed(20261004)
+  for (i in seq_len(24L)) {
+    got <- run_one(ix_gen_spec(inline_max))
     want <- rep(FALSE, length(got$flags))
     if (got$expected > 0L) {
       want[got$expected] <- TRUE
@@ -600,32 +574,35 @@ test_that("the zc-selection fold matches the legacy loop: randomized specs", {
 })
 
 test_that("the fold with full caps selects list trees and string vectors", {
-  p <- pool_pair()
-  on.exit(pool_end(p))
+  # one fresh pool_pair per pair — the first-submit guarantee (above)
   lst <- list(runif(3L), runif(5120L))
+  p <- pool_pair()
   t <- mizu_submit_call(
     p$ctrl,
-    mizu_call(NULL, lst, .source = ".Call(mizu:::mizu_zc_view_check, ..1)")
+    mizu_call(
+      NULL,
+      lst,
+      .source = "list(.Call(mizu:::mizu_zc_view_check, ..1), sum(..1[[2]]))"
+    )
   )
   pool_step(p)
-  expect_identical(mizu_collect(t), TRUE)
-  t <- mizu_submit_call(
-    p$ctrl,
-    mizu_call(NULL, lst, .source = "sum(..1[[2]])")
-  )
-  pool_step(p)
-  expect_equal(mizu_collect(t), sum(lst[[2L]]))
+  got <- mizu_collect(t)
+  pool_end(p)
+  expect_identical(got[[1L]], TRUE)
+  expect_equal(got[[2L]], sum(lst[[2L]]))
   sv <- rep(strrep("z", 40000L), 3L)
+  p <- pool_pair()
   t <- mizu_submit_call(
     p$ctrl,
-    mizu_call(NULL, sv, .source = ".Call(mizu:::mizu_zc_view_check, ..1)")
+    mizu_call(
+      NULL,
+      sv,
+      .source = "list(.Call(mizu:::mizu_zc_view_check, ..1), sum(nchar(..1)))"
+    )
   )
   pool_step(p)
-  expect_identical(mizu_collect(t), TRUE)
-  t <- mizu_submit_call(
-    p$ctrl,
-    mizu_call(NULL, sv, .source = "sum(nchar(..1))")
-  )
-  pool_step(p)
-  expect_identical(mizu_collect(t), sum(nchar(sv)))
+  got <- mizu_collect(t)
+  pool_end(p)
+  expect_identical(got[[1L]], TRUE)
+  expect_identical(got[[2L]], sum(nchar(sv)))
 })
