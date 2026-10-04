@@ -71,6 +71,9 @@ probes and A/B isolations stay in the log.
 | crosslang map ~10us tasks, spec | 3.2 ms wall | 2026-10-01 |
 | crosslang frame relay, unmodified REF | 0.004 ms/rt | 2026-10-01 |
 | crosslang frame relay, one computed col | 0.47 ms/rt | 2026-10-01 |
+| crosslang channel rt, small (<= 8 KB) | 0.9-2.5 us/rt | 2026-10-04 |
+| crosslang channel rt, 8 MB (REF relay) | 390.7 us/rt | 2026-10-04 |
+| crosslang channel rt, 100k difftime | 159.8 us/rt | 2026-10-04 |
 
 ## Incumbent baselines (2026-07)
 
@@ -873,3 +876,41 @@ sequential rt pool 1.4 us at display precision (R1/R3 1.5). Map walls
 tie or below (best-of-3 5.3 / 11.3 against records 5.3 / 11.1).
 
 Status: full suite 3171 pass, 0 fail (3 expected macOS skips).
+
+## 2026-10-04 — cross-language channel bench harness + difftime interchange
+
+First run of dev/bench/crosslang-channel-bench.R (new: R host against a
+Python echo peer, plain-echo and copy-echo peers per payload — one rt is
+R stage, Python read, Python stage, R read) and the first measurement of
+the difftime <-> timedelta64[us] interchange that landed the same day
+(the R writer emits attr(realv, {class: "difftime", units}), pymizu homes
+timedelta64[us]; a temporal numpy scalar no longer crosses as its uint8
+byte view). Three channel rows enter the table (small, 8 MB REF relay,
+100k difftime); the rest stay log-only as the suite's first record.
+
+Results: NULL 0.9, scalar double 0.9, scalar string 0.8, 8 KB double
+2.3 (copy echo 2.9), 800 KB double 51.0 (68.7), 8 MB double 390.7
+(625.7) us/rt; 10k strings 188.4, 100k logical+NA 32.5, 10k Date 72.0,
+100k difftime 159.8, frame 1k x 4 77.7, frame 100k x 3 189.8 us/rt;
+pipelined 8 KB doubles 99.0k rt/s. The crosslang map suite re-run after
+the interop change holds every band (spec 0.23 us/elt, template 0.06,
+seed 1.8, compute 3.1 ms).
+
+Status: mizu full suite 3176 pass, 0 fail (3 expected macOS skips);
+pymizu 396 pass, 0 fail (5 skips); ruff + pyrefly clean.
+
+## 2026-10-04 — difftime frame columns (the frame half of the interchange)
+
+difftime columns joined the frame whitelist (R qualification + the MIZL
+leaf blob; pymizu's FCOL_TD — duration[us] on the Arrow export,
+timedelta64[us] from to_dict(), the Arrow stream's duration[unit] read).
+Same-day re-run of the channel bench for the one new row; the
+fcol_ensure_export lazy-scan double-count this surfaced (a pre-existing
+latent bug — a lazy-scanned column with NAs reported 2x null_count on
+the Arrow export) is fixed and the run validates it.
+
+Results: frame 100k x 2 with a difftime column 237.6 us/rt (the
+all-double frame 100k x 3 at 206.3 in the same run); 100k difftime
+standalone 148.0 us/rt.
+
+Status: full suite 3189 pass, 0 fail (3 expected macOS skips).
