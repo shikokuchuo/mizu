@@ -126,6 +126,8 @@ test_that("R -> Python -> R relay exactness across the tag families", {
   rt(list(b = c(TRUE, FALSE)))
   rt(as.Date("2022-03-21") + 0:2)
   rt(.POSIXct(c(1700000000, 1700000000.5), tz = "UTC"))
+  rt(as.difftime(c(1.5, 2), units = "secs"))
+  rt(as.difftime(c(1, NA), units = "secs"))
   skip_if_not_installed("bit64")
   rt(bit64::as.integer64(c(1, -1, 2^53 + 1)))
   rt(bit64::as.integer64(5))
@@ -157,6 +159,11 @@ test_that("R -> Python -> R documented shifts", {
     .POSIXct(1700000000, tz = "UTC")
   )
   rt(c(TRUE, NA), c(1L, NA)) # logical with NA -> integer
+  # difftime units normalize to seconds across the boundary
+  rt(
+    as.difftime(c(1.5, 2.25), units = "mins"),
+    as.difftime(c(90, 135), units = "secs")
+  )
   expect_true(mizu_close(ch, timeout = 10))
 })
 
@@ -181,6 +188,19 @@ test_that("a data.frame relays through the received Frame's own export", {
   )
   mizu_send(ch, dfd)
   expect_identical(mizu_recv(ch, 30), dfd)
+  # a difftime column relays, units normalized to seconds
+  dft <- data.frame(
+    d = as.difftime(c(1.5, 2.25, NA), units = "mins"),
+    x = 1:3
+  )
+  mizu_send(ch, dft)
+  expect_identical(
+    mizu_recv(ch, 30),
+    data.frame(
+      d = as.difftime(c(90, 135, NA), units = "secs"),
+      x = 1:3
+    )
+  )
   expect_true(mizu_close(ch, timeout = 10))
 })
 

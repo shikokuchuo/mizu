@@ -114,6 +114,30 @@ test_that("the temporal shapes round-trip", {
   # a named zone survives in a frame column
   df <- data.frame(t = as.POSIXct(1700000000, tz = "America/New_York") + 0:1)
   expect_identical(ix_rt(p, df), df)
+  # difftime: the value crosses in its declared units, NA kept
+  td <- as.difftime(c(1.5, 2.25, NA), units = "mins")
+  expect_identical(ix_rt(p, td), td)
+  td0 <- as.difftime(numeric(0), units = "days")
+  expect_identical(ix_rt(p, td0), td0)
+  # a difftime frame column: same relay rule as the vector
+  tdf <- data.frame(
+    a = c(1.5, 2.5, 3.5),
+    d = as.difftime(c(1, 2, NA), units = "hours")
+  )
+  expect_identical(ix_rt(p, tdf), tdf)
+})
+
+test_that("a difftime frame column crosses as MIZL on a foreign handle", {
+  df <- data.frame(
+    a = seq_len(300000) + 0,
+    d = as.difftime(seq_len(300000) + 0.5, units = "secs")
+  )
+  p <- foreign_pair(caps = 6L) # ATTRS + MIZL
+  on.exit(channel_end(p))
+  got <- ix_rt(p, df)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got[["a"]][], df[["a"]])
+  expect_identical(got[["d"]][], df[["d"]])
 })
 
 test_that("NA mappings and the integer boundaries", {
@@ -227,7 +251,7 @@ test_that("the decline set raises mizu_error_not_portable on a foreign handle", 
     class = "mizu_error_not_portable"
   )
   expect_error(
-    mizu_send(p$host, as.difftime(1, units = "days")),
+    mizu_send(p$host, structure(1, class = "difftime", units = "fortnights")),
     class = "mizu_error_not_portable"
   )
   expect_error(

@@ -40,9 +40,9 @@
 SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
 #endif
 
-static SEXP ix_tzone_sym;
+static SEXP ix_tzone_sym, ix_units_sym;
 static SEXP ix_date_class, ix_posixct_class, ix_factor_class,
-  ix_frame_class, ix_ordered_class, ix_ref_marker_class;
+  ix_frame_class, ix_ordered_class, ix_ref_marker_class, ix_difftime_class;
 
 static int ix_int_is_seq1n(SEXP rn, R_xlen_t n);
 
@@ -255,6 +255,29 @@ static int ix_qualify_posixct(SEXP x) {
   return ok;
 }
 
+/* A units string the wire admits (R's five difftime units). */
+static int ix_units_known(SEXP units) {
+  if (TYPEOF(units) != STRSXP || XLENGTH(units) != 1 ||
+      STRING_ELT(units, 0) == NA_STRING)
+    return 0;
+  const char *u = CHAR(STRING_ELT(units, 0));
+  return !strcmp(u, "secs") || !strcmp(u, "mins") || !strcmp(u, "hours") ||
+    !strcmp(u, "days") || !strcmp(u, "weeks");
+}
+
+/* A plain difftime: class exactly "difftime", attributes exactly class
+   and a known length-1 units. The value crosses in its declared units
+   (the reader homes it), so no conversion pass runs here. */
+static int ix_qualify_difftime(SEXP x) {
+  if (TYPEOF(x) != REALSXP || !ix_class_is(x, ix_difftime_class) ||
+      ix_attr_count(x) != 2)
+    return 0;
+  SEXP units = PROTECT(Rf_getAttrib(x, ix_units_sym));
+  const int ok = ix_units_known(units);
+  UNPROTECT(1);
+  return ok;
+}
+
 /* A plain dim array: no class (or the integer64 class the 0x0e value tag
    consumes), attributes exactly dim (+ class), dim an integer vector of
    length >= 1 with no NA, every element >= 0, product == length(x). The
@@ -331,7 +354,7 @@ static int ix_qualify_frame(SEXP x, int *rn_seq1n) {
       } else {
         const int q = mizu_interop_attrs_qualify(col);
         if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
-            q != MIZU_IXQ_POSIXCT)
+            q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
           ok_cols = 0;
       }
     }
@@ -449,6 +472,7 @@ int mizu_interop_attrs_qualify(SEXP x) {
   if (ix_qualify_dim(x)) return MIZU_IXQ_DIM;
   if (ix_qualify_date(x)) return MIZU_IXQ_DATE;
   if (ix_qualify_posixct(x)) return MIZU_IXQ_POSIXCT;
+  if (ix_qualify_difftime(x)) return MIZU_IXQ_DIFFTIME;
   return ix_encodable(x, 0) ? MIZU_IXQ_ENCODABLE : MIZU_IXQ_NONE;
 }
 
@@ -792,6 +816,8 @@ static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
   SEXP dim = PROTECT(Rf_getAttrib(x, R_DimSymbol));
   SEXP rn = PROTECT(Rf_getAttrib(x, R_RowNamesSymbol));
   SEXP tz = PROTECT(Rf_getAttrib(x, ix_tzone_sym));
+  SEXP units = PROTECT(q == MIZU_IXQ_DIFFTIME ?
+    Rf_getAttrib(x, ix_units_sym) : R_NilValue);
   const int skip_class = q == MIZU_IXQ_DIM && ix_is_int64(x);
 
   uint64_t count = 0;
@@ -799,6 +825,7 @@ static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
   if (levels != R_NilValue) count++;
   if (dim != R_NilValue) count++;
   if (klass != R_NilValue && !skip_class) count++;
+  if (units != R_NilValue) count++;
   if (rn != R_NilValue) count++;
   if (tz != R_NilValue) count++;
   IXW_PUT(w, mizu_ix_put_dict_begin, count);
@@ -806,35 +833,40 @@ static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
   if (names_attr != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, "names", 5);
     ixw_node(w, names_attr);
-    if (w->depth < 0) { UNPROTECT(6); return; }
+    if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (levels != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, "levels", 6);
     ixw_node(w, levels);
-    if (w->depth < 0) { UNPROTECT(6); return; }
+    if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (dim != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, "dim", 3);
     ixw_node(w, dim);
-    if (w->depth < 0) { UNPROTECT(6); return; }
+    if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (klass != R_NilValue && !skip_class) {
     IXW_PUT(w, mizu_ix_put_key, "class", 5);
     ixw_node(w, klass);
-    if (w->depth < 0) { UNPROTECT(6); return; }
+    if (w->depth < 0) { UNPROTECT(7); return; }
+  }
+  if (units != R_NilValue) {
+    IXW_PUT(w, mizu_ix_put_key, "units", 5);
+    ixw_node(w, units);
+    if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (rn != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, "row.names", 9);
     ixw_rownames(w, rn,
                  TYPEOF(x) == VECSXP && XLENGTH(x) > 0 ?
                    XLENGTH(VECTOR_ELT(x, 0)) : 0);
-    if (w->depth < 0) { UNPROTECT(6); return; }
+    if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (tz != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, "tzone", 5);
     ixw_node(w, tz);
   }
-  UNPROTECT(6);
+  UNPROTECT(7);
 }
 
 static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
@@ -1745,6 +1777,7 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
   SEXP dim = ix_dict_get(attrs, "dim");
   SEXP rn = ix_dict_get(attrs, "row.names");
   SEXP tz = ix_dict_get(attrs, "tzone");
+  SEXP units = ix_dict_get(attrs, "units");
   const R_xlen_t na = XLENGTH(attrs);
 
   /* factor: value intv; attrs exactly levels, class */
@@ -1778,7 +1811,7 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
         } else {
           const int q = mizu_interop_attrs_qualify(col);
           if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
-              q != MIZU_IXQ_POSIXCT)
+              q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
             ixr_stop_no_home(attrs);
         }
       }
@@ -1849,6 +1882,13 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
         (TYPEOF(tz) != STRSXP || XLENGTH(tz) != 1 ||
          STRING_ELT(tz, 0) == NA_STRING))
       ixr_stop_no_home(attrs);
+    ixr_attrs_apply(value, attrs);
+    return value;
+  }
+  /* difftime: value realv in the declared units; attrs exactly class and
+     a known length-1 units */
+  if (TYPEOF(value) == REALSXP && na == 2 && units != R_NilValue &&
+      ix_strv_is(klass, "difftime") && ix_units_known(units)) {
     ixr_attrs_apply(value, attrs);
     return value;
   }
@@ -2659,9 +2699,13 @@ int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
 
 void mizu_interop_init(void) {
   ix_tzone_sym = Rf_install("tzone");
+  ix_units_sym = Rf_install("units");
   ix_date_class = Rf_allocVector(STRSXP, 1);
   SET_STRING_ELT(ix_date_class, 0, Rf_mkChar("Date"));
   R_PreserveObject(ix_date_class);
+  ix_difftime_class = Rf_allocVector(STRSXP, 1);
+  SET_STRING_ELT(ix_difftime_class, 0, Rf_mkChar("difftime"));
+  R_PreserveObject(ix_difftime_class);
   ix_factor_class = Rf_allocVector(STRSXP, 1);
   SET_STRING_ELT(ix_factor_class, 0, Rf_mkChar("factor"));
   R_PreserveObject(ix_factor_class);

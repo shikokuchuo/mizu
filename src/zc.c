@@ -339,10 +339,12 @@ static int mizu_zc_tree_caps_walk(SEXP x, uint32_t caps) {
     if (mizu_view_is_int64(x)) return 1;
     if (caps & MIZU_CAP_ATTRS) {
       /* the whitelisted leaf shapes a region-backed reader homes:
-         factor, dim, Date, POSIXct (the 'I' leaf blob carries them) */
+         factor, dim, Date, POSIXct, difftime (the 'I' leaf blob
+         carries them) */
       const int q = mizu_interop_attrs_qualify(x);
       return q == MIZU_IXQ_FACTOR || q == MIZU_IXQ_DIM ||
-             q == MIZU_IXQ_DATE || q == MIZU_IXQ_POSIXCT;
+             q == MIZU_IXQ_DATE || q == MIZU_IXQ_POSIXCT ||
+             q == MIZU_IXQ_DIFFTIME;
     }
     return 0;
   case STRSXP:
