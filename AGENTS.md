@@ -250,35 +250,59 @@ Cross-cutting invariants (shared by channel and pool):
   an ALTREP view (the `view.c` classes) instead of unserializing.
   Eligibility: atomic vectors gate on the O(1) data size; strings and
   list trees gate on a cheap lower-bound probe
-  (`mizu_view_layout_size`’s per-leaf serialize counts would otherwise
-  tax every small pool task payload), and a mizu view anywhere in a list
-  tree crosses by reference, never copied into the layout — a REF-able
-  one (`mizu_view_refable`: would REF top-level and unadorned) becomes a
-  remote leaf (MIZL directory tag 33, F2.5), while a materialized or
-  locally attributed one still rejects the tree (the serialize path’s
-  wire hooks carry it). ALTREP inputs are rejected unless
-  `mizu_view_altrep_readable` (view.h) passes: R’s S4 data-part wrappers
-  qualify (an atomic-vector-backed S4 object forwards to a non-ALTREP
-  data1 of the same type sharing its data pointer; R \>= 4.6.1 patched /
-  4.7 consolidates a shared data part in place on the pointer request,
-  so the probe takes the wrapper’s pointer first and re-reads data1);
-  lazy ALTREPs, compact sequences (materialized or not), and
-  extptr-data1 foreign views never pass — the tier choice depends on the
-  value, never its materialization history. The S4 object bit rides the
-  layouts: a flags word at header offset 32 (bytes \[24-31\] stay mizu’s
-  refcount/flags) on MIZH/MIZS/MIZL roots, and bit 30 of the MIZL
-  directory entry’s sexptype on vector/string leaves — applied with
-  `Rf_asS4` after attributes land (`mizu_view_apply_s4`;
-  `mizu_view_list_wrap` applies it internally, `mizu_zc_wrap0` calls it
-  on MIZH/MIZS roots). Top-level pairlists stay on the serialize tiers
-  (MIZL coerces LISTSXP to VECSXP; an S4 pairlist would lose the bit in
-  the coercion). Lifetime is a cross-process refcount in the region
-  header’s reserved bytes \[24-31\] (a mizu-owned offset convention —
-  the view layer never reads them): producer stores 1 at stage, consumer
-  adds 1 at wrap before its consumer-done signal, and the view’s
-  once-only release callback (the layer’s embedder release hook — fires
-  at COW materialization or finalization; finalizer-only for list views,
-  whose extracted element views keep referencing the region) subs 1. The
+  (`mizu_view_layout_size`‘s per-leaf serialize counts would otherwise
+  tax every small pool task payload) — for an attribute-free STRSXP the
+  probe’s byte sum is the exact layout size, so the size walk is skipped
+  — and a mizu view anywhere in a list tree crosses by reference, never
+  copied into the layout — a REF-able one (`mizu_view_refable`: would
+  REF top-level and unadorned) becomes a remote leaf (MIZL directory tag
+  33, F2.5), while a materialized or locally attributed one still
+  rejects the tree (the serialize path’s wire hooks carry it). ALTREP
+  inputs are rejected unless `mizu_view_altrep_readable` (view.h)
+  passes: R’s S4 data-part wrappers qualify (an atomic-vector-backed S4
+  object forwards to a non-ALTREP data1 of the same type sharing its
+  data pointer; R \>= 4.6.1 patched / 4.7 consolidates a shared data
+  part in place on the pointer request, so the probe takes the wrapper’s
+  pointer first and re-reads data1); lazy ALTREPs, compact sequences
+  (materialized or not), and extptr-data1 foreign views never pass — the
+  tier choice depends on the value, never its materialization history.
+  The S4 object bit rides the layouts: a flags word at header offset 32
+  (bytes \[24-31\] stay mizu’s refcount/flags) on MIZH/MIZS/MIZL roots,
+  and bit 30 of the MIZL directory entry’s sexptype on vector/string
+  leaves — applied with `Rf_asS4` after attributes land
+  (`mizu_view_apply_s4`; `mizu_view_list_wrap` applies it internally,
+  `mizu_zc_wrap0` calls it on MIZH/MIZS roots). The MIZS write keeps
+  per-element encoding marks same-language (the wire contract —
+  test-zc.R pins the section byte-for-byte) but bulk-fills CE_UTF8 on
+  the foreign path with NA bytes zeroed in the loop (validity starts
+  all-present with NA bits cleared, offsets are running-pointer stores,
+  inter-section gaps never written — every reader access is
+  geometry-keyed): the gate has already excluded latin1/bytes, so UTF-8
+  marks and validated ASCII both read correctly as UTF-8 and the foreign
+  reader skips its native-mark validation defense. The foreign gate
+  itself (`mizu_interop_strings_utf8`, interop.c) fuses its verdict and
+  the probe’s byte sum into one walk behind the ALTREP fence (an
+  optional `size_t *bytes` out-param; R \>= 4.5 reads the ASCII bit
+  first — R clears every mark on pure-ASCII CHARSXPs at creation, so the
+  bit means unmarked native), and frame string columns gate like
+  top-level vectors (a latin1 column takes the ’I’ copy translated, a
+  bytes-marked one declines at send; REF-able view columns are never
+  walked) — before that gate they reached the foreign reader marked and
+  failed one hop late. The three string walks take one `STRING_PTR_RO`
+  call per walk on R \>= 4.5 via view.h’s
+  `mizu_view_str_base`/`mizu_view_str_elt` (ALTREP keeps STRING_ELT — a
+  data-pointer request could materialize a view); the residual
+  R-vs-pymizu string-stage gap is libR’s call-based CHARSXP accessors
+  (LENGTH/R_CHAR), the public-API floor (dev/bench/notes.md,
+  2026-10-04). Top-level pairlists stay on the serialize tiers (MIZL
+  coerces LISTSXP to VECSXP; an S4 pairlist would lose the bit in the
+  coercion). Lifetime is a cross-process refcount in the region header’s
+  reserved bytes \[24-31\] (a mizu-owned offset convention — the view
+  layer never reads them): producer stores 1 at stage, consumer adds 1
+  at wrap before its consumer-done signal, and the view’s once-only
+  release callback (the layer’s embedder release hook — fires at COW
+  materialization or finalization; finalizer-only for list views, whose
+  extracted element views keep referencing the region) subs 1. The
   producer drops its loan at the core’s retain release points;
   zero-count regions rejoin the spill free list, others wait in a
   per-handle lent-region ledger (quota-bounded sweeps on busy reap
