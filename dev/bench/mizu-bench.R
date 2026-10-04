@@ -594,6 +594,33 @@ with_pool(1L, function(p) {
   })
 })
 
+# 8. submit-plan cost vs candidate count (W2) ---------------------------------
+
+cat("\n== 8. submit-plan cost vs candidate count (W2: flat in k) ==\n")
+
+# a spec's k zc candidates (40 KB vectors, each past the floor): the folded
+# plan walks once where the pre-fold loop ran a size pass per candidate
+# (k+2 walks). The by-value filler keeps the whole argument tree on the
+# walk, so the plan's walk count is the measured term (k = 0 is the
+# no-candidate baseline)
+with_pool(2L, function(p) {
+  cands <- lapply(seq_len(16L), function(i) runif(5120L))
+  filler <- sprintf("%08d", seq_len(1000L))
+  n <- 24L
+  for (k in c(0L, 1L, 4L, 16L)) {
+    spec <- do.call(
+      mizu_call,
+      c(list(NULL), list(filler), cands[seq_len(k)], list(.source = "0L"))
+    )
+    invisible(mizu_collect(mizu_submit_call(p, spec), timeout = 30))
+    note_us(sprintf("plan k = %2d", k), "mizu pool", n, function() {
+      for (i in seq_len(n)) {
+        mizu_collect(mizu_submit_call(p, spec), timeout = 30)
+      }
+    })
+  }
+})
+
 # summary ----------------------------------------------------------------------
 
 cat("\n== summary ==\n")

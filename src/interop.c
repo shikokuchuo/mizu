@@ -565,6 +565,14 @@ typedef struct mizu_ixw_s {
   SEXP zc_node;
   int zc_spent;
   int abandon;
+  /* the W2 plan record: non-NULL runs the walk in record mode — the
+     optimistic write flips to count-only at the first SHM_VEC candidate,
+     the first 16 candidates recording with their by-value subtree sizes
+     (detection inside a recorded candidate's subtree suppressed, the
+     never-nest rule) and ref leaves setting has_ref as they emit */
+  mizu_ix_plan *plan;
+  int plan_suppress;
+  int plan_nocand;         /* churn or no handle: no candidates */
 } mizu_ixw;
 
 /* One emit: the put helpers count with a NULL dst; past the limit the
@@ -615,6 +623,7 @@ static void ixw_path_pop(mizu_ixw *w, size_t saved) {
 }
 
 static void ixw_node(mizu_ixw *w, SEXP x);
+static void ixw_value(mizu_ixw *w, SEXP x);
 
 /* One CHARSXP's wire form: the byte length through out_len (-1 = NA), 0
    on a decline. */
@@ -954,12 +963,12 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
    fresh region's name (F1's D1: the one tag serves both by-reference
    cases). The size pass counts the conservative reservation — the fresh
    region's name length is known only at the checkout, so the plan's fit
-   decision uses MIZU_NAME_MAX - 1 and the actual write never exceeds it.
+   decision uses MIZU_IX_ZC_RESERVE and the actual write never exceeds it.
    A checkout failure (a churn race) abandons: nothing is retained yet,
    the caller re-runs with no_zc = 1. */
 static void ixw_zc_leaf(mizu_ixw *w, SEXP x) {
   if (w->dst == NULL) {
-    w->total += 2 + (MIZU_NAME_MAX - 1);
+    w->total += MIZU_IX_ZC_RESERVE;
     return;
   }
   size_t total;
@@ -1022,14 +1031,45 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
         if (len > 0 && len <= 255) {
           IXW_PUT(w, mizu_ix_put_ref, s, len);
           mizu_zc_ref_mark(x);
+          if (w->plan != NULL) w->plan->has_ref = 1;
           UNPROTECT(1);
           return;
         }
       }
       UNPROTECT(1);
     }
+    /* the W2 fold: the plan's candidate record lives in the walk itself
+       (the pre-scan's predicates are the gate's own, a REF-able view
+       never a candidate — the branch above returned). A layout-eligible
+       node records and walks by value for its subtree size, nested
+       detection suppressed; the optimistic write's tail past the first
+       candidate is abandoned (selection follows the walk). */
+    if (w->plan != NULL && !w->plan_suppress && !w->plan_nocand &&
+        w->plan->ncand < 16) {
+      size_t zc_total;
+      if (mizu_zc_eligible_foreign(x, w->inline_max, &zc_total, w->caps)) {
+        w->dst = NULL;
+        const size_t start = w->total;
+        w->plan_suppress = 1;
+        ixw_value(w, x);
+        w->plan_suppress = 0;
+        if (w->depth >= 0) {
+          w->plan->cand[w->plan->ncand] = x;
+          w->plan->size[w->plan->ncand] = w->total - start;
+          w->plan->ncand++;
+        }
+        return;
+      }
+    }
   }
 
+  ixw_value(w, x);
+}
+
+/* The value dispatch (the ref gate's fall-through): every position the
+   gate covers reaches here — the gate itself, or a recorded candidate's
+   by-value subtree walk. */
+static void ixw_value(mizu_ixw *w, SEXP x) {
   if (x == R_NilValue) {
     IXW_PUT(w, mizu_ix_put_nil);
     return;
@@ -1275,19 +1315,22 @@ static void ixw_task_fields(mizu_ixw *w, SEXP spec) {
   UNPROTECT(1);
 }
 
-/* The two-pass task writer (0x12): the header fields through the core
-   emitters, then the spec's fields. Refs on (F1): the ref gate emits
-   0x13 leaves and the plan's zc node stages the single checkout. A
-   decline fills the record and returns 0 — a foreign task with
-   non-portable args can never run, so there is no fallback. A mid-write
-   checkout failure returns SIZE_MAX — the caller re-runs with no_zc = 1,
-   never a partial stream (the core rolls an uncommitted checkout back at
-   the next verb entry). */
+/* The task writer (0x12): the header fields through the core emitters,
+   then the spec's fields. Refs on (F1): the ref gate emits 0x13 leaves
+   and the selected zc node stages the single checkout. A decline fills
+   the record and returns 0 — a foreign task with non-portable args can
+   never run, so there is no fallback. A mid-write checkout failure
+   returns SIZE_MAX — the caller re-runs with no_zc = 1, never a partial
+   stream (the core rolls an uncommitted checkout back at the next verb
+   entry). plan non-NULL runs the walk in record mode (W2): the
+   optimistic write counts past the first candidate, the candidates and
+   has_ref recorded for the caller's arithmetic selection. */
 size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t target, uint64_t ident,
                                mizu_ix_decline *rec, mizu_handle *h,
                                uint32_t caps, uint32_t inline_max,
-                               SEXP zc_node, int no_zc) {
+                               SEXP zc_node, int no_zc,
+                               mizu_ix_plan *plan) {
   if (rec != NULL) {
     rec->decline = 0;
     rec->path[0] = '\0';
@@ -1297,101 +1340,22 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
   if (!ixw_spec_check(spec))
     Rf_error("mizu: a malformed mizu_call spec");
   const int kind = INTEGER(VECTOR_ELT(spec, 1))[0];
+  if (plan != NULL) {
+    plan->ncand = 0;
+    plan->has_ref = 0;
+  }
+  const int nocand = plan == NULL || h == NULL || mizu_handle_churn(h);
 
   mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
                  .path = "args", .path_len = 4, .h = h, .caps = caps,
                  .inline_max = inline_max, .refs = 1, .no_zc = no_zc,
-                 .zc_node = zc_node };
+                 .zc_node = zc_node, .plan = plan, .plan_nocand = nocand };
   IXW_PUT(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
   if (w.abandon) return SIZE_MAX;
   if (w.depth < 0) return 0;
   return w.total;
-}
-
-/* The pre-scan's node probe (the document-order walk shares ixw_node's
-   shape): a REF-qualifying view sets *out_has_ref; a layout-eligible
-   fresh value past the floor is a zc candidate — the node itself first
-   (one layout write covers the tree, its view leaves riding the layout
-   write's wire hooks), the elements depth-first only past a decline. The
-   caps filter and the churn flag read off h. */
-static int ixp_probe(SEXP x, uint32_t caps, uint32_t inline_max, int churn,
-                     int *out_has_ref, SEXP *cand, int max_cand) {
-  if (x == R_NilValue) return 0;
-  if (mizu_view_check(x) &&
-      (TYPEOF(x) == VECSXP || R_altrep_data2(x) == R_NilValue)) {
-    SEXP id = PROTECT(mizu_view_shm_name(x));
-    const int refok = id != R_NilValue &&
-      XLENGTH(STRING_ELT(id, 0)) <= 255 &&
-      mizu_zc_ref_foreign_ok(x, caps);
-    UNPROTECT(1);
-    if (refok) {
-      *out_has_ref = 1;
-      return 0;                    /* refs for free — never the zc node */
-    }
-  }
-  size_t total;
-  if (!churn && mizu_zc_eligible_foreign(x, inline_max, &total, caps)) {
-    if (max_cand > 0) cand[0] = x;
-    return 1;
-  }
-  if (TYPEOF(x) == VECSXP && !mizu_view_check(x)) {
-    /* containers walk their elements depth-first (the named-list dict's
-       values are the elements — one walk covers both) */
-    int ncand = 0;
-    for (R_xlen_t i = 0; i < XLENGTH(x) && ncand >= 0; i++) {
-      int got = ixp_probe(VECTOR_ELT(x, i), caps, inline_max, churn,
-                          out_has_ref, cand + ncand, max_cand - ncand);
-      ncand += got;
-      if (ncand >= max_cand) ncand = -1;
-    }
-    return ncand < 0 ? max_cand : ncand;
-  }
-  return 0;
-}
-
-/* D3's size-pass-first: walk the argument trees in document order; for
-   each zc candidate in turn, run the size pass with it recorded — the
-   first whose stream fits inline_max (the conservative reservation) is
-   the zc node. With none, *out_zc stays R_NilValue and the write runs
-   no_zc = 1 from the start. */
-size_t mizu_interop_task_plan(SEXP spec, uint32_t target, uint64_t ident,
-                              mizu_handle *h, uint32_t caps,
-                              uint32_t inline_max, SEXP *out_zc,
-                              int *out_has_ref, mizu_ix_decline *rec) {
-  *out_zc = R_NilValue;
-  *out_has_ref = 0;
-  if (rec != NULL) {
-    rec->decline = 0;
-    rec->path[0] = '\0';
-    rec->reason[0] = '\0';
-    rec->remedy[0] = '\0';
-  }
-  if (!ixw_spec_check(spec))
-    Rf_error("mizu: a malformed mizu_call spec");
-  const int churn = h != NULL && mizu_handle_churn(h);
-  SEXP cand[16];
-  int ncand = 0;
-  SEXP args[2] = { VECTOR_ELT(spec, 2), VECTOR_ELT(spec, 3) };
-  for (int a = 0; a < 2; a++)
-    for (R_xlen_t i = 0; i < XLENGTH(args[a]) && ncand >= 0; i++) {
-      int got = ixp_probe(VECTOR_ELT(args[a], i), caps, inline_max, churn,
-                          out_has_ref, cand + ncand, 16 - ncand);
-      ncand += got;
-      if (ncand >= 16) ncand = -1;
-    }
-  if (ncand < 0) ncand = 16;
-  for (int i = 0; i < ncand; i++) {
-    size_t n = mizu_interop_write_task(NULL, 0, spec, target, ident, rec,
-                                       h, caps, inline_max, cand[i], 0);
-    if (n == 0) return 0;          /* a decline — the record is filled */
-    if (n != SIZE_MAX && n <= (size_t) inline_max) {
-      *out_zc = cand[i];
-      return n;
-    }
-  }
-  return 0;
 }
 
 // Map descriptors and runner tasks (Phase 5) ---------------------------------------
@@ -2569,12 +2533,12 @@ SEXP mizu_interop_write_task_call(SEXP spec, SEXP target, SEXP ident,
   const int nz = Rf_asLogical(no_zc) == 1;
   mizu_ix_decline rec;
   size_t n = mizu_interop_write_task(NULL, 0, spec, (uint32_t) t, id, &rec,
-                                     NULL, 0, 240, R_NilValue, nz);
+                                     NULL, 0, 240, R_NilValue, nz, NULL);
   if (n == 0)
     mizu_stop_interop("not portable at %s (%s)", rec.path, rec.reason);
   SEXP bytes = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
   if (mizu_interop_write_task(RAW(bytes), n, spec, (uint32_t) t, id, NULL,
-                              NULL, 0, 240, R_NilValue, nz) != n) {
+                              NULL, 0, 240, R_NilValue, nz, NULL) != n) {
     UNPROTECT(1);
     mizu_stop_interop("task write mismatch");
   }

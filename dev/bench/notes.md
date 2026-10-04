@@ -73,6 +73,10 @@ probes and A/B isolations stay in the log.
 | crosslang frame relay, one computed col | 0.47 ms/rt | 2026-10-01 |
 | crosslang channel rt, small (<= 8 KB) | 0.9-2.5 us/rt | 2026-10-04 |
 | crosslang channel rt, 8 MB (REF relay) | 390.7 us/rt | 2026-10-04 |
+| submit plan k = 0 (W2 row) | 62.1 us/task | 2026-10-04 |
+| submit plan k = 1 (W2 row) | 64.6 us/task | 2026-10-04 |
+| submit plan k = 4 (W2 row) | 68.1 us/task | 2026-10-04 |
+| submit plan k = 16 (W2 row) | 84.2 us/task | 2026-10-04 |
 | crosslang channel rt, 100k difftime | 159.8 us/rt | 2026-10-04 |
 
 ## Incumbent baselines (2026-07)
@@ -1038,3 +1042,41 @@ Status: full suite 3212 pass, 0 fail (3 expected macOS skips); pymizu
 398 pass / 5 skip plus 96 crosslang pass; mori re-vendored from this
 tree, 433 pass, 0 fail (23 expected macOS skips); rchk zero package
 findings; libmizu untouched.
+
+## 2026-10-04 — W2: the zc-selection fold (the task plan walks once)
+
+The mizu half of pymizu's 2026-10-04 W2 entry: the 'I' task submit's
+per-candidate size-pass loop folded into the one record walk —
+ixp_probe and mizu_interop_task_plan are gone, the walk records the
+first 16 candidates with their by-value subtree sizes (has_ref read
+off the emitted ref leaves — exact, where the probe's was an
+approximation: it missed views nested inside a recorded candidate and
+counted views inside attr shapes the writer never emits by
+reference), and selection is arithmetic over the walk's own total.
+One walk for a candidate-free inline spec, two for a by-reference
+one — was k+2. Selection A/B-verified identical to the pre-fold
+implementation over 60 randomized spec trees plus the 11-row
+candidate matrix (worker-side view probes, the adjusted ==
+inline_max boundary inclusive both sides).
+
+Results (plan-cost A/B, pool_pair in-process — a 1000-string
+by-value filler plus k 40 KB vectors, submit+step+collect):
+
+| k | before | after |
+|----|----|----|
+| 0 | 113.1 | 98.6 |
+| 1 | 83.9 | 60.9 |
+| 4 | 145.3 | 66.2 |
+| 16 | 400.1 | 104.8 |
+
+Flat in k (was linear — the per-candidate passes re-walked the whole
+argument tree); the residual growth is the spill bytes themselves.
+The full bench's rows unmoved (sequential rt 1.5 us/task, payload
+8 KB 2.7, 800 KB 79.9, 8 MB 437.3 us/task); the crosslang spec-map
+row 0.24 us/elt vs the 0.23 record (host drift). pymizu's
+counterpart landed the same day (its k = 16 row 2,225.3 -> 431.1
+us/task).
+
+Status: full suite 3291 pass, 0 fail (3 expected macOS skips; new
+candidate-matrix, randomized-spec, and full-caps rows in
+test-call.R).

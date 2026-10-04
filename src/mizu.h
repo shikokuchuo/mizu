@@ -187,32 +187,41 @@ int mizu_interop_strings_utf8(SEXP x, size_t *bytes);
 int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
                               uint32_t inline_max, SEXP x,
                               mizu_ix_decline *rec);
+/* The zc ref leaf's conservative reservation in a plan/count walk: the
+   fresh region's name length is known only at the checkout, so the fit
+   decision uses the bound and the actual write never exceeds it. */
+#define MIZU_IX_ZC_RESERVE (2 + (MIZU_NAME_MAX - 1))
+/* The W2 plan record, filled by mizu_interop_write_task's record mode:
+   the first 16 SHM_VEC candidates in document order, each with its
+   by-value subtree size (a recorded candidate's subtree walks with
+   detection suppressed — the never-nest rule), and has_ref set when a
+   ref leaf emitted (the D2 detector). The selection is arithmetic: the
+   first candidate with total - size[i] + MIZU_IX_ZC_RESERVE <=
+   inline_max is the zc node — the record walk's total is the no_zc
+   stream's, REF-able views emitting ref leaves in every mode. */
+typedef struct {
+  SEXP cand[16];
+  size_t size[16];
+  int ncand;
+  int has_ref;
+} mizu_ix_plan;
 /* The task stream (0x12) writer: emits off the spec's components (code,
    positional, named) — two-pass, NULL dst sizes and qualifies (0 = a
    non-portable argument, the record filled). Refs are always on (F1): a
    REF-qualifying view in the argument trees emits a ref leaf (0x13) and
-   marks the region REFHELD. With h != NULL the zc_node recorded by
-   mizu_interop_task_plan stages one SHM_VEC checkout mid-write (the
-   write pass only — the size pass counts a conservative reservation);
-   a mid-write checkout failure returns SIZE_MAX, the caller re-running
-   with no_zc = 1. inline_max is the zc floor gate. */
+   marks the region REFHELD. With h != NULL the selected zc_node stages
+   one SHM_VEC checkout mid-write (the write pass only — the count walks
+   size a conservative reservation); a mid-write checkout failure returns
+   SIZE_MAX, the caller re-running with no_zc = 1. inline_max is the zc
+   floor gate. plan non-NULL runs the walk in record mode (zc_node
+   R_NilValue): the optimistic write flips to count-only at the first
+   candidate, the plan filled for the caller's arithmetic selection. */
 size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t target, uint64_t ident,
                                mizu_ix_decline *rec, mizu_handle *h,
                                uint32_t caps, uint32_t inline_max,
-                               SEXP zc_node, int no_zc);
-/* D3's size-pass-first over the spec's argument trees: *out_has_ref set
-   when a REF-qualifying view rides the trees (the D2 detector); the zc
-   node is the first layout-eligible fresh value in document order
-   (positional in order, then named, depth-first) whose remainder fits
-   inline_max — *out_zc records it and the size pass's conservative total
-   is returned. No fitting candidate: 0 with *out_zc = R_NilValue (the
-   no_zc flow — refs still emit). h is the staging handle (churn read,
-   pool-word caps). */
-size_t mizu_interop_task_plan(SEXP spec, uint32_t target, uint64_t ident,
-                              mizu_handle *h, uint32_t caps,
-                              uint32_t inline_max, SEXP *out_zc,
-                              int *out_has_ref, mizu_ix_decline *rec);
+                               SEXP zc_node, int no_zc,
+                               mizu_ix_plan *plan);
 /* The exec-hook decode of a task stream: validates the header and the
    per-kind shape off the cursor, stashes the submitter identity in
    mizu_curpool_ident, and builds in place — name kind: a LANGSXP (the

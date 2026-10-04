@@ -206,7 +206,7 @@ void mizu_payload_spill_task(mizu_slot_hdr *hdr, unsigned char *payload,
   mizu_shm *shm = mizu_spill_get_raise(h, n);
   if (mizu_interop_write_task((unsigned char *) shm->addr, shm->size, spec,
                               target, ident, NULL, h, caps, inline_max,
-                              R_NilValue, 1) != n)
+                              R_NilValue, 1, NULL) != n)
     Rf_error("mizu: task write mismatch");   /* the walk is deterministic */
   hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;

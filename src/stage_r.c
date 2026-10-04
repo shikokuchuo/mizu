@@ -299,19 +299,27 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
       return 0;
     }
     mizu_ix_decline rec;
-    SEXP zc_node = R_NilValue;
-    int has_ref = 0;
-    /* D3's size-pass-first: the pre-scan finds the ref/zc candidates
-       (and doubles as the D2 detector); with a zc candidate the write
-       stages the single checkout, inline-fitting by construction */
-    size_t planned = mizu_interop_task_plan(spec, target, rh->spec_ident,
-                                            h, (uint32_t) (rh->worker_ident >> 32),
-                                            inline_max, &zc_node,
-                                            &has_ref, &rec);
-    if (planned == 0 && rec.decline)
+    mizu_ix_plan plan;
+    const uint32_t caps = (uint32_t) (rh->worker_ident >> 32);
+    /* the W2 fold: one record walk — the optimistic write flips to
+       count-only at the first SHM_VEC candidate, so a candidate-free
+       inline spec completes in a single walk. Selection is arithmetic
+       over the recorded subtree sizes (F1's D3, the first candidate
+       whose remainder fits), never a size pass per candidate */
+    const size_t total =
+      mizu_interop_write_task(payload, inline_max, spec, target,
+                              rh->spec_ident, &rec, h, caps, inline_max,
+                              R_NilValue, 0, &plan);
+    if (total == 0)
       mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
-    if ((has_ref || zc_node != R_NilValue) &&
-        !((uint32_t) (rh->worker_ident >> 32) & MIZU_CAP_TASKREF))
+    SEXP zc_node = R_NilValue;
+    for (int i = 0; i < plan.ncand; i++) {
+      if (total - plan.size[i] + MIZU_IX_ZC_RESERVE <= (size_t) inline_max) {
+        zc_node = plan.cand[i];
+        break;
+      }
+    }
+    if ((plan.has_ref || zc_node != R_NilValue) && !(caps & MIZU_CAP_TASKREF))
       /* D2: fail locally rather than remotely — a remote failure loses
          the work to a task error stream */
       mizu_stop_not_portable(
@@ -320,9 +328,8 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
         "upgrade the workers' binding");
     if (zc_node != R_NilValue) {
       n = mizu_interop_write_task(payload, inline_max, spec, target,
-                                  rh->spec_ident, &rec, h,
-                                  (uint32_t) (rh->worker_ident >> 32),
-                                  inline_max, zc_node, 0);
+                                  rh->spec_ident, &rec, h, caps,
+                                  inline_max, zc_node, 0, NULL);
       if (n != SIZE_MAX) {
         if (n == 0)
           mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
@@ -335,14 +342,25 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
       }
       /* a mid-write checkout failure (a churn race): re-run by value,
          never a partial stream */
-      zc_node = R_NilValue;
     }
-    n = mizu_interop_write_task(payload, inline_max, spec, target,
-                                rh->spec_ident, &rec, h,
-                                (uint32_t) (rh->worker_ident >> 32),
-                                inline_max, R_NilValue, 1);
-    if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
-    if (n <= inline_max) {
+    if (plan.ncand == 0 && total <= (size_t) inline_max) {
+      /* one walk: the record walk's write is the stream */
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) total;
+      hdr->aux = 0;        /* no keeperless claim: inert on task entries */
+      if (mizu_zc_ref_fired())
+        mizu_r_pin(h, ctx, spec);
+      return 0;
+    }
+    /* candidates recorded, none fitting (or the zc write abandoned): the
+       record walk counted the by-value stream — rewrite it inline, or
+       spill it at the recorded size */
+    if (total <= (size_t) inline_max) {
+      n = mizu_interop_write_task(payload, inline_max, spec, target,
+                                  rh->spec_ident, &rec, h, caps,
+                                  inline_max, R_NilValue, 1, NULL);
+      if (n == 0)
+        mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
       hdr->aux = 0;        /* no keeperless claim: inert on task entries */
@@ -352,8 +370,7 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
     }
     mizu_stage_reap(h);
     mizu_payload_spill_task(hdr, payload, spec, target, rh->spec_ident,
-                            n, h, (uint32_t) (rh->worker_ident >> 32),
-                            inline_max);
+                            total, h, caps, inline_max);
     if (mizu_zc_ref_fired())
       mizu_r_pin(h, ctx, spec);
     return 0;

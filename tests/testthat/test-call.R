@@ -485,3 +485,147 @@ test_that("mizu_submit_call validates the spec and the name shape", {
   )
   pool_end(p)
 })
+
+test_that("the zc-selection fold matches the legacy loop: candidate matrix", {
+  p <- pool_pair(ident = c(2L, 8L)) # TASKREF only: the exact-model caps
+  on.exit(pool_end(p))
+  inline_max <- ix_inline_max(p)
+  # the model's selection, the live view flags, and the values all agree
+  check <- function(got, want_sel) {
+    expect_identical(got$expected, want_sel)
+    want <- rep(FALSE, length(got$flags))
+    if (want_sel > 0L) {
+      want[want_sel] <- TRUE
+    }
+    expect_identical(got$flags, want)
+    expect_true(got$sum_ok)
+  }
+  cand <- runif(5120L) # 40960 bytes — past the floor
+
+  # k = 1, the boundary exact: adjusted == inline_max selects (the fit is
+  # inclusive); adjusted == inline_max + 1 stays by value
+  spec_total <- function(positional) {
+    x <- list(
+      target = 2L,
+      kind = 1L,
+      ident = 30064771075,
+      code = ix_probe_src("..1"),
+      positional = positional,
+      named = list()
+    )
+    nchar(ix_write_task(x)) %/% 2L
+  }
+  t_tot <- inline_max + ix_node_size(cand) - ix_reserve
+  fill <- strrep("a", t_tot - spec_total(list(cand, "")))
+  stopifnot(spec_total(list(cand, fill)) == t_tot)
+  check(ix_run_probe(p, list(cand, fill), list(), "..1", inline_max), 1L)
+  check(
+    ix_run_probe(p, list(cand, paste0(fill, "a")), list(), "..1", inline_max),
+    0L
+  )
+
+  # k = 1 at the middle and tail positions, and nested in a list
+  check(
+    ix_run_probe(p, list(runif(3L), cand, "x"), list(), "..2", inline_max),
+    1L
+  )
+  check(ix_run_probe(p, list(runif(3L)), list(n1 = cand), "n1", inline_max), 1L)
+  check(
+    ix_run_probe(
+      p,
+      list(list(runif(3L), cand)),
+      list(),
+      "..1[[2]]",
+      inline_max
+    ),
+    1L
+  )
+
+  # k >= 2 never selects (each adjusted total carries the other candidates
+  # by value); 17 candidates exercise the record cap
+  check(
+    ix_run_probe(
+      p,
+      list(cand, runif(25000L)),
+      list(),
+      c("..1", "..2"),
+      inline_max
+    ),
+    0L
+  )
+  c17 <- lapply(seq_len(17L), function(i) runif(5120L + i))
+  check(
+    ix_run_probe(p, c17, list(), sprintf("..%d", seq_len(17L)), inline_max),
+    0L
+  )
+
+  # k = 0, inline and spilled by-value totals
+  check(
+    ix_run_probe(p, list(runif(3L), "abc"), list(), character(0L), inline_max),
+    0L
+  )
+  check(
+    ix_run_probe(
+      p,
+      list(runif(100L)),
+      list(n1 = strrep("y", 30000L)),
+      character(0L),
+      inline_max
+    ),
+    0L
+  )
+})
+
+test_that("the zc-selection fold matches the legacy loop: randomized specs", {
+  p <- pool_pair(ident = c(2L, 8L)) # TASKREF only: the exact-model caps
+  on.exit(pool_end(p))
+  inline_max <- ix_inline_max(p)
+  set.seed(20261004)
+  for (i in seq_len(24L)) {
+    spec <- ix_gen_spec(inline_max)
+    got <- ix_run_probe(
+      p,
+      spec$positional,
+      spec$named,
+      spec$paths,
+      inline_max
+    )
+    want <- rep(FALSE, length(got$flags))
+    if (got$expected > 0L) {
+      want[got$expected] <- TRUE
+    }
+    expect_identical(got$flags, want)
+    expect_true(got$sum_ok)
+  }
+})
+
+test_that("the fold with full caps selects list trees and string vectors", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  lst <- list(runif(3L), runif(5120L))
+  t <- mizu_submit_call(
+    p$ctrl,
+    mizu_call(NULL, lst, .source = ".Call(mizu:::mizu_zc_view_check, ..1)")
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t), TRUE)
+  t <- mizu_submit_call(
+    p$ctrl,
+    mizu_call(NULL, lst, .source = "sum(..1[[2]])")
+  )
+  pool_step(p)
+  expect_equal(mizu_collect(t), sum(lst[[2L]]))
+  sv <- rep(strrep("z", 40000L), 3L)
+  t <- mizu_submit_call(
+    p$ctrl,
+    mizu_call(NULL, sv, .source = ".Call(mizu:::mizu_zc_view_check, ..1)")
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t), TRUE)
+  t <- mizu_submit_call(
+    p$ctrl,
+    mizu_call(NULL, sv, .source = "sum(nchar(..1))")
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t), sum(nchar(sv)))
+})
