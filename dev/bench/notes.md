@@ -914,3 +914,77 @@ all-double frame 100k x 3 at 206.3 in the same run); 100k difftime
 standalone 148.0 us/rt.
 
 Status: full suite 3189 pass, 0 fail (3 expected macOS skips).
+
+## 2026-10-04 — MIZS write-asymmetry instrument rows + baseline (ebd2521)
+
+New rows ahead of the string-write fixes (the mizs-write-asymmetry
+plan): a send-only row against an acking Python sink on both
+cross-language drivers (the ack is the NULL row's cost; the remainder
+is the send-side stage the echo round trip only implies), a
+UTF-8-marked 10k-string variant, and same-language 10k-string / small
+named char rows in mizu-bench.R. The UTF-8 variant carries non-ASCII
+content (valué-…): R clears encoding marks on pure-ASCII CHARSXPs, so
+an ASCII "marked" vector is unmarked — the first cut of the row
+measured the same unmarked payload twice. The small named char row
+lives same-language only: a named atomic has no portable foreign home,
+so the cross-language send of it raises not_portable.
+
+Baseline (the committed pre-fix build): R-hosted 10k strings 187.4
+us/rt echo, 165.3 us/send sink; UTF-8-marked 142.8 us/rt echo, 120.9
+us/send sink — the mark skipping the gate's byte validation prices
+that pass at ~44 us on this payload. Same-language: 10k strings
+124.1 us/rt channel echo, small named char 1.4 us/rt (the declined
+path — F0's no-regression row). Python-hosted mirror: 10k strings
+22.7 us/rt echo, 21.7 us/send sink. The acceptance target for the
+fixes: R send-only within ~1.5x of the Python sink number.
+
+Status: rows report-only; no suite run (no code change).
+
+## 2026-10-04 — MIZS string-write passes: gate flag read, fused probe, bulk sections
+
+Landed the mizs-write-asymmetry fixes in risk order, each A/B'd against
+the day's instrument baseline (the entry above): F1 (the foreign UTF-8
+gate reads R >= 4.5's Rf_charIsASCII bit instead of validating), F0
+(the probe's byte sum is the exact layout size for an attribute-free
+STRSXP — the size walk is skipped — and the foreign gate walk is fused
+with the probe behind the ALTREP fence), F2+F4 (the foreign write
+bulk-fills encoding CE_UTF8 with NA bytes zeroed in the loop, validity
+a bulk 0xFF with NA bits cleared, offsets running-pointer stores, the
+upfront section memset gone), and one fix the plan's F2 premise forced:
+frame string columns were the one ungated foreign path into the MIZS
+writer (a latin1 column reached the Python reader marked and failed
+there — verified empirically), so the frame branch of
+mizu_zc_eligible_foreign now gates string columns like the top level
+(latin1 takes the 'I' copy translated, bytes declines at send; REF-able
+view columns are never walked). A further pass the sample profile
+justified (F5): the three string walks take one STRING_PTR_RO call per
+walk (R >= 4.5, ALTREP keeps STRING_ELT) and the gate tests the ASCII
+bit ahead of the mark switch — mkCharLenCE clears every mark on
+pure-ASCII CHARSXPs (compiled probe), so the bit means unmarked native.
+
+Results (A/B against the committed baseline, same host): R-hosted 10k
+strings 187.4 -> 86.6 us/rt echo, 165.3 -> 64.9 us/send sink; the
+UTF-8-marked variant 142.8 -> 95.8 echo, 120.9 -> 73.8 sink (the mark
+no longer wins — unmarked ASCII now takes the one-call fast path).
+Same-language: 10k strings 124.1 -> 88.3 us/rt channel echo; small
+named char 1.4 -> 1.5 us/rt (the declined path, no regression). F1
+alone was worth ~39 us/send (H1: the byte validation), F0 ~32 (H2: one
+pointer walk), F2+F4 ~7 (H3: minor as predicted), F5 ~22. Python-hosted
+mirror flat (21.7 -> 20.9 us/send — the Python stage is unchanged
+code). The residual 3.1x against the Python sink (was 7.6x) is libR's
+call-based CHARSXP accessors: sampling attributes ~30 us of the 65 to
+LENGTH/R_CHAR/charIsASCII call overhead (10k elements x 4 calls) with
+memcpy (~19 us) and transport at parity — the public C API has no
+inline CHARSXP length/bytes accessors, and closing further would mean
+sxpinfo bit-poking, which the rchk-clean public-API discipline rules
+out. The ~1.5x acceptance target is not reachable within it; the
+payload matrix validates the edge shapes (latin1 control: 'I' copy, no
+view; 1k-long strings: 262.8 us/send, the memcpy-dominated ratio
+narrowed to ~2x; 50% NAs: 30.3; a mori ALTREP string vector: fenced to
+the copy tiers, no view on receipt).
+
+Status: full suite 3196 pass, 0 fail (3 expected macOS skips); pymizu
+398 pass / 5 skip plus 96 crosslang pass against this build; mori
+re-vendored from this tree, 433 pass, 0 fail (23 expected macOS skips);
+rchk bcheck identical to the pristine tree (zero package findings);
+libmizu make test green.

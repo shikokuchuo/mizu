@@ -13,7 +13,11 @@
 #                           directions pay the full layout write)
 #   2. typed payloads       strings, logicals with NA, datetime, frames —
 #                           the interchange codec and MIZS/MIZL layouts
-#   3. pipelined throughput small vectors in flight, no per-send wait
+#   3. send-only staging    one-way sends against an acking sink: the ack
+#                           is the NULL row's cost, the remainder the
+#                           send-side stage (the layout write the echo
+#                           round trip only implies)
+#   4. pipelined throughput small vectors in flight, no per-send wait
 #
 # Timings are bench::mark medians. Run:
 #
@@ -85,6 +89,18 @@ while True:
     ch.send(x.copy() if hasattr(x, 'copy') else x)
 "
 
+# the acking sink: acks each payload with None, so a send + ack wait
+# measures the R-side stage alone (the sink's read of a view-tier payload
+# is a cheap wrap)
+py_sink <- "
+import pymizu
+while True:
+    x = ch.recv(30)
+    if pymizu.is_sentinel(x):
+        break
+    ch.send(None)
+"
+
 # orderly teardown: the echo peers break on a sentinel; mizu_close signals
 # close and waits for the peer's own close rendezvous
 with_peer <- function(program, f) {
@@ -130,8 +146,13 @@ for (nm in names(payloads)) {
 
 cat("\n== 2. typed payloads (echo peer) ==\n")
 
+# the UTF-8-marked variant needs non-ASCII bytes: R clears encoding marks
+# on pure-ASCII CHARSXPs, so marked content is the only way to carry CE_UTF8
+utf8_strings <- sprintf("valué-%05d", seq_len(10000))
+
 typed <- list(
   "10k strings" = sprintf("value-%05d", seq_len(10000)),
+  "10k strings UTF-8" = utf8_strings,
   "100k logical+NA" = rep(c(TRUE, FALSE, NA), length.out = 100000),
   "10k Date" = as.Date("2026-01-01") + seq_len(10000),
   "100k difftime" = as.difftime(runif(100000, 0, 3600), units = "secs"),
@@ -157,7 +178,19 @@ for (nm in names(typed)) {
   with_peer(py_echo, function(ch) note(nm, "echo", rt_us(ch, x), "us/rt"))
 }
 
-cat("\n== 3. pipelined throughput (10k x 8 KB doubles in flight) ==\n")
+cat("\n== 3. send-only staging (acking sink) ==\n")
+
+sink_payloads <- list(
+  "10k strings" = sprintf("value-%05d", seq_len(10000)),
+  "10k strings UTF-8" = utf8_strings
+)
+
+for (nm in names(sink_payloads)) {
+  x <- sink_payloads[[nm]]
+  with_peer(py_sink, function(ch) note(nm, "sink", rt_us(ch, x), "us/send"))
+}
+
+cat("\n== 4. pipelined throughput (10k x 8 KB doubles in flight) ==\n")
 
 k <- 10000L
 x <- runif(1000)

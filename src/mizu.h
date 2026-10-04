@@ -180,7 +180,7 @@ SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate);
    ASCII, CE_UTF8, or native that validates as UTF-8) — shared with the
    zero-copy filter in zc.c. */
 int mizu_interop_names_ok(SEXP names);
-int mizu_interop_strings_utf8(SEXP x);
+int mizu_interop_strings_utf8(SEXP x, size_t *bytes);
 /* The foreign STR1: the top-level length-1 string tier, normalized to
    UTF-8 (latin1 translated, CE_BYTES declined). 1 staged, 0 not a
    length-1 string, -1 decline (the record filled). */

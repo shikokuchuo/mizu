@@ -274,6 +274,25 @@ test_that("a frame with a view column crosses to Python as a remote leaf (F2.5)"
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a foreign MIZS write bulk-fills UTF-8 marks, zero at NAs", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- rep(c("alpha", "beta", NA_character_), length.out = 20000)
+  mizu_send(ch, x)
+  y <- mizu_recv(ch, 30) # the echo: a view of x's own region (REF)
+  expect_true(.Call(mizu:::mizu_zc_view_check, y))
+
+  n <- length(x)
+  peek <- view_peek(y)
+  off_enc <- 64 + align64(ceiling(n / 8)) + align64(8 * (n + 1))
+  expect_identical(as.integer(peek(off_enc, n)), as.integer(!is.na(x)))
+  expect_identical(y, x) # last: identical() materializes views on R < 4.6
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(

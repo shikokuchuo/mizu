@@ -178,12 +178,25 @@ int mizu_interop_names_ok(SEXP names) {
 
 /* The foreign MIZS gate's string walk: every element ASCII, CE_UTF8, or
    native that validates as UTF-8 — a latin1 vector takes the 'I' copy
-   (which translates it), a bytes-marked one declines there. */
-int mizu_interop_strings_utf8(SEXP x) {
+   (which translates it), a bytes-marked one declines there. R >= 4.5
+   reads the ASCII bit first: R clears every mark on pure-ASCII CHARSXPs
+   at creation, so the bit means unmarked native, and pure ASCII is
+   valid UTF-8 by construction. bytes, when non-NULL, takes the packed
+   byte total (NAs span nothing) so the caller's size gate rides the
+   same walk. */
+int mizu_interop_strings_utf8(SEXP x, size_t *bytes) {
   const R_xlen_t n = XLENGTH(x);
+  const SEXP *base = mizu_view_str_base(x);
+  size_t total = 0;
   for (R_xlen_t i = 0; i < n; i++) {
-    SEXP cs = STRING_ELT(x, i);
+    SEXP cs = mizu_view_str_elt(x, i, base);
     if (cs == NA_STRING) continue;
+#if R_VERSION >= R_Version(4, 5, 0)
+    if (Rf_charIsASCII(cs)) {
+      total += (size_t) LENGTH(cs);
+      continue;
+    }
+#endif
     switch (Rf_getCharCE(cs)) {
     case CE_UTF8:
       break;
@@ -195,7 +208,9 @@ int mizu_interop_strings_utf8(SEXP x) {
                       (size_t) LENGTH(cs)))
         return 0;
     }
+    total += (size_t) LENGTH(cs);
   }
+  if (bytes != NULL) *bytes = total;
   return 1;
 }
 

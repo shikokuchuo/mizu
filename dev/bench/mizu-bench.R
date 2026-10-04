@@ -13,7 +13,10 @@
 #                             the 2^20 slot_size cap allows, so 8 KB and
 #                             800 KB ride in-slot and 8 MB takes the spill
 #                             tier (SHM_VEC views; on Linux the churn
-#                             signal falls back to SHM_RAW reuse)
+#                             signal falls back to SHM_RAW reuse); plus a
+#                             same-language 10k-string channel echo (the
+#                             MIZS layout write; the cross-language
+#                             counterpart is crosslang-channel-bench.R)
 #   4. parallel fan-out       ~10 us compute tasks, 4 workers: fire all,
 #                             collect all (in-process loop as the anchor);
 #                             scenario 6 maps the same work in one call
@@ -334,6 +337,40 @@ for (pl in payloads) {
     pl[["args"]]
   )
 }
+
+# same-language string staging: the plain echo relays the received view by
+# reference, so each crossing pays one MIZS layout write and one wrap. The
+# small named vector is the declined-path row: the zero-copy probe turns
+# it away ahead of any layout walk, so its cost must stay the copy tier's
+# (a named atomic has no foreign home — this row exists same-language only)
+xs <- sprintf("value-%05d", seq_len(10000L))
+small_named <- c(a = "alpha", b = "beta", g = "gamma")
+with_channel(echo_expr, function(ch) {
+  mizu_send(ch, xs)
+  invisible(mizu_recv(ch, 30))
+  note_us(
+    "10k strings",
+    "mizu channel",
+    1L,
+    function() {
+      mizu_send(ch, xs)
+      invisible(mizu_recv(ch, 30))
+    },
+    "us/rt"
+  )
+  note_us(
+    "small named char",
+    "mizu channel",
+    100L,
+    function() {
+      for (i in seq_len(100L)) {
+        mizu_send(ch, small_named)
+        invisible(mizu_recv(ch, 30))
+      }
+    },
+    "us/rt"
+  )
+})
 
 # 4. parallel fan-out ----------------------------------------------------------
 

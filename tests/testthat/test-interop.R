@@ -472,6 +472,24 @@ test_that("the foreign zero-copy filter gates the layouts by capability", {
   expect_error(mizu_send(p$host, bv), class = "mizu_error_not_portable")
   channel_end(p)
 
+  # a string column gates like a top-level vector: latin1 takes the 'I'
+  # copy (translated), bytes declines at send — never a MIZL leaf one
+  # hop late
+  ldf <- data.frame(
+    x = runif(10000),
+    s = iconv(rep("héllo", 10000), from = "UTF-8", to = "latin1")
+  )
+  p <- foreign_pair(caps = 7L)
+  got <- ix_rt(p, ldf)
+  expect_false(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got, ldf)
+  channel_end(p)
+  bdf <- data.frame(x = runif(10000), s = rep("héllo", 10000))
+  Encoding(bdf[["s"]]) <- "bytes"
+  p <- foreign_pair(caps = 7L)
+  expect_error(mizu_send(p$host, bdf), class = "mizu_error_not_portable")
+  channel_end(p)
+
   # a named vector past the floor has no shape: it raises at send
   nv <- setNames(rnorm(40000), paste0("n", seq_len(40000)))
   p <- foreign_pair(caps = 7L)

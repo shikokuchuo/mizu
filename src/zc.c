@@ -213,9 +213,10 @@ mizu_shm *mizu_zc_open(const char *name) {
    allocation, no serialize count. */
 static size_t mizu_zc_str_probe(SEXP x) {
   R_xlen_t n = XLENGTH(x);
+  const SEXP *base = mizu_view_str_base(x);
   size_t total = MIZU_HEADER_SIZE + mizu_view_str_geometry((size_t) n).data;
   for (R_xlen_t i = 0; i < n; i++) {
-    SEXP s = STRING_ELT(x, i);
+    SEXP s = mizu_view_str_elt(x, i, base);
     if (s != NA_STRING) total += (size_t) LENGTH(s);
   }
   return total;
@@ -312,7 +313,15 @@ int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total,
        wrappers) without touching elements. */
     if (ALTREP(x) && !mizu_view_check(x) && !mizu_view_altrep_readable(x))
       return 0;
-    if (mizu_zc_str_probe(x) <= gate) return 0;
+    const size_t probe = mizu_zc_str_probe(x);
+    if (probe <= gate) return 0;
+    if (!ANY_ATTRIB(x)) {
+      /* the probe's sum is the exact layout size here: header + geometry +
+         packed bytes is mizs_size with zero attrs, and the writer's
+         return — the size walk adds nothing */
+      *out_total = probe;
+      return 1;
+    }
   } else if (type == VECSXP) {
     int reject = 0;
     if (mizu_zc_tree_probe(x, &reject) <= gate || reject) return 0;
@@ -351,7 +360,7 @@ static int mizu_zc_tree_caps_walk(SEXP x, uint32_t caps) {
     /* a view leaf keeps rejecting on generic trees (remote leaves are the
        frame gate's, F2.5) */
     return !ANY_ATTRIB(x) && !mizu_view_check(x) && (caps & MIZU_CAP_MIZS) &&
-           mizu_interop_strings_utf8(x);
+           mizu_interop_strings_utf8(x, NULL);
   case VECSXP: {
     if (Rf_isS4(x) || mizu_view_check(x)) return 0;
     SEXP names = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
@@ -409,10 +418,27 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
   if (type == STRSXP) {
     /* MIZS, gated on the bit and every element crossing as UTF-8 (a
        latin1 vector takes the 'I' copy, which translates it; a
-       bytes-marked one declines there) */
-    if (!(caps & MIZU_CAP_MIZS) || !mizu_interop_strings_utf8(x))
+       bytes-marked one declines there). The fence runs ahead of any
+       walk; the gate walk then doubles as the probe's byte sum, and for
+       an attribute-free vector that sum is the exact layout size. */
+    if (!(caps & MIZU_CAP_MIZS)) return 0;
+    if (ALTREP(x) && !mizu_view_check(x) && !mizu_view_altrep_readable(x))
       return 0;
-    return mizu_zc_eligible(x, inline_max, out_total, 1);
+    size_t bytes = 0;
+    if (!mizu_interop_strings_utf8(x, &bytes)) return 0;
+    const size_t gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
+      (size_t) inline_max : MIZU_ZC_FLOOR;
+    const size_t total = MIZU_HEADER_SIZE +
+      mizu_view_str_geometry((size_t) XLENGTH(x)).data + bytes;
+    if (total <= gate) return 0;
+    if (!ANY_ATTRIB(x)) {
+      *out_total = total;
+      return 1;
+    }
+    const size_t exact = mizu_view_layout_size(x, 1);
+    if (exact == 0) return 0;
+    *out_total = exact;
+    return 1;
   }
   if (type != VECSXP) return 0;
   /* a plain data.frame: ATTRS + MIZL, plus MIZS when any column is a
@@ -433,6 +459,16 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
        whole frame takes the 'I' copy) */
     if (has_ref) need |= MIZU_CAP_MIZL_REF;
     if ((caps & need) != need) return 0;
+    /* a string column gates like a top-level vector: a latin1 column
+       takes the 'I' copy (which translates it), a bytes-marked one
+       declines there — ungated it would reach the reader one hop late.
+       A REF-able view column crosses by reference and is never walked. */
+    for (R_xlen_t i = 0; i < XLENGTH(x); i++) {
+      SEXP col = VECTOR_ELT(x, i);
+      if (TYPEOF(col) == STRSXP && !mizu_view_refable(col) &&
+          !mizu_interop_strings_utf8(col, NULL))
+        return 0;
+    }
     return mizu_zc_eligible(x, inline_max, out_total, 1);
   }
   return mizu_zc_tree_caps(x, caps) &&
