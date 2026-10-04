@@ -988,3 +988,26 @@ Status: full suite 3196 pass, 0 fail (3 expected macOS skips); pymizu
 re-vendored from this tree, 433 pass, 0 fail (23 expected macOS skips);
 rchk bcheck identical to the pristine tree (zero package findings);
 libmizu make test green.
+
+## 2026-10-04 — the nested MIZL string-leaf duplicate, sized (no code change)
+
+The follow-up measurement the MIZS plan's cross-references called for:
+whether the remaining duplicate walks (foreign gate + tree probe +
+nested size per string column, vs the top level's fused single walk)
+show at scale. The committed frame rows can't show it — their string
+columns are <= 5 KB — so a 100k-string column was measured directly
+(foreign sink and same-language echo, quiet host, 635df0c). Findings
+filed as a new investigation note (.posit plans,
+mizl-string-leaf-duplicate.md): candidates N1 (budget-capped tree
+probe) and N2 (verdict fused into the tree walk) are zc.c-local; N3
+(recorded per-leaf sums retiring the nested size walk's string
+component) crosses the vendored seam and waits on N1/N2's evidence.
+
+Results: 100k strings top-level 574.9 us/send; frame 100k x 3 numeric
+108.7; frame with the 100k-string column 893.8 (the column's marginal
+785 vs 575 top-level — ~210 us, two duplicate walks at ~105 each).
+Same-language: top-level 676.3 us/rt, frame with the column 867.4 (one
+duplicate walk plus frame overhead). pymizu pays two walks per nested
+string column — the parity target.
+
+Status: measurement only; suite state as the previous entry.
