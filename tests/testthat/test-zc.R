@@ -223,8 +223,8 @@ test_that("a REF slot with len past inline_max is rejected before reading", {
   mizu_send(p[["host"]], x)
   y <- mizu_recv(p[["peer"]], 5)
   mizu_send(p[["peer"]], y) # REF back to the host
-  suffix <- .Call(mizu:::mizu_channel_suffix, p[["host"]])
-  rw <- .Call(mizu:::mizu_region_open, paste0("/mizu_", suffix), TRUE)
+  rname <- .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]]
+  rw <- .Call(mizu:::mizu_region_open, rname, TRUE)
   ring <- 512L + 64L * 64L # the peer's tx ring (second ring)
   .Call(
     mizu:::mizu_poke,
