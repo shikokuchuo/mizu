@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="cc44c6fa0a4ab884547ca3acf0f8ddbfc91ad620"  # libmizu: the 'I' byte-shape helpers in the core ext surface
+PIN="7b873e077cb81db8f439f9f02e1926484359c11f"  # libmizu: torn-wire validation gaps and lifecycle fixes
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
