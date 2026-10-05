@@ -53,6 +53,32 @@ mizu_collect(t)
 #> [1] 500500
 ```
 
+## A default pool for package code
+
+Package code can read a process-wide default pool with `mizu_default_pool()`.
+`mizu_set_default_pool()` sets it — `NULL` clears it — and invisibly returns the previous default, so callers can save and restore.
+The registry anchors the handle: a pool set as the default stays alive even after its variable is removed.
+`mizu_with_pool()` scopes the default to an expression, `mizu_local_pool()` to the calling frame.
+Both restore the previous default on exit.
+
+Resolve an optional pool in this order: an explicit `pool` argument, `mizu_current_pool()` inside a task, `mizu_default_pool()`, then your own fallback — sequential evaluation or an error.
+The default never overrides `mizu_current_pool()`: inside a task the worker’s own handle wins, so nested submission is never shadowed.
+Setting a default checks the type only — a stopped pool is accepted and fails at use time — and handles from `mizu_pool_attach()` are valid defaults.
+
+``` r
+run <- function(x, pool = mizu_default_pool()) {
+  if (is.null(pool)) {
+    stop("no pool: pass one, or set a default", call. = FALSE)
+  }
+  mizu_collect(mizu_submit(pool, x * 2L, x = x))
+}
+
+old <- mizu_set_default_pool(p)
+run(21L)
+#> [1] 42
+mizu_set_default_pool(old)
+```
+
 ## Waiting on several tasks
 
 `mizu_collect_any()` waits on a list of task handles and returns `list(index, value)` for the first to reach a terminal state — completion order, not submission order.
@@ -79,7 +105,7 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 4.119828
+#> [1] 5.532799
 #> 
 #> $label
 #> [1] "done"

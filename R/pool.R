@@ -345,6 +345,118 @@ mizu_current_pool <- function() {
   .Call(mizu_current_pool_call)
 }
 
+# The process-wide default pool registry: (handle, pid-at-set) anchored in
+# namespace state. The anchor keeps a default pool alive past `rm(p)` — an
+# unreferenced handle's finalizer stops the pool. The pid lets a forked
+# child read the default as unset without touching a handle it does not
+# own; the C-side fork guard on handle unwrap remains the backstop.
+.default_pool <- new.env(parent = emptyenv())
+
+#' The Process-Wide Default Pool
+#'
+#' `mizu_default_pool()` returns the pool registered as this process's
+#' default, or `NULL` when none is set. `mizu_set_default_pool()` sets the
+#' default — or clears it, with `NULL` — and invisibly returns the
+#' previous one, so callers can save and restore. `mizu_with_pool()`
+#' evaluates `expr` with `pool` as the default and restores the previous
+#' default on exit, including on error. `mizu_local_pool()` sets the
+#' default until the calling frame exits (the withr `local_*` pattern).
+#'
+#' The registry anchors the handle: a pool set as the default stays alive
+#' even after its variable is removed, until the default is cleared or
+#' replaced. Handles from [mizu_pool_attach()] are valid defaults;
+#' ownership and teardown stay with the pool's creator.
+#'
+#' Setting a default checks the type only: a stopped pool is accepted
+#' (liveness is transient; a probe would prove nothing about use time) and
+#' fails later with the usual stopped-pool errors. The default is
+#' process-global state — after a `fork()`, a child process reads it as
+#' unset.
+#'
+#' @section Package authors:
+#' A function that takes an optional pool resolves it in this order: an
+#' explicit `pool` argument, then [mizu_current_pool()] inside a task (the
+#' evaluating worker's own pool, for nested submission), then
+#' `mizu_default_pool()`, then the caller's own fallback — sequential
+#' evaluation or an error. `mizu_current_pool()` is runtime-owned by the
+#' pool around each task evaluation and cannot be shadowed; the default
+#' pool is user-set state and never overrides it.
+#'
+#' @param pool a pool handle from [mizu_pool()] or [mizu_pool_attach()],
+#'   or `NULL` to clear the default.
+#' @param expr an expression to evaluate with `pool` as the default.
+#' @param frame the frame at whose exit the previous default is restored;
+#'   defaults to the caller of `mizu_local_pool()`.
+#'
+#' @return `mizu_default_pool()`: the default pool handle, or `NULL`.
+#'   `mizu_set_default_pool()` and `mizu_local_pool()`: the previous
+#'   default (a pool handle or `NULL`), invisibly. `mizu_with_pool()`: the
+#'   value of `expr`.
+#'
+#' @examples
+#' p <- mizu_pool()
+#' old <- mizu_set_default_pool(p)
+#'
+#' # the package-author resolution idiom
+#' f <- function(x, pool = mizu_default_pool()) {
+#'   if (is.null(pool)) {
+#'     stop("no pool: pass one, or set a default", call. = FALSE)
+#'   }
+#'   mizu_collect(mizu_submit(pool, x + 1L, x = x))
+#' }
+#' f(1L)
+#'
+#' # scoped use: the previous default returns on exit
+#' mizu_with_pool(NULL, mizu_default_pool())
+#' mizu_default_pool()
+#'
+#' mizu_set_default_pool(old)
+#' mizu_pool_stop(p)
+#'
+#' @export
+mizu_default_pool <- function() {
+  if (identical(.default_pool$pid, Sys.getpid())) .default_pool$pool
+}
+
+#' @rdname mizu_default_pool
+#' @export
+mizu_set_default_pool <- function(pool) {
+  if (!is.null(pool) && !inherits(pool, "mizu_pool")) {
+    stop("mizu: pool must be a mizu pool handle or NULL", call. = FALSE)
+  }
+  prev <- .default_pool$pool
+  .default_pool$pool <- pool
+  .default_pool$pid <- Sys.getpid()
+  invisible(prev)
+}
+
+#' @rdname mizu_default_pool
+#' @export
+mizu_with_pool <- function(pool, expr) {
+  prev <- mizu_set_default_pool(pool)
+  on.exit(mizu_set_default_pool(prev))
+  expr
+}
+
+#' @rdname mizu_default_pool
+#' @export
+mizu_local_pool <- function(pool, frame = parent.frame()) {
+  prev <- mizu_set_default_pool(pool)
+  defer(mizu_set_default_pool(prev), envir = frame)
+  invisible(prev)
+}
+
+# Register `expr` to run when the frame `envir` exits (mirai's standalone
+# defer, the simplified withr form). The thunk forces `expr` in this
+# helper's retained frame, so the restore expression is captured as a
+# promise: fully evaluated there, a NULL previous default needs no
+# quoting. `add = TRUE` never clobbers the caller's own on.exit;
+# `after = FALSE` gives LIFO restore for nested registrations.
+defer <- function(expr, envir) {
+  thunk <- as.call(list(function() expr))
+  do.call(on.exit, list(thunk, add = TRUE, after = FALSE), envir = envir)
+}
+
 #' Submit a Batch of Tasks
 #'
 #' `mizu_submit_batch()` submits one task per element of `.exprs` in a
