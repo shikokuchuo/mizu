@@ -21,6 +21,7 @@ reference:
       - mizu_collect_all
       - mizu_cancel
       - mizu_current_pool
+      - mizu_default_pool
       - mizu_spawn_workers
       - mizu_pool_stop
   - title: Parallel map

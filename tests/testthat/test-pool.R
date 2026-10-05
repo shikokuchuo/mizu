@@ -783,6 +783,109 @@ test_that("collect_all validates its task list", {
   pool_end(p2)
 })
 
+test_that("the default pool round-trips, clears, and returns its predecessor", {
+  expect_null(mizu_default_pool())
+  old <- mizu_set_default_pool(NULL)
+  p <- pool_pair()
+  expect_invisible(mizu_set_default_pool(p[["ctrl"]]))
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  prev <- mizu_set_default_pool(NULL)
+  expect_identical(prev, p[["ctrl"]])
+  expect_null(mizu_default_pool())
+  pool_end(p)
+  mizu_set_default_pool(old)
+})
+
+test_that("the default pool validates its type", {
+  old <- mizu_set_default_pool(NULL)
+  expect_snapshot(mizu_set_default_pool(42), error = TRUE)
+  expect_error(mizu_with_pool(42, NULL), "pool handle")
+  expect_error(mizu_local_pool(42), "pool handle")
+  expect_null(mizu_default_pool())
+  mizu_set_default_pool(old)
+})
+
+test_that("the default registry anchors the handle past rm() and gc()", {
+  old <- mizu_set_default_pool(NULL)
+  p <- pool_pair()
+  mizu_set_default_pool(p[["ctrl"]])
+  p[["ctrl"]] <- NULL
+  gc()
+  d <- mizu_default_pool()
+  expect_s3_class(d, "mizu_pool")
+  t <- mizu_submit(d, 1L + 1L)
+  pool_step(p)
+  expect_identical(mizu_collect(t, timeout = 5), 2L)
+  p[["ctrl"]] <- d
+  pool_end(p)
+  mizu_set_default_pool(old)
+})
+
+test_that("a forked process reads the default as unset without clearing it", {
+  old <- mizu_set_default_pool(NULL)
+  p <- pool_pair()
+  mizu_set_default_pool(p[["ctrl"]])
+  reg <- mizu:::.default_pool
+  pid <- reg$pid
+  reg$pid <- pid + 1L
+  expect_null(mizu_default_pool())
+  expect_identical(reg$pool, p[["ctrl"]])
+  reg$pid <- pid
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  pool_end(p)
+  mizu_set_default_pool(old)
+})
+
+test_that("mizu_with_pool scopes the default and restores the previous one", {
+  old <- mizu_set_default_pool(NULL)
+  p <- pool_pair()
+  q <- pool_pair()
+  mizu_set_default_pool(p[["ctrl"]])
+  expect_identical(
+    mizu_with_pool(q[["ctrl"]], mizu_default_pool()),
+    q[["ctrl"]]
+  )
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  mizu_with_pool(NULL, expect_null(mizu_default_pool()))
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  expect_error(mizu_with_pool(q[["ctrl"]], stop("boom")), "boom")
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  expect_identical(mizu_with_pool(NULL, 1L + 1L), 2L)
+  pool_end(p)
+  pool_end(q)
+  mizu_set_default_pool(old)
+})
+
+test_that("mizu_local_pool restores at the calling frame's exit, LIFO", {
+  old <- mizu_set_default_pool(NULL)
+  p <- pool_pair()
+  q <- pool_pair()
+  mizu_set_default_pool(p[["ctrl"]])
+  f <- function() {
+    prev <- mizu_local_pool(q[["ctrl"]])
+    expect_identical(prev, p[["ctrl"]])
+    expect_identical(mizu_default_pool(), q[["ctrl"]])
+  }
+  f()
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  g <- function() {
+    mizu_local_pool(q[["ctrl"]])
+    mizu_local_pool(NULL)
+    expect_null(mizu_default_pool())
+  }
+  g()
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  h <- function() {
+    mizu_local_pool(q[["ctrl"]])
+    stop("boom")
+  }
+  expect_error(h(), "boom")
+  expect_identical(mizu_default_pool(), p[["ctrl"]])
+  pool_end(p)
+  pool_end(q)
+  mizu_set_default_pool(old)
+})
+
 test_that("collect_any reports completion order across real workers", {
   skip_if_no_child_mizu()
   p <- mizu_pool(2L)
