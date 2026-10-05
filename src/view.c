@@ -1202,16 +1202,23 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
     mizu_view_elem entry;
     entry.data_offset = (int64_t) cur;
 
-    int is_remote = 0;
+    int is_remote = 0, broken_ref = 0;
     if (mizu_view_refable(elt)) {
       SEXP id = PROTECT(mizu_view_shm_name(elt));
       int64_t rlength = 0, rattrs = 0;
       int rna_free = 0;
-      if (id != R_NilValue &&
-          mizu_view_ref_descriptor(elt, id, &rlength, &rattrs, &rna_free) == 0) {
+      if (id != R_NilValue) {
         /* the remote leaf (F2.5): the identifier span and the referenced
            column's own length / attrs size as resolved; the emit hook
-           marks the region REFHELD (the holder set widens) */
+           marks the region REFHELD (the holder set widens). The size pass
+           committed to the span when it counted the identifier, so a
+           descriptor that no longer resolves is an error, never a silent
+           downgrade to a copy (that would overrun the sized region) */
+        if (mizu_view_ref_descriptor(elt, id, &rlength, &rattrs,
+                                     &rna_free) != 0) {
+          UNPROTECT(1);
+          Rf_error("mizu: a view's identifier no longer resolves its region");
+        }
         size_t len = (size_t) LENGTH(STRING_ELT(id, 0));
         memcpy(base + cur, CHAR(STRING_ELT(id, 0)), len);
         entry.sexptype = MIZU_VIEW_TAG_REF;
@@ -1220,15 +1227,20 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
         entry.data_size = (int64_t) len;
         if (mizu_view_emit_hook != NULL) mizu_view_emit_hook(elt);
         is_remote = 1;
+      } else {
+        /* a broken identifier (an over-deep chain): the embedder probe
+           rejects these, so only the host path meets them — its size pass
+           counted the serialize form, and the serialize branch below
+           writes it */
+        broken_ref = 1;
       }
       UNPROTECT(1);
-      /* a broken identifier: the host path never meets it (the probe
-         rejects); the copy forms below take it */
     }
 
     if (is_remote) {
       cur += MIZU_VIEW_ALIGN64((size_t) entry.data_size);
-    } else if (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt))) {
+    } else if (!broken_ref &&
+               (type == VECSXP || (type == LISTSXP && !Rf_isS4(elt)))) {
       SEXP coerced = (type == LISTSXP) ? Rf_coerceVector(elt, VECSXP) : elt;
       PROTECT(coerced);
       size_t written = mizu_view_nested_write(base + cur, coerced, foreign);
@@ -1238,7 +1250,7 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
       entry.data_size = (int64_t) written;
       UNPROTECT(1);
       cur += MIZU_VIEW_ALIGN64(written);
-    } else if (mizu_view_shm_eligible(type)) {
+    } else if (!broken_ref && mizu_view_shm_eligible(type)) {
       /* the integer64 leaf gate (the size pass gates identically) */
       int int64 = type != STRSXP && mizu_view_is_int64_any(elt);
       SEXP elt_attrs = PROTECT(mizu_view_get_attrs_for_serialize(elt));
@@ -1681,6 +1693,25 @@ size_t mizu_view_layout_write(unsigned char *base, SEXP x, int foreign) {
    dispatchers; a 0 size means pass-through. A LISTSXP root is coerced once
    per dispatcher — pairlist roots are rare enough to pay that for a single
    dispatch. */
+/* The layout write can raise (a remote leaf's descriptor, the attrs
+   hook): the fresh region owns no finalizer yet, so the write rides an
+   unwind cleanup that closes and unlinks it. */
+struct mizu_view_write_ctx { mizu_shm *shm; SEXP x; };
+
+static SEXP mizu_view_write_run(void *data) {
+  struct mizu_view_write_ctx *c = (struct mizu_view_write_ctx *) data;
+  mizu_view_layout_write((unsigned char *) c->shm->addr, c->x, 0);
+  return R_NilValue;
+}
+
+static void mizu_view_write_cleanup(void *data, Rboolean jump) {
+  if (jump) {
+    mizu_shm *shm = (mizu_shm *) data;
+    mizu_shm_close_stack(shm, 1);
+    free(shm);
+  }
+}
+
 SEXP mizu_view_create(SEXP x) {
   if (mizu_view_check(x)) return x;
 
@@ -1691,7 +1722,11 @@ SEXP mizu_view_create(SEXP x) {
   int rc = mizu_shm_create_heap(&shm, total);
   if (rc) mizu_view_shm_create_failed(rc, total);
 
-  mizu_view_layout_write((unsigned char *) shm->addr, x, 0);
+  struct mizu_view_write_ctx ctx = { shm, x };
+  SEXP cont = PROTECT(R_MakeUnwindCont());
+  R_UnwindProtect(mizu_view_write_run, &ctx, mizu_view_write_cleanup, shm,
+                  cont);
+  UNPROTECT(1);
 
   return mizu_view_make_result(shm);
 }
@@ -2108,9 +2143,14 @@ static void mizu_view_path_descriptor(unsigned char *base, int64_t region_size,
   unsigned char *cur = base;
   int64_t cur_size = region_size;
   for (int k = 0; k < path_len - 1; k++) {
-    mizu_view_elem step;
-    memcpy(&step, cur + MIZU_HEADER_SIZE + 32 * (size_t) path[k],
-           sizeof(step));
+    /* re-validate every hop: the walk that produced the view ran over the
+       same pages, but a re-sent view resolves against the region as it is
+       now — a peer may have rewritten a directory entry since */
+    mizu_mizl_entry step;
+    if (mizu_mizl_elem(cur, (size_t) cur_size, path[k], &step) != 0 ||
+        (step.sexptype & ~(int32_t) MIZU_MIZL_S4) != MIZU_TYPE_VEC ||
+        step.attrs_size != 0)
+      Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
     cur += step.data_offset;
     cur_size = step.data_size;
   }

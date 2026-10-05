@@ -580,8 +580,10 @@ static void ixw_decline(mizu_ixw *w, const char *reason,
 static void ixw_path_push(mizu_ixw *w, R_xlen_t i) {
   size_t room = sizeof w->path - w->path_len;
   if (room < 8) return;
-  w->path_len +=
-    (size_t) snprintf(w->path + w->path_len, room, "[[%ld]]", (long) i);
+  /* clamp like ixw_path_key: snprintf reports the would-be length, so an
+     unclamped add can run path_len past the buffer */
+  int n = snprintf(w->path + w->path_len, room, "[[%ld]]", (long) i);
+  w->path_len += (size_t) n < room ? (size_t) n : room - 1;
 }
 
 static void ixw_path_key(mizu_ixw *w, const char *key) {
@@ -1618,6 +1620,8 @@ static int ix_keyset_add(ix_keyset *s, SEXP key) {
 }
 
 static void ixr_keyset_init(ix_keyset *ks, uint64_t count) {
+  if (count > (uint64_t) 1 << 30)
+    mizu_stop_interop("malformed interop stream: an implausible dict count");
   uint32_t cap = 16;
   while (cap < count * 2) cap *= 2;
   ks->slots = (SEXP *) R_alloc((size_t) cap, sizeof(SEXP));
@@ -1643,23 +1647,31 @@ static void ixr_dict_into(mizu_ix *cur, SEXP out, SEXP names, uint64_t n,
 
 // The attr shape builder ------------------------------------------------------------
 
-/* The class and attribute names for the no-home error. */
+/* The class and attribute names for the no-home error. off tracks the
+   would-be length clamped to the buffer: snprintf reports what it wanted
+   to write, so a long key must not carry off past the end (the next
+   call's size argument would wrap). */
 NORET static void ixr_stop_no_home(SEXP attrs) {
   SEXP keys = Rf_getAttrib(attrs, R_NamesSymbol);
   char msg[512];
   size_t off = (size_t) snprintf(msg, sizeof msg,
     "no portable home for an attributed value (attributes: ");
-  for (R_xlen_t i = 0; i < XLENGTH(attrs); i++)
+  for (R_xlen_t i = 0; i < XLENGTH(attrs); i++) {
     off += (size_t) snprintf(msg + off, sizeof msg - off, "%s\"%s\"",
                              i == 0 ? "" : ", ",
                              CHAR(STRING_ELT(keys, i)));
+    if (off >= sizeof msg) off = sizeof msg - 1;
+  }
   SEXP klass = ix_dict_get(attrs, MIZU_IX_ATTR_CLASS);
   if (TYPEOF(klass) == STRSXP && XLENGTH(klass) > 0) {
     off += (size_t) snprintf(msg + off, sizeof msg - off, "; class: ");
-    for (R_xlen_t i = 0; i < XLENGTH(klass); i++)
+    if (off >= sizeof msg) off = sizeof msg - 1;
+    for (R_xlen_t i = 0; i < XLENGTH(klass); i++) {
       off += (size_t) snprintf(msg + off, sizeof msg - off, "%s\"%s\"",
                                i == 0 ? "" : ", ",
                                CHAR(STRING_ELT(klass, i)));
+      if (off >= sizeof msg) off = sizeof msg - 1;
+    }
   }
   snprintf(msg + off, sizeof msg - off, ")");
   mizu_stop_interop("%s", msg);
@@ -2596,32 +2608,26 @@ int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
 
 // Init --------------------------------------------------------------------------------
 
+/* Fill-then-preserve, protected across the allocating mkChar calls. */
+static SEXP ix_class_vec(const char *a, const char *b) {
+  SEXP v = PROTECT(Rf_allocVector(STRSXP, b != NULL ? 2 : 1));
+  SET_STRING_ELT(v, 0, Rf_mkChar(a));
+  if (b != NULL) SET_STRING_ELT(v, 1, Rf_mkChar(b));
+  R_PreserveObject(v);
+  UNPROTECT(1);
+  return v;
+}
+
 void mizu_interop_init(void) {
   ix_tzone_sym = Rf_install(MIZU_IX_ATTR_TZONE);
   ix_units_sym = Rf_install(MIZU_IX_ATTR_UNITS);
-  ix_date_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_date_class, 0, Rf_mkChar(MIZU_IX_CLASS_DATE));
-  R_PreserveObject(ix_date_class);
-  ix_difftime_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_difftime_class, 0, Rf_mkChar(MIZU_IX_CLASS_DIFFTIME));
-  R_PreserveObject(ix_difftime_class);
-  ix_factor_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_factor_class, 0, Rf_mkChar(MIZU_IX_CLASS_FACTOR));
-  R_PreserveObject(ix_factor_class);
-  ix_frame_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_frame_class, 0, Rf_mkChar(MIZU_IX_CLASS_DATAFRAME));
-  R_PreserveObject(ix_frame_class);
-  ix_posixct_class = Rf_allocVector(STRSXP, 2);
-  SET_STRING_ELT(ix_posixct_class, 0, Rf_mkChar(MIZU_IX_CLASS_POSIXCT));
-  SET_STRING_ELT(ix_posixct_class, 1, Rf_mkChar(MIZU_IX_CLASS_POSIXT));
-  R_PreserveObject(ix_posixct_class);
-  ix_ordered_class = Rf_allocVector(STRSXP, 2);
-  SET_STRING_ELT(ix_ordered_class, 0, Rf_mkChar("ordered"));
-  SET_STRING_ELT(ix_ordered_class, 1, Rf_mkChar("factor"));
-  R_PreserveObject(ix_ordered_class);
-  ix_ref_marker_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_ref_marker_class, 0, Rf_mkChar("mizu_ix_ref"));
-  R_PreserveObject(ix_ref_marker_class);
+  ix_date_class = ix_class_vec(MIZU_IX_CLASS_DATE, NULL);
+  ix_difftime_class = ix_class_vec(MIZU_IX_CLASS_DIFFTIME, NULL);
+  ix_factor_class = ix_class_vec(MIZU_IX_CLASS_FACTOR, NULL);
+  ix_frame_class = ix_class_vec(MIZU_IX_CLASS_DATAFRAME, NULL);
+  ix_posixct_class = ix_class_vec(MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT);
+  ix_ordered_class = ix_class_vec("ordered", "factor");
+  ix_ref_marker_class = ix_class_vec("mizu_ix_ref", NULL);
   /* the view layer's attribute blobs are 'I' streams from here (mori
      leaves the triple unset and keeps R_Serialize both ways) */
   mizu_view_set_attrs_hooks(mizu_interop_attrs_blob_size,

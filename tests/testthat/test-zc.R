@@ -217,6 +217,25 @@ test_that("a received view re-sends as REF — zero bytes move", {
   channel_end(p)
 })
 
+test_that("a REF slot with len past inline_max is rejected before reading", {
+  p <- channel_pair(slot_size = 64L, arena_size = 0) # inline_max = 48
+  x <- runif(10000)
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  mizu_send(p[["peer"]], y) # REF back to the host
+  suffix <- .Call(mizu:::mizu_channel_suffix, p[["host"]])
+  rw <- .Call(mizu:::mizu_region_open, paste0("/mizu_", suffix), TRUE)
+  ring <- 512L + 64L * 64L # the peer's tx ring (second ring)
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    ring + 4L,
+    writeBin(60L, raw(4L), endian = "little")
+  )
+  expect_snapshot(mizu_recv(p[["host"]], 5), error = TRUE)
+  channel_end(p)
+})
+
 test_that("pool results cross as views; a held result pins the worker's region", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], runif(100000))

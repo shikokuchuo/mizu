@@ -71,6 +71,14 @@ test_that("attributes round-trip: names, dim, class, object bit", {
     codec_rt(structure(1L, class = "foo")),
     structure(1L, class = "foo")
   )
+  # a class attribute that is not the last pair: the deferred class value
+  # must stay anchored while later attributes allocate (it once dropped
+  # off the protect stack and a collection reused its node)
+  x <- structure(1:3, class = "foo", bar = "baz")
+  expect_identical(names(attributes(x)), c("class", "bar"))
+  for (i in 1:20) {
+    expect_identical(codec_rt(x), x)
+  }
 })
 
 test_that("S4 objects round-trip with the bit, slots, and class intact", {

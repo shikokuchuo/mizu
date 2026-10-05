@@ -463,23 +463,27 @@ static void scr_attrs(mizu_scr *r, SEXP x, unsigned depth) {
   uint32_t n = scr_u32(r);
   if (n > (uint32_t) (r->end - r->p) / 9)
     Rf_error("mizu: corrupt payload stream");
+  PROTECT_INDEX ipx;
   SEXP classv = R_NilValue;
+  PROTECT_WITH_INDEX(classv, &ipx);   /* anchors the deferred class value */
   for (uint32_t i = 0; i < n; i++) {
     SEXP nm = PROTECT(scr_string(r));
     if (nm == NA_STRING) {
-      UNPROTECT(1);
+      UNPROTECT(2);
       Rf_error("mizu: corrupt payload stream");
     }
     SEXP val = PROTECT(scr_node(r, depth + 1));
     SEXP sym = Rf_installTrChar(nm);
     if (sym == R_ClassSymbol) {
       classv = val;
+      REPROTECT(classv, ipx);
     } else {
       Rf_setAttrib(x, sym, val);
     }
     UNPROTECT(2);
   }
   if (classv != R_NilValue) Rf_classgets(x, classv);
+  UNPROTECT(1);
 }
 
 static SEXP scr_body(mizu_scr *r, uint32_t tag, unsigned depth) {

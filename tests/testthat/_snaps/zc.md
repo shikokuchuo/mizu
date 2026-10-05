@@ -1,3 +1,11 @@
+# a REF slot with len past inline_max is rejected before reading
+
+    Code
+      mizu_recv(p[["host"]], 5)
+    Condition
+      Error in `mizu_recv()`:
+      ! mizu: corrupt payload slot
+
 # remote-leaf declines are corrupt-or-newer shaped
 
     Code

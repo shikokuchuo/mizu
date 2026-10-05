@@ -295,6 +295,36 @@ test_that("corrupt and unknown streams raise informatively", {
   expect_snapshot(ix_read("49010f0f"), error = TRUE)
   # a frame whose columns differ in length (the builder's error)
   expect_snapshot(ix_read(ix_corpus()[["err-frame-shape"]]), error = TRUE)
+  # a no-home attribute list whose keys overflow the message buffer: the
+  # error text truncates, the stream reader must not overrun its stack
+  u64 <- function(x) {
+    c(writeBin(as.integer(x), raw(4), endian = "little"), raw(4))
+  }
+  key <- strrep("k", 600)
+  s <- c(
+    charToRaw("I"),
+    as.raw(1),
+    as.raw(0x0f),
+    as.raw(0x07),
+    u64(0),
+    as.raw(0x0d),
+    u64(1),
+    writeBin(600L, raw(4), endian = "little"),
+    charToRaw(key),
+    as.raw(0x00)
+  )
+  expect_snapshot(.Call(mizu:::mizu_interop_read_call, s), error = TRUE)
+})
+
+test_that("the writer's path tracking cannot overflow its buffer", {
+  # a path segment at the boundary: "[[100000]]" needs ten bytes where the
+  # path has room for eight — the push must clamp, not run the length past
+  k <- strrep("a", 118)
+  inner <- as.list(rep(1, 100000))
+  inner[[100000]] <- list(b = 1)
+  x <- structure(list(inner), names = k)
+  s <- .Call(mizu:::mizu_interop_write_call, x)
+  expect_identical(.Call(mizu:::mizu_interop_read_call, s), x)
 })
 
 test_that("an attribute set outside the whitelist and a mismatched frame decline", {

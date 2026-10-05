@@ -397,6 +397,11 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
     return ctx->gone ? NULL : v;
   }
   case MIZU_KIND_REF: {
+    /* the identifier caps at 1024 below, but the slot only carries
+       inline_max — bound the read to the slot first, as the other inline
+       kinds do */
+    if (hdr->len > inline_max)
+      Rf_error("mizu: corrupt payload slot");
     SEXP v = mizu_zc_ref_read(hdr, payload, &ctx->gone, zoc);
     return ctx->gone ? NULL : v;
   }
