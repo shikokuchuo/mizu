@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="909563b2f1c9f8a46f6b8ca243fb94408c0237c5"  # libmizu: deduplicate shared core helpers + the channel fork guard
+PIN="cc44c6fa0a4ab884547ca3acf0f8ddbfc91ad620"  # libmizu: the 'I' byte-shape helpers in the core ext surface
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

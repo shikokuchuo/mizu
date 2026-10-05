@@ -44,41 +44,15 @@ static SEXP ix_tzone_sym, ix_units_sym;
 static SEXP ix_date_class, ix_posixct_class, ix_factor_class,
   ix_frame_class, ix_ordered_class, ix_ref_marker_class, ix_difftime_class;
 
+/* The attr vocabulary single-sources through the core's MIZU_IX_ATTR_* /
+   MIZU_IX_CLASS_* / MIZU_IX_UNIT_* macros (the byte-shape helper
+   registry); a key crosses with its length as sizeof - 1. */
+#define IX_KEYLEN(s) ((uint32_t) (sizeof(s) - 1))
+
 static int ix_int_is_seq1n(SEXP rn, R_xlen_t n);
 
-/* Strict RFC 3629 UTF-8 validation (the core cursor's own rule, mirrored
-   here for the writer's unmarked-native check — the vendored
-   implementation is TU-private). */
-static int ix_utf8_ok(const unsigned char *s, size_t n) {
-  size_t i = 0;
-  while (i < n) {
-    const unsigned char c = s[i];
-    if (c < 0x80) {
-      i++;
-    } else if (c < 0xC2) {
-      return 0;
-    } else if (c < 0xE0) {
-      if (i + 2 > n || (s[i + 1] & 0xC0) != 0x80) return 0;
-      i += 2;
-    } else if (c < 0xF0) {
-      if (i + 3 > n || (s[i + 1] & 0xC0) != 0x80 ||
-          (s[i + 2] & 0xC0) != 0x80) return 0;
-      if (c == 0xE0 && s[i + 1] < 0xA0) return 0;
-      if (c == 0xED && s[i + 1] >= 0xA0) return 0;
-      i += 3;
-    } else if (c < 0xF5) {
-      if (i + 4 > n || (s[i + 1] & 0xC0) != 0x80 ||
-          (s[i + 2] & 0xC0) != 0x80 || (s[i + 3] & 0xC0) != 0x80)
-        return 0;
-      if (c == 0xF0 && s[i + 1] < 0x90) return 0;
-      if (c == 0xF4 && s[i + 1] > 0x8F) return 0;
-      i += 4;
-    } else {
-      return 0;
-    }
-  }
-  return 1;
-}
+/* The UTF-8 rule single-sources through the core's mizu_ix_utf8_valid
+   (the byte-shape helper registry; the vendored mizu_ext.h inline). */
 
 /* The UTF-8 byte form of one CHARSXP, or a decline (CE_BYTES always;
    unmarked native when not valid UTF-8). latin1 translates through
@@ -104,7 +78,7 @@ static const char *ix_char_utf8(SEXP cs, int *ok, int32_t *out_len) {
   }
   /* unmarked native: as-is on the UTF-8-native supported platforms,
      after a validity check */
-  if (!ix_utf8_ok((const unsigned char *) CHAR(cs), (size_t) LENGTH(cs))) {
+  if (!mizu_ix_utf8_valid(CHAR(cs), (size_t) LENGTH(cs))) {
     *ok = 0;
     return NULL;
   }
@@ -204,8 +178,7 @@ int mizu_interop_strings_utf8(SEXP x, size_t *bytes) {
     case CE_BYTES:
       return 0;
     default:
-      if (!ix_utf8_ok((const unsigned char *) CHAR(cs),
-                      (size_t) LENGTH(cs)))
+      if (!mizu_ix_utf8_valid(CHAR(cs), (size_t) LENGTH(cs)))
         return 0;
     }
     total += (size_t) LENGTH(cs);
@@ -276,8 +249,9 @@ static int ix_units_known(SEXP units) {
       STRING_ELT(units, 0) == NA_STRING)
     return 0;
   const char *u = CHAR(STRING_ELT(units, 0));
-  return !strcmp(u, "secs") || !strcmp(u, "mins") || !strcmp(u, "hours") ||
-    !strcmp(u, "days") || !strcmp(u, "weeks");
+  return !strcmp(u, MIZU_IX_UNIT_SECS) || !strcmp(u, MIZU_IX_UNIT_MINS) ||
+    !strcmp(u, MIZU_IX_UNIT_HOURS) || !strcmp(u, MIZU_IX_UNIT_DAYS) ||
+    !strcmp(u, MIZU_IX_UNIT_WEEKS);
 }
 
 /* A plain difftime: class exactly "difftime", attributes exactly class
@@ -661,25 +635,15 @@ static void ixw_str_put(mizu_ixw *w, SEXP cs, int32_t len, int bare) {
 /* An atomic vector tag: resident data rides mizu_ix_put_vec's one call;
    ALTREP crosses by value — a manual header, then *_GET_REGION in
    bounded chunks (a compact sequence is never expanded on the sender).
-   The tag byte mirrors mizu_ix_put_vec's table. */
-static uint32_t ix_vec_tag(int wire_type) {
-  switch (wire_type) {
-  case MIZU_TYPE_LGL:   return MIZU_IX_TAG_LGLV;
-  case MIZU_TYPE_INT:   return MIZU_IX_TAG_INTV;
-  case MIZU_TYPE_REAL:  return MIZU_IX_TAG_REALV;
-  case MIZU_TYPE_CPLX:  return MIZU_IX_TAG_CPLXV;
-  case MIZU_TYPE_INT64: return MIZU_IX_TAG_I64V;
-  default:              return MIZU_IX_TAG_RAWV;
-  }
-}
-
+   The tag byte is the core's mizu_ix_tag_of table (only the six atomic
+   wire types reach here). */
 static void ixw_atomic_put(mizu_ixw *w, int wire_type, SEXP x) {
   const R_xlen_t n = XLENGTH(x);
   if (!ALTREP(x)) {
     IXW_PUT(w, mizu_ix_put_vec, wire_type, mizu_vec_ptr(x), (uint64_t) n);
     return;
   }
-  const uint32_t tag = ix_vec_tag(wire_type);
+  const uint32_t tag = (uint32_t) mizu_ix_tag_of(wire_type);
   if (w->dst != NULL) {
     if (w->total + 9 > w->limit) {
       w->overflow = 1;
@@ -855,39 +819,45 @@ static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
   IXW_PUT(w, mizu_ix_put_dict_begin, count);
 
   if (names_attr != R_NilValue) {
-    IXW_PUT(w, mizu_ix_put_key, "names", 5);
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_NAMES,
+            IX_KEYLEN(MIZU_IX_ATTR_NAMES));
     ixw_node(w, names_attr);
     if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (levels != R_NilValue) {
-    IXW_PUT(w, mizu_ix_put_key, "levels", 6);
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_LEVELS,
+            IX_KEYLEN(MIZU_IX_ATTR_LEVELS));
     ixw_node(w, levels);
     if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (dim != R_NilValue) {
-    IXW_PUT(w, mizu_ix_put_key, "dim", 3);
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
     ixw_node(w, dim);
     if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (klass != R_NilValue && !skip_class) {
-    IXW_PUT(w, mizu_ix_put_key, "class", 5);
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_CLASS,
+            IX_KEYLEN(MIZU_IX_ATTR_CLASS));
     ixw_node(w, klass);
     if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (units != R_NilValue) {
-    IXW_PUT(w, mizu_ix_put_key, "units", 5);
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_UNITS,
+            IX_KEYLEN(MIZU_IX_ATTR_UNITS));
     ixw_node(w, units);
     if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (rn != R_NilValue) {
-    IXW_PUT(w, mizu_ix_put_key, "row.names", 9);
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_ROWNAMES,
+            IX_KEYLEN(MIZU_IX_ATTR_ROWNAMES));
     ixw_rownames(w, rn,
                  TYPEOF(x) == VECSXP && XLENGTH(x) > 0 ?
                    XLENGTH(VECTOR_ELT(x, 0)) : 0);
     if (w->depth < 0) { UNPROTECT(7); return; }
   }
   if (tz != R_NilValue) {
-    IXW_PUT(w, mizu_ix_put_key, "tzone", 5);
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_TZONE,
+            IX_KEYLEN(MIZU_IX_ATTR_TZONE));
     ixw_node(w, tz);
   }
   UNPROTECT(7);
@@ -1462,19 +1432,6 @@ size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
    its call as the detail text. Serves the peer shim's uncaught-error send
    (the stage hook's pointer match) and Phase 4's ERR publish. */
 
-/* magic + version + tag + flags + index + three counted lengths. */
-#define MIZU_IX_ERR_OVERHEAD 25
-#define MIZU_IX_ERR_TYPE_SHARE 128
-
-/* The UTF-8-boundary floor of n bytes within share (s must be valid UTF-8;
-   ix_char_utf8 has already guaranteed it). */
-static size_t ix_err_floor(const unsigned char *s, size_t n, size_t share) {
-  if (n <= share) return n;
-  size_t len = share;
-  while (len > 0 && (s[len] & 0xC0) == 0x80) len--;
-  return len;
-}
-
 /* One named element of a VECSXP condition, or R_NilValue. */
 static SEXP ix_cond_field(SEXP cond, const char *name) {
   if (TYPEOF(cond) != VECSXP) return R_NilValue;
@@ -1516,10 +1473,12 @@ static SEXP ix_err_call_text(SEXP call) {
   return out;
 }
 
-/* Frame cond as an 'I' err stream: dst has inline_max bytes; the return
-   is the stream size, always within inline_max (the truncations above
-   guarantee it), so the caller stamps INLINE with the keeperless claim.
-   NULL dst sizes only (the test hook's two-pass). */
+/* Frame cond as an 'I' err stream: the mode logic resolves the spans
+   here; the bounded framer is the core's mizu_ix_write_err (the
+   byte-shape helper registry) — dst has inline_max bytes; the return is
+   the stream size, always within inline_max (the budget guarantees it),
+   so the caller stamps INLINE with the keeperless claim. NULL dst sizes
+   only (the test hook's two-pass). */
 size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                               SEXP cond) {
   const char *type = "", *msg = "", *detail = "";
@@ -1598,23 +1557,11 @@ size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
     }
   }
 
-  const size_t budget = inline_max;
-  size_t avail = budget > MIZU_IX_ERR_OVERHEAD ?
-    budget - MIZU_IX_ERR_OVERHEAD : 0;
-  size_t cap = avail < MIZU_IX_ERR_TYPE_SHARE ? avail : MIZU_IX_ERR_TYPE_SHARE;
-  const size_t tn = ix_err_floor((const unsigned char *) type,
-                                 (size_t) type_n, cap);
-  cap = budget / 2;
-  if (cap > avail - tn) cap = avail - tn;
-  const size_t mn = ix_err_floor((const unsigned char *) msg,
-                                 (size_t) msg_n, cap);
-  const size_t dn = ix_err_floor((const unsigned char *) detail,
-                                 (size_t) detail_n, avail - tn - mn);
-
-  size_t n = mizu_ix_put_header(dst);
-  n += mizu_ix_put_err(dst != NULL ? dst + n : NULL, has_index, index,
-                       type, (uint32_t) tn, msg, (uint32_t) mn,
-                       detail, (uint32_t) dn);
+  const size_t n = mizu_ix_write_err(dst, inline_max,
+                                     type, (size_t) type_n,
+                                     msg, (size_t) msg_n,
+                                     detail, (size_t) detail_n,
+                                     has_index, index);
   UNPROTECT(1);                    /* klass */
   return n;
 }
@@ -1706,7 +1653,7 @@ NORET static void ixr_stop_no_home(SEXP attrs) {
     off += (size_t) snprintf(msg + off, sizeof msg - off, "%s\"%s\"",
                              i == 0 ? "" : ", ",
                              CHAR(STRING_ELT(keys, i)));
-  SEXP klass = ix_dict_get(attrs, "class");
+  SEXP klass = ix_dict_get(attrs, MIZU_IX_ATTR_CLASS);
   if (TYPEOF(klass) == STRSXP && XLENGTH(klass) > 0) {
     off += (size_t) snprintf(msg + off, sizeof msg - off, "; class: ");
     for (R_xlen_t i = 0; i < XLENGTH(klass); i++)
@@ -1751,25 +1698,25 @@ static int ix_strv_is2(SEXP v, const char *a, const char *b) {
    checked before anything applies; a dict outside the whitelist is the
    informative no-home error). */
 static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
-  SEXP klass = ix_dict_get(attrs, "class");
-  SEXP levels = ix_dict_get(attrs, "levels");
-  SEXP dim = ix_dict_get(attrs, "dim");
-  SEXP rn = ix_dict_get(attrs, "row.names");
-  SEXP tz = ix_dict_get(attrs, "tzone");
-  SEXP units = ix_dict_get(attrs, "units");
+  SEXP klass = ix_dict_get(attrs, MIZU_IX_ATTR_CLASS);
+  SEXP levels = ix_dict_get(attrs, MIZU_IX_ATTR_LEVELS);
+  SEXP dim = ix_dict_get(attrs, MIZU_IX_ATTR_DIM);
+  SEXP rn = ix_dict_get(attrs, MIZU_IX_ATTR_ROWNAMES);
+  SEXP tz = ix_dict_get(attrs, MIZU_IX_ATTR_TZONE);
+  SEXP units = ix_dict_get(attrs, MIZU_IX_ATTR_UNITS);
   const R_xlen_t na = XLENGTH(attrs);
 
   /* factor: value intv; attrs exactly levels, class */
   if (TYPEOF(value) == INTSXP && na == 2 && TYPEOF(levels) == STRSXP &&
-      ix_strv_is(klass, "factor")) {
+      ix_strv_is(klass, MIZU_IX_CLASS_FACTOR)) {
     ixr_attrs_apply(value, attrs);
     return value;
   }
   /* data.frame: value a plain list of one-length columns; attrs exactly
      names, class, row.names */
   if (TYPEOF(value) == VECSXP && !ANY_ATTRIB(value) && na == 3 &&
-      ix_strv_is(klass, "data.frame") && rn != R_NilValue) {
-    SEXP cnames = ix_dict_get(attrs, "names");
+      ix_strv_is(klass, MIZU_IX_CLASS_DATAFRAME) && rn != R_NilValue) {
+    SEXP cnames = ix_dict_get(attrs, MIZU_IX_ATTR_NAMES);
     const R_xlen_t nc = XLENGTH(value);
     if (nc < 1 || TYPEOF(cnames) != STRSXP || XLENGTH(cnames) != nc ||
         !mizu_interop_names_ok(cnames))
@@ -1847,7 +1794,8 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
     return value;
   }
   /* Date: value realv integral days; attrs exactly class */
-  if (TYPEOF(value) == REALSXP && na == 1 && ix_strv_is(klass, "Date")) {
+  if (TYPEOF(value) == REALSXP && na == 1 &&
+      ix_strv_is(klass, MIZU_IX_CLASS_DATE)) {
     if (!ix_date_integral(REAL(value), XLENGTH(value)))
       ixr_stop_no_home(attrs);
     ixr_attrs_apply(value, attrs);
@@ -1856,7 +1804,7 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
   /* POSIXct: value realv epoch seconds; attrs class plus optional tzone */
   if (TYPEOF(value) == REALSXP &&
       (na == 1 || (na == 2 && tz != R_NilValue)) &&
-      ix_strv_is2(klass, "POSIXct", "POSIXt")) {
+      ix_strv_is2(klass, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT)) {
     if (tz != R_NilValue &&
         (TYPEOF(tz) != STRSXP || XLENGTH(tz) != 1 ||
          STRING_ELT(tz, 0) == NA_STRING))
@@ -1867,7 +1815,7 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
   /* difftime: value realv in the declared units; attrs exactly class and
      a known length-1 units */
   if (TYPEOF(value) == REALSXP && na == 2 && units != R_NilValue &&
-      ix_strv_is(klass, "difftime") && ix_units_known(units)) {
+      ix_strv_is(klass, MIZU_IX_CLASS_DIFFTIME) && ix_units_known(units)) {
     ixr_attrs_apply(value, attrs);
     return value;
   }
@@ -2161,46 +2109,12 @@ static SEXP ixr_value(mizu_ix *cur, int refs) {
 
 // The task stream decode (Phase 4) ----------------------------------------------
 
-/* The shared per-field shape checks of the exec decode and the hook
-   decode: the field tags are the builder's check, not the cursor's — a
-   wrong tag is the informative "wrong shape for its kind". */
+/* The per-field shape checks are the core's mizu_ixt_* decode shim (the
+   byte-shape helper registry — the texts record through the TLS slot, so
+   they reach here through ixr_stop_tls like any cursor failure); what
+   stays local is the raise idiom for the plain item pulls. */
 static void ixt_next(mizu_ix *cur, mizu_ix_item *it) {
   if (mizu_ix_next(cur, it) != MIZU_OK) ixr_stop_tls();
-}
-
-static void ixt_want_code(mizu_ix *cur, mizu_ix_item *it) {
-  ixt_next(cur, it);
-  if (it->kind != MIZU_IX_STR1 || it->na)
-    mizu_stop_interop("malformed task stream: the code field is not a "
-                      "string");
-}
-
-static void ixt_want_list(mizu_ix *cur, mizu_ix_item *it) {
-  ixt_next(cur, it);
-  if (it->kind != MIZU_IX_LIST)
-    mizu_stop_interop("malformed task stream: the positional field is not "
-                      "a list");
-}
-
-static void ixt_want_dict(mizu_ix *cur, mizu_ix_item *it) {
-  ixt_next(cur, it);
-  if (it->kind != MIZU_IX_DICT)
-    mizu_stop_interop("malformed task stream: the named field is not a "
-                      "dict");
-}
-
-/* The task header: the TASK item, the supported kinds, and — with stash —
-   the submitter identity stashed ahead of every field read, so even a
-   torn stream fails the task in the submitter's own format. */
-static void ixt_open(mizu_ix *cur, const unsigned char *buf, size_t len,
-                     mizu_ix_item *it, int stash, int max_kind) {
-  if (mizu_ix_open(cur, buf, len) != MIZU_OK) ixr_stop_tls();
-  ixt_next(cur, it);
-  if (it->kind != MIZU_IX_TASK)
-    mizu_stop_interop("malformed task stream: no task tag");
-  if (it->task_kind > (uint32_t) max_kind)
-    mizu_stop_interop("unsupported task kind 0x%02X", it->task_kind);
-  if (stash) mizu_curpool_ident = it->u64[0];
 }
 
 /* Resolve the qualified name through the worker's own namespace machinery
@@ -2242,8 +2156,8 @@ static SEXP ixt_resolve_name(const unsigned char *code, uint64_t len) {
    Raises the informative shape errors; the exec hook contains them. */
 static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
   mizu_ix_item code, pos, named;
-  ixt_want_code(cur, &code);
-  ixt_want_list(cur, &pos);
+  if (mizu_ixt_want_code(cur, &code) != MIZU_OK) ixr_stop_tls();
+  if (mizu_ixt_want_list(cur, &pos) != MIZU_OK) ixr_stop_tls();
   SEXP out;
   if (kind == 0) {
     /* fn stays protected to the end — it is the call's CAR anyway, and
@@ -2258,7 +2172,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
       tail = cell;
       UNPROTECT(1);
     }
-    ixt_want_dict(cur, &named);
+    if (mizu_ixt_want_dict(cur, &named) != MIZU_OK) ixr_stop_tls();
     ix_keyset ks = { NULL, 0 };
     if (named.count != 0) ixr_keyset_init(&ks, named.count);
     for (uint64_t i = 0; i < named.count; i++) {
@@ -2290,7 +2204,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
   SEXP pos_args = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));
   for (uint64_t i = 0; i < pos.count; i++)
     SET_VECTOR_ELT(pos_args, (R_xlen_t) i, ixr_value(cur, 1));
-  ixt_want_dict(cur, &named);
+  if (mizu_ixt_want_dict(cur, &named) != MIZU_OK) ixr_stop_tls();
   ix_keyset ks = { NULL, 0 };
   if (named.count != 0) ixr_keyset_init(&ks, named.count);
   for (uint64_t i = 0; i < named.count; i++) {
@@ -2331,7 +2245,10 @@ SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
                             int *kind_out) {
   mizu_ix cur;
   mizu_ix_item it;
-  ixt_open(&cur, buf, len, &it, 1, 1);
+  if (mizu_ixt_open(&cur, buf, len, &it, 1) != MIZU_OK) ixr_stop_tls();
+  /* the submitter identity stashes ahead of every field read, so even a
+     torn stream fails the task in the submitter's own format */
+  mizu_curpool_ident = it.u64[0];
   const int kind = (int) it.task_kind;
   *kind_out = kind;
   SEXP out = PROTECT(ixt_call(&cur, kind, base, 0));
@@ -2353,7 +2270,8 @@ SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
 SEXP mizu_interop_exec_runner(const unsigned char *buf, size_t len) {
   mizu_ix cur;
   mizu_ix_item it, name, gen, seed;
-  ixt_open(&cur, buf, len, &it, 1, 2);
+  if (mizu_ixt_open(&cur, buf, len, &it, 2) != MIZU_OK) ixr_stop_tls();
+  mizu_curpool_ident = it.u64[0];   /* stashed as the call kinds' */
   if (it.task_kind != 2)
     mizu_stop_interop("malformed runner stream: not a runner task");
   ixt_next(&cur, &name);
@@ -2592,13 +2510,15 @@ SEXP mizu_interop_read_task_call(SEXP bytes) {
   if (TYPEOF(bytes) != RAWSXP) Rf_error("mizu: expected a raw vector");
   mizu_ix cur;
   mizu_ix_item it, code, pos, named;
-  ixt_open(&cur, RAW(bytes), (size_t) XLENGTH(bytes), &it, 0, 1);
-  ixt_want_code(&cur, &code);
-  ixt_want_list(&cur, &pos);
+  if (mizu_ixt_open(&cur, RAW(bytes), (size_t) XLENGTH(bytes), &it, 1) !=
+      MIZU_OK)
+    ixr_stop_tls();
+  if (mizu_ixt_want_code(&cur, &code) != MIZU_OK) ixr_stop_tls();
+  if (mizu_ixt_want_list(&cur, &pos) != MIZU_OK) ixr_stop_tls();
   SEXP positional = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));
   for (uint64_t i = 0; i < pos.count; i++)
     SET_VECTOR_ELT(positional, (R_xlen_t) i, ixr_value(&cur, 2));
-  ixt_want_dict(&cur, &named);
+  if (mizu_ixt_want_dict(&cur, &named) != MIZU_OK) ixr_stop_tls();
   SEXP nn = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t) named.count));
   SEXP nv = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) named.count));
   ix_keyset ks = { NULL, 0 };
@@ -2677,23 +2597,23 @@ int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
 // Init --------------------------------------------------------------------------------
 
 void mizu_interop_init(void) {
-  ix_tzone_sym = Rf_install("tzone");
-  ix_units_sym = Rf_install("units");
+  ix_tzone_sym = Rf_install(MIZU_IX_ATTR_TZONE);
+  ix_units_sym = Rf_install(MIZU_IX_ATTR_UNITS);
   ix_date_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_date_class, 0, Rf_mkChar("Date"));
+  SET_STRING_ELT(ix_date_class, 0, Rf_mkChar(MIZU_IX_CLASS_DATE));
   R_PreserveObject(ix_date_class);
   ix_difftime_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_difftime_class, 0, Rf_mkChar("difftime"));
+  SET_STRING_ELT(ix_difftime_class, 0, Rf_mkChar(MIZU_IX_CLASS_DIFFTIME));
   R_PreserveObject(ix_difftime_class);
   ix_factor_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_factor_class, 0, Rf_mkChar("factor"));
+  SET_STRING_ELT(ix_factor_class, 0, Rf_mkChar(MIZU_IX_CLASS_FACTOR));
   R_PreserveObject(ix_factor_class);
   ix_frame_class = Rf_allocVector(STRSXP, 1);
-  SET_STRING_ELT(ix_frame_class, 0, Rf_mkChar("data.frame"));
+  SET_STRING_ELT(ix_frame_class, 0, Rf_mkChar(MIZU_IX_CLASS_DATAFRAME));
   R_PreserveObject(ix_frame_class);
   ix_posixct_class = Rf_allocVector(STRSXP, 2);
-  SET_STRING_ELT(ix_posixct_class, 0, Rf_mkChar("POSIXct"));
-  SET_STRING_ELT(ix_posixct_class, 1, Rf_mkChar("POSIXt"));
+  SET_STRING_ELT(ix_posixct_class, 0, Rf_mkChar(MIZU_IX_CLASS_POSIXCT));
+  SET_STRING_ELT(ix_posixct_class, 1, Rf_mkChar(MIZU_IX_CLASS_POSIXT));
   R_PreserveObject(ix_posixct_class);
   ix_ordered_class = Rf_allocVector(STRSXP, 2);
   SET_STRING_ELT(ix_ordered_class, 0, Rf_mkChar("ordered"));
