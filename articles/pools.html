@@ -104,10 +104,26 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="va">t</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 500500</span></span></code></pre></div>
+</section><section class="level2"><h2 id="a-default-pool-for-package-code">A default pool for package code<a class="anchor" aria-label="anchor" href="#a-default-pool-for-package-code"></a>
+</h2>
+<p>Package code can read a process-wide default pool with <code><a href="../reference/mizu_default_pool.html">mizu_default_pool()</a></code>. <code><a href="../reference/mizu_default_pool.html">mizu_set_default_pool()</a></code> sets it — <code>NULL</code> clears it — and invisibly returns the previous default, so callers can save and restore. The registry anchors the handle: a pool set as the default stays alive even after its variable is removed. <code><a href="../reference/mizu_default_pool.html">mizu_with_pool()</a></code> scopes the default to an expression, <code><a href="../reference/mizu_default_pool.html">mizu_local_pool()</a></code> to the calling frame. Both restore the previous default on exit.</p>
+<p>Resolve an optional pool in this order: an explicit <code>pool</code> argument, <code><a href="../reference/mizu_current_pool.html">mizu_current_pool()</a></code> inside a task, <code><a href="../reference/mizu_default_pool.html">mizu_default_pool()</a></code>, then your own fallback — sequential evaluation or an error. The default never overrides <code><a href="../reference/mizu_current_pool.html">mizu_current_pool()</a></code>: inside a task the worker’s own handle wins, so nested submission is never shadowed. Setting a default checks the type only — a stopped pool is accepted and fails at use time — and handles from <code><a href="../reference/mizu_pool_attach.html">mizu_pool_attach()</a></code> are valid defaults.</p>
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">run</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">x</span>, <span class="va">pool</span> <span class="op">=</span> <span class="fu"><a href="../reference/mizu_default_pool.html">mizu_default_pool</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span>  <span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/NULL.html" class="external-link">is.null</a></span><span class="op">(</span><span class="va">pool</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
+<span>    <span class="kw"><a href="https://rdrr.io/r/base/stop.html" class="external-link">stop</a></span><span class="op">(</span><span class="st">"no pool: pass one, or set a default"</span>, call. <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
+<span>  <span class="op">}</span></span>
+<span>  <span class="fu"><a href="../reference/mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">pool</span>, <span class="va">x</span> <span class="op">*</span> <span class="fl">2L</span>, x <span class="op">=</span> <span class="va">x</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="op">}</span></span>
+<span></span>
+<span><span class="va">old</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_default_pool.html">mizu_set_default_pool</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span>
+<span><span class="fu">run</span><span class="op">(</span><span class="fl">21L</span><span class="op">)</span></span>
+<span><span class="co">#&gt; [1] 42</span></span>
+<span><span class="fu"><a href="../reference/mizu_default_pool.html">mizu_set_default_pool</a></span><span class="op">(</span><span class="va">old</span><span class="op">)</span></span></code></pre></div>
 </section><section class="level2"><h2 id="waiting-on-several-tasks">Waiting on several tasks<a class="anchor" aria-label="anchor" href="#waiting-on-several-tasks"></a>
 </h2>
 <p><code><a href="../reference/mizu_collect_any.html">mizu_collect_any()</a></code> waits on a list of task handles and returns <code>list(index, value)</code> for the first to reach a terminal state — completion order, not submission order. The other handles stay collectible. <code><a href="../reference/mizu_collect_all.html">mizu_collect_all()</a></code> waits until every task is terminal and returns all values in input order, with the names of the handle list carried over. Both take one overall <code>timeout</code> and return the <code>mizu_timeout</code> sentinel on expiry, consuming nothing. An outcome that raises — the error of the task itself, a cancelled task, a dead worker — gains a 1-based <code>index</code> field naming the handle’s position, and only the reported handle is consumed:</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">slow</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="op">{</span> <span class="fu"><a href="https://rdrr.io/r/base/Sys.sleep.html" class="external-link">Sys.sleep</a></span><span class="op">(</span><span class="fl">0.5</span><span class="op">)</span>; <span class="st">"slow"</span> <span class="op">}</span><span class="op">)</span></span>
 <span><span class="va">fast</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="st">"fast"</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_any.html">mizu_collect_any</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="va">slow</span>, <span class="va">fast</span><span class="op">)</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
@@ -125,12 +141,12 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; $total</span></span>
-<span><span class="co">#&gt; [1] 4.119828</span></span>
+<span><span class="co">#&gt; [1] 5.532799</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; $label</span></span>
 <span><span class="co">#&gt; [1] "done"</span></span></code></pre></div>
 <p><code><a href="../reference/mizu_submit_batch.html">mizu_submit_batch()</a></code> moves the other direction: one task per element of a list of pre-quoted expressions in a single call — one boundary crossing and one wake-up sweep for the whole burst, with the <code>...</code> arguments shared by every task:</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ts</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_submit_batch.html">mizu_submit_batch</a></span><span class="op">(</span><span class="va">p</span>, <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/substitute.html" class="external-link">quote</a></span><span class="op">(</span><span class="fl">1</span> <span class="op">+</span> <span class="fl">1</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/substitute.html" class="external-link">quote</a></span><span class="op">(</span><span class="fl">2</span> <span class="op">+</span> <span class="fl">2</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [[1]]</span></span>
@@ -141,20 +157,20 @@
 </section><section class="level2"><h2 id="sizing-sharing-and-watching-a-pool">Sizing, sharing and watching a pool<a class="anchor" aria-label="anchor" href="#sizing-sharing-and-watching-a-pool"></a>
 </h2>
 <p>A pool can grow and shrink while it runs. Retirement is graceful: the worker finishes its current task, and the remaining workers consume anything still queued to it. Other R processes can join a running pool as submitters — the name of the pool is the only thing they need:</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_spawn_workers</a></span><span class="op">(</span><span class="va">p</span>, n <span class="op">=</span> <span class="fl">2L</span><span class="op">)</span>     <span class="co"># two more workers join the pool</span></span>
 <span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_retire_worker</a></span><span class="op">(</span><span class="va">p</span>, slot <span class="op">=</span> <span class="fl">0L</span><span class="op">)</span>  <span class="co"># worker 0 exits after its current task</span></span>
 <span></span>
 <span><span class="co"># in another R process — submit and collect exactly as the creator does:</span></span>
 <span><span class="va">p2</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_pool_attach.html">mizu_pool_attach</a></span><span class="op">(</span><span class="va">name</span><span class="op">)</span>      <span class="co"># name: mizu_pool_status(p)$name on the creator</span></span></code></pre></div>
 <p>Four read-only tools observe a running pool without disturbing it:</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_pool_status.html">mizu_pool_status</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>  <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_stats.html">mizu_pool_stats</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>   <span class="co"># cumulative counters: tasks run, steals, parks per worker</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_dump.html">mizu_pool_dump</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>    <span class="co"># every slot in full detail — the first tool when a pool hangs</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_trace.html">mizu_pool_trace</a></span><span class="op">(</span><span class="va">p</span>, \<span class="op">(</span><span class="va">event</span>, <span class="va">id</span><span class="op">)</span> <span class="fu"><a href="https://rdrr.io/r/base/message.html" class="external-link">message</a></span><span class="op">(</span><span class="va">event</span>, <span class="st">" "</span>, <span class="va">id</span><span class="op">)</span><span class="op">)</span>  <span class="co"># task lifecycle hook</span></span></code></pre></div>
 <p>When you are done, <code><a href="../reference/mizu_pool_stop.html">mizu_pool_stop()</a></code> cancels the pending tasks, waits for the workers to exit cleanly, and releases the shared region:</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></code></pre></div>
 </section><script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {

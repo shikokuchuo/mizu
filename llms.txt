@@ -207,6 +207,11 @@ By participating in this project you agree to abide by its terms.
   : Cancel a Task
 - [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
   : The Evaluating Worker's Own Pool Handle
+- [`mizu_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
+  [`mizu_set_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
+  [`mizu_with_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
+  [`mizu_local_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
+  : The Process-Wide Default Pool
 - [`mizu_spawn_workers()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md)
   [`mizu_retire_worker()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md)
   : Grow or Shrink the Worker Set of a Pool
