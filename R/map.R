@@ -24,6 +24,7 @@
 # is self-resolved: mizu_current_pool() as its first body line).
 map_chunk_ref <- str2lang("mizu:::map_chunk")
 map_runner_ref <- str2lang("mizu:::map_runner")
+map_stream_chunk_ref <- str2lang("mizu:::map_stream_chunk")
 
 # One blob-path chunk task's wire payload: map_chunk(r, b[, s]).
 map_payload <- function(st, r) {
@@ -203,18 +204,46 @@ mono_time <- function() .Call(mizu_now_call)
 #' identical across languages. A spec map runs on a same-language pool
 #' too, subject to the same portability rules.
 #'
+#' @section Streaming maps:
+#' With `.stream = TRUE`, the map never stages the whole of `.x` into
+#' shared memory: it streams slices of `.x` to workers as they take work;
+#' the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
+#' under a sliding submit/collect window of at most
+#' `min(.chunks, 2 * live workers, free result slots)` outstanding tasks,
+#' so shared-memory residency is bounded by `window x slice` instead of
+#' `sizeof(.x)` — with the default chunk count that is roughly
+#' `(2 * workers) / .chunks` of the serialized `.x`. The chunk count
+#' defaults to `min(length(.x), 32 * live workers)` and `.chunks`
+#' overrides it outright (`.chunks = length(.x)` is the mirai-style
+#' extreme of one element per task). Everything else — result order,
+#' `.template` and `.collect`, `.seed` invariance, the error taxonomy —
+#' is exactly the non-streaming map's. Fail-fast latency coarsens from
+#' about one adaptive morsel batch to about one chunk: the outstanding
+#' work at any time is bounded by the window, so the bound moves with
+#' `.chunks`. Two trade-offs come with fixed chunks: the adaptive batch
+#' sizing of the morsel machinery is lost (skew mitigation is to raise
+#' `.chunks`), and slices cross via the serialized tiers, so per-chunk
+#' staging costs an ordinary submit's serialization rather than the
+#' raw-section path's zero-serialize slicing. A streaming map always
+#' stages its descriptor region (workers materialize the map context at
+#' most once each) and needs same-language workers: a [mizu_call()] spec
+#' as `.f` errors.
+#'
 #' @section Very large x:
 #' The serialized runner wrapper needs a little over 200 bytes of entry
 #' inline budget, so pools created with `slot_size = 256L` (224-byte
 #' budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
 #' the wrapper to about 270 bytes. Seeded maps on such pools work but
 #' spill a region per runner, so keep the default `slot_size` on pools
-#' meant for seeded maps. For a very large `.x`, sharing it first is the
-#' recommended path: a zero-copy view received from a channel or a pool
+#' meant for seeded maps. For a very large `.x`, two paths avoid
+#' materializing it per worker. If shared-memory residency is acceptable,
+#' share it first: a zero-copy view received from a channel or a pool
 #' result, or a `mori::share()`d vector, reduces to its ~30-byte
 #' identifier inside the staged descriptor, and workers read elements
 #' straight off the shared pages with OS demand paging — no worker copies
-#' any part of `.x` (`mizu_map` itself never calls mori).
+#' any part of `.x` (`mizu_map` itself never calls mori). If `.x` must
+#' not be staged wholesale at all, `.stream = TRUE` keeps only a window
+#' of slices in shared memory — see the Streaming maps section.
 #'
 #' As in [lapply()], `.x` is indexed with `[[` on the workers after an
 #' `as.list()` coercion of anything that is not a plain vector. So a
@@ -250,6 +279,10 @@ mono_time <- function() .Call(mizu_now_call)
 #'   copy-on-write: the first write materializes a private copy. It keeps
 #'   the map region alive until released, and re-sending it through a
 #'   channel or pool crosses as a full copy, not by reference.
+#' @param .stream `TRUE` streams slices of `.x` to workers under a
+#'   sliding window instead of staging `.x` into shared memory wholesale,
+#'   bounding shared-memory residency by the window times the slice size.
+#'   See the Streaming maps section.
 #'
 #' @return A list of the results of `.f` in the order of `.x`, with
 #'   `names(.x)` reapplied. With `.template`, an atomic vector of type
@@ -275,7 +308,8 @@ mizu_map <- function(
   .chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
-  .collect = "value"
+  .collect = "value",
+  .stream = FALSE
 ) {
   map_check_native(.pool, .f)
   dots <- list(...)
@@ -285,7 +319,11 @@ mizu_map <- function(
   if (length(.x) == 0L) {
     return(map_empty(.x, .template))
   }
-  st <- map_stage(.pool, .x, .f, dots, .template, .chunks, .seed)
+  st <- if (.stream) {
+    map_stage_stream(.pool, .x, .f, dots, .template, .chunks, .seed)
+  } else {
+    map_stage(.pool, .x, .f, dots, .template, .chunks, .seed)
+  }
   map_run(.pool, st, .timeout, .collect)
 }
 
@@ -298,6 +336,9 @@ mizu_map <- function(
 map_run <- function(pool, st, timeout, collect = "value") {
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
   on.exit(map_cancel(st))
+  if (isTRUE(st[["stream"]])) {
+    return(map_run_stream(pool, st, deadline, collect))
+  }
   map_submit(pool, st, deadline)
   if (st[["timed_out"]]) {
     return(.Call(mizu_map_timeout_call))
@@ -356,7 +397,8 @@ mizu_map_prepare <- function(
   .f,
   ...,
   .template = NULL,
-  .chunks = NULL
+  .chunks = NULL,
+  .stream = FALSE
 ) {
   map_check_native(.pool, .f)
   dots <- list(...)
@@ -369,8 +411,13 @@ mizu_map_prepare <- function(
   pm[["dots"]] <- dots
   pm[["template"]] <- .template
   pm[["chunks"]] <- .chunks
+  pm[["stream"]] <- .stream
   if (length(.x) > 0L) {
-    pm[["st"]] <- map_stage(.pool, .x, .f, dots, .template, .chunks)
+    pm[["st"]] <- if (.stream) {
+      map_stage_stream(.pool, .x, .f, dots, .template, .chunks)
+    } else {
+      map_stage(.pool, .x, .f, dots, .template, .chunks)
+    }
   }
   class(pm) <- "mizu_map_prepared"
   pm
@@ -385,7 +432,10 @@ mizu_map_prepare <- function(
 #' steps, simulation sweeps) at memcpy cost, skipping the region create
 #' and the re-attach of every worker. Any other change of `.x` — a
 #' different shape or type, a list, a map staged inline — restages
-#' transparently on the next run.
+#' transparently on the next run. A streaming prepared map keeps `.x`
+#' submitter-side, so a replacement `.x` of any shape simply re-slices on
+#' the next run — only a length change under `.template` restages (the
+#' output area is sized for the staged length).
 #'
 #' @rdname mizu_map_prepare
 #' @param pm a prepared-map handle from [mizu_map_prepare()].
@@ -401,8 +451,9 @@ mizu_map_run <- function(
     stop("mizu: not a prepared-map handle", call. = FALSE)
   }
   map_collect_check(.collect, pm[["template"]])
+  stream <- isTRUE(pm[["stream"]])
   if (!is.null(.x)) {
-    map_swap_x(pm, .x)
+    if (stream) map_swap_x_stream(pm, .x) else map_swap_x(pm, .x)
   }
   if (length(pm[["x"]]) == 0L) {
     return(map_empty(pm[["x"]], pm[["template"]]))
@@ -412,20 +463,36 @@ mizu_map_run <- function(
     # unclean previous run (or a prior restage failure): stage afresh — a
     # straggler against the old region dies at its exhausted cursor or
     # stale-generation claim word, and the region unlinks at GC
-    st <- map_stage(
-      pm[["pool"]],
-      pm[["x"]],
-      pm[["f"]],
-      pm[["dots"]],
-      pm[["template"]],
-      pm[["chunks"]],
-      .seed
-    )
+    st <- if (stream) {
+      map_stage_stream(
+        pm[["pool"]],
+        pm[["x"]],
+        pm[["f"]],
+        pm[["dots"]],
+        pm[["template"]],
+        pm[["chunks"]],
+        .seed
+      )
+    } else {
+      map_stage(
+        pm[["pool"]],
+        pm[["x"]],
+        pm[["f"]],
+        pm[["dots"]],
+        pm[["template"]],
+        pm[["chunks"]],
+        .seed
+      )
+    }
   } else {
     # a rearm failure (transient slot exhaustion) raises before the reset
     # touches anything, so the staged state stays good for a retry; from
     # the reset on, pessimism rules — restage unless the run ends clean
-    map_rearm(pm[["pool"]], st, .seed)
+    if (stream) {
+      map_rearm_stream(pm[["pool"]], st, .seed)
+    } else {
+      map_rearm(pm[["pool"]], st, .seed)
+    }
     pm[["st"]] <- NULL
   }
   r <- map_run(pm[["pool"]], st, .timeout, .collect)
@@ -482,6 +549,36 @@ map_swap_x <- function(pm, x) {
     st[["nms"]] <- names(x)
   } else {
     pm[["st"]] <- NULL
+  }
+  invisible(pm)
+}
+
+# Replace a prepared streaming map's x: no swap gate — the region holds
+# only f and dots, so any shape works by re-slicing, and only the chunk
+# geometry recomputes when n changes. The exception is the template path:
+# its output area sizes off the staged n, so a length change restages.
+map_swap_x_stream <- function(pm, x) {
+  st <- pm[["st"]]
+  if (
+    (!is.vector(x) || is.object(x)) &&
+      !identical(attributes(x), list(class = "integer64"))
+  ) {
+    x <- as.list(x)
+  }
+  pm[["x"]] <- x
+  if (is.null(st)) {
+    return(invisible(pm))
+  }
+  n <- length(x)
+  if (st[["direct"]] && n != st[["n"]]) {
+    pm[["st"]] <- NULL
+    return(invisible(pm))
+  }
+  st[["x"]] <- x
+  st[["nms"]] <- names(x)
+  if (n != st[["n"]]) {
+    st[["n"]] <- n
+    map_stream_geometry(st, .Call(mizu_pool_map_caps, pm[["pool"]]))
   }
   invisible(pm)
 }
@@ -614,6 +711,24 @@ map_rearm <- function(pool, st, seed) {
   } else {
     st[["handles"]] <- vector("list", st[["C"]])
   }
+  st[["timed_out"]] <- FALSE
+  invisible(st)
+}
+
+# Re-arm a staged streaming map for another run: per-run seed state, a
+# fresh window against the live workers, and the O(1) reset that clears
+# the shared state (streaming reads none of it — the cancel word included
+# — but the reset keeps the region indistinguishable from a fresh one).
+# The chunk geometry is inherited from staging or the last swap.
+map_rearm_stream <- function(pool, st, seed) {
+  st[["seed_state"]] <- map_seed_state(seed)
+  caps <- .Call(mizu_pool_map_caps, pool)
+  if (caps[[2L]] == 0L) {
+    stop_slots_exhausted()
+  }
+  .Call(mizu_map_reset, st[["wrap"]])
+  map_stream_window(st, caps)
+  st[["handles"]] <- vector("list", st[["C"]])
   st[["timed_out"]] <- FALSE
   invisible(st)
 }
@@ -899,6 +1014,286 @@ map_stage <- function(
   }
   st[["timed_out"]] <- FALSE
   st
+}
+
+# The sliding window: min(C, 2 x live workers, free result slots) — one
+# chunk executing per worker plus one covering the collect -> refill ->
+# claim gap, floored at 1 (zero free slots already errored at stage).
+map_stream_window <- function(st, caps) {
+  st[["W"]] <- max(
+    1L,
+    as.integer(min(st[["C"]], 2 * max(1L, caps[[1L]]), caps[[2L]]))
+  )
+  invisible(st)
+}
+
+# Streaming chunk geometry: C fixed chunks over n — min(n, 32 x live
+# workers) by default, .chunks overriding outright, bounded only by n (the
+# window paces outstanding work, so no slot/ring clamp, unlike the blob
+# path; .chunks = n is the mirai extreme of one element per task). lo/hi
+# are the blob path's balanced ranges.
+map_stream_geometry <- function(st, caps) {
+  n <- st[["n"]]
+  C <- min(n, if (is.null(st[["chunks"]])) 32 * caps[[1L]] else st[["chunks"]])
+  st[["C"]] <- max(1L, as.integer(C))
+  size <- n %/% st[["C"]]
+  sizes <- rep.int(size, st[["C"]])
+  extra <- n %% st[["C"]]
+  if (extra > 0) {
+    sizes[seq_len(extra)] <- size + 1
+  }
+  st[["hi"]] <- cumsum(sizes)
+  st[["lo"]] <- st[["hi"]] - sizes + 1
+  map_stream_window(st, caps)
+}
+
+# Stage a streaming map: x stays submitter-side and feeds fixed slices
+# through ordinary chunk tasks under a sliding submit/collect window, so
+# SHM residency is bounded by window x slice instead of sizeof(x). The
+# region is descriptor-only — f + dots, plus the template output area
+# (sized off the explicit n, independent of x) — through the existing
+# mizu_map_stage with x = NULL: one code path and the worker's ctx cache.
+# Its morsel geometry is inert (no streaming path claims, cursors, or
+# reads the cancel word; fail-fast rides task-level cancellation over the
+# bounded window), so one morsel keeps the header minimal.
+map_stage_stream <- function(
+  pool,
+  x,
+  f,
+  dots,
+  template = NULL,
+  chunks = NULL,
+  seed = NULL
+) {
+  if (inherits(f, "mizu_call")) {
+    stop(
+      "mizu: a mizu_call() spec as '.f' cannot stream \u2014 chunk slices cross ",
+      "as same-language task payloads",
+      call. = FALSE
+    )
+  }
+  if (typeof(f) == "closure") {
+    f <- strip_srcref(f)
+  }
+  # lapply's coercion rule, as map_stage (the class-only integer64
+  # exception included: it stays a vector, its slices re-classed)
+  if (
+    (!is.vector(x) || is.object(x)) &&
+      !identical(attributes(x), list(class = "integer64"))
+  ) {
+    x <- as.list(x)
+  }
+  n <- length(x)
+  map_template_check(template)
+  direct <- !is.null(template) && typeof(template) %in% map_template_types
+
+  st <- new.env(parent = emptyenv())
+  st[["stream"]] <- TRUE
+  st[["spec"]] <- FALSE
+  st[["n"]] <- n
+  st[["nms"]] <- names(x)
+  st[["x"]] <- x
+  st[["template"]] <- template
+  st[["direct"]] <- direct
+  st[["seed_state"]] <- map_seed_state(seed)
+
+  caps <- .Call(mizu_pool_map_caps, pool)
+  if (caps[[2L]] == 0L) {
+    stop_slots_exhausted()
+  }
+  if (!is.null(chunks)) {
+    chunks <- as.numeric(chunks)
+    if (length(chunks) != 1L || is.na(chunks) || chunks < 1) {
+      stop("mizu: .chunks must be a positive number", call. = FALSE)
+    }
+  }
+  st[["chunks"]] <- chunks
+  map_stream_geometry(st, caps)
+
+  sr <- .Call(
+    mizu_map_stage,
+    list(f, dots),
+    NULL,
+    NULL,
+    n,
+    if (direct) template,
+    n
+  )
+  st[["name"]] <- sr[[1L]]
+  st[["wrap"]] <- sr[[2L]]
+  st[["handles"]] <- vector("list", st[["C"]])
+  st[["timed_out"]] <- FALSE
+  st
+}
+
+# One streaming chunk task's wire payload: map_stream_chunk(n, r, x[, s])
+# — `n` names the descriptor region, `r` packs c(lo, hi) as doubles, `x`
+# is the submitter-side slice embedded as a call literal (the blob path's
+# embedding pattern): it crosses via the ordinary staging tiers and is
+# GC-freed after submit, so only W serialized slices are ever resident.
+# `s` is the 6-word RNG base state when seeded.
+map_stream_payload <- function(st, k) {
+  seeded <- !is.null(st[["seed_state"]])
+  expr <- as.call(c(
+    list(
+      map_stream_chunk_ref,
+      st[["name"]],
+      c(st[["lo"]][[k]], st[["hi"]][[k]]),
+      .Call(mizu_map_xslice, st[["x"]], st[["lo"]][[k]], st[["hi"]][[k]])
+    ),
+    if (seeded) list(st[["seed_state"]])
+  ))
+  list(expr, list())
+}
+
+# The streaming run, decomposed so the pool_pair() harness can interleave
+# pool_step() between the window's turns, exactly as the blob path's
+# stages: prime submits up to W chunk tasks (unflagged, like blob chunks),
+# each turn collects one completion and refills one chunk, and
+# map_run_stream composes them against the map's one deadline. Expiry
+# marks the state timed out and surfaces as the sentinel; the on.exit
+# backstop in map_run cancels the outstanding window.
+
+# Refill the window up to W (or C). FALSE marks the state timed out — the
+# deadline expired before or inside a ring-space wait. The pre-check ahead
+# of each payload build mirrors map_submit's: a nested submit never waits
+# on ring space, so an expired deadline must be caught here.
+map_stream_refill <- function(pool, st, deadline) {
+  C <- st[["C"]]
+  W <- min(st[["W"]], C)
+  next_k <- st[["next_k"]]
+  oi <- st[["oi"]]
+  while (next_k <= C && length(oi) < W) {
+    if (mono_time() >= deadline) {
+      st[["timed_out"]] <- TRUE
+      return(FALSE)
+    }
+    h <- .Call(
+      mizu_pool_submit_try,
+      pool,
+      map_stream_payload(st, next_k),
+      deadline,
+      0L
+    )
+    if (inherits(h, "mizu_timeout")) {
+      st[["timed_out"]] <- TRUE
+      return(FALSE)
+    }
+    st[["handles"]][[next_k]] <- h
+    oi <- c(oi, next_k)
+    next_k <- next_k + 1L
+  }
+  st[["next_k"]] <- next_k
+  st[["oi"]] <- oi
+  TRUE
+}
+
+# Prime the run: the generic-results accumulator and the outstanding set
+# are per-run state, then the first window fills.
+map_stream_prime <- function(pool, st, deadline) {
+  st[["out"]] <- if (!st[["direct"]]) vector("list", st[["n"]])
+  st[["oi"]] <- integer(0L)
+  st[["next_k"]] <- 1L
+  map_stream_refill(pool, st, deadline)
+}
+
+# The fail path of a streaming turn, NORET: cancel the outstanding window,
+# then drain the siblings non-blockingly — cancelled and still-executing
+# tasks read as cancelled / pending and are ignored. A worker death
+# reports its chunk's range (the blob-path shape), drained deaths adding
+# theirs; otherwise the minimum-element-index error among those observed
+# raises — first by element index among the elements that ran, the set
+# that ran already depending on completion order. An error carrying no
+# element index is not f's (pool stop, infrastructure) and stays fatal,
+# as the runner path's.
+map_stream_fail <- function(st, v, k) {
+  died <- NULL
+  elts <- NULL
+  errs <- list()
+  if (inherits(v, "mizu_error_worker_died")) {
+    died <- v
+    elts <- cbind(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]])
+  } else if (!is.null(v[["mizu_map_index"]])) {
+    errs <- list(v)
+  } else {
+    stop(v)
+  }
+  oi <- st[["oi"]]
+  hl <- st[["handles"]][oi]
+  map_cancel(st)
+  now <- mono_time()
+  for (i in seq_along(oi)) {
+    w <- .Call(mizu_pool_collect_try, hl[[i]], now)
+    if (!is.object(w) || !inherits(w, "mizu_caught")) {
+      next
+    }
+    w <- w[[1L]]
+    if (inherits(w, "mizu_error_worker_died")) {
+      if (is.null(died)) {
+        died <- w
+        elts <- cbind(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
+      } else {
+        elts <- rbind(
+          elts,
+          c(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
+        )
+      }
+    } else if (!is.null(w[["mizu_map_index"]])) {
+      errs[[length(errs) + 1L]] <- w
+    } else if (!inherits(w, "mizu_error_cancelled")) {
+      stop(w)
+    }
+  }
+  if (!is.null(died)) {
+    stop_worker_died(died[["slot"]], died[["pid"]], elts)
+  }
+  idx <- vapply(errs, function(e) as.numeric(e[["mizu_map_index"]]), 0)
+  stop(errs[[which.min(idx)]])
+}
+
+# One streaming turn: collect the next completed chunk (parking on
+# collect_any against the remaining deadline), splice generic results into
+# place (template results are already in the region's output area; the
+# chunk's NULL result is drained and dropped), and refill. Errors take
+# the fail path above; deadline expiry marks the state timed out.
+map_stream_turn <- function(pool, st, deadline) {
+  oi <- st[["oi"]]
+  remaining <- deadline - mono_time()
+  v <- if (remaining > 0) {
+    tryCatch(
+      .Call(mizu_pool_collect_any, st[["handles"]][oi], remaining),
+      error = function(e) e
+    )
+  } else {
+    .Call(mizu_map_timeout_call)
+  }
+  if (inherits(v, "mizu_timeout")) {
+    st[["timed_out"]] <- TRUE
+    return(invisible())
+  }
+  pos <- v[["index"]]
+  k <- oi[[pos]]
+  st[["oi"]] <- oi[-pos]
+  st[["handles"]][k] <- list(NULL)
+  if (inherits(v, "condition")) {
+    map_stream_fail(st, v, k)
+  }
+  if (!st[["direct"]]) {
+    st[["out"]][seq.int(st[["lo"]][[k]], st[["hi"]][[k]])] <- v[["value"]]
+  }
+  map_stream_refill(pool, st, deadline)
+  invisible()
+}
+
+map_run_stream <- function(pool, st, deadline, collect = "value") {
+  map_stream_prime(pool, st, deadline)
+  while (length(st[["oi"]]) && !st[["timed_out"]]) {
+    map_stream_turn(pool, st, deadline)
+  }
+  if (st[["timed_out"]]) {
+    return(.Call(mizu_map_timeout_call))
+  }
+  map_assemble(st, st[["out"]], collect)
 }
 
 # Submit the map's tasks — R runner tasks on the region path, C chunk
@@ -1188,17 +1583,22 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
       }
     }
   }
+  map_assemble(st, out, collect)
+}
+
+# The shared assembly tail of map_collect and the streaming loop: the
+# generic path's named list, or the template paths' one gather memcpy from
+# the output area — or, for a character template (generic chunk results),
+# vapply's own checks. A "view" collect instead wraps the output area as
+# an ALTREP view (no gather copy), its names / dim applied in C — the R
+# setters would duplicate the view and the default ALTREP duplicate
+# materializes. The view pins the region, so the state is marked consumed
+# and a prepared re-run restages rather than overwriting it
+map_assemble <- function(st, out, collect = "value") {
   if (!st[["direct"]] && is.null(st[["template"]])) {
     names(out) <- st[["nms"]]
     return(out)
   }
-  # template assembly: one memcpy from the output area — or, for a
-  # character template (generic chunk results), vapply's own checks. A
-  # "view" collect instead wraps the output area as an ALTREP view (no
-  # gather copy), its names / dim applied in C — the R setters would
-  # duplicate the view and the default ALTREP duplicate materializes. The
-  # view pins the region, so the state is marked consumed and a prepared
-  # re-run restages rather than overwriting it
   if (st[["direct"]] && identical(collect, "view")) {
     st[["consumed"]] <- TRUE
     return(.Call(
@@ -1275,6 +1675,52 @@ map_chunk <- function(r, b, s = NULL) {
       d[[2L]],
       d[[3L]],
       lo - 1,
+      lo,
+      hi,
+      sr,
+      eic,
+      environment()
+    ),
+    error = function(e) {
+      if (eic[[1L]] >= 1) {
+        e[["mizu_map_index"]] <- eic[[1L]]
+      }
+      stop(e)
+    }
+  )
+}
+
+# Worker-side streaming chunk evaluator, riding each chunk task as
+# mizu:::map_stream_chunk(n, r, x[, s]): `n` names the descriptor-only map
+# region (attached at most once per worker per map through the map_ctx
+# cache), `r` packs c(lo, hi) as doubles, `x` is the chunk's slice, and
+# `s` the 6-word RNG base state when seeded. The batch loop is the
+# existing mizu_map_batch over the slice: template results write straight
+# into the region's output area, generic results publish as the chunk
+# task's ordinary result. The per-element RNG seek (O(log lo)) keeps
+# streams invariant across chunk count, window size, and completion
+# order.
+map_stream_chunk <- function(n, r, x, s = NULL) {
+  lo <- r[[1L]]
+  hi <- r[[2L]]
+  ctx <- map_ctx(mizu_current_pool(), n)
+  sr <- NULL
+  if (!is.null(s)) {
+    restore_rng <- rng_save()
+    on.exit(restore_rng())
+    sr <- .Call(mizu_map_rng_seek, s, lo)
+  }
+  # one tryCatch per chunk, as map_chunk's: eic is the loop's in-flight
+  # element index, annotating an escaping error with the failing element
+  eic <- numeric(1L)
+  tryCatch(
+    .Call(
+      mizu_map_batch,
+      if (ctx[["tmpl"]]) ctx[["xp"]],
+      ctx[["f"]],
+      ctx[["dots"]],
+      x,
+      0,
       lo,
       hi,
       sr,

@@ -300,6 +300,72 @@ SEXP mizu_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
   return map_slice_copy(mh, (uint64_t) lo, (uint64_t) hi);
 }
 
+/* Submitter-side x slice [lo, hi] for a streaming map's chunk payload:
+   one owning vector, names dropped (they stay submitter-side for
+   assembly). The element-read discipline mirrors mizu_map_batch: an
+   atomic non-ALTREP x is one allocVector + memcpy; an ALTREP with a data
+   block behind it (a received mizu/mori view) memcpy's the shared pages
+   through DATAPTR_OR_NULL — never the writable accessors, so no COW
+   materialization of the whole vector and no early zc release; an ALTREP
+   without data (a compact sequence) falls to the per-element standard
+   accessors, which dispatch without materializing. Class-only integer64
+   re-applies the class through the wire allocator (the MIZU_TYPE_INT64
+   discipline). STRSXP / VECSXP / EXPRSXP slice per element (shallow). */
+SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
+  double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
+  if (!(lo >= 1) || !(hi >= lo) || hi > (double) XLENGTH(x))
+    Rf_error("mizu: invalid stream slice range");
+  const R_xlen_t l0 = (R_xlen_t) lo - 1;
+  const R_xlen_t len = (R_xlen_t) (hi - lo + 1);
+  const SEXPTYPE xt = TYPEOF(x);
+  switch (xt) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP: {
+    const int i64 = xt == REALSXP && mizu_view_is_int64(x);
+    const int wt = i64 ? MIZU_TYPE_INT64 : (int) xt;
+    const size_t elt = mizu_view_sizeof_elt(wt);
+    const void *src = ALTREP(x) ? DATAPTR_OR_NULL(x) : mizu_vec_ptr(x);
+    if (src != NULL) {
+      SEXP out = PROTECT(mizu_wire_alloc(wt, len));
+      memcpy(mizu_vec_ptr(out),
+             (const unsigned char *) src + (size_t) l0 * elt,
+             (size_t) len * elt);
+      UNPROTECT(1);
+      return out;
+    }
+    /* ALTREP without a data block: per-element accessors, no DATAPTR — a
+       compact sequence would materialize wholesale through it */
+    SEXP out = PROTECT(Rf_allocVector(xt, len));
+    for (R_xlen_t i = 0; i < len; i++) {
+      switch (xt) {
+      case LGLSXP:  LOGICAL(out)[i] = LOGICAL_ELT(x, l0 + i); break;
+      case INTSXP:  INTEGER(out)[i] = INTEGER_ELT(x, l0 + i); break;
+      case REALSXP: REAL(out)[i]    = REAL_ELT(x, l0 + i);    break;
+      case CPLXSXP: COMPLEX(out)[i] = COMPLEX_ELT(x, l0 + i); break;
+      default:      RAW(out)[i]     = RAW_ELT(x, l0 + i);     break;
+      }
+    }
+    UNPROTECT(1);
+    return out;
+  }
+  case STRSXP: {
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, len));
+    for (R_xlen_t i = 0; i < len; i++)
+      SET_STRING_ELT(out, i, STRING_ELT(x, l0 + i));
+    UNPROTECT(1);
+    return out;
+  }
+  case VECSXP: case EXPRSXP: {
+    SEXP out = PROTECT(Rf_allocVector(xt, len));
+    for (R_xlen_t i = 0; i < len; i++)
+      SET_VECTOR_ELT(out, i, VECTOR_ELT(x, l0 + i));
+    UNPROTECT(1);
+    return out;
+  }
+  default:
+    Rf_error("mizu: unsupported stream slice type");
+  }
+}
+
 /* Template-path write of element e's value at its disjoint output-area
    offset. "Like vapply" means exactly vapply, coercions included: exact
    type memcpys, an upward coercion (logical -> integer -> double ->

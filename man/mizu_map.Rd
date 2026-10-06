@@ -13,7 +13,8 @@ mizu_map(
   .chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
-  .collect = "value"
+  .collect = "value",
+  .stream = FALSE
 )
 }
 \arguments{
@@ -57,6 +58,11 @@ immediately reduce. Requires an atomic \code{.template}. The view is
 copy-on-write: the first write materializes a private copy. It keeps
 the map region alive until released, and re-sending it through a
 channel or pool crosses as a full copy, not by reference.}
+
+\item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a
+sliding window instead of staging \code{.x} into shared memory wholesale,
+bounding shared-memory residency by the window times the slice size.
+See the Streaming maps section.}
 }
 \value{
 A list of the results of \code{.f} in the order of \code{.x}, with
@@ -214,6 +220,33 @@ identical across languages. A spec map runs on a same-language pool
 too, subject to the same portability rules.
 }
 
+\section{Streaming maps}{
+
+With \code{.stream = TRUE}, the map never stages the whole of \code{.x} into
+shared memory: it streams slices of \code{.x} to workers as they take work;
+the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
+under a sliding submit/collect window of at most
+\verb{min(.chunks, 2 * live workers, free result slots)} outstanding tasks,
+so shared-memory residency is bounded by \verb{window x slice} instead of
+\code{sizeof(.x)} — with the default chunk count that is roughly
+\code{(2 * workers) / .chunks} of the serialized \code{.x}. The chunk count
+defaults to \verb{min(length(.x), 32 * live workers)} and \code{.chunks}
+overrides it outright (\code{.chunks = length(.x)} is the mirai-style
+extreme of one element per task). Everything else — result order,
+\code{.template} and \code{.collect}, \code{.seed} invariance, the error taxonomy —
+is exactly the non-streaming map's. Fail-fast latency coarsens from
+about one adaptive morsel batch to about one chunk: the outstanding
+work at any time is bounded by the window, so the bound moves with
+\code{.chunks}. Two trade-offs come with fixed chunks: the adaptive batch
+sizing of the morsel machinery is lost (skew mitigation is to raise
+\code{.chunks}), and slices cross via the serialized tiers, so per-chunk
+staging costs an ordinary submit's serialization rather than the
+raw-section path's zero-serialize slicing. A streaming map always
+stages its descriptor region (workers materialize the map context at
+most once each) and needs same-language workers: a \code{\link[=mizu_call]{mizu_call()}} spec
+as \code{.f} errors.
+}
+
 \section{Very large x}{
 
 The serialized runner wrapper needs a little over 200 bytes of entry
@@ -221,12 +254,15 @@ inline budget, so pools created with \code{slot_size = 256L} (224-byte
 budget) fit it. The exception is \code{.seed}: its 6-word RNG state pushes
 the wrapper to about 270 bytes. Seeded maps on such pools work but
 spill a region per runner, so keep the default \code{slot_size} on pools
-meant for seeded maps. For a very large \code{.x}, sharing it first is the
-recommended path: a zero-copy view received from a channel or a pool
+meant for seeded maps. For a very large \code{.x}, two paths avoid
+materializing it per worker. If shared-memory residency is acceptable,
+share it first: a zero-copy view received from a channel or a pool
 result, or a \code{mori::share()}d vector, reduces to its ~30-byte
 identifier inside the staged descriptor, and workers read elements
 straight off the shared pages with OS demand paging — no worker copies
-any part of \code{.x} (\code{mizu_map} itself never calls mori).
+any part of \code{.x} (\code{mizu_map} itself never calls mori). If \code{.x} must
+not be staged wholesale at all, \code{.stream = TRUE} keeps only a window
+of slices in shared memory — see the Streaming maps section.
 
 As in \code{\link[=lapply]{lapply()}}, \code{.x} is indexed with \code{[[} on the workers after an
 \code{as.list()} coercion of anything that is not a plain vector. So a
