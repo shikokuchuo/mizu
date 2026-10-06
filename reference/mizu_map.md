@@ -31,7 +31,8 @@ mizu_map(
   .chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
-  .collect = "value"
+  .collect = "value",
+  .stream = FALSE
 )
 ```
 
@@ -104,6 +105,13 @@ mizu_map(
   write materializes a private copy. It keeps the map region alive until
   released, and re-sending it through a channel or pool crosses as a
   full copy, not by reference.
+
+- .stream:
+
+  `TRUE` streams slices of `.x` to workers under a sliding window
+  instead of staging `.x` into shared memory wholesale, bounding
+  shared-memory residency by the window times the slice size. See the
+  Streaming maps section.
 
 ## Value
 
@@ -245,6 +253,33 @@ steal-order invariance holds within a worker language, but the draws are
 not identical across languages. A spec map runs on a same-language pool
 too, subject to the same portability rules.
 
+## Streaming maps
+
+With `.stream = TRUE`, the map never stages the whole of `.x` into
+shared memory: it streams slices of `.x` to workers as they take work;
+the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
+under a sliding submit/collect window of at most
+`min(.chunks, 2 * live workers, free result slots)` outstanding tasks,
+so shared-memory residency is bounded by `window x slice` instead of
+`sizeof(.x)` — with the default chunk count that is roughly
+`(2 * workers) / .chunks` of the serialized `.x`. The chunk count
+defaults to `min(length(.x), 32 * live workers)` and `.chunks` overrides
+it outright (`.chunks = length(.x)` is the mirai-style extreme of one
+element per task). Everything else — result order, `.template` and
+`.collect`, `.seed` invariance, the error taxonomy — is exactly the
+non-streaming map's. Fail-fast latency coarsens from about one adaptive
+morsel batch to about one chunk: the outstanding work at any time is
+bounded by the window, so the bound moves with `.chunks`. Two trade-offs
+come with fixed chunks: the adaptive batch sizing of the morsel
+machinery is lost (skew mitigation is to raise `.chunks`), and slices
+cross via the serialized tiers, so per-chunk staging costs an ordinary
+submit's serialization rather than the raw-section path's zero-serialize
+slicing. A streaming map always stages its descriptor region (workers
+materialize the map context at most once each) and needs same-language
+workers: a
+[`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
+spec as `.f` errors.
+
 ## Very large x
 
 The serialized runner wrapper needs a little over 200 bytes of entry
@@ -252,13 +287,16 @@ inline budget, so pools created with `slot_size = 256L` (224-byte
 budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
 the wrapper to about 270 bytes. Seeded maps on such pools work but spill
 a region per runner, so keep the default `slot_size` on pools meant for
-seeded maps. For a very large `.x`, sharing it first is the recommended
-path: a zero-copy view received from a channel or a pool result, or a
+seeded maps. For a very large `.x`, two paths avoid materializing it per
+worker. If shared-memory residency is acceptable, share it first: a
+zero-copy view received from a channel or a pool result, or a
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector,
 reduces to its ~30-byte identifier inside the staged descriptor, and
 workers read elements straight off the shared pages with OS demand
 paging — no worker copies any part of `.x` (`mizu_map` itself never
-calls mori).
+calls mori). If `.x` must not be staged wholesale at all,
+`.stream = TRUE` keeps only a window of slices in shared memory — see
+the Streaming maps section.
 
 As in [`lapply()`](https://rdrr.io/r/base/lapply.html), `.x` is indexed
 with `[[` on the workers after an

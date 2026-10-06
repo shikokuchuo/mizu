@@ -109,7 +109,8 @@ ever materializes more than a batch of it.</p>
 <span>  .chunks <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  .seed <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  .timeout <span class="op">=</span> <span class="cn">Inf</span>,</span>
-<span>  .collect <span class="op">=</span> <span class="st">"value"</span></span>
+<span>  .collect <span class="op">=</span> <span class="st">"value"</span>,</span>
+<span>  .stream <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -174,6 +175,13 @@ immediately reduce. Requires an atomic <code>.template</code>. The view is
 copy-on-write: the first write materializes a private copy. It keeps
 the map region alive until released, and re-sending it through a
 channel or pool crosses as a full copy, not by reference.</p></dd>
+
+
+<dt id="arg--stream">.stream<a class="anchor" aria-label="anchor" href="#arg--stream"></a></dt>
+<dd><p><code>TRUE</code> streams slices of <code>.x</code> to workers under a
+sliding window instead of staging <code>.x</code> into shared memory wholesale,
+bounding shared-memory residency by the window times the slice size.
+See the Streaming maps section.</p></dd>
 
 </dl></div>
     <div class="section level2">
@@ -323,6 +331,34 @@ identical across languages. A spec map runs on a same-language pool
 too, subject to the same portability rules.</p>
     </div>
     <div class="section level2">
+    <h2 id="streaming-maps">Streaming maps<a class="anchor" aria-label="anchor" href="#streaming-maps"></a></h2>
+
+
+<p>With <code>.stream = TRUE</code>, the map never stages the whole of <code>.x</code> into
+shared memory: it streams slices of <code>.x</code> to workers as they take work;
+the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
+under a sliding submit/collect window of at most
+<code>min(.chunks, 2 * live workers, free result slots)</code> outstanding tasks,
+so shared-memory residency is bounded by <code>window x slice</code> instead of
+<code>sizeof(.x)</code> — with the default chunk count that is roughly
+<code>(2 * workers) / .chunks</code> of the serialized <code>.x</code>. The chunk count
+defaults to <code>min(length(.x), 32 * live workers)</code> and <code>.chunks</code>
+overrides it outright (<code>.chunks = length(.x)</code> is the mirai-style
+extreme of one element per task). Everything else — result order,
+<code>.template</code> and <code>.collect</code>, <code>.seed</code> invariance, the error taxonomy —
+is exactly the non-streaming map's. Fail-fast latency coarsens from
+about one adaptive morsel batch to about one chunk: the outstanding
+work at any time is bounded by the window, so the bound moves with
+<code>.chunks</code>. Two trade-offs come with fixed chunks: the adaptive batch
+sizing of the morsel machinery is lost (skew mitigation is to raise
+<code>.chunks</code>), and slices cross via the serialized tiers, so per-chunk
+staging costs an ordinary submit's serialization rather than the
+raw-section path's zero-serialize slicing. A streaming map always
+stages its descriptor region (workers materialize the map context at
+most once each) and needs same-language workers: a <code><a href="mizu_call.html">mizu_call()</a></code> spec
+as <code>.f</code> errors.</p>
+    </div>
+    <div class="section level2">
     <h2 id="very-large-x">Very large x<a class="anchor" aria-label="anchor" href="#very-large-x"></a></h2>
 
 
@@ -331,12 +367,15 @@ inline budget, so pools created with <code>slot_size = 256L</code> (224-byte
 budget) fit it. The exception is <code>.seed</code>: its 6-word RNG state pushes
 the wrapper to about 270 bytes. Seeded maps on such pools work but
 spill a region per runner, so keep the default <code>slot_size</code> on pools
-meant for seeded maps. For a very large <code>.x</code>, sharing it first is the
-recommended path: a zero-copy view received from a channel or a pool
+meant for seeded maps. For a very large <code>.x</code>, two paths avoid
+materializing it per worker. If shared-memory residency is acceptable,
+share it first: a zero-copy view received from a channel or a pool
 result, or a <code><a href="https://rdrr.io/pkg/mori/man/share.html" class="external-link">mori::share()</a></code>d vector, reduces to its ~30-byte
 identifier inside the staged descriptor, and workers read elements
 straight off the shared pages with OS demand paging — no worker copies
-any part of <code>.x</code> (<code>mizu_map</code> itself never calls mori).</p>
+any part of <code>.x</code> (<code>mizu_map</code> itself never calls mori). If <code>.x</code> must
+not be staged wholesale at all, <code>.stream = TRUE</code> keeps only a window
+of slices in shared memory — see the Streaming maps section.</p>
 <p>As in <code><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply()</a></code>, <code>.x</code> is indexed with <code>[[</code> on the workers after an
 <code><a href="https://rdrr.io/r/base/list.html" class="external-link">as.list()</a></code> coercion of anything that is not a plain vector. So a
 data.frame maps over its columns, and a factor over its elements.</p>

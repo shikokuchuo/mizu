@@ -13,7 +13,15 @@ free: the seed state rides the runner payloads, not the region.
 ## Usage
 
 ``` r
-mizu_map_prepare(.pool, .x, .f, ..., .template = NULL, .chunks = NULL)
+mizu_map_prepare(
+  .pool,
+  .x,
+  .f,
+  ...,
+  .template = NULL,
+  .chunks = NULL,
+  .stream = FALSE
+)
 
 mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 ```
@@ -63,6 +71,13 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 
   the morsel count of the map (its scheduling granularity), or `NULL`
   for the default. See the Granularity section.
+
+- .stream:
+
+  `TRUE` streams slices of `.x` to workers under a sliding window
+  instead of staging `.x` into shared memory wholesale, bounding
+  shared-memory residency by the window times the slice size. See the
+  Streaming maps section.
 
 - pm:
 
@@ -129,7 +144,10 @@ the region. This runs the iterate-over-same-shape loop (optimizer steps,
 simulation sweeps) at memcpy cost, skipping the region create and the
 re-attach of every worker. Any other change of `.x` — a different shape
 or type, a list, a map staged inline — restages transparently on the
-next run.
+next run. A streaming prepared map keeps `.x` submitter-side, so a
+replacement `.x` of any shape simply re-slices on the next run — only a
+length change under `.template` restages (the output area is sized for
+the staged length).
 
 ## Examples
 
