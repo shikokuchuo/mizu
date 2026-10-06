@@ -194,8 +194,8 @@ the launcher to
 The launchers need a `python3` with pymizu installed. A launcher is one
 function that takes the join token and spawns the peer process; for a
 different spawn method, write your own. The pymizu README shows the
-reverse direction: a Python host that spawns an R peer with
-`pymizu.r_launcher()`.
+reverse direction: a Python host that drives R workers with
+`pymizu.r_pool_launcher()`.
 
 ## Vignettes
 
