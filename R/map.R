@@ -1212,7 +1212,7 @@ map_stream_fail <- function(st, v, k) {
   errs <- list()
   if (inherits(v, "mizu_error_worker_died")) {
     died <- v
-    elts <- cbind(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]])
+    elts <- rbind(elts, c(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]]))
   } else if (!is.null(v[["mizu_map_index"]])) {
     errs <- list(v)
   } else {
@@ -1229,15 +1229,14 @@ map_stream_fail <- function(st, v, k) {
     }
     w <- w[[1L]]
     if (inherits(w, "mizu_error_worker_died")) {
+      # the first death reports slot/pid; every death adds its range
       if (is.null(died)) {
         died <- w
-        elts <- cbind(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
-      } else {
-        elts <- rbind(
-          elts,
-          c(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
-        )
       }
+      elts <- rbind(
+        elts,
+        c(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
+      )
     } else if (!is.null(w[["mizu_map_index"]])) {
       errs[[length(errs) + 1L]] <- w
     } else if (!inherits(w, "mizu_error_cancelled")) {

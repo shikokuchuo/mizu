@@ -116,6 +116,10 @@ test_that("mizu_map_xslice slices every supported shape, names dropped", {
   # compact ALTREP sequences slice per element, never materializing
   expect_identical(.Call(mizu:::mizu_map_xslice, 1:10^9, 5, 8), 5:8)
   expect_identical(
+    .Call(mizu:::mizu_map_xslice, as.double(1:10^9), 5, 8),
+    as.double(5:8)
+  )
+  expect_identical(
     .Call(mizu:::mizu_map_xslice, seq(1, 10, by = 0.5), 2, 4),
     c(1.5, 2, 2.5)
   )
@@ -346,6 +350,47 @@ test_that("sibling errors drain into the minimum element index selection", {
   )
   expect_identical(e[["mizu_map_index"]], 3)
   expect_identical(conditionMessage(e), "e3")
+  pool_end(p)
+})
+
+test_that("an infrastructure error on a drained sibling stays fatal", {
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:4,
+    function(i) if (i == 1L) stop("boom") else i,
+    list(),
+    chunks = 2
+  )
+  mizu:::map_stream_prime(p[["ctrl"]], st, Inf)
+  # a sibling whose chunk names a region that does not resolve: the
+  # worker's ctx attach fails outside f — not f's error, not a death, and
+  # it must re-raise rather than drain silently
+  h <- .Call(
+    mizu:::mizu_pool_submit_try,
+    p[["ctrl"]],
+    list(
+      quote(mizu:::map_stream_chunk("mizu-nonexistent", c(1, 2), 1:2)),
+      list()
+    ),
+    Inf,
+    0L
+  )
+  st[["handles"]][[3L]] <- h
+  st[["oi"]] <- c(st[["oi"]], 3L)
+  expect_identical(pool_step(p), 1L) # chunk 1 errors at element 1
+  expect_identical(pool_step(p), 1L) # chunk 2 ok
+  expect_identical(pool_step(p), 1L) # the bogus chunk's attach fails
+  e <- tryCatch(
+    {
+      mizu:::map_stream_turn(p[["ctrl"]], st, Inf)
+      NULL
+    },
+    error = function(e) e
+  )
+  expect_s3_class(e, "mizu_error")
+  expect_false(inherits(e, "mizu_error_worker_died"))
+  expect_null(e[["mizu_map_index"]])
   pool_end(p)
 })
 
@@ -608,6 +653,109 @@ test_that("worker death fails a streaming map with the chunk's exact range", {
     mizu_map(p, 1:4, function(i) i + 1L, .stream = TRUE, .timeout = 30),
     as.list(2:5)
   )
+  expect_true(mizu_pool_stop(p))
+})
+
+test_that("a drained worker death wins over the observed error", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  # chunk 1 errors fast; chunk 2 sleeps in elements 3-4 until killed below
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  st <- mizu:::map_stage_stream(
+    p,
+    1:4,
+    function(i) {
+      if (i <= 2L) {
+        stop("boom")
+      }
+      Sys.sleep(30)
+    },
+    list(),
+    chunks = 2
+  )
+  mizu:::map_stream_prime(p, st, Inf)
+  victim <- -1
+  expect_true(wait_until(
+    {
+      d <- mizu_pool_dump(p)
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      hit <- any(d[["tasks"]][["status"]] == "err") &&
+        nrow(pend) == 1L &&
+        pend[["worker"]] >= 0L
+      if (hit) {
+        victim <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
+      }
+      hit
+    },
+    timeout = 10
+  ))
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  } # a failed gate must never reach kill(-1)
+  kill_hard(victim)
+  # the drain sweeps non-blockingly: the death verdict must have landed
+  expect_true(wait_until(
+    !any(mizu_pool_dump(p)[["tasks"]][["status"]] == "pending"),
+    timeout = 10
+  ))
+  e <- tryCatch(
+    {
+      mizu:::map_stream_turn(p, st, mizu:::mono_time() + 30)
+      NULL
+    },
+    error = identity
+  )
+  expect_s3_class(e, "mizu_error_worker_died")
+  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_true(mizu_pool_stop(p))
+})
+
+test_that("deaths on both workers accumulate every lost range", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  # both chunks sleep: each worker holds one when both die
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  st <- mizu:::map_stage_stream(
+    p,
+    1:4,
+    function(i) Sys.sleep(30),
+    list(),
+    chunks = 2
+  )
+  mizu:::map_stream_prime(p, st, Inf)
+  victims <- integer(0)
+  expect_true(wait_until(
+    {
+      d <- mizu_pool_dump(p)
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      hit <- nrow(pend) == 2L && all(pend[["worker"]] >= 0L)
+      if (hit) {
+        victims <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
+      }
+      hit
+    },
+    timeout = 10
+  ))
+  if (any(!(victims > 0))) {
+    stop("no victim pid")
+  } # a failed gate must never reach kill(-1)
+  kill_hard(victims[[1L]])
+  kill_hard(victims[[2L]])
+  expect_true(wait_until(
+    !any(mizu_pool_dump(p)[["tasks"]][["status"]] == "pending"),
+    timeout = 10
+  ))
+  e <- tryCatch(
+    {
+      mizu:::map_stream_turn(p, st, mizu:::mono_time() + 30)
+      NULL
+    },
+    error = identity
+  )
+  expect_s3_class(e, "mizu_error_worker_died")
+  expect_identical(e[["elements"]], cbind(lo = c(1, 3), hi = c(2, 4)))
   expect_true(mizu_pool_stop(p))
 })
 

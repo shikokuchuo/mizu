@@ -307,8 +307,10 @@ SEXP mizu_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
    block behind it (a received mizu/mori view) memcpy's the shared pages
    through DATAPTR_OR_NULL — never the writable accessors, so no COW
    materialization of the whole vector and no early zc release; an ALTREP
-   without data (a compact sequence) falls to the per-element standard
-   accessors, which dispatch without materializing. Class-only integer64
+   without data slices per element for the compact sequences (base R's
+   only no-data atomic ALTREPs — a DATAPTR request would materialize
+   wholesale), while any other — a foreign class — materializes through
+   its own DATAPTR method into the memcpy path. Class-only integer64
    re-applies the class through the wire allocator (the MIZU_TYPE_INT64
    discipline). STRSXP / VECSXP / EXPRSXP slice per element (shallow). */
 SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
@@ -333,6 +335,9 @@ SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
     const int wt = i64 ? MIZU_TYPE_INT64 : (int) xt;
     const size_t elt = mizu_view_sizeof_elt(wt);
     const void *src = ALTREP(x) ? DATAPTR_OR_NULL(x) : mizu_vec_ptr(x);
+    /* a no-data ALTREP outside the compact sequences is a foreign class:
+       materialize through its own DATAPTR method */
+    if (src == NULL && xt != INTSXP && xt != REALSXP) src = DATAPTR_RO(x);
     if (src != NULL) {
       SEXP out = PROTECT(mizu_wire_alloc(wt, len));
       memcpy(mizu_vec_ptr(out),
@@ -341,17 +346,15 @@ SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
       UNPROTECT(1);
       return out;
     }
-    /* ALTREP without a data block: per-element accessors, no DATAPTR — a
-       compact sequence would materialize wholesale through it */
+    /* compact sequences: per-element accessors, no DATAPTR — a compact
+       sequence would materialize wholesale through it */
     SEXP out = PROTECT(Rf_allocVector(xt, len));
-    for (R_xlen_t i = 0; i < len; i++) {
-      switch (xt) {
-      case LGLSXP:  LOGICAL(out)[i] = LOGICAL_ELT(x, l0 + i); break;
-      case INTSXP:  INTEGER(out)[i] = INTEGER_ELT(x, l0 + i); break;
-      case REALSXP: REAL(out)[i]    = REAL_ELT(x, l0 + i);    break;
-      case CPLXSXP: COMPLEX(out)[i] = COMPLEX_ELT(x, l0 + i); break;
-      default:      RAW(out)[i]     = RAW_ELT(x, l0 + i);     break;
-      }
+    if (xt == INTSXP) {
+      for (R_xlen_t i = 0; i < len; i++)
+        INTEGER(out)[i] = INTEGER_ELT(x, l0 + i);
+    } else {
+      for (R_xlen_t i = 0; i < len; i++)
+        REAL(out)[i] = REAL_ELT(x, l0 + i);
     }
     UNPROTECT(1);
     return out;
@@ -363,7 +366,8 @@ SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
     UNPROTECT(1);
     return out;
   }
-  case VECSXP: case EXPRSXP: {
+  /* VECSXP / EXPRSXP — the pre-switch gate admits nothing else */
+  default: {
     SEXP out = PROTECT(Rf_allocVector(xt, len));
     for (R_xlen_t i = 0; i < len; i++)
       SET_VECTOR_ELT(out, i, VECTOR_ELT(x, l0 + i));
@@ -371,9 +375,6 @@ SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
     return out;
   }
   }
-  /* the pre-switch gate makes this unreachable, but the compiler cannot
-     prove it */
-  return R_NilValue;
 }
 
 /* Template-path write of element e's value at its disjoint output-area
