@@ -37,14 +37,14 @@
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
 <li><hr class="dropdown-divider"></li>
+    <li><h6 class="dropdown-header" data-toc-skip>Performance</h6></li>
+    <li><a class="dropdown-item" href="../articles/benchmarks.html">Benchmarks</a></li>
+    <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>Guide</h6></li>
     <li><a class="dropdown-item" href="../articles/channels.html">Channels</a></li>
     <li><a class="dropdown-item" href="../articles/pools.html">Task pools</a></li>
     <li><a class="dropdown-item" href="../articles/map.html">Parallel map</a></li>
     <li><a class="dropdown-item" href="../articles/interop.html">Python interop</a></li>
-    <li><hr class="dropdown-divider"></li>
-    <li><h6 class="dropdown-header" data-toc-skip>Performance</h6></li>
-    <li><a class="dropdown-item" href="../articles/benchmarks.html">Benchmarks</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>Operations</h6></li>
     <li><a class="dropdown-item" href="../articles/operations.html">Operations</a></li>
@@ -97,6 +97,8 @@
 </h2>
 <ul>
 <li>
+<a href="benchmarks.html">Benchmarks</a> — head-to-head measurements against mirai.</li>
+<li>
 <a href="channels.html">Channels</a> — two-way message links between R processes: send and receive, batch verbs, sentinel values, remote errors.</li>
 <li>
 <a href="pools.html">Task pools</a> — work-stealing worker pools: submit and collect, nested tasks, waiting on several tasks, sizing and observing a pool.</li>
@@ -104,8 +106,6 @@
 <a href="map.html">Parallel map</a> — <code><a href="../reference/mizu_map.html">mizu_map()</a></code>: staged-once mapping over a pool, templates, reproducible random numbers, prepared maps.</li>
 <li>
 <a href="interop.html">Python interop</a> — channels and pools shared with Python processes through pymizu, including the cross-language map.</li>
-<li>
-<a href="benchmarks.html">Benchmarks</a> — head-to-head measurements against mirai.</li>
 <li>
 <a href="operations.html">Operations</a> — sizing <code>/dev/shm</code> on Linux, the Linux memory allocator, and crash semantics.</li>
 </ul></section><script id="quarto-html-after-body" type="application/javascript">

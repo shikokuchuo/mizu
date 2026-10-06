@@ -42,14 +42,14 @@ prints as closed. So auto-printing is always safe."></head><body>
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><hr class="dropdown-divider"></li>
+    <li><h6 class="dropdown-header" data-toc-skip>Performance</h6></li>
+    <li><a class="dropdown-item" href="../articles/benchmarks.html">Benchmarks</a></li>
+    <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>Guide</h6></li>
     <li><a class="dropdown-item" href="../articles/channels.html">Channels</a></li>
     <li><a class="dropdown-item" href="../articles/pools.html">Task pools</a></li>
     <li><a class="dropdown-item" href="../articles/map.html">Parallel map</a></li>
     <li><a class="dropdown-item" href="../articles/interop.html">Python interop</a></li>
-    <li><hr class="dropdown-divider"></li>
-    <li><h6 class="dropdown-header" data-toc-skip>Performance</h6></li>
-    <li><a class="dropdown-item" href="../articles/benchmarks.html">Benchmarks</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>Operations</h6></li>
     <li><a class="dropdown-item" href="../articles/operations.html">Operations</a></li>
@@ -128,7 +128,7 @@ prints as closed. So auto-printing is always safe.</p>
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_pool.html">mizu_pool</a></span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">p</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1a00_d0121533: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1b4f_d94777cc: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span> <span class="op">+</span> <span class="fl">1</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">t</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_task: ok&gt;</span>

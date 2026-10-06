@@ -32,14 +32,14 @@ default until the calling frame exits (the withr local_* pattern)."></head><body
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><hr class="dropdown-divider"></li>
+    <li><h6 class="dropdown-header" data-toc-skip>Performance</h6></li>
+    <li><a class="dropdown-item" href="../articles/benchmarks.html">Benchmarks</a></li>
+    <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>Guide</h6></li>
     <li><a class="dropdown-item" href="../articles/channels.html">Channels</a></li>
     <li><a class="dropdown-item" href="../articles/pools.html">Task pools</a></li>
     <li><a class="dropdown-item" href="../articles/map.html">Parallel map</a></li>
     <li><a class="dropdown-item" href="../articles/interop.html">Python interop</a></li>
-    <li><hr class="dropdown-divider"></li>
-    <li><h6 class="dropdown-header" data-toc-skip>Performance</h6></li>
-    <li><a class="dropdown-item" href="../articles/benchmarks.html">Benchmarks</a></li>
     <li><hr class="dropdown-divider"></li>
     <li><h6 class="dropdown-header" data-toc-skip>Operations</h6></li>
     <li><a class="dropdown-item" href="../articles/operations.html">Operations</a></li>
@@ -151,7 +151,7 @@ pool is user-set state and never overrides it.</p>
 <span class="r-in"><span><span class="fu">mizu_with_pool</span><span class="op">(</span><span class="cn">NULL</span>, <span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> NULL</span>
 <span class="r-in"><span><span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1a00_d0121520: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1b4f_d94777b9: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="fu">mizu_set_default_pool</span><span class="op">(</span><span class="va">old</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
