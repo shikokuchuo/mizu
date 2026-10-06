@@ -1279,7 +1279,9 @@ map_stream_turn <- function(pool, st, deadline) {
     map_stream_fail(st, v, k)
   }
   if (!st[["direct"]]) {
-    st[["out"]][seq.int(st[["lo"]][[k]], st[["hi"]][[k]])] <- v[["value"]]
+    # the splice is one C pass (the region path's assembly discipline): an
+    # R-level `[<-` would dispatch per element, per chunk
+    .Call(mizu_map_vsplice, st[["out"]], st[["lo"]][[k]], v[["value"]])
   }
   map_stream_refill(pool, st, deadline)
   invisible()

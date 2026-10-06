@@ -648,6 +648,22 @@ SEXP mizu_map_splice(SEXP out, SEXP results, SEXP ms_sexp) {
   return R_NilValue;
 }
 
+/* Streaming-path assembly: one chunk's batch value list into out at its
+   element offset — the pointer-copy half of the region path's
+   mizu_map_splice, per chunk rather than per runner (an R-level `[<-`
+   would dispatch per element). */
+SEXP mizu_map_vsplice(SEXP out, SEXP lo_sexp, SEXP vals) {
+  if (TYPEOF(out) != VECSXP || TYPEOF(vals) != VECSXP)
+    Rf_error("mizu: invalid map splice arguments");
+  double lo = Rf_asReal(lo_sexp);
+  if (!(lo >= 1) || lo + (double) XLENGTH(vals) - 1 > (double) XLENGTH(out))
+    Rf_error("mizu: invalid map splice range");
+  R_xlen_t base = (R_xlen_t) lo - 1;
+  for (R_xlen_t i = 0; i < XLENGTH(vals); i++)
+    SET_VECTOR_ELT(out, base + i, VECTOR_ELT(vals, i));
+  return R_NilValue;
+}
+
 /* Worker-death lost set: issued = [0, cursor), lost = issued minus the
    union of the collected batch histories — a batch in no history was
    issued but never completed (its claimant died, or f errored
