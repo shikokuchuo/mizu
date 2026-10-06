@@ -6,7 +6,7 @@
 <!-- badges: start -->
 
 [![R-CMD-check](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml)
-[![Codecov test coverage](https://codecov.io/gh/shikokuchuo/mizu/graph/badge.svg)](https://codecov.io/gh/shikokuchuo/mizu)
+[![Codecov test coverage](https://codecov.io/gh/shikokuchuo/mizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/mizu)
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 <!-- badges: end -->
@@ -33,6 +33,18 @@ mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library 
 Pre-release.
 The API is not stable and may change at any time before a release.
 
+## Use cases
+
+**Parallelize R at thread granularity.**
+Parallel backends that move tasks over sockets spend around 100 µs per round trip, so anything finer than coarse jobs runs faster serially.
+mizu hands off a task in shared memory and wakes one worker — overhead under a microsecond — so functions measured in microseconds parallelize profitably across cores.
+See [Benchmarks](#benchmarks).
+
+**Orchestrate Python workers from R.**
+`mizu_py_launcher()` and `mizu_py_pool_launcher()` spawn Python processes as channel peers or pool workers, driven by `mizu_call()` specs.
+Data crosses as shared-memory views rather than serialized copies — a numeric vector arrives in Python as a NumPy array, and results come back the same way — so an R session can use Python’s package ecosystem as if it were local.
+See [Python interop](#python-interop).
+
 ## Installation
 
 Install the development version from GitHub:
@@ -40,6 +52,20 @@ Install the development version from GitHub:
 ``` r
 pak::pak("shikokuchuo/mizu")
 ```
+
+## Benchmarks
+
+Communication overhead against mirai on one machine (M4 Pro, from `dev/bench/mizu-mirai-bench.R`):
+
+| Benchmark | mizu | mirai | Speedup |
+|----|----|----|----|
+| Trivial task round trip | 0.8 µs | 100.5 µs | 126x |
+| Pipelined throughput, 1 worker | 833,000 tasks/s | 9,700 tasks/s | 86x |
+| 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
+| Parallel map of 2,000 ~10 µs tasks, 4 workers | 5.0 ms | 218 ms | 44x |
+
+These rows measure communication overhead, the cost mizu is built to remove.
+mirai also covers workers on remote machines and HPC clusters, which shared memory cannot reach.
 
 ## Channels
 
@@ -95,20 +121,6 @@ mizu_map(p, 1:5, \(i) i * 2L, .template = integer(1))
 mizu_pool_stop(p)
 ```
 
-## Benchmarks
-
-Communication overhead against mirai on one machine (M4 Pro, from `dev/bench/mizu-mirai-bench.R`):
-
-| Benchmark | mizu | mirai | Speedup |
-|----|----|----|----|
-| Trivial task round trip | 0.8 µs | 100.5 µs | 126x |
-| Pipelined throughput, 1 worker | 833,000 tasks/s | 9,700 tasks/s | 86x |
-| 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
-| Parallel map of 2,000 ~10 µs tasks, 4 workers | 5.0 ms | 218 ms | 44x |
-
-These rows measure communication overhead, the cost mizu is built to remove.
-mirai also covers workers on remote machines and HPC clusters, which shared memory cannot reach.
-
 ## Python interop
 
 A channel peer can be a Python process that runs [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of the same core.
@@ -129,6 +141,7 @@ while True:
 
 mizu_send(ch, c(1.5, 2.5, 3.5)) # arrives in Python as a float64 NumPy array
 mizu_recv(ch, timeout = 5) # echoes back as a numeric vector
+#> [1] 3 5 7
 mizu_close(ch)
 ```
 
@@ -138,7 +151,7 @@ The pymizu README shows the reverse direction: a Python host that spawns an R pe
 
 ## Vignettes
 
-`vignette("mizu", package = "mizu")` is the overview hub, with topic vignettes on channels, task pools, the parallel map, Python interop, benchmarks against mirai, and operations (sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics).
+`vignette("mizu", package = "mizu")` is the overview hub, with topic vignettes on benchmarks against mirai, channels, task pools, the parallel map, Python interop, and operations (sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics).
 
 ------------------------------------------------------------------------
 

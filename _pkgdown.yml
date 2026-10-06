@@ -51,6 +51,10 @@ reference:
       - print.mizu_channel
 
 articles:
+  - title: Performance
+    navbar: Performance
+    contents:
+      - benchmarks
   - title: Guide
     navbar: Guide
     contents:
@@ -58,10 +62,6 @@ articles:
       - pools
       - map
       - interop
-  - title: Performance
-    navbar: Performance
-    contents:
-      - benchmarks
   - title: Operations
     navbar: Operations
     contents:
