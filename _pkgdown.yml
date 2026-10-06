@@ -1,6 +1,7 @@
 url: https://shikokuchuo.net/mizu/
 
 template:
+  package: tidytemplate
   bootstrap: 5
 
 reference:
