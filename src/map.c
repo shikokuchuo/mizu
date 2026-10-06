@@ -313,11 +313,20 @@ SEXP mizu_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
    discipline). STRSXP / VECSXP / EXPRSXP slice per element (shallow). */
 SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
+  const SEXPTYPE xt = TYPEOF(x);
+  /* the type gate ahead of the range gate: a wrong type reports itself,
+     not XLENGTH's generic error */
+  switch (xt) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+  case STRSXP: case VECSXP: case EXPRSXP:
+    break;
+  default:
+    Rf_error("mizu: unsupported stream slice type");
+  }
   if (!(lo >= 1) || !(hi >= lo) || hi > (double) XLENGTH(x))
     Rf_error("mizu: invalid stream slice range");
   const R_xlen_t l0 = (R_xlen_t) lo - 1;
   const R_xlen_t len = (R_xlen_t) (hi - lo + 1);
-  const SEXPTYPE xt = TYPEOF(x);
   switch (xt) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP: {
     const int i64 = xt == REALSXP && mizu_view_is_int64(x);
@@ -361,9 +370,10 @@ SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
     UNPROTECT(1);
     return out;
   }
-  default:
-    Rf_error("mizu: unsupported stream slice type");
   }
+  /* the pre-switch gate makes this unreachable, but the compiler cannot
+     prove it */
+  return R_NilValue;
 }
 
 /* Template-path write of element e's value at its disjoint output-area

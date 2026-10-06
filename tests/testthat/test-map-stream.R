@@ -113,12 +113,42 @@ test_that("mizu_map_xslice slices every supported shape, names dropped", {
   sl <- .Call(mizu:::mizu_map_xslice, lx, 1, 2)
   expect_identical(sl, unname(lx[1:2]))
   expect_true(identical(sl[[1L]], lx[[1L]]))
-  # a compact ALTREP sequence slices per element
+  # compact ALTREP sequences slice per element, never materializing
   expect_identical(.Call(mizu:::mizu_map_xslice, 1:10^9, 5, 8), 5:8)
-  # range validation
+  expect_identical(
+    .Call(mizu:::mizu_map_xslice, seq(1, 10, by = 0.5), 2, 4),
+    c(1.5, 2, 2.5)
+  )
+  # range validation and unsupported types
   expect_error(.Call(mizu:::mizu_map_xslice, 1:10, 0, 2), "slice range")
   expect_error(.Call(mizu:::mizu_map_xslice, 1:10, 2, 11), "slice range")
   expect_error(.Call(mizu:::mizu_map_xslice, 1:10, 5, 4), "slice range")
+  expect_error(
+    .Call(mizu:::mizu_map_xslice, quote(x), 1, 1),
+    "unsupported stream slice type"
+  )
+})
+
+test_that("mizu_map_vsplice validates its arguments and writes in place", {
+  out <- vector("list", 4L)
+  expect_error(
+    .Call(mizu:::mizu_map_vsplice, out, 1, "x"),
+    "invalid map splice arguments"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_vsplice, "x", 1, list(1)),
+    "invalid map splice arguments"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_vsplice, out, 0, list(1)),
+    "invalid map splice range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_vsplice, out, 4, list(1, 2)),
+    "invalid map splice range"
+  )
+  .Call(mizu:::mizu_map_vsplice, out, 2, list("a", "b"))
+  expect_identical(out, list(NULL, "a", "b", NULL))
 })
 
 test_that("mizu_map_xslice re-classes class-only integer64", {
@@ -383,6 +413,77 @@ test_that("class-only integer64 streams with classed slices and elements", {
   pool_end(p)
 })
 
+test_that(".chunks validates on the streaming path", {
+  p <- pool_pair()
+  expect_error(
+    mizu:::map_stage_stream(p[["ctrl"]], 1:4, identity, list(), chunks = 0),
+    "positive number"
+  )
+  expect_error(
+    mizu:::map_stage_stream(p[["ctrl"]], 1:4, identity, list(), chunks = NA),
+    "positive number"
+  )
+  expect_error(
+    mizu:::map_stage_stream(
+      p[["ctrl"]],
+      1:4,
+      identity,
+      list(),
+      chunks = c(1, 2)
+    ),
+    "positive number"
+  )
+  pool_end(p)
+})
+
+test_that("a deadline expired at prime marks the run timed out, nothing submitted", {
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
+  r <- mizu:::map_run_stream(p[["ctrl"]], st, mizu:::mono_time() - 1)
+  expect_s3_class(r, "mizu_timeout")
+  expect_true(st[["timed_out"]])
+  expect_length(st[["oi"]], 0L)
+  pool_end(p)
+})
+
+test_that("a deadline expired at a turn marks the run timed out", {
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
+  mizu:::map_stream_prime(p[["ctrl"]], st, Inf)
+  mizu:::map_stream_turn(p[["ctrl"]], st, mizu:::mono_time() - 1)
+  expect_true(st[["timed_out"]])
+  mizu:::map_cancel(st)
+  pool_end(p)
+})
+
+test_that("a ring-full submit past the deadline marks the run timed out", {
+  p <- pool_pair(workers = 2L, injection_cap = 2L)
+  st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
+  # W = 4 but the two-slot ring: chunk 3's submit blocks with the workers
+  # never stepped
+  r <- mizu:::map_run_stream(p[["ctrl"]], st, mizu:::mono_time() + 0.05)
+  expect_s3_class(r, "mizu_timeout")
+  expect_true(st[["timed_out"]])
+  mizu:::map_cancel(st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  pool_end(p)
+})
+
+test_that("an unannotated chunk outcome stays fatal", {
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list(), chunks = 4)
+  mizu:::map_stream_prime(p[["ctrl"]], st, Inf)
+  .Call(mizu:::mizu_pool_cancel, st[["handles"]][[1L]])
+  expect_error(
+    mizu:::map_stream_turn(p[["ctrl"]], st, Inf),
+    "task cancelled or pool stopped",
+    class = "mizu_error_cancelled"
+  )
+  pool_end(p)
+})
+
 test_that("a deadline expiring mid-run cancels the window, sentinel returned", {
   p <- pool_pair()
   st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
@@ -581,6 +682,15 @@ test_that("a prepared streaming x replacement re-slices; template lengths restag
   mizu:::map_swap_x_stream(pm, list(1, 2, 3))
   expect_identical(pm[["st"]][["name"]], name1)
   expect_identical(run_stream(p, pm[["st"]]), list(2, 4, 6))
+  # an object x coerces on swap, exactly as at stage
+  mizu:::map_swap_x_stream(pm, data.frame(a = 1:2, b = 3:4))
+  expect_identical(pm[["x"]], list(a = 1:2, b = 3:4))
+  # a swap with no staged state is a no-op beyond the x update
+  pm2 <- mizu_map_prepare(p[["ctrl"]], 1:4, identity, .stream = TRUE)
+  pm2[["st"]] <- NULL
+  mizu:::map_swap_x_stream(pm2, 1:6)
+  expect_identical(pm2[["x"]], 1:6)
+  expect_null(pm2[["st"]])
   # a length change under .template restages (the output area sizes off n)
   pm2 <- mizu_map_prepare(
     p[["ctrl"]],
@@ -592,5 +702,33 @@ test_that("a prepared streaming x replacement re-slices; template lengths restag
   name2 <- pm2[["st"]][["name"]]
   mizu:::map_swap_x_stream(pm2, 1:6)
   expect_null(pm2[["st"]])
+  pool_end(p)
+})
+
+test_that("mizu_map_run swaps x on the streaming path ahead of the run", {
+  p <- pool_pair()
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:10, function(i) i * 2L, .stream = TRUE)
+  # the swap lands before the run starts: even a timed-out run keeps it
+  r <- mizu_map_run(pm, .x = 1:4, .timeout = 0.001)
+  expect_s3_class(r, "mizu_timeout")
+  expect_identical(pm[["x"]], 1:4)
+  expect_null(pm[["st"]]) # the unclean run's state is not re-attached
+  pool_end(p)
+})
+
+test_that("a streaming rearm with a full subrange errors before any reset", {
+  p <- pool_pair()
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:4, identity, .stream = TRUE)
+  held <- lapply(1:8, function(i) mizu_submit(p[["ctrl"]], v, v = i))
+  expect_error(
+    mizu:::map_rearm_stream(p[["ctrl"]], pm[["st"]], NULL),
+    "result slots exhausted"
+  )
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  for (i in 1:8) {
+    expect_identical(mizu_collect(held[[i]], timeout = 5), i)
+  }
   pool_end(p)
 })
