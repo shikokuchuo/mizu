@@ -1080,3 +1080,27 @@ us/task).
 Status: full suite 3291 pass, 0 fail (3 expected macOS skips; new
 candidate-matrix, randomized-spec, and full-caps rows in
 test-call.R).
+
+## 2026-10-06 — streaming mizu_map (.stream = TRUE) [(be838b3)]
+
+Validation rows for the streaming map (a sliding submit/collect window
+of fixed x-slices; SHM residency bounded by window x slice, never the
+whole of x). The footprint model confirms at W/C: descriptor-only
+region + W serialized slices = 6.4% of the region path's 15.3 MB for a
+16 MB x (the model's 6.2%). The first read caught a loop pathology:
+the generic-path splice dispatched per element from R (~43 ms/chunk at
+15625-element chunks), which the C splice (mizu_map_vsplice) removes —
+post-fix the trivial-f rows run at/under the region path and big-x
+carries the documented serialized-slice trade-off, not a starvation
+(the template row is the starvation control: no result publishes).
+
+Results (big-x = 2e6 doubles, 16 MB; trivial f = 1e6, 4 workers):
+big-x region 0.581s | stream 0.764s (1.31x); SHM 15.3 MB region |
+0.97 MB stream (6.4%, model 6.2%). trivial f region 0.103s | stream
+0.052s (0.50x); trivial f template region 0.044s | stream 0.046s
+(1.05x). stream chunk sweep auto(128)/32/128/512: 0.70/0.60/0.70/0.18s.
+Suite rows in band (rt 1.00 us, map trivial f 0.10 us/elt, 32 MiB
+template 0.08 us/elt).
+
+Status: full suite 3461 pass, 0 fail (3 expected macOS skips); R CMD
+check 0 errors / 0 warnings / 0 notes.

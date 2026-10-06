@@ -5,7 +5,15 @@
 \alias{mizu_map_run}
 \title{Prepared Maps: Stage Once, Run Many}
 \usage{
-mizu_map_prepare(.pool, .x, .f, ..., .template = NULL, .chunks = NULL)
+mizu_map_prepare(
+  .pool,
+  .x,
+  .f,
+  ...,
+  .template = NULL,
+  .chunks = NULL,
+  .stream = FALSE
+)
 
 mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 }
@@ -32,6 +40,11 @@ argument name passed here never collides with them.}
 
 \item{.chunks}{the morsel count of the map (its scheduling
 granularity), or \code{NULL} for the default. See the Granularity section.}
+
+\item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a
+sliding window instead of staging \code{.x} into shared memory wholesale,
+bounding shared-memory residency by the window times the slice size.
+See the Streaming maps section.}
 
 \item{pm}{a prepared-map handle from \code{\link[=mizu_map_prepare]{mizu_map_prepare()}}.}
 
@@ -98,7 +111,10 @@ the region. This runs the iterate-over-same-shape loop (optimizer
 steps, simulation sweeps) at memcpy cost, skipping the region create
 and the re-attach of every worker. Any other change of \code{.x} — a
 different shape or type, a list, a map staged inline — restages
-transparently on the next run.
+transparently on the next run. A streaming prepared map keeps \code{.x}
+submitter-side, so a replacement \code{.x} of any shape simply re-slices on
+the next run — only a length change under \code{.template} restages (the
+output area is sized for the staged length).
 }
 
 \examples{

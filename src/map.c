@@ -300,6 +300,83 @@ SEXP mizu_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
   return map_slice_copy(mh, (uint64_t) lo, (uint64_t) hi);
 }
 
+/* Submitter-side x slice [lo, hi] for a streaming map's chunk payload:
+   one owning vector, names dropped (they stay submitter-side for
+   assembly). The element-read discipline mirrors mizu_map_batch: an
+   atomic non-ALTREP x is one allocVector + memcpy; an ALTREP with a data
+   block behind it (a received mizu/mori view) memcpy's the shared pages
+   through DATAPTR_OR_NULL — never the writable accessors, so no COW
+   materialization of the whole vector and no early zc release; an ALTREP
+   without data slices per element for the compact sequences (base R's
+   only no-data atomic ALTREPs — a DATAPTR request would materialize
+   wholesale), while any other — a foreign class — materializes through
+   its own DATAPTR method into the memcpy path. Class-only integer64
+   re-applies the class through the wire allocator (the MIZU_TYPE_INT64
+   discipline). STRSXP / VECSXP / EXPRSXP slice per element (shallow). */
+SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
+  double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
+  const SEXPTYPE xt = TYPEOF(x);
+  /* the type gate ahead of the range gate: a wrong type reports itself,
+     not XLENGTH's generic error */
+  switch (xt) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+  case STRSXP: case VECSXP: case EXPRSXP:
+    break;
+  default:
+    Rf_error("mizu: unsupported stream slice type");
+  }
+  if (!(lo >= 1) || !(hi >= lo) || hi > (double) XLENGTH(x))
+    Rf_error("mizu: invalid stream slice range");
+  const R_xlen_t l0 = (R_xlen_t) lo - 1;
+  const R_xlen_t len = (R_xlen_t) (hi - lo + 1);
+  switch (xt) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP: {
+    const int i64 = xt == REALSXP && mizu_view_is_int64(x);
+    const int wt = i64 ? MIZU_TYPE_INT64 : (int) xt;
+    const size_t elt = mizu_view_sizeof_elt(wt);
+    const void *src = ALTREP(x) ? DATAPTR_OR_NULL(x) : mizu_vec_ptr(x);
+    /* a no-data ALTREP outside the compact sequences is a foreign class:
+       materialize through its own DATAPTR method */
+    if (src == NULL && xt != INTSXP && xt != REALSXP) src = DATAPTR_RO(x);
+    if (src != NULL) {
+      SEXP out = PROTECT(mizu_wire_alloc(wt, len));
+      memcpy(mizu_vec_ptr(out),
+             (const unsigned char *) src + (size_t) l0 * elt,
+             (size_t) len * elt);
+      UNPROTECT(1);
+      return out;
+    }
+    /* compact sequences: per-element accessors, no DATAPTR — a compact
+       sequence would materialize wholesale through it */
+    SEXP out = PROTECT(Rf_allocVector(xt, len));
+    if (xt == INTSXP) {
+      for (R_xlen_t i = 0; i < len; i++)
+        INTEGER(out)[i] = INTEGER_ELT(x, l0 + i);
+    } else {
+      for (R_xlen_t i = 0; i < len; i++)
+        REAL(out)[i] = REAL_ELT(x, l0 + i);
+    }
+    UNPROTECT(1);
+    return out;
+  }
+  case STRSXP: {
+    SEXP out = PROTECT(Rf_allocVector(STRSXP, len));
+    for (R_xlen_t i = 0; i < len; i++)
+      SET_STRING_ELT(out, i, STRING_ELT(x, l0 + i));
+    UNPROTECT(1);
+    return out;
+  }
+  /* VECSXP / EXPRSXP — the pre-switch gate admits nothing else */
+  default: {
+    SEXP out = PROTECT(Rf_allocVector(xt, len));
+    for (R_xlen_t i = 0; i < len; i++)
+      SET_VECTOR_ELT(out, i, VECTOR_ELT(x, l0 + i));
+    UNPROTECT(1);
+    return out;
+  }
+  }
+}
+
 /* Template-path write of element e's value at its disjoint output-area
    offset. "Like vapply" means exactly vapply, coercions included: exact
    type memcpys, an upward coercion (logical -> integer -> double ->
@@ -579,6 +656,22 @@ SEXP mizu_map_splice(SEXP out, SEXP results, SEXP ms_sexp) {
         SET_VECTOR_ELT(out, lo - 1 + i, VECTOR_ELT(bv, i));
     }
   }
+  return R_NilValue;
+}
+
+/* Streaming-path assembly: one chunk's batch value list into out at its
+   element offset — the pointer-copy half of the region path's
+   mizu_map_splice, per chunk rather than per runner (an R-level `[<-`
+   would dispatch per element). */
+SEXP mizu_map_vsplice(SEXP out, SEXP lo_sexp, SEXP vals) {
+  if (TYPEOF(out) != VECSXP || TYPEOF(vals) != VECSXP)
+    Rf_error("mizu: invalid map splice arguments");
+  double lo = Rf_asReal(lo_sexp);
+  if (!(lo >= 1) || lo + (double) XLENGTH(vals) - 1 > (double) XLENGTH(out))
+    Rf_error("mizu: invalid map splice range");
+  R_xlen_t base = (R_xlen_t) lo - 1;
+  for (R_xlen_t i = 0; i < XLENGTH(vals); i++)
+    SET_VECTOR_ELT(out, base + i, VECTOR_ELT(vals, i));
   return R_NilValue;
 }
 
