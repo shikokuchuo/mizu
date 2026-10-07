@@ -1,4 +1,4 @@
-#' mizu: Lock-Free Shared-Memory Parallelism for R
+#' mizu: Zero-Copy Shared-Memory Parallelism Across R and Python
 #'
 #' Parallel computation and data exchange between R processes on the same
 #' machine. Lock-free channels and work-stealing task pools over 'POSIX'

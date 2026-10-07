@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: If you use this software, please cite it as below.
-title: "mizu: Lock-free shared-memory parallelism for R"
+title: "mizu: Zero-copy shared-memory parallelism across R and Python"
 authors:
   - family-names: Gao
     given-names: Charlie
