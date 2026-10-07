@@ -35,12 +35,12 @@ library for lock-free shared-memory IPC.
 Python, so R and Python can talk to each other.
 
 - Zero-copy vectors and data frames — received as ALTREP views over the
-  shared pages, never unserialized.
+  shared pages, never unserialized
 - Reproducible parallel randomness (`.seed`), invariant for any worker
-  count or steal order.
+  count or steal order
 - Sentinels, not errors, on hot paths; worker crashes detected at OS
-  latency.
-- R 4.3+ on Linux, macOS, and Windows.
+  latency
+- R 4.3+ on Linux, macOS, and Windows
 
 > **Pre-release.** The API is not stable and may change at any time
 > before a release.

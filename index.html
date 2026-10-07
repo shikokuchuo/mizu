@@ -82,10 +82,10 @@
 <p>The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <ul>
-<li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages, never unserialized.</li>
-<li>Reproducible parallel randomness (<code>.seed</code>), invariant for any worker count or steal order.</li>
-<li>Sentinels, not errors, on hot paths; worker crashes detected at OS latency.</li>
-<li>R 4.3+ on Linux, macOS, and Windows.</li>
+<li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages, never unserialized</li>
+<li>Reproducible parallel randomness (<code>.seed</code>), invariant for any worker count or steal order</li>
+<li>Sentinels, not errors, on hot paths; worker crashes detected at OS latency</li>
+<li>R 4.3+ on Linux, macOS, and Windows</li>
 </ul>
 <blockquote>
 <p><strong>Pre-release.</strong> The API is not stable and may change at any time before a release.</p>
