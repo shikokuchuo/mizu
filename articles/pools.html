@@ -106,6 +106,7 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="va">t</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 500500</span></span></code></pre></div>
+<p><code><a href="../reference/mizu_map.html">mizu_map()</a></code> nests the same way: a task can map over its own pool with <code>mizu_map(mizu_current_pool(), ...)</code> — see <a href="map.html#nested-maps">Nested maps</a>.</p>
 </section><section class="level2"><h2 id="a-default-pool-for-package-code">A default pool for package code<a class="anchor" aria-label="anchor" href="#a-default-pool-for-package-code"></a>
 </h2>
 <p>Package code can read a process-wide default pool with <code><a href="../reference/mizu_default_pool.html">mizu_default_pool()</a></code>. <code><a href="../reference/mizu_default_pool.html">mizu_set_default_pool()</a></code> sets it — <code>NULL</code> clears it — and invisibly returns the previous default, so callers can save and restore. The registry anchors the handle: a pool set as the default stays alive even after its variable is removed. <code><a href="../reference/mizu_default_pool.html">mizu_with_pool()</a></code> scopes the default to an expression, <code><a href="../reference/mizu_default_pool.html">mizu_local_pool()</a></code> to the calling frame. Both restore the previous default on exit.</p>
@@ -143,7 +144,7 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; $total</span></span>
-<span><span class="co">#&gt; [1] 5.532799</span></span>
+<span><span class="co">#&gt; [1] 5.00159</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; $label</span></span>
 <span><span class="co">#&gt; [1] "done"</span></span></code></pre></div>

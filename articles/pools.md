@@ -53,6 +53,11 @@ mizu_collect(t)
 #> [1] 500500
 ```
 
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) nests
+the same way: a task can map over its own pool with
+`mizu_map(mizu_current_pool(), ...)` — see [Nested
+maps](https://shikokuchuo.net/mizu/articles/map.html#nested-maps).
+
 ## A default pool for package code
 
 Package code can read a process-wide default pool with
@@ -127,7 +132,7 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 5.532799
+#> [1] 5.00159
 #> 
 #> $label
 #> [1] "done"

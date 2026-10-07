@@ -38,6 +38,7 @@ Python, so R and Python can talk to each other.
   shared pages, never unserialized
 - Reproducible parallel randomness (`.seed`), invariant for any worker
   count or steal order
+- Nested parallel maps — a task can map over its own pool, deadlock-free
 - Sentinels, not errors, on hot paths; worker crashes detected at OS
   latency
 - R 4.3+ on Linux, macOS, and Windows
@@ -181,10 +182,6 @@ pl.DataFrame(x).group_by('cyl').agg(pl.col('mpg').mean()).sort('cyl')",
   )
 )
 mizu_collect(t)
-#>   cyl      mpg
-#> 1   4 26.66364
-#> 2   6 19.74286
-#> 3   8 15.10000
 
 mizu_pool_stop(p)
 ```
