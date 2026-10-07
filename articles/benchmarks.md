@@ -42,8 +42,8 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu       258.42µs 394.46µs     2198.  480.61KB     27.7
-#> 2 mirai        7.31ms   7.92ms      125.    3.81MB     21.3
+#> 1 mizu        263.1µs  406.8µs     2107.  480.61KB     27.7
+#> 2 mirai         7.5ms   7.96ms      124.    3.81MB     19.9
 ```
 
 End to end, mizu is **20x** faster: every timed run stages the frame,
@@ -74,12 +74,12 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      21.52ms   21.5ms     46.5     30.9MB   976.  
-#> 2 mizu         5.08ms    5.7ms    138.     424.6KB     1.91
-#> 3 mirai      204.99ms  205.4ms      4.87      19MB     2.43
+#> 1 serial      20.07ms  20.07ms     49.8     30.8MB  1047.  
+#> 2 mizu         4.94ms   5.61ms    151.     432.5KB     0   
+#> 3 mirai       202.7ms  202.7ms      4.93      19MB     9.87
 ```
 
-mizu turns the four workers into a **3.8x** gain over the serial loop,
+mizu turns the four workers into a **3.6x** gain over the serial loop,
 and runs **36x** ahead of mirai (medians).
 
 ``` r
@@ -93,3 +93,63 @@ serialization through sockets is unavoidable. On one machine, mizu
 removes that cost — an order of magnitude on data movement, and per-task
 overhead low enough that even microsecond-scale tasks profit from
 parallelism.
+
+## How mizu compares
+
+mizu occupies a specific point in the design space: parallelism across
+processes on a single machine, with data moving through shared memory
+instead of serialized copies. The tools below overlap at the edges; the
+differences are in what has to run, how data moves, and where workers
+can live.
+
+| Tool | What runs | How data moves | Best for |
+|----|----|----|----|
+| `parallel` | Nothing beyond base R | Fork copy-on-write (Unix); socket copies from a cluster | Coarse tasks, maximum portability |
+| mirai | Daemon processes | Serialized copies over nanonext sockets | Local or remote workers, HPC clusters |
+| crew | A mirai-based, auto-scaled controller | Same as mirai | Bursty workloads and pipelines |
+| future | A backend (multisession, multicore, mirai, …) | Serialized copies; transport per backend | Backend-agnostic parallel loops |
+| callr | A fresh R process per call | Serialized copies per call | Isolated one-off computations |
+| mizu | Nothing; a package | Shared-memory views, µs handoff | Fine-grained tasks, large vectors and frames, Python interop |
+
+### Base R
+
+`mclapply()` forks workers on Unix — cheap there, because a fork shares
+the parent’s pages copy-on-write — but fork is unavailable on Windows
+and composes poorly with threads, GUI sessions, and some external
+libraries; `parLapply()` over a socket cluster is the portable form and
+serializes every task and result through a socket.
+
+### mirai, crew, and future
+
+mirai dispatches tasks to daemon processes over nanonext sockets, its
+dispatcher working through callbacks rather than as a broker process —
+socket copies are the price of its generality: daemons can run anywhere
+a network reaches, including other machines and HPC clusters, which
+shared memory cannot. crew builds auto-scaling worker management on
+mirai for bursty pipelines.
+
+future layers a backend-agnostic interface over these and other backends
+(multisession, multicore, or mirai itself via future.mirai), so code
+ports between them unchanged; the cost of that abstraction is much
+higher per-task overhead than either mirai or crew, ahead of the
+backend’s own transport.
+
+### callr
+
+callr answers a different question — evaluating R code in a fresh,
+isolated session with no carry-over of state — and pays for the
+isolation with a process spawn and a serialized round trip per call. It
+is the right tool for one-off isolation, not for dividing a loop.
+
+### The one thing only mizu does
+
+A pool whose workers are Python processes, exchanging vectors and data
+frames as shared-memory views ([Python
+interop](https://shikokuchuo.net/mizu/articles/interop.md)). None of the
+tools above cross the language boundary.
+
+The short version: choose mizu when the work fits one machine, when
+tasks are fine-grained or vectors and frames large, or when Python needs
+to be in the loop; choose mirai or crew when workers must run on other
+machines or under a scheduler, future when code must port across
+backends, and callr when a task needs a pristine session.

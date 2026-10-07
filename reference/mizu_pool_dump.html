@@ -114,18 +114,18 @@ this handle parked waiting for a result).</p>
 <span class="r-in"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu">mizu_pool_dump</span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $name</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_1b2f_e3ee9c19"</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_1aed_b22c72e2"</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $shutdown</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $workers</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   slot status  pid park_state parked top bottom in_flight</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 8190     parked   TRUE   0      0        -1</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 8154     parked   TRUE   0      0        -1</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $submitters</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   slot status  pid rs_start rs_count queued ready full_waiter</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 6959        0      512      0 FALSE       FALSE</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 6893        0      512      0 FALSE       FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2    1   free    0        0        0      0 FALSE       FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 3    2   free    0        0        0      0 FALSE       FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 4    3   free    0        0        0      0 FALSE       FALSE</span>
@@ -168,7 +168,7 @@ this handle parked waiting for a result).</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] 31</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-in"><span><span class="fu"><a href="mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="va">t</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.3884493</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.9625173</span>
 <span class="r-in"><span><span class="fu"><a href="mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-in"><span></span></span>
 </code></pre></div>
