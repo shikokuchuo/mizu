@@ -32,22 +32,12 @@ The hot path stays in user space: single-producer single-consumer rings with bat
 mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 [pymizu](https://github.com/shikokuchuo/pymizu) binds the same core for Python, so R and Python can talk to each other.
 
-Pre-release.
-The API is not stable and may change at any time before a release.
+- Zero-copy vectors and data frames — received as ALTREP views over the shared pages, never unserialized
+- Reproducible parallel randomness (`.seed`), invariant for any worker count or steal order
+- Sentinels, not errors, on hot paths; worker crashes detected at OS latency
+- R 4.3+ on Linux, macOS, and Windows
 
-## Use cases
-
-### Parallelize R at thread granularity
-
-A task measured in microseconds costs more to move over a socket than to run, so socket-based backends only pay off for coarse jobs.
-mizu hands off a task in shared memory and wakes one worker, so functions measured in microseconds parallelize profitably across cores.
-See [Benchmarks](#benchmarks).
-
-### Orchestrate Python workers from R
-
-`mizu_py_launcher()` and `mizu_py_pool_launcher()` spawn Python processes as channel peers or pool workers, driven by `mizu_call()` specs.
-Data crosses as shared-memory views rather than serialized copies — a numeric vector arrives in Python as a NumPy array, and results come back the same way — so an R session can use Python’s package ecosystem as if it were local.
-See [Python interop](#python-interop).
+> **Pre-release.** The API is not stable and may change at any time before a release.
 
 ## Installation
 
@@ -58,6 +48,18 @@ pak::pak("shikokuchuo/mizu")
 ```
 
 Requires R 4.3 or later on a 64-bit platform (Linux: kernel 5.3 or later).
+
+## Quickstart
+
+``` r
+library(mizu)
+
+p <- mizu_pool(n_workers = 4L)
+t <- mizu_submit(p, sum(x) + y, x = 1:10, y = 100)
+mizu_collect(t)
+#> [1] 155
+mizu_pool_stop(p)
+```
 
 ## Benchmarks
 
@@ -112,6 +114,8 @@ mizu_collect(t)
 
 mizu_pool_stop(p)
 ```
+
+A task error re-raises on collect as a classed condition with its message, call, and fields intact; a dead worker’s claimed tasks fail the same way, detected at OS notification latency with no heartbeats or polling.
 
 ## Parallel map
 

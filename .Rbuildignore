@@ -5,6 +5,8 @@
 ^\.cache$
 ^\.github$
 ^README\.Rmd$
+^CITATION\.cff$
+^CONTRIBUTING\.md$
 ^LICENSE\.md$
 ^tools$
 ^dev$
