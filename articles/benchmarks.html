@@ -207,7 +207,7 @@
 </section><section class="level3"><h3 id="the-one-thing-only-mizu-does">The one thing only mizu does<a class="anchor" aria-label="anchor" href="#the-one-thing-only-mizu-does"></a>
 </h3>
 <p>A pool whose workers are Python processes, exchanging vectors and data frames as shared-memory views (<a href="interop.html">Python interop</a>). None of the tools above cross the language boundary.</p>
-<p>The short version: choose mizu when the work fits one machine, when tasks are fine-grained or vectors and frames large, or when Python needs to be in the loop; choose mirai or crew when workers must run on other machines or under a scheduler, future when code must port across backends, and callr when a task needs a pristine session.</p>
+<p>The short version: choose mizu when the work fits one machine, when tasks are fine-grained or vectors and frames large, or when Python needs to be in the loop; choose mirai or crew when workers must run on other machines or under a scheduler, and callr when a task needs a pristine session.</p>
 </section></section><script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
       var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);

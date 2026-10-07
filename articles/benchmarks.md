@@ -151,5 +151,5 @@ tools above cross the language boundary.
 The short version: choose mizu when the work fits one machine, when
 tasks are fine-grained or vectors and frames large, or when Python needs
 to be in the loop; choose mirai or crew when workers must run on other
-machines or under a scheduler, future when code must port across
-backends, and callr when a task needs a pristine session.
+machines or under a scheduler, and callr when a task needs a pristine
+session.
