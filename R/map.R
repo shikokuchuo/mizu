@@ -1198,14 +1198,17 @@ map_stream_prime <- function(pool, st, deadline) {
 }
 
 # The fail path of a streaming turn, NORET: cancel the outstanding window,
-# then drain the siblings non-blockingly — cancelled and still-executing
-# tasks read as cancelled / pending and are ignored. A worker death
-# reports its chunk's range (the blob-path shape), drained deaths adding
-# theirs; otherwise the minimum-element-index error among those observed
-# raises — first by element index among the elements that ran, the set
-# that ran already depending on completion order. An error carrying no
-# element index is not f's (pool stop, infrastructure) and stays fatal,
-# as the runner path's.
+# then drain the siblings non-blockingly. A blind collect of a
+# just-cancelled task races the worker's cancel consume (its publish or
+# pre-eval skip frees the slot, which a collect reads as already
+# collected), so each sibling is probed first and only a stable terminal
+# outcome (ok / err / died) is collected — pending and cancelled siblings
+# carry no outcome and are ignored. A worker death reports its chunk's
+# range (the blob-path shape), drained deaths adding theirs; otherwise the
+# minimum-element-index error among those observed raises — first by
+# element index among the elements that ran, the set that ran already
+# depending on completion order. An error carrying no element index is not
+# f's (pool stop, infrastructure) and stays fatal, as the runner path's.
 map_stream_fail <- function(st, v, k) {
   died <- NULL
   elts <- NULL
@@ -1223,6 +1226,10 @@ map_stream_fail <- function(st, v, k) {
   map_cancel(st)
   now <- mono_time()
   for (i in seq_along(oi)) {
+    state <- .Call(mizu_pool_task_state, hl[[i]])
+    if (state != "ok" && state != "err" && state != "died") {
+      next
+    }
     w <- .Call(mizu_pool_collect_try, hl[[i]], now)
     if (!is.object(w) || !inherits(w, "mizu_caught")) {
       next

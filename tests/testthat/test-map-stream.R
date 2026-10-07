@@ -394,6 +394,37 @@ test_that("an infrastructure error on a drained sibling stays fatal", {
   pool_end(p)
 })
 
+test_that("the drain ignores a sibling whose cancel the worker consumed", {
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:3 + 0,
+    function(i) if (i == 2) stop("bad") else i,
+    list()
+  )
+  mizu:::map_stream_prime(p[["ctrl"]], st, Inf)
+  expect_identical(pool_step(p), 1L) # chunk 1
+  mizu:::map_stream_turn(p[["ctrl"]], st, Inf) # collects 1, refills 3
+  expect_identical(pool_step(p), 1L) # chunk 2 errors at 2
+  v <- tryCatch(
+    .Call(mizu:::mizu_pool_collect_any, st[["handles"]][st[["oi"]]], 5),
+    error = function(e) e
+  )
+  k <- st[["oi"]][[v[["index"]]]]
+  st[["oi"]] <- st[["oi"]][-v[["index"]]]
+  st[["handles"]][k] <- list(NULL)
+  # a cancelled sibling's slot is freed by the worker's skip, not by a
+  # collect — the drain must not read it as already collected
+  .Call(mizu:::mizu_pool_cancel, st[["handles"]][[3L]])
+  pool_step(p)
+  expect_identical(
+    .Call(mizu:::mizu_pool_task_state, st[["handles"]][[3L]]),
+    "collected"
+  )
+  expect_error(mizu:::map_stream_fail(st, v, k), "bad")
+  pool_end(p)
+})
+
 test_that("one attach per worker per map; the ctx cache serves chunk 2", {
   p <- pool_pair()
   st <- mizu:::map_stage_stream(p[["ctrl"]], 1:10, function(i) i, list())
