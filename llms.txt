@@ -182,6 +182,10 @@ pl.DataFrame(x).group_by('cyl').agg(pl.col('mpg').mean()).sort('cyl')",
   )
 )
 mizu_collect(t)
+#>   cyl      mpg
+#> 1   4 26.66364
+#> 2   6 19.74286
+#> 3   8 15.10000
 
 mizu_pool_stop(p)
 ```
