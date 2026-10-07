@@ -113,3 +113,10 @@ In rough order of desirability: `executeCode()` if available (user-shared sessio
 - Commit messages: single-line subject only, no body.
 - The package has no `NEWS.md` — don't add change bullets.
 - Only push when the user explicitly requests it.
+
+## Pending tasks
+
+- Reword "fork/join-shaped recursive parallelism" in the `mizu_map()` roxygen
+  ("Nested maps" section, `R/map.R`) to plain language — "nested" is the
+  settled term across the README and vignettes (docs added 2026-10-07) —
+  then re-document.

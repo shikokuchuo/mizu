@@ -59,6 +59,8 @@ t <- mizu_submit(
 mizu_collect(t)
 ```
 
+`mizu_map()` nests the same way: a task can map over its own pool with `mizu_map(mizu_current_pool(), ...)` — see [Nested maps](map.html#nested-maps).
+
 ## A default pool for package code
 
 Package code can read a process-wide default pool with `mizu_default_pool()`.

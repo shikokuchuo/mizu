@@ -49,6 +49,7 @@ mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library 
 
 - Zero-copy vectors and data frames — received as ALTREP views over the shared pages, never unserialized
 - Reproducible parallel randomness (`.seed`), invariant for any worker count or steal order
+- Nested parallel maps — a task can map over its own pool, deadlock-free
 - Sentinels, not errors, on hot paths; worker crashes detected at OS latency
 - R 4.3+ on Linux, macOS, and Windows
 

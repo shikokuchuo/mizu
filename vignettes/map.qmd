@@ -80,6 +80,24 @@ vapply(runs, \(r) r[[1L]], numeric(1))
 A run collected with `.collect = "view"` hands its region to the view, so the next run restages into a fresh one.
 The handle pins the staged data and the region for its lifetime; both release at garbage collection.
 
+## Nested maps
+
+A map can nest: `mizu_map(mizu_current_pool(), ...)` inside a task expression uses the evaluating worker’s own handle.
+The runner submissions push straight onto the worker’s own deque, and the blocked collect executes its own runners while idle peers steal the rest: nested maps never deadlock the pool.
+
+``` r
+t <- mizu_submit(
+  p,
+  sum(unlist(mizu_map(mizu_current_pool(), parts, sum))),
+  parts = split(as.numeric(1:100000), rep(1:10, each = 1e4))
+)
+mizu_collect(t)
+#> [1] 5000050000
+```
+
+The first nested map of a worker claims a submitter slot, so at the default `max_submitters = 8` — one held by the controller — at most 7 workers can nest concurrently.
+Raise `max_submitters` for wider nested fan-outs.
+
 ``` r
 mizu_pool_stop(p)
 ```
