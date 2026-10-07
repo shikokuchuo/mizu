@@ -1,25 +1,34 @@
-# rchk (static PROTECT analysis) and valgrind checks in the r-hub containers,
-# which carry the CRAN check configurations:
-# https://github.com/r-hub/containers. Derived from the canonical workflow at
-# https://github.com/r-hub/actions/blob/v1/workflows/rhub.yaml. At manual
-# dispatch, `config` accepts any comma-separated list of R-hub platforms.
+# R-hub's generic GitHub Actions workflow file. Its canonical location is at
+# https://github.com/r-hub/actions/blob/v1/workflows/rhub.yaml
+# You can update this file to a newer version using the rhub2 package:
+#
+# rhub::rhub_setup()
+#
+# It is unlikely that you need to modify this file manually.
 
 name: R-hub
+run-name: >-
+  ${{ github.event.inputs.id || format('Manual run by @{0}', github.triggering_actor) }}:
+  ${{ github.event.inputs.name || github.event.inputs.config }}
 
 on:
-  push:
-    branches: [main, master]
-  pull_request:
   workflow_dispatch:
     inputs:
       config:
-        description: 'A comma separated list of R-hub platforms to use.'
+        description: >-
+          Comma-separated list of R-hub platforms to use.
+          Full list: summary(rhub::rhub_platforms())
         type: string
-        default: 'rchk,valgrind'
-
-permissions: read-all
+        default: 'linux,windows,macos'
+      name:
+        description: 'Run name. You can leave this empty.'
+        type: string
+      id:
+        description: 'Unique ID. You can leave this empty.'
+        type: string
 
 jobs:
+
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -29,11 +38,11 @@ jobs:
     steps:
     # NO NEED TO CHECKOUT HERE
     - uses: r-hub/actions/setup@v1
-      id: rhub-setup
       with:
-        config: ${{ github.event.inputs.config || 'rchk,valgrind' }}
+        config: ${{ github.event.inputs.config }}
+      id: rhub-setup
 
-  containers:
+  linux-containers:
     needs: setup
     if: ${{ needs.setup.outputs.containers != '[]' }}
     runs-on: ubuntu-latest
@@ -43,12 +52,7 @@ jobs:
       matrix:
         config: ${{ fromJson(needs.setup.outputs.containers) }}
     container:
-      # rchk:latest (r-hub/containers, 2026-09-26) broke bcheck: it exits 1
-      # ~100ms after start with no output and zero findings. Pin the last
-      # known-good image until upstream fixes it.
-      image: ${{ matrix.config.label == 'rchk' && 'ghcr.io/r-hub/containers/rchk@sha256:2d3bc86120b0902ca1cde617844085d102e5e2a38631c05d5c142603404c9b0d' || matrix.config.container }}
-      # Docker's 64MB default /dev/shm is too small for the test suite.
-      options: --shm-size=2g
+      image: ${{ matrix.config.container }}
 
     steps:
       - uses: r-hub/actions/checkout@v1
@@ -60,15 +64,6 @@ jobs:
         with:
           token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
-      # The images lack the quarto CLI, needed to build the vignette at
-      # R CMD build. rchk runs its own script on the source tree instead.
-      - name: Install Quarto CLI
-        if: matrix.config.label != 'rchk'
-        run: |
-          curl -sLO https://quarto.org/download/latest/quarto-linux-amd64.tar.gz
-          mkdir -p /opt/quarto
-          tar -xzf quarto-linux-amd64.tar.gz -C /opt/quarto --strip-components=1
-          echo "/opt/quarto/bin" >> "$GITHUB_PATH"
       - uses: r-hub/actions/run-check@v1
         with:
           token: ${{ secrets.RHUB_TOKEN }}
@@ -96,9 +91,9 @@ jobs:
           job-config: ${{ matrix.config.job-config }}
       - uses: r-hub/actions/setup-deps@v1
         with:
-          token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
+          token: ${{ secrets.RHUB_TOKEN }}
       - uses: r-hub/actions/run-check@v1
         with:
-          token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
+          token: ${{ secrets.RHUB_TOKEN }}
