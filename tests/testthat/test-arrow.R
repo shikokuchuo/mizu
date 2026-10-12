@@ -454,8 +454,12 @@ test_that("a depth-2 remote borrow flattens to the final region", {
   on.exit(channel_end(fx[["p"]]))
   poke_remote(fx, len = length(x)) # B's entry 0 -> aname[1]
   bname <- .Call(mizu:::mizu_zc_view_name, fx[["yb"]])
-  mizu_send(fx[["p"]][["host"]], list(runif(40000)))
-  yc <- mizu_recv(fx[["p"]][["peer"]], 5)
+  # a second pair for region C: the live views over A and B trip the first
+  # handle's churn fallback on Linux
+  p2 <- channel_pair(arena_size = 0)
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2[["host"]], list(runif(40000)))
+  yc <- mizu_recv(p2[["peer"]], 5)
   rwc <- .Call(
     mizu:::mizu_region_open,
     .Call(mizu:::mizu_zc_view_name, yc),
