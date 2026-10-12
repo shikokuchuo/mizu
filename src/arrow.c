@@ -11,6 +11,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
+   R, where ATTRIB() was still the sanctioned spelling. */
+#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
+#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
+#endif
+
 int mizu_arrow_check(SEXP x) {
   switch (TYPEOF(x)) {
   case ENVSXP:

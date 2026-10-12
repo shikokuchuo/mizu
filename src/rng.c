@@ -38,32 +38,32 @@ static const unsigned long long A2p127[3][3] = {
   { 2824425944ULL,   32183930ULL, 2093834863ULL }
 };
 
-static void mat_vec_mod(const unsigned long long A[3][3],
+static void mat_vec_mod(const unsigned long long *A,
                         const unsigned long long *v,
                         unsigned long long *out, unsigned long long m) {
   for (int i = 0; i < 3; i++) {
     unsigned long long s = 0;
     for (int j = 0; j < 3; j++) {
-      s = (s + (A[i][j] * v[j]) % m) % m;
+      s = (s + (A[i * 3 + j] * v[j]) % m) % m;
     }
     out[i] = s;
   }
 }
 
-static void mat_mat_mod(const unsigned long long A[3][3],
-                        const unsigned long long B[3][3],
+static void mat_mat_mod(const unsigned long long *A,
+                        const unsigned long long *B,
                         unsigned long long out[3][3], unsigned long long m) {
   for (int i = 0; i < 3; i++)
     for (int j = 0; j < 3; j++) {
       unsigned long long s = 0;
       for (int k = 0; k < 3; k++)
-        s = (s + (A[i][k] * B[k][j]) % m) % m;
+        s = (s + (A[i * 3 + k] * B[k * 3 + j]) % m) % m;
       out[i][j] = s;
     }
 }
 
 /* A^k mod m by square-and-multiply: the seek's O(log k). */
-static void mat_pow_mod(const unsigned long long A[3][3], uint64_t k,
+static void mat_pow_mod(const unsigned long long *A, uint64_t k,
                         unsigned long long out[3][3], unsigned long long m) {
   unsigned long long base[3][3], tmp[3][3];
   memcpy(base, A, sizeof(base));
@@ -72,12 +72,12 @@ static void mat_pow_mod(const unsigned long long A[3][3], uint64_t k,
       out[i][j] = i == j;
   while (k != 0) {
     if (k & 1) {
-      mat_mat_mod(out, base, tmp, m);
+      mat_mat_mod(out[0], base[0], tmp, m);
       memcpy(out, tmp, sizeof(tmp));
     }
     k >>= 1;
     if (k != 0) {
-      mat_mat_mod(base, base, tmp, m);
+      mat_mat_mod(base[0], base[0], tmp, m);
       memcpy(base, tmp, sizeof(tmp));
     }
   }
@@ -118,15 +118,15 @@ SEXP mizu_map_rng_seek(SEXP state, SEXP k_sexp) {
   if (!(kd >= 0) || kd > 9.007199254740992e15)
     Rf_error("mizu: invalid stream index");
   unsigned long long P1[3][3], P2[3][3], v1[3], v2[3], o1[3], o2[3];
-  mat_pow_mod(A1p127, (uint64_t) kd, P1, MIZU_RNG_M1);
-  mat_pow_mod(A2p127, (uint64_t) kd, P2, MIZU_RNG_M2);
+  mat_pow_mod(A1p127[0], (uint64_t) kd, P1, MIZU_RNG_M1);
+  mat_pow_mod(A2p127[0], (uint64_t) kd, P2, MIZU_RNG_M2);
   const int *s = INTEGER(state);
   for (int i = 0; i < 3; i++) {
     v1[i] = (unsigned int) s[i];
     v2[i] = (unsigned int) s[i + 3];
   }
-  mat_vec_mod(P1, v1, o1, MIZU_RNG_M1);
-  mat_vec_mod(P2, v2, o2, MIZU_RNG_M2);
+  mat_vec_mod(P1[0], v1, o1, MIZU_RNG_M1);
+  mat_vec_mod(P2[0], v2, o2, MIZU_RNG_M2);
   SEXP out = Rf_allocVector(INTSXP, 6);
   for (int i = 0; i < 3; i++) {
     INTEGER(out)[i] = (int) o1[i];
