@@ -64,6 +64,9 @@ The full contract, with the NA-sentinel and widening rules per dtype, is the dty
 
 The frame exchange extends to Arrow producers directly: an `arrow` Table, RecordBatch, or RecordBatchReader — and any struct-typed `nanoarrow_array_stream` or `nanoarrow_array`, which covers `DBI::dbGetQueryArrow()`, duckdb, adbc, and polars outputs — stages straight off the Arrow buffers, one layout write into the shared region rather than a conversion to R values first.
 The receiver gets an ordinary `data.frame`, each column a view over the region's pages, and `mizu_as_arrow()` converts back to Arrow: a struct-typed `nanoarrow_array_stream` whose buffers point straight into the shared region for attribute-free double, integer, `integer64`, and character columns, the rest (factors, Date / POSIXct / difftime, logical, raw) converting per column.
+A subset frame, or a new data frame assembled from received columns, also keeps the backing pages.
+The export borrows each column through its original region, and a column re-sent inside a new frame crosses by reference, not by copy.
+If a region's producer exited, only that region's columns fall back to the copy path.
 Two caveats: sending a stream consumes it — a streaming RecordBatchReader is fully materialized at send, source bytes and region resident at once — and fidelity is frame-level, not Arrow-schema-exact (a dictionary returns as a factor, uints widen, an `int32` of `INT32_MIN` reads as `NA`, and a `uint64` past 2^53 crosses as `NA` with a warning at send).
 
 ```{r arrow-data}
@@ -74,6 +77,12 @@ mizu_send(ch, arrow::arrow_table(data.frame(x = runif(1e5), s = rep(c("a", "b", 
 df <- mizu_recv(ch, timeout = 30)
 stream <- mizu_as_arrow(df)
 arrow::as_arrow_table(stream)
+
+# a subset, or a new frame assembled from received columns, borrows the same pages
+sub <- df["x"]
+arrow::as_arrow_table(mizu_as_arrow(sub))
+mixed <- data.frame(x = df$x, y = runif(1e5))
+arrow::as_arrow_table(mizu_as_arrow(mixed))
 mizu_close(ch)
 ```
 
