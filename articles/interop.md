@@ -88,12 +88,17 @@ ordinary `data.frame`, each column a view over the region’s pages, and
 converts back to Arrow: a struct-typed `nanoarrow_array_stream` whose
 buffers point straight into the shared region for attribute-free double,
 integer, `integer64`, and character columns, the rest (factors, Date /
-POSIXct / difftime, logical, raw) converting per column. Two caveats:
-sending a stream consumes it — a streaming RecordBatchReader is fully
-materialized at send, source bytes and region resident at once — and
-fidelity is frame-level, not Arrow-schema-exact (a dictionary returns as
-a factor, uints widen, an `int32` of `INT32_MIN` reads as `NA`, and a
-`uint64` past 2^53 crosses as `NA` with a warning at send).
+POSIXct / difftime, logical, raw) converting per column. A subset frame,
+or a new data frame assembled from received columns, also keeps the
+backing pages. The export borrows each column through its original
+region, and a column re-sent inside a new frame crosses by reference,
+not by copy. If a region’s producer exited, only that region’s columns
+fall back to the copy path. Two caveats: sending a stream consumes it —
+a streaming RecordBatchReader is fully materialized at send, source
+bytes and region resident at once — and fidelity is frame-level, not
+Arrow-schema-exact (a dictionary returns as a factor, uints widen, an
+`int32` of `INT32_MIN` reads as `NA`, and a `uint64` past 2^53 crosses
+as `NA` with a warning at send).
 
 ``` r
 
@@ -107,6 +112,19 @@ arrow::as_arrow_table(stream)
 #> 100000 rows x 2 columns
 #> $x <double>
 #> $s <large_string>
+
+# a subset, or a new frame assembled from received columns, borrows the same pages
+sub <- df["x"]
+arrow::as_arrow_table(mizu_as_arrow(sub))
+#> Table
+#> 100000 rows x 1 columns
+#> $x <double>
+mixed <- data.frame(x = df$x, y = runif(1e5))
+arrow::as_arrow_table(mizu_as_arrow(mixed))
+#> Table
+#> 100000 rows x 2 columns
+#> $x <double>
+#> $y <double>
 mizu_close(ch)
 ```
 
@@ -132,7 +150,7 @@ stages it:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.2350326 0.4209946 0.7069910
+#> [1] 0.1980602 0.5397354 0.7745376
 s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -180,23 +198,23 @@ them:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.6597939 0.6597939
+#> [1] 0.1764397 0.1764397
 #> 
 #> [[2]]
-#> [1] 0.02363868 0.02363868
+#> [1] 0.6969044 0.6969044
 #> 
 #> [[3]]
-#> [1] 0.07997163 0.07997163
+#> [1] 0.01163782 0.01163782
 #> 
 #> [[4]]
-#> [1] 0.00981698 0.00981698
+#> [1] 0.2961558 0.2961558
 #> 
 #> [[5]]
-#> [1] 0.2861084 0.2861084
+#> [1] 0.05827685 0.05827685
 #> 
 #> [[6]]
-#> [1] 0.1333596 0.1333596
+#> [1] 0.4727825 0.4727825
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -1.3455733 -0.4019513 -0.8632504 -0.2859470 -0.6970251 -1.0635872
+#> [1] -0.4634369 -1.2202721 -0.5148074 -0.5192409 -1.3174920 -0.5995259
 mizu_pool_stop(p)
 ```

@@ -9,14 +9,14 @@
 ```
 
 mizu makes communication between R processes cheap enough to divide work
-at granularities usually reserved for threads.
+at a granularity usually reserved for threads.
 
-Shared memory has always been the fastest IPC transport. A socket round
-trip costs four system calls and four copies of the data; in shared
-memory, one process reads the bytes the other wrote — the kernel never
+Shared memory is the fastest IPC transport. A socket round trip costs
+four system calls and four copies of the data. In shared memory, one
+process reads the bytes that the other wrote, and the kernel never
 touches the data. mizu handles the synchronization, waiting, and peer
-crashes for you, so a task round trip drops from around 100 µs over
-sockets to under a microsecond — two orders of magnitude (see
+crashes for you. A task round trip drops from around 100 µs over sockets
+to under a microsecond — two orders of magnitude (see
 [Benchmarks](#benchmarks)).
 
 Channels and work-stealing task pools run over POSIX shared memory
@@ -35,15 +35,19 @@ library for lock-free shared-memory IPC.
 Python, so R and Python can talk to each other.
 
 - Zero-copy vectors and data frames — received as ALTREP views over the
-  shared pages, never unserialized
+  shared pages
+- Zero-copy Arrow interchange — `arrow` tables and record batches travel
+  as one frame, and
+  [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md)
+  converts a received frame back to Arrow without copying
 - Reproducible parallel randomness (`.seed`), invariant for any worker
   count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
-- Sentinels, not errors, on hot paths; worker crashes detected at OS
-  latency
+- Sentinels, not errors, on hot paths — and worker crashes detected by
+  the OS, not by polling
 - R 4.3+ on Linux, macOS, and Windows
 
-> **Pre-release.** The API is not stable and may change at any time
+> **Pre-release.** The API is not stable and can change at any time
 > before a release.
 
 ## Installation
@@ -137,15 +141,15 @@ mizu_pool_stop(p)
 ```
 
 A task error re-raises on collect as a classed condition with its
-message, call, and fields intact; a dead worker’s claimed tasks fail the
-same way, detected at OS notification latency with no heartbeats or
+message, call, and fields intact. A dead worker’s claimed tasks fail the
+same way — the OS reports the crash, so detection needs no heartbeats or
 polling.
 
 ## Parallel map
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) maps
 a function over a vector or list on the pool and returns the results in
-input order. The function and data cross into shared memory once; a
+input order. The function and data cross into shared memory once. A
 handful of chunk tasks divide the elements, and each worker
 self-schedules element ranges off a shared cursor.
 
@@ -190,18 +194,18 @@ mizu_collect(t)
 mizu_pool_stop(p)
 ```
 
-A numeric vector arrives in Python as a NumPy array and a data frame as
-a `pymizu.Frame`; a NumPy array, or a polars, pyarrow, or pandas frame,
+A numeric vector arrives in Python as a NumPy array, and a data frame as
+a `pymizu.Frame`. A NumPy array, or a polars, pyarrow, or pandas frame,
 arrives back as a vector or data.frame. Arrow data (`arrow` tables and
 record batches, or any struct-typed `nanoarrow_array_stream`) crosses
 the same way, and
 [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md)
-converts a received frame back to Arrow zero-copy. For a channel peer,
-pass the peer program as a source string (instead of a quoted
+converts a received frame back to Arrow without copying. For a channel
+peer, pass the peer program as a source string (instead of a quoted
 expression) and set the launcher to
 [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md).
 The launchers need a `python3` with pymizu installed. A launcher is one
-function that takes the join token and spawns the peer process; for a
+function that takes the join token and spawns the peer process. For a
 different spawn method, write your own. The pymizu README shows the
 reverse direction: a Python host that drives R workers with
 `pymizu.r_pool_launcher()`.
@@ -209,7 +213,7 @@ reverse direction: a Python host that drives R workers with
 ## Vignettes
 
 [`vignette("mizu", package = "mizu")`](https://shikokuchuo.net/mizu/articles/mizu.md)
-is the overview hub, with topic vignettes on benchmarks against mirai,
+is the overview hub. Topic vignettes cover benchmarks against mirai,
 channels, task pools, the parallel map, Python interop, and operations
 (sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and
 crash semantics). The [pkgdown site](https://shikokuchuo.net/mizu/) has
