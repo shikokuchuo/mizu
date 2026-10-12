@@ -12,10 +12,15 @@ its own upstream repo; this package is its R binding: a `.Call` veneer
 `src/verbs.c`), the SEXP staging/eval hooks (`src/stage_r.c`), and the
 R-only subsystems (the compact codec,
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md), the
-ALTREP view layer). The Python binding is **pymizu** (sibling repo
-`../pymizu`, outside this workspace — editing its files needs the file
-open in an editor or the folder added as a workspace root). 64-bit only;
-Linux needs kernel \>= 5.3 (`pidfd_open`, no fallback).
+ALTREP view layer, and the Arrow frame paths — `R/arrow.R`,
+`src/arrow.c` + `src/arrow.h`: Arrow data stages straight off the Arrow
+buffers via the core’s frame writer, and
+[`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md)
+converts a received frame back to Arrow, zero-copy per borrowable
+column). The Python binding is **pymizu** (sibling repo `../pymizu`,
+outside this workspace — editing its files needs the file open in an
+editor or the folder added as a workspace root). 64-bit only; Linux
+needs kernel \>= 5.3 (`pidfd_open`, no fallback).
 
 ### Commands
 
@@ -107,6 +112,30 @@ sources — mizu is their upstream, and mori vendors them from this repo
 (`mizu_view_` → `mori_`, the libmizu region names → mori’s vendored
 names, and the class names / extptr tags / error prefix onto mori’s
 namespace).
+
+Arrow data is its own path, not the value tiers: the vendored core’s
+`arrow.c` writes the Arrow C Data Interface → MIZL frame (shared with
+pymizu as the byte-identity proof). The send gate lives in
+`mizu_r_stage_channel` (`src/stage_r.c`): `mizu_arrow_check` (two TYPEOF
+compares ahead of any `inherits`) routes to `mizu_arrow_stage_r`, which
+pulls the ABI structs via nanoarrow at R level (`R/arrow.R`’s
+`arrow_batches`; a stream is fully materialized at send),
+size-pre-gates, and calls the core’s `mizu_arrow_stage`; declines and
+below-gate sizes convert the held batches to a value and re-enter the
+value tiers. The receive is
+[`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md):
+`mizu_arrow_borrow_kinds` (chain parse for region + position,
+materialization, the attribute gates, the MIZS encoding gate off the
+directory block) then `mizu_arrow_export` filling off the MIZL
+directory; one holder per call owns a fresh mapping + counted loan with
+an R-free idempotent release (pymizu’s `frame_export` mirrored). Two
+traps: `nanoarrow_array_modify()` returns a modified copy and rebuilds
+the parent’s schema unnamed — re-associate the named struct schema
+before `basic_array_stream()` or the parent re-converts (broken for
+C-provided columns); and the int64 gate for views is
+`mizu_view_is_int64_any` (the strict `mizu_view_is_int64` rejects
+ALTREP). A dead producer unlinks the region name: kinds return zero and
+the export returns `FALSE`, degrading to all-copy with values intact.
 
 The seam: the core moves opaque `(hdr, payload)` frames and never sees a
 SEXP. The binding registers callbacks per handle at create/attach/join
@@ -532,15 +561,22 @@ Also in helper.R: `kill_hard()` / `pid_alive()` (use these —
 and `pskill(pid, 0)` *kills* there; `pid_alive()` is zombie-aware via
 `pid_zombie()`), `wait_until()`, `echo_expr` (the canonical peer echo
 loop) with `channel_end()` for orderly channel teardown, `pool_pull()`
-(moves injection entries onto a worker’s own deque), and
-`skip_if_no_reaper()` (the
+(moves injection entries onto a worker’s own deque), `foreign_pair()` (a
+foreign-hinted `channel_pair` — the host stages interop), `rc_of()` (a
+view’s region refcount/flags), and `skip_if_no_reaper()` (the
 [`mizu_prune()`](https://shikokuchuo.net/mizu/reference/mizu_prune.md)
 orphan-reaping tests need a PID 1 that reaps).
 
-`helper-crosslang.R` provides `skip_if_no_pymizu()` (guards on a
-`python3` with pymizu and NumPy importable) and `py_echo` (the Python
-echo peer); the cross-language tests spawn real Python peers through the
-exported `mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)`.
+`helper-arrow.R` has the Arrow fixtures: `arrow_matrix()` (the
+mapped-type matrix past the region floor, with `want` the R-side
+expectation) and `grab_warnings()`. `helper-crosslang.R` provides
+`skip_if_no_pymizu()` (guards on a `python3` with pymizu and NumPy
+importable), `skip_if_no_pyarrow()` (the Arrow exchange additionally
+needs pyarrow), and `py_echo` (the Python echo peer); the cross-language
+tests spawn real Python peers through the exported
+`mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)`. The probes key
+on `Sys.which("python3")` — prepend `../pymizu/.venv/bin` to `PATH` to
+run them locally against the pymizu dev build.
 
 `test-benchmark.R` is report-only: it prints timings for eyeballing in
 CI logs against the baselines and outcome records in

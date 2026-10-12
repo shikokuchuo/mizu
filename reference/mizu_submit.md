@@ -136,6 +136,6 @@ returns every result in input order.
 p <- mizu_pool()
 t <- mizu_submit(p, sum(x), x = runif(10))
 mizu_collect(t, timeout = 30)
-#> [1] 5.357433
+#> [1] 5.301731
 mizu_pool_stop(p)
 ```

@@ -95,8 +95,8 @@ p <- mizu_pool()
 # same-language pools take specs too
 t <- mizu_submit_call(p, mizu_call("stats::quantile", runif(100)))
 mizu_collect(t)
-#>          0%         25%         50%         75%        100% 
-#> 0.007399441 0.256357024 0.467888899 0.690372972 0.997069135 
+#>         0%        25%        50%        75%       100% 
+#> 0.03167256 0.28760158 0.54435834 0.70977269 0.98961159 
 mizu_pool_stop(p)
 
 if (FALSE) { # \dontrun{
