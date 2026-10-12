@@ -124,18 +124,24 @@ size-pre-gates, and calls the core’s `mizu_arrow_stage`; declines and
 below-gate sizes convert the held batches to a value and re-enter the
 value tiers. The receive is
 [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md):
-`mizu_arrow_borrow_kinds` (chain parse for region + position,
-materialization, the attribute gates, the MIZS encoding gate off the
-directory block) then `mizu_arrow_export` filling off the MIZL
-directory; one holder per call owns a fresh mapping + counted loan with
-an R-free idempotent release (pymizu’s `frame_export` mirrored). Two
-traps: `nanoarrow_array_modify()` returns a modified copy and rebuilds
-the parent’s schema unnamed — re-associate the named struct schema
-before `basic_array_stream()` or the parent re-converts (broken for
-C-provided columns); and the int64 gate for views is
-`mizu_view_is_int64_any` (the strict `mizu_view_is_int64` rejects
-ALTREP). A dead producer unlinks the region name: kinds return zero and
-the export returns `FALSE`, degrading to all-copy with values intact.
+one fused decide-and-fill `.Call` (`mizu_arrow_export(x, arrays)` — R
+pre-allocates the schema-less arrays, so the located geometry never
+leaves C) where every column locates uniformly through its own view
+identifier — a bare root dispatches on the magic (`mizu_mizh_check` /
+`mizu_mizs_check`), a path reads the terminal directory entry through
+the view layer’s `mizu_view_path_entry`, and the region mapping rides
+the `mizu_view_chain_shm` accessor (no fresh open at the decision); the
+materialization and attribute gates and the MIZS encoding gate run at
+the decision. One holder per call owns a fresh mapping + counted loan
+per distinct region with an R-free idempotent release (pymizu’s
+`frame_export` mirrored). Two traps: `nanoarrow_array_modify()` returns
+a modified copy and rebuilds the parent’s schema unnamed — re-associate
+the named struct schema before `basic_array_stream()` or the parent
+re-converts (broken for C-provided columns); and the int64 gate for
+views is `mizu_view_is_int64_any` (the strict `mizu_view_is_int64`
+rejects ALTREP). A dead producer unlinks the region name: that region’s
+acquire fails and only its own columns degrade to the copy path, values
+read off the surviving consumer mappings.
 
 The seam: the core moves opaque `(hdr, payload)` frames and never sees a
 SEXP. The binding registers callbacks per handle at create/attach/join
