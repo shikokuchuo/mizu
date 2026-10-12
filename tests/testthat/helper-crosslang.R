@@ -26,6 +26,28 @@ skip_if_no_pymizu <- function() {
   py
 }
 
+# The Arrow exchange tests additionally need pyarrow in the peer.
+pyarrow_ok <- local({
+  val <- NULL
+  function(py) {
+    if (is.null(val)) {
+      val <<- nzchar(py) &&
+        system2(
+          py,
+          c("-c", shQuote("import pyarrow")),
+          stdout = FALSE,
+          stderr = FALSE
+        ) ==
+          0L
+    }
+    val
+  }
+})
+
+skip_if_no_pyarrow <- function(py) {
+  testthat::skip_if_not(pyarrow_ok(py), "pyarrow not available")
+}
+
 # The Python echo peer: the mirror of echo_expr.
 py_echo <- "
 import pymizu

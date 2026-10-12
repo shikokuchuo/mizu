@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="7b873e077cb81db8f439f9f02e1926484359c11f"  # libmizu: torn-wire validation gaps and lifecycle fixes
+PIN="4c426a9b6952e42e31c78086bd115df9b56c14c5"  # libmizu: the Arrow frame writer (arrow.c)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

@@ -5,7 +5,6 @@
 # refcount transitions deterministic; the death backstop is cross-process.
 
 is_view <- function(x) .Call(mizu:::mizu_zc_view_check, x)
-rc_of <- function(x) .Call(mizu:::mizu_zc_refcount, x) # c(refcount, flags)
 chan_ledger <- function(ch) {
   .Call(mizu:::mizu_channel_stat, ch)[["ledger_entries"]]
 }

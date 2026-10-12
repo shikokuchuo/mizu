@@ -158,6 +158,7 @@ mizu_pool_stop(p)
 ```
 
 A numeric vector arrives in Python as a NumPy array and a data frame as a `pymizu.Frame`; a NumPy array, or a polars, pyarrow, or pandas frame, arrives back as a vector or data.frame.
+Arrow data (`arrow` tables and record batches, or any struct-typed `nanoarrow_array_stream`) crosses the same way, and `mizu_as_arrow()` converts a received frame back to Arrow zero-copy.
 For a channel peer, pass the peer program as a source string (instead of a quoted expression) and set the launcher to `mizu_py_launcher()`.
 The launchers need a `python3` with pymizu installed.
 A launcher is one function that takes the join token and spawns the peer process; for a different spawn method, write your own.

@@ -339,3 +339,124 @@ sys.exit(3)
   expect_s3_class(mizu_recv(ch, 30), "mizu_closed")
   expect_true(mizu_close(ch, timeout = 10))
 })
+
+test_that("an Arrow table crosses to Python as a Frame and echoes back", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pymizu
+import pyarrow as pa
+f = ch.recv(30)
+t = pa.table(f)
+ok = (
+    t.num_rows == 3
+    and t.column_names == ['i', 's']
+    and t.column('i').type == pa.int32()
+    and t.column('s').type == pa.string()
+    and t.column('i').to_pylist() == [1, None, 3]
+    and t.column('s').to_pylist() == ['x', 'y', None]
+)
+ch.send(ok)
+ch.send(t)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  df <- data.frame(i = c(1L, NA, 3L), s = c("x", "y", NA))
+  mizu_send(ch, arrow::arrow_table(df))
+  expect_true(mizu_recv(ch, 30))
+  expect_identical(mizu_recv(ch, 30), df)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a Python peer mutates the frame and returns it", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pymizu
+import pyarrow as pa
+import numpy as np
+f = ch.recv(30)
+t = pa.table(f)
+t = t.append_column('y', pa.array(np.asarray(t['x']) * 2))
+ch.send(t)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  df <- data.frame(x = c(1.5, 2.5, 3.5))
+  mizu_send(ch, arrow::arrow_table(df))
+  expect_identical(mizu_recv(ch, 30), cbind(df, y = df$x * 2))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("Python Arrow sends read as data.frames (front-end and Frame)", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  ch <- mizu_channel(
+    "
+import pymizu
+import pyarrow as pa
+ch.send(pa.table({'x': [1.5, 2.5], 's': ['a', None]}))
+t = pa.table({'t': pa.array([1704067200500000, None], type=pa.timestamp('us'))})
+ch.send(pymizu.Frame.from_arrow(t))
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  expect_identical(
+    mizu_recv(ch, 30),
+    data.frame(x = c(1.5, 2.5), s = c("a", NA))
+  )
+  expect_identical(
+    mizu_recv(ch, 30),
+    data.frame(
+      t = as.POSIXct(
+        c(1704067200.5, NA_real_),
+        origin = "1970-01-01",
+        tz = "UTC"
+      )
+    )
+  )
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a received Python frame exports to Arrow zero-copy", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+t = pa.table({
+    'x': [1.5, None, 3.5] * 3000,
+    'i': pa.array([1, None, 3] * 3000, type=pa.int32()),
+    's': ['a', 'b', None] * 3000,
+    't': pa.array([1704067200500000, None, 1704067200500002] * 3000,
+                  type=pa.timestamp('us')),
+})
+ch.send(t)
+ch.recv(30)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  df <- mizu_recv(ch, 30)
+  st <- mizu_as_arrow(df)
+  tab <- arrow::as_arrow_table(st)
+  types <- vapply(tab$schema$fields, function(f) f$type$ToString(), "")
+  expect_identical(
+    unname(types),
+    c("double", "int32", "large_string", "timestamp[us, tz=UTC]")
+  )
+  back <- as.data.frame(tab)
+  expect_identical(nrow(back), 9000L)
+  expect_identical(sum(is.na(back$x)), 3000L)
+  expect_identical(sum(is.na(back$t)), 3000L)
+  expect_identical(
+    back$t[1],
+    as.POSIXct(1704067200.5, origin = "1970-01-01", tz = "UTC")
+  )
+  mizu_send(ch, 0L)
+  expect_true(mizu_close(ch, timeout = 10))
+})

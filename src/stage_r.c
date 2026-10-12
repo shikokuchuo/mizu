@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "mizu.h"
+#include "arrow.h"
 #include <R_ext/Utils.h>
 
 /* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
@@ -80,6 +81,13 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = MIZU_AUX_F_KEEPERLESS;
+    return 0;
+  }
+  if (mizu_arrow_check(x)) {
+    /* an Arrow frame stages as one MIZL region off the Arrow buffers via
+       the core writer — the frame grammar's own path, ahead of the value
+       tiers (an ArrowTabular environment would otherwise serialize) */
+    mizu_arrow_stage_r(x, hdr, payload, inline_max, h, ctx);
     return 0;
   }
   if ((!foreign || mizu_zc_ref_foreign_ok(x, rh->peer_caps)) &&

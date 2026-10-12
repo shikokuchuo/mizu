@@ -185,6 +185,16 @@ channel_pair <- function(
   list(host = host, peer = peer)
 }
 
+# A foreign channel: the host's peer reports Python with the given
+# capability mask, so the host end stages interop and the (R) peer end
+# reads it back.
+foreign_pair <- function(caps = 0L, ...) {
+  channel_pair(ident = c(3L, as.integer(caps)), ...)
+}
+
+# c(refcount, flags) of the region behind a view; integer(0) otherwise.
+rc_of <- function(x) .Call(mizu:::mizu_zc_refcount, x)
+
 # The canonical peer expression: echo everything until close or host death.
 # An idle timeout is not terminal — under instrumentation (valgrind) the
 # producer can exceed any idle bound — so only other sentinels end the loop.

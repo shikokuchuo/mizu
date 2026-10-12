@@ -22,8 +22,10 @@ BugReports: https://github.com/shikokuchuo/mizu/issues
 Depends:
     R (>= 4.3)
 Suggests:
+    arrow,
     bit64,
     mori,
+    nanoarrow,
     quarto,
     testthat (>= 3.0.0)
 VignetteBuilder:

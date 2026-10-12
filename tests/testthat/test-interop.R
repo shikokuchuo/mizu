@@ -3,12 +3,6 @@
 # suite then pins over real peers. helper-interop.R has the notation
 # parser; the corpus rows live in test-interop-corpus.R.
 
-# A foreign channel: the host's peer reports Python with no capabilities,
-# so the host end stages interop and the (R) peer end reads it back.
-foreign_pair <- function(caps = 0L, ...) {
-  channel_pair(ident = c(3L, as.integer(caps)), ...)
-}
-
 ix_rt <- function(p, x, timeout = 5) {
   mizu_send(p$host, x)
   mizu_recv(p$peer, timeout = timeout)

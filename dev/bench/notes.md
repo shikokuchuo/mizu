@@ -1104,3 +1104,22 @@ template 0.08 us/elt).
 
 Status: full suite 3461 pass, 0 fail (3 expected macOS skips); R CMD
 check 0 errors / 0 warnings / 0 notes.
+
+## 2026-10-12 — the Arrow frame paths vs the conversion baselines
+
+A/B for the Arrow send gate (the core writer off the Arrow buffers) and
+mizu_as_arrow's zero-copy receive export, against the conversions they
+replace (dev/bench/arrow-bench.R): a 2e5-row x 5-col table (double,
+int32, string, dictionary, timestamp[us] — ~6.1 MB as a frame) on one
+channel, bench::mark medians, >= 10 iterations.
+
+Results (send): mizu_send(arrow_table) 1.8 ms, 1.1 MB alloc |
+convert_array_stream + mizu_send(df) 20.0 ms, 8.6 MB alloc (~11x, the
+per-element CHARSXP creation and the second fixed-width copy). Results
+(receive): mizu_as_arrow(frame) 2.2 ms, 2.5 MB alloc |
+as_nanoarrow_array_stream(frame) 10.1 ms, 5.4 MB alloc (~4.6x, the
+borrow vs the full materialize).
+
+Status: full suite 3584 pass, 0 fail (3 expected macOS skips); rchk
+clean (only R's own "too many states" in RunGenCollect / bcEval_loop /
+strptime_internal).

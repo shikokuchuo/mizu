@@ -1,0 +1,62 @@
+is_view <- function(x) .Call(mizu:::mizu_zc_view_check, x)
+
+# The mapped-type matrix, sized so the frame stages as a region (its span
+# past the 32 KiB floor). uint8 stays null-free: a null-bearing one
+# declines (R raw has no NA). float16/float32 columns hold values exact at
+# their width. want is the R-level expectation the receive is compared
+# against.
+arrow_matrix <- function(n = 6000L) {
+  i <- seq_len(n)
+  want <- data.frame(
+    lgl = rep(c(TRUE, FALSE, NA), length.out = n),
+    i8 = rep(c(1L, NA, -3L), length.out = n),
+    i16 = rep(c(300L, NA, -300L), length.out = n),
+    u8 = as.raw(rep(c(0L, 1L, 255L), length.out = n)),
+    u16 = rep(c(0L, NA, 65535L), length.out = n),
+    i32 = rep(c(1L, NA, -300000L), length.out = n),
+    u32 = as.numeric(rep(c(0, NA, 4294967295), length.out = n)),
+    f16 = rep(c(0.5, NA, -2.5), length.out = n),
+    f32 = rep(c(0.5, NA, -2.75), length.out = n),
+    f64 = i + 0.5,
+    str = rep(c("alpha", NA, "héllo ✓"), length.out = n),
+    lstr = rep(c("beta", NA, "γ"), length.out = n),
+    fct = factor(
+      rep(c("a", "b", NA), length.out = n),
+      levels = c("a", "b", "zzz")
+    ),
+    dat = as.Date("2024-01-01") + i %% 100,
+    tms = as.POSIXct("2024-01-01 00:00:00.5", tz = "UTC") + i %% 1000,
+    dur = as.difftime(rep(c(1, NA, 300), length.out = n), units = "secs")
+  )
+  tab <- arrow::arrow_table(
+    lgl = want$lgl,
+    i8 = arrow::Array$create(want$i8)$cast(arrow::int8()),
+    i16 = arrow::Array$create(want$i16)$cast(arrow::int16()),
+    u8 = arrow::Array$create(as.integer(want$u8))$cast(arrow::uint8()),
+    u16 = arrow::Array$create(want$u16)$cast(arrow::uint16()),
+    i32 = want$i32,
+    u32 = arrow::Array$create(want$u32)$cast(arrow::uint32()),
+    f16 = arrow::Array$create(want$f16)$cast(arrow::float16()),
+    f32 = arrow::Array$create(want$f32)$cast(arrow::float32()),
+    f64 = want$f64,
+    str = want$str,
+    lstr = arrow::Array$create(want$lstr)$cast(arrow::large_utf8()),
+    fct = want$fct,
+    dat = want$dat,
+    tms = want$tms,
+    dur = want$dur
+  )
+  list(tab = tab, want = want)
+}
+
+grab_warnings <- function(expr) {
+  ws <- character()
+  withCallingHandlers(
+    expr,
+    warning = function(w) {
+      ws <<- c(ws, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  ws
+}

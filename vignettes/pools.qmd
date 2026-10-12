@@ -107,7 +107,7 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 5.00159
+#> [1] 5.772469
 #> 
 #> $label
 #> [1] "done"

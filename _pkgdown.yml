@@ -37,6 +37,7 @@ reference:
       - mizu_pool_trace
   - title: Cross-language interop
     contents:
+      - mizu_as_arrow
       - mizu_call
       - mizu_launcher
       - mizu_py_launcher
