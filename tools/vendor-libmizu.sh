@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="4c426a9b6952e42e31c78086bd115df9b56c14c5"  # libmizu: the Arrow frame writer (arrow.c)
+PIN="52820ea4878f5ef5c76507cf4b48fe7efa3ebfd2"  # libmizu: the verbatim nanosecond temporal form
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
