@@ -460,3 +460,39 @@ ch.recv(30)
   mizu_send(ch, 0L)
   expect_true(mizu_close(ch, timeout = 10))
 })
+
+test_that("mizu_as_arrow borrows pymizu's matched remote columns", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+import pyarrow.compute as pc
+f = ch.recv(60)
+t = pa.table(f)                    # the registered export
+x2 = pc.multiply(t.column('x'), 2)
+t2 = t.set_column(t.schema.get_field_index('x'), 'x', x2)
+ch.send(t2)                        # i and l cross as remote leaves
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  df <- data.frame(i = 1:300000, x = runif(300000), l = 1:300000)
+  mizu_send(ch, arrow::arrow_table(df))
+  y <- mizu_recv(ch, 60)
+  expect_true(.Call(mizu:::mizu_zc_view_check, y[["i"]]))
+  expect_true(.Call(mizu:::mizu_zc_view_check, y[["l"]]))
+  invisible(y[["x"]]) # resolve + cache before the base read
+  base <- rc_of(y[["i"]])[1L]
+  st <- mizu_as_arrow(y)
+  # one export loan on the sent frame's region across both matched columns
+  expect_identical(rc_of(y[["i"]])[1L], base + 1L)
+  tab <- arrow::as_arrow_table(st)
+  back <- as.data.frame(tab)
+  expect_identical(back[["i"]], df[["i"]])
+  expect_identical(back[["l"]], df[["l"]])
+  expect_identical(back[["x"]], 2 * df[["x"]])
+  rm(st, tab, back)
+  expect_true(mizu_close(ch, timeout = 10))
+})

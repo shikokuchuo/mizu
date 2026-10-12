@@ -1,5 +1,22 @@
 is_view <- function(x) .Call(mizu:::mizu_zc_view_check, x)
 
+# The fused decide-and-fill export, driven directly: x's pre-allocated
+# schema-less arrays filled in place off the located regions, the per-column
+# borrow kinds returned (0 = the nanoarrow copy path).
+arrow_export <- function(x) {
+  arrays <- lapply(
+    seq_along(x),
+    function(i) nanoarrow::nanoarrow_allocate_array()
+  )
+  list(kinds = .Call(mizu:::mizu_arrow_export, x, arrays), arrays = arrays)
+}
+
+# Read a filled borrowed array back as an R vector.
+array_value <- function(array, schema) {
+  nanoarrow::nanoarrow_array_set_schema(array, schema)
+  nanoarrow::convert_array(array)
+}
+
 # The mapped-type matrix, sized so the frame stages as a region (its span
 # past the 32 KiB floor). uint8 stays null-free: a null-bearing one
 # declines (R raw has no NA). float16/float32 columns hold values exact at

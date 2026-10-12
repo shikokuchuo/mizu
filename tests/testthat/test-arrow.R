@@ -221,8 +221,11 @@ test_that("mizu_as_arrow borrows the borrowable columns", {
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
-  df <- data.frame(x = runif(6000), i = seq_len(6000) + 0L,
-                   s = rep(c("alpha", "beta", NA), length.out = 6000))
+  df <- data.frame(
+    x = runif(6000),
+    i = seq_len(6000) + 0L,
+    s = rep(c("alpha", "beta", NA), length.out = 6000)
+  )
   df$x[2] <- NA
   df$i[3] <- NA
   mizu_send(p$host, arrow::arrow_table(df))
@@ -292,7 +295,10 @@ test_that("mizu_as_arrow exports integer64 as int64", {
   skip_if_not_installed("bit64")
   p <- channel_pair()
   on.exit(channel_end(p))
-  df <- data.frame(i64 = bit64::as.integer64(c(1:3, NA, seq_len(6000))), x = 1:6004)
+  df <- data.frame(
+    i64 = bit64::as.integer64(c(1:3, NA, seq_len(6000))),
+    x = 1:6004
+  )
   mizu_send(p$host, arrow::arrow_table(df))
   out <- mizu_recv(p$peer, 5)
   tab <- arrow::as_arrow_table(mizu_as_arrow(out))
@@ -333,4 +339,273 @@ test_that("a latin1 string column takes the copy path", {
   expect_s3_class(st, "nanoarrow_array_stream")
   back <- arrow::as_arrow_table(st)
   expect_identical(as.data.frame(back)$s, df$s)
+})
+
+test_that("a relayed frame borrows remote and local columns uniformly", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x1 <- runif(20000)
+  x2 <- seq_len(20000) + 0L
+  mizu_send(p$host, list(x1, x2))
+  ya <- mizu_recv(p$peer, 5)
+  b <- runif(20000)
+  # both views nest as remote leaves; b crosses as the frame's own leaf
+  mizu_send(p$peer, data.frame(a = ya[[1L]], a2 = ya[[2L]], b = b))
+  out <- mizu_recv(p$host, 5)
+  invisible(out$a) # resolve + cache the remote views before the base read
+  invisible(out$a2)
+  base <- rc_of(ya[[1L]])[1L]
+  st <- mizu_as_arrow(out)
+  expect_identical(rc_of(ya[[1L]])[1L], base + 1L) # one loan for two remotes
+  tab <- arrow::as_arrow_table(st)
+  expect_identical(as.data.frame(tab), data.frame(a = x1, a2 = x2, b = b))
+  rm(st, tab)
+  gc()
+  gc()
+  gc() # the release cascade runs one generation per pass
+  expect_identical(rc_of(ya[[1L]])[1L], base)
+  ex <- arrow_export(out)
+  expect_identical(ex$kinds, c(1L, 2L, 1L))
+})
+
+test_that("relayed root views borrow through the rc-0 arms", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # the MIZS arm: an unadorned string view crosses as a remote leaf
+  v <- rep(c("alpha", "beta", NA, "héllo ✓"), length.out = 40000)
+  mizu_send(p$host, v)
+  sv <- mizu_recv(p$peer, 5)
+  b <- runif(40000)
+  mizu_send(p$peer, data.frame(s = sv, b = b))
+  out <- mizu_recv(p$host, 5)
+  ex <- arrow_export(out)
+  expect_identical(ex$kinds, c(4L, 1L))
+  expect_identical(
+    array_value(ex$arrays[[1L]], nanoarrow::na_large_string()),
+    v
+  )
+  expect_identical(array_value(ex$arrays[[2L]], nanoarrow::na_double()), b)
+  rm(ex)
+  # the MIZH arm: a classed (never REF-able) integer64 view rides the
+  # serialize path and resolves as a bare root view
+  i64 <- bit64::as.integer64(c(1, 2, NA, seq_len(40000)))
+  mizu_send(p$host, i64)
+  iv <- mizu_recv(p$peer, 5)
+  b <- runif(40003)
+  mizu_send(p$peer, data.frame(l = iv, b = b))
+  out <- mizu_recv(p$host, 5)
+  ex <- arrow_export(out)
+  expect_identical(ex$kinds, c(3L, 0L))
+  back <- array_value(ex$arrays[[1L]], nanoarrow::na_int64())
+  expect_identical(sum(is.na(back)), 1L) # the sentinel scan's owned bitmap
+  expect_identical(bit64::as.integer64(back), i64)
+})
+
+test_that("the export borrows a crafted remote column (path target)", {
+  skip_if_not_installed("nanoarrow")
+  x <- runif(50000)
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x))
+  col <- fx[["yb"]][[1L]]
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 1L)
+  expect_identical(array_value(ex$arrays[[1L]], nanoarrow::na_double()), x)
+})
+
+test_that("the export borrows a crafted remote int64 column with NA", {
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  x <- bit64::as.integer64(c(1, 2, NA, seq_len(50000)))
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x))
+  col <- fx[["yb"]][[1L]]
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 3L)
+  back <- array_value(ex$arrays[[1L]], nanoarrow::na_int64())
+  expect_identical(sum(is.na(back)), 1L) # a same-language region: sentinel scan
+  expect_identical(bit64::as.integer64(back), x)
+})
+
+test_that("the export borrows a crafted remote string column with NA", {
+  skip_if_not_installed("nanoarrow")
+  x <- rep(c("alpha", NA, "héllo ✓"), length.out = 50000)
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x))
+  col <- fx[["yb"]][[1L]]
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 4L)
+  back <- array_value(ex$arrays[[1L]], nanoarrow::na_large_string())
+  expect_identical(sum(is.na(back)), sum(is.na(x))) # the block-validity count
+  expect_identical(back, x)
+})
+
+test_that("a depth-2 remote borrow flattens to the final region", {
+  skip_if_not_installed("nanoarrow")
+  x <- runif(50000)
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x)) # B's entry 0 -> aname[1]
+  bname <- .Call(mizu:::mizu_zc_view_name, fx[["yb"]])
+  mizu_send(fx[["p"]][["host"]], list(runif(40000)))
+  yc <- mizu_recv(fx[["p"]][["peer"]], 5)
+  rwc <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, yc),
+    TRUE
+  )
+  poke_remote(list(rw = rwc), id = paste0(bname, "[1]"), len = length(x))
+  col <- yc[[1L]] # C -> bname[1] -> aname[1]: the resolve recursion flattens
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 1L)
+  expect_identical(array_value(ex$arrays[[1L]], nanoarrow::na_double()), x)
+})
+
+test_that("a mixed-region frame borrows each view column off its region", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(6000)
+  mizu_send(p$host, data.frame(x = x, s = rep(c("a", "b", NA), 2000)))
+  f1 <- mizu_recv(p$peer, 5)
+  y <- seq_len(6000) + 0
+  mizu_send(p$host, data.frame(y = y, s = rep(c("a", "b", NA), 2000)))
+  f2 <- mizu_recv(p$peer, 5)
+  r1 <- rc_of(f1$x)[1L]
+  r2 <- rc_of(f2$y)[1L]
+  ex <- arrow_export(data.frame(a = f1$x, b = f2$y, c = y))
+  expect_identical(ex$kinds, c(1L, 1L, 0L))
+  expect_identical(rc_of(f1$x)[1L], r1 + 1L) # one loan per region
+  expect_identical(rc_of(f2$y)[1L], r2 + 1L)
+  expect_identical(array_value(ex$arrays[[1L]], nanoarrow::na_double()), x)
+  expect_identical(array_value(ex$arrays[[2L]], nanoarrow::na_double()), y)
+})
+
+test_that("a subset frame borrows its live view columns", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(
+    x = runif(6000),
+    s = rep(c("a", "b", NA), length.out = 6000),
+    z = seq_len(6000) + 0L
+  )
+  mizu_send(p$host, df)
+  f <- mizu_recv(p$peer, 5)
+  ex <- arrow_export(f[1:2]) # a materialized frame of live views
+  expect_identical(ex$kinds, c(1L, 4L))
+  expect_identical(array_value(ex$arrays[[1L]], nanoarrow::na_double()), df$x)
+  expect_identical(
+    array_value(ex$arrays[[2L]], nanoarrow::na_large_string()),
+    df$s
+  )
+})
+
+test_that("a received vector assembled into a data.frame borrows", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  v <- rep(c("alpha", NA, "héllo"), length.out = 40000)
+  mizu_send(p$host, v)
+  sv <- mizu_recv(p$peer, 5)
+  ex <- arrow_export(data.frame(s = sv))
+  expect_identical(ex$kinds, 4L)
+  expect_identical(
+    array_value(ex$arrays[[1L]], nanoarrow::na_large_string()),
+    v
+  )
+})
+
+test_that("duplicated columns borrow off one loan", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(6000)
+  mizu_send(p$host, data.frame(x = x, s = rep(c("a", "b", NA), 2000)))
+  f <- mizu_recv(p$peer, 5)
+  base <- rc_of(f$x)[1L]
+  ex <- arrow_export(data.frame(a = f$x, a2 = f$x))
+  expect_identical(ex$kinds, c(1L, 1L))
+  expect_identical(rc_of(f$x)[1L], base + 1L)
+})
+
+test_that("a latin1-marked remote string column copies", {
+  skip_if_not_installed("arrow")
+  x <- rep(c("héllo", "plain"), length.out = 50000)
+  Encoding(x) <- ifelse(x == "héllo", "latin1", "unknown")
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x))
+  col <- fx[["yb"]][[1L]]
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 0L)
+  back <- arrow::as_arrow_table(mizu_as_arrow(data.frame(s = col)))
+  expect_identical(as.data.frame(back)$s, x)
+})
+
+test_that("a materialized remote column copies", {
+  skip_if_not_installed("nanoarrow")
+  x <- runif(50000)
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x))
+  col <- fx[["yb"]][[1L]]
+  col[1L] <- -col[1L] # COW: no longer the SHM-backed view
+  x[1L] <- -x[1L]
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 0L)
+  expect_identical(col, x)
+})
+
+test_that("a dead referenced region degrades only its own columns", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("arrow")
+  p1 <- channel_pair()
+  x <- runif(50000)
+  mizu_send(p1[["host"]], list(x))
+  ya <- mizu_recv(p1[["peer"]], 5)
+  p2 <- channel_pair()
+  on.exit(channel_end(p2))
+  b <- runif(50000)
+  mizu_send(p2[["host"]], data.frame(a = ya[[1L]], b = b))
+  frame <- mizu_recv(p2[["peer"]], 5)
+  col <- frame$a # resolve before the teardown (the cache carries it)
+  expect_true(is_view(col))
+  channel_end(p1) # A unlinks; the received views' own mappings survive
+  back <- as.data.frame(arrow::as_arrow_table(mizu_as_arrow(frame)))
+  expect_identical(back$a, x) # values intact — assert values, never the locus
+  expect_identical(back$b, b)
+})
+
+test_that("an orphaned referenced region still borrows", {
+  skip_if_no_child_mizu()
+  skip_if_not_installed("nanoarrow")
+  ch <- mizu_channel(
+    quote({
+      mizu_send(ch, list(runif(100000)))
+      Sys.sleep(30)
+    }),
+    arena_size = 0
+  )
+  ya <- mizu_recv(ch, 30)
+  col <- ya[[1L]]
+  expect_true(is_view(col))
+  expected <- as.numeric(col)
+  kill_hard(.Call(mizu:::mizu_channel_stat, ch)[["peer_pid"]])
+  expect_s3_class(mizu_recv(ch, 30), "mizu_peer_gone")
+  ex <- arrow_export(list(col)) # the name survives a hard kill: the borrow
+  expect_identical(ex$kinds, 1L)
+  expect_identical(
+    array_value(ex$arrays[[1L]], nanoarrow::na_double()),
+    expected
+  )
+  expect_true(mizu_close(ch, 10))
 })

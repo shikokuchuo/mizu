@@ -1,11 +1,15 @@
-/* The R binding's Arrow send path: the class gate (mizu_arrow_check) and
+/* The R binding's Arrow paths. Send: the class gate (mizu_arrow_check) and
    the frame stage (mizu_arrow_stage_r) over the core's Arrow frame writer
    (vendor/libmizu/arrow.c). The R helpers eval inside the transactional
    guarantee — they complete before any shared-state mutation; the core
    stage's capability conjunction is the only caps home, and the size
    pre-gate (the region-span proxy) the binding's one tier choice. No pin:
    the frame region is self-contained (every byte copied off the Arrow
-   buffers; no remote leaves from R). */
+   buffers; no remote leaves from R). Receive (mizu_as_arrow): one fused
+   decide-and-fill .Call — every column locates uniformly through its own
+   view identifier (a bare root by magic, a path through
+   mizu_view_path_entry), and one counted loan per distinct region holds
+   the pages the exported arrays point into. */
 
 #include "arrow.h"
 #include <stdlib.h>
@@ -140,90 +144,116 @@ static int arrow_str_enc_ok(const unsigned char *block, int64_t n,
   return 1;
 }
 
-/* One column's borrow kind: the frame's own unmaterialized leaf view
-   (the chain parse pins the region identity and the directory position),
-   attribute-free or class-only integer64, the wire tag agreeing, strings
-   past the encoding gate. A remote or foreign leaf fails the chain parse
-   (it roots elsewhere) and takes the copy path. */
-static int arrow_borrow_kind(SEXP col, const unsigned char *base,
-                             const char *fname, int64_t i,
-                             const mizu_mizl_entry *e) {
-  if (!mizu_view_check(col) || TYPEOF(col) == VECSXP ||
-      R_altrep_data2(col) != R_NilValue)
-    return 0;
-  SEXP id = mizu_view_shm_name(col);
-  if (id == R_NilValue) return 0;
+/* One borrowed column's located geometry: the decision records
+   region-relative offsets (the regions are immutable post-publish, so the
+   holder's fresh mapping at the acquire reads them byte-for-byte); the
+   pre-fill resolves the validity pointer and the null count. */
+typedef struct {
+  R_xlen_t i;              /* the column index in x */
+  mizu_shm *region;        /* resolved at the acquire; NULL = declined */
   char name[MIZU_NAME_MAX];
-  int32_t path[MIZU_VIEW_MAX_PATH];
-  int plen = 0;
-  if (mizu_view_parse_id(CHAR(STRING_ELT(id, 0)), name, sizeof name,
-                         path, &plen) != 1 ||
-      plen != 1 || path[0] != i || strcmp(name, fname) != 0)
-    return 0;
-  const int32_t tag = e->sexptype & ~(int32_t) MIZU_MIZL_S4;
+  int kind;                /* 1..4; zeroed by a failed acquire */
+  int64_t data_off;        /* region-relative: element data / the MIZS block */
+  int64_t length;
+  int64_t voff, vcount;    /* the flattened validity pair (fixed width) */
+  const void *valid;       /* resolved at the pre-fill */
+  int64_t nulls;
+} arrow_col_plan;
+
+/* The candidate borrow kind off the live view alone: TYPEOF, the attr
+   gates, the int64-any probe — no wire tag, no region read. */
+static int arrow_col_kind(SEXP col) {
   switch (TYPEOF(col)) {
   case REALSXP:
-    if (mizu_view_is_int64_any(col))
-      return tag == MIZU_TYPE_INT64 ? ARROW_BORROW_INT64 : 0;
-    return !ANY_ATTRIB(col) && tag == MIZU_TYPE_REAL ? ARROW_BORROW_REAL : 0;
+    if (mizu_view_is_int64_any(col)) return ARROW_BORROW_INT64;
+    return !ANY_ATTRIB(col) ? ARROW_BORROW_REAL : 0;
   case INTSXP:
-    return !ANY_ATTRIB(col) && tag == MIZU_TYPE_INT ? ARROW_BORROW_INT : 0;
+    return !ANY_ATTRIB(col) ? ARROW_BORROW_INT : 0;
   case STRSXP:
-    return !ANY_ATTRIB(col) && tag == MIZU_TYPE_STR &&
-      arrow_str_enc_ok(base + e->data_offset, e->length,
-                       e->data_size - e->attrs_size) ? ARROW_BORROW_STR : 0;
+    return !ANY_ATTRIB(col) ? ARROW_BORROW_STR : 0;
   }
   return 0;
 }
 
-/* Per-column borrow kinds for mizu_as_arrow() (INTSXP(ncols); all zero —
-   the whole-frame copy fallback — when x is not a region-backed frame). */
-SEXP mizu_arrow_borrow_kinds_call(SEXP x) {
-  const R_xlen_t ncols = XLENGTH(x);
-  SEXP kinds = PROTECT(Rf_allocVector(INTSXP, ncols));
-  memset(INTEGER(kinds), 0, (size_t) ncols * sizeof(int));
-  if (!mizu_view_check(x) || TYPEOF(x) != VECSXP) {
-    UNPROTECT(1);
-    return kinds;
+static int32_t arrow_kind_tag(int kind) {
+  switch (kind) {
+  case ARROW_BORROW_REAL:  return MIZU_TYPE_REAL;
+  case ARROW_BORROW_INT:   return MIZU_TYPE_INT;
+  case ARROW_BORROW_INT64: return MIZU_TYPE_INT64;
+  default:                 return MIZU_TYPE_STR;
   }
-  SEXP id = PROTECT(mizu_view_shm_name(x));
-  char fname[MIZU_NAME_MAX];
-  int32_t path[MIZU_VIEW_MAX_PATH];
-  int plen = 0;
-  mizu_shm *shm = NULL;
-  int64_t n = 0, aoff = 0, asz = 0, hv[2];
-  if (id == R_NilValue ||
-      mizu_view_parse_id(CHAR(STRING_ELT(id, 0)), fname, sizeof fname,
-                         path, &plen) != 0 ||
-      mizu_shm_open(&shm, fname) != MIZU_OK ||
-      mizu_mizl_check(mizu_shm_addr(shm), mizu_shm_size(shm), &n, &aoff,
-                      &asz, hv) != 0 ||
-      n != (int64_t) ncols) {
-    if (shm != NULL) mizu_shm_close(shm, 0);
-    UNPROTECT(2);
-    return kinds;
+}
+
+/* The uniform locate: a parsed identifier (rc/path) over an open mapping
+   → the leaf's region-relative geometry in pl. rc 0 dispatches on the
+   magic the way mizu_view_root_descriptor does (MIZH: the tag off the
+   wire type, data at MIZU_HEADER_SIZE, the valid pair; MIZS: the block at
+   MIZU_HEADER_SIZE, str_size the enc-gate body; MIZL declines — a list
+   target wraps as VECSXP and never reaches here). rc 1 reads the terminal
+   directory entry through mizu_view_path_entry, the offsets flattened to
+   region-relative by the leaf-base delta (data_offset, and valid[0] when
+   nonzero). The tag cross-checks against the kind; strings run the
+   encoding gate on the located block. 0 on any rejection. */
+static int arrow_locate(const unsigned char *base, size_t size, int rc,
+                        const int32_t *path, int plen, int kind,
+                        arrow_col_plan *pl) {
+  const int32_t want = arrow_kind_tag(kind);
+  if (rc == 0) {
+    if (size < MIZU_HEADER_SIZE) return 0;
+    uint32_t magic;
+    memcpy(&magic, base, 4);
+    if (magic == MIZU_MAGIC_VEC) {
+      int wire;
+      int64_t n, valid[2];
+      if (mizu_mizh_check(base, size, &wire, &n, valid) != 0 ||
+          wire != want)
+        return 0;
+      pl->data_off = MIZU_HEADER_SIZE;
+      pl->length = n;
+      pl->voff = valid[0];
+      pl->vcount = valid[1];
+      return 1;
+    }
+    if (magic == MIZU_MAGIC_STR) {
+      int64_t n, str_size, attrs;
+      if (mizu_mizs_check(base, size, &n, &str_size, &attrs) != 0 ||
+          want != MIZU_TYPE_STR ||
+          !arrow_str_enc_ok(base + MIZU_HEADER_SIZE, n, str_size))
+        return 0;
+      pl->data_off = MIZU_HEADER_SIZE;
+      pl->length = n;
+      pl->voff = 0;
+      pl->vcount = 0;
+      return 1;
+    }
+    return 0;
   }
-  const unsigned char *base = (const unsigned char *) mizu_shm_addr(shm);
-  const size_t size = mizu_shm_size(shm);
-  for (int64_t i = 0; i < n; i++) {
-    mizu_mizl_entry e;
-    if (mizu_mizl_elem(base, size, i, &e) != 0) break;
-    SEXP col = PROTECT(VECTOR_ELT(x, (R_xlen_t) i));
-    INTEGER(kinds)[i] = arrow_borrow_kind(col, base, fname, i, &e);
-    UNPROTECT(1);
-  }
-  mizu_shm_close(shm, 0);
-  UNPROTECT(2);
-  return kinds;
+  const unsigned char *leaf;
+  mizu_mizl_entry e;
+  if (mizu_view_path_entry(base, (int64_t) size, path, plen, &leaf,
+                           &e) != 0)
+    return 0;
+  const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
+  if (tag != want) return 0;
+  const int64_t delta = leaf - base;
+  if (kind == ARROW_BORROW_STR &&
+      !arrow_str_enc_ok(leaf + e.data_offset, e.length,
+                        e.data_size - e.attrs_size))
+    return 0;
+  pl->data_off = delta + e.data_offset;
+  pl->length = e.length;
+  pl->voff = e.valid[0] != 0 ? delta + e.valid[0] : 0;
+  pl->vcount = e.valid[1];
+  return 1;
 }
 
 // The export holder ---------------------------------------------------------------
 
-/* One fresh view mapping + counted loan on the frame's region
-   (mizu_shm_open_view counts), shared by every borrowed column of one
-   mizu_as_arrow() call; each filled ArrowArray takes one reference
+/* One fresh view mapping + counted loan per distinct region backing a
+   borrowed column (mizu_shm_open_view counts), shared by every column
+   locating into that region; each filled ArrowArray takes one reference
    (private_data + the idempotent release below). The last release subs
-   the loan and unmaps — pure C, callable from any thread (Arrow C++ may
+   the loans and unmaps — pure C, callable from any thread (Arrow C++ may
    drop its last buffer reference off the R thread). */
 typedef struct mizu_arrow_owned_s {
   uint8_t *bmp;
@@ -231,17 +261,34 @@ typedef struct mizu_arrow_owned_s {
 } mizu_arrow_owned;
 
 typedef struct {
-  mizu_shm *shm;
+  mizu_shm **regions;        /* open_view mappings + counted loans */
+  size_t nregions, cap;
   long pid;
   _Atomic size_t refs;
   mizu_arrow_owned *owned;   /* sentinel-derived validity bitmaps */
   const void **bufs;         /* 3 pointers per borrowed column */
 } mizu_arrow_holder;
 
+/* The region named `name`, acquired once per holder: a scan of the
+   acquired set, else a fresh open_view (the counted loan). NULL when the
+   name went away (an orderly producer exit unlinked it). */
+static mizu_shm *holder_acquire(mizu_arrow_holder *hd, const char *name) {
+  for (size_t k = 0; k < hd->nregions; k++)
+    if (strcmp(mizu_shm_name(hd->regions[k]), name) == 0)
+      return hd->regions[k];
+  mizu_shm *reg = NULL;
+  if (mizu_shm_open_view(&reg, name) != MIZU_OK)
+    return NULL;
+  hd->regions[hd->nregions++] = reg;
+  return reg;
+}
+
 static void mizu_arrow_holder_free(mizu_arrow_holder *hd) {
-  if (hd->pid == mizu_self_pid())
-    mizu_zc_unref(hd->shm);        /* a forked child's sub would corrupt it */
-  mizu_shm_close(hd->shm, 0);
+  for (size_t k = 0; k < hd->nregions; k++) {
+    if (hd->pid == mizu_self_pid())
+      mizu_zc_unref(hd->regions[k]); /* a forked child's sub would corrupt it */
+    mizu_shm_close(hd->regions[k], 0);
+  }
   while (hd->owned != NULL) {
     mizu_arrow_owned *nx = hd->owned->next;
     free(hd->owned->bmp);
@@ -249,6 +296,7 @@ static void mizu_arrow_holder_free(mizu_arrow_holder *hd) {
     hd->owned = nx;
   }
   free(hd->bufs);
+  free(hd->regions);
   free(hd);
 }
 
@@ -260,108 +308,137 @@ static void mizu_arrow_array_release(struct ArrowArray *a) {
   mizu_arrow_holder_free(hd);
 }
 
-/* Fill every borrowed column's pre-allocated ArrowArray in place off the
-   frame's MIZL directory: {validity, data} for fixed width (the tail
-   bitmap when the region carries one, NULL when known-NA-free, else a
-   sentinel-derived owned bitmap), {validity, offsets, data} for MIZS
-   verbatim (the encoding gate already ran at the borrow decision). */
-SEXP mizu_arrow_export_call(SEXP x, SEXP idx, SEXP arrays) {
-  if (!mizu_view_check(x) || TYPEOF(x) != VECSXP ||
-      TYPEOF(idx) != INTSXP || TYPEOF(arrays) != VECSXP ||
-      XLENGTH(idx) != XLENGTH(arrays))
+/* The fused decide-and-fill for mizu_as_arrow(): the per-column borrow
+   decision (kinds, the return — all zero is the all-copy shape) and the
+   zero-copy fill of the borrowed columns' pre-allocated ArrowArrays in
+   one call, so the located geometry never leaves C. Every column locates
+   uniformly through its own view identifier — a local frame leaf and a
+   remote leaf alike ({validity, data} for fixed width: the tail bitmap
+   when the region carries one, NULL when known-NA-free, else a
+   sentinel-derived owned bitmap; {validity, offsets, data} for MIZS
+   verbatim, the encoding gate at the decision). A region whose name went
+   away declines only its own columns to the copy path. */
+SEXP mizu_arrow_export_call(SEXP x, SEXP arrays) {
+  if (TYPEOF(x) != VECSXP || TYPEOF(arrays) != VECSXP ||
+      XLENGTH(x) != XLENGTH(arrays))
     Rf_error("mizu: corrupt arrow export call");
-  SEXP id = PROTECT(mizu_view_shm_name(x));
-  if (id == R_NilValue)
-    Rf_error("mizu: the frame has no region");
-  const char *fname = CHAR(STRING_ELT(id, 0));
-  const R_xlen_t nb = XLENGTH(idx);
+  const R_xlen_t n = XLENGTH(x);
+  SEXP kinds = PROTECT(Rf_allocVector(INTSXP, n));
+  memset(INTEGER(kinds), 0, (size_t) n * sizeof(int));
+  arrow_col_plan *plans =
+    (arrow_col_plan *) R_alloc(n != 0 ? n : 1, sizeof(arrow_col_plan));
+  int nb = 0;
+
+  /* Phase 1 — the decision (the only phase that allocates SEXPs; the
+     holder does not exist yet, so a raise leaks nothing). */
+  for (R_xlen_t i = 0; i < n; i++) {
+    SEXP col = PROTECT(VECTOR_ELT(x, i));
+    int kind = mizu_view_check(col) && R_altrep_data2(col) == R_NilValue
+      ? arrow_col_kind(col)
+      : 0;
+    if (kind == 0) {
+      UNPROTECT(1);
+      continue;
+    }
+    SEXP id = PROTECT(mizu_view_shm_name(col));
+    if (id != R_NilValue) {
+      char name[MIZU_NAME_MAX];
+      int32_t path[MIZU_VIEW_MAX_PATH];
+      int plen = 0;
+      const int rc = mizu_view_parse_id(CHAR(STRING_ELT(id, 0)), name,
+                                        sizeof name, path, &plen);
+      mizu_shm *chain = rc >= 0 ? mizu_view_chain_shm(col) : NULL;
+      if (chain != NULL &&
+          arrow_locate((const unsigned char *) mizu_shm_addr(chain),
+                       mizu_shm_size(chain), rc, path, plen, kind,
+                       &plans[nb])) {
+        plans[nb].i = i;
+        plans[nb].region = NULL;
+        memcpy(plans[nb].name, name, sizeof name);
+        plans[nb].kind = kind;
+        INTEGER(kinds)[i] = kind;
+        nb++;
+      }
+    }
+    UNPROTECT(2);
+  }
+  if (nb == 0) {
+    UNPROTECT(1);
+    return kinds;
+  }
+
+  /* Phase 2 — the acquire (no R API): one counted loan per distinct
+     region; a failed open zeroes only that region's plans (the views
+     still read off their own mappings — those columns copy). */
   mizu_arrow_holder *hd = (mizu_arrow_holder *) calloc(1, sizeof *hd);
   if (hd == NULL)
     Rf_error("mizu: allocation failure");
-  hd->bufs = (const void **) calloc((size_t) (nb != 0 ? nb : 1) * 3,
-                                    sizeof(void *));
-  if (hd->bufs == NULL) {
+  hd->regions = (mizu_shm **) calloc((size_t) nb, sizeof(mizu_shm *));
+  hd->bufs = (const void **) calloc((size_t) nb * 3, sizeof(void *));
+  if (hd->regions == NULL || hd->bufs == NULL) {
+    free(hd->regions);
+    free(hd->bufs);
     free(hd);
     Rf_error("mizu: allocation failure");
   }
   atomic_init(&hd->refs, 0);
-  hd->owned = NULL;
-  if (mizu_shm_open_view(&hd->shm, fname) != MIZU_OK) {
-    /* the name went away (the producer exited and unlinked): FALSE sends
-       the caller to the all-copy fallback — the views still read */
-    free(hd->bufs);
-    free(hd);
-    UNPROTECT(1);
-    return Rf_ScalarLogical(FALSE);
-  }
+  hd->cap = (size_t) nb;
   hd->pid = mizu_self_pid();
-  /* the plan pass: validate every entry and allocate every owned bitmap
-     (0xFF-prefilled — the unused high bits read valid), so the fill
-     below cannot fail */
-  unsigned char *base = (unsigned char *) mizu_shm_addr(hd->shm);
-  const size_t size = mizu_shm_size(hd->shm);
-  int64_t n, aoff, asz, hv[2];
-  if (mizu_mizl_check(base, size, &n, &aoff, &asz, hv) != 0) {
-    mizu_arrow_holder_free(hd);
-    Rf_error("mizu: the frame region is corrupt or newer");
+  for (int j = 0; j < nb; j++) {
+    if (plans[j].kind == 0) continue;
+    mizu_shm *reg = holder_acquire(hd, plans[j].name);
+    if (reg != NULL) {
+      plans[j].region = reg;
+      continue;
+    }
+    for (int k = j; k < nb; k++)
+      if (plans[k].kind != 0 && strcmp(plans[k].name, plans[j].name) == 0) {
+        plans[k].kind = 0;
+        INTEGER(kinds)[plans[k].i] = 0;
+      }
   }
-  const void **datas = (const void **) R_alloc(nb, sizeof(void *));
-  const void **valids = (const void **) R_alloc(nb, sizeof(void *));
-  const void **offs = (const void **) R_alloc(nb, sizeof(void *));
-  int64_t *lens = (int64_t *) R_alloc(nb, sizeof(int64_t));
-  int64_t *nulls = (int64_t *) R_alloc(nb, sizeof(int64_t));
-  int32_t *tags = (int32_t *) R_alloc(nb, sizeof(int32_t));
-  for (R_xlen_t j = 0; j < nb; j++) {
-    const int64_t col = (int64_t) INTEGER(idx)[j] - 1;
-    if (col < 0 || col >= n ||
-        R_ExternalPtrAddr(VECTOR_ELT(arrays, j)) == NULL) {
+
+  /* Phase 3a — the pre-fill (the sole fallible step): resolve every live
+     plan's validity pointer and null count off its region mapping,
+     building the sentinel-derived owned bitmaps (0xFF-prefilled — the
+     unused high bits read valid), so the fill below cannot fail. */
+  for (int j = 0; j < nb; j++) {
+    arrow_col_plan *pl = &plans[j];
+    if (pl->kind == 0) continue;
+    if (R_ExternalPtrAddr(VECTOR_ELT(arrays, pl->i)) == NULL) {
       mizu_arrow_holder_free(hd);
       Rf_error("mizu: corrupt arrow export call");
     }
-    mizu_mizl_entry e;
-    if (mizu_mizl_elem(base, size, col, &e) != 0) {
-      mizu_arrow_holder_free(hd);
-      Rf_error("mizu: the frame region is corrupt or newer");
-    }
-    const int32_t tag = e.sexptype & ~(int32_t) MIZU_MIZL_S4;
-    lens[j] = e.length;
-    tags[j] = tag;
-    if (tag == MIZU_TYPE_STR) {
-      mizu_mizs_geom g = mizu_mizs_geometry(e.length);
-      const unsigned char *block = base + e.data_offset;
+    const unsigned char *base =
+      (const unsigned char *) mizu_shm_addr(pl->region);
+    if (pl->kind == ARROW_BORROW_STR) {
+      const unsigned char *block = base + pl->data_off;
+      const mizu_mizs_geom g = mizu_mizs_geometry(pl->length);
       const uint8_t *validity = block + g.validity;
       int64_t nn = 0;
-      for (int64_t k = 0; k < e.length; k++)
+      for (int64_t k = 0; k < pl->length; k++)
         nn += (validity[k >> 3] & (1u << (k & 7))) == 0;
-      datas[j] = block + g.data;
-      offs[j] = block + g.offsets;
-      valids[j] = nn != 0 ? (const void *) validity : NULL;
-      nulls[j] = nn;
+      pl->valid = nn != 0 ? (const void *) validity : NULL;
+      pl->nulls = nn;
       continue;
     }
-    if (tag != MIZU_TYPE_REAL && tag != MIZU_TYPE_INT &&
-        tag != MIZU_TYPE_INT64) {
-      mizu_arrow_holder_free(hd);
-      Rf_error("mizu: column %lld is not borrowable",
-               (long long) (col + 1));
-    }
-    datas[j] = base + e.data_offset;
-    offs[j] = NULL;
-    if (e.valid[0] != 0) {                /* the tail bitmap, verbatim */
-      valids[j] = base + e.valid[0];
-      nulls[j] = e.valid[1];
-    } else if (e.valid[1] == 0) {         /* absent: sentinel-derived */
-      uint8_t *bmp = (uint8_t *) malloc(((size_t) e.length + 7) / 8);
+    if (pl->voff != 0) {                /* the tail bitmap, verbatim */
+      pl->valid = base + pl->voff;
+      pl->nulls = pl->vcount;
+    } else if (pl->vcount == 0) {       /* absent: sentinel-derived */
+      uint8_t *bmp = (uint8_t *) malloc(((size_t) pl->length + 7) / 8);
       if (bmp == NULL) {
         mizu_arrow_holder_free(hd);
         Rf_error("mizu: allocation failure");
       }
-      memset(bmp, 0xFF, ((size_t) e.length + 7) / 8);
-      int64_t nn = (int64_t) mizu_na_build(tag, bmp, datas[j],
-                                           (uint64_t) e.length, 0);
+      memset(bmp, 0xFF, ((size_t) pl->length + 7) / 8);
+      const int64_t nn = (int64_t) mizu_na_build(
+        arrow_kind_tag(pl->kind), bmp, base + pl->data_off,
+        (uint64_t) pl->length, 0
+      );
       if (nn == 0) {
         free(bmp);
-        valids[j] = NULL;
+        pl->valid = NULL;
       } else {
         mizu_arrow_owned *ow = (mizu_arrow_owned *) malloc(sizeof *ow);
         if (ow == NULL) {
@@ -372,29 +449,38 @@ SEXP mizu_arrow_export_call(SEXP x, SEXP idx, SEXP arrays) {
         ow->bmp = bmp;
         ow->next = hd->owned;
         hd->owned = ow;
-        valids[j] = bmp;
+        pl->valid = bmp;
       }
-      nulls[j] = nn;
-    } else {                              /* {0,-1}: known-NA-free */
-      valids[j] = NULL;
-      nulls[j] = 0;
+      pl->nulls = nn;
+    } else {                            /* {0,-1}: known-NA-free */
+      pl->valid = NULL;
+      pl->nulls = 0;
     }
   }
-  for (R_xlen_t j = 0; j < nb; j++) {
+
+  /* Phase 3b — the infallible fill: the ArrowArray fields, 3 buffers for
+     strings, 2 otherwise. */
+  for (int j = 0; j < nb; j++) {
+    arrow_col_plan *pl = &plans[j];
+    if (pl->kind == 0) continue;
     struct ArrowArray *a =
-      (struct ArrowArray *) R_ExternalPtrAddr(VECTOR_ELT(arrays, j));
+      (struct ArrowArray *) R_ExternalPtrAddr(VECTOR_ELT(arrays, pl->i));
+    const unsigned char *base =
+      (const unsigned char *) mizu_shm_addr(pl->region);
     const void **bufs = hd->bufs + 3 * j;
-    a->length = lens[j];
-    a->null_count = nulls[j];
+    a->length = pl->length;
+    a->null_count = pl->nulls;
     a->offset = 0;
-    a->n_buffers = tags[j] == MIZU_TYPE_STR ? 3 : 2;
+    a->n_buffers = pl->kind == ARROW_BORROW_STR ? 3 : 2;
     a->n_children = 0;
-    bufs[0] = valids[j];
-    if (tags[j] == MIZU_TYPE_STR) {
-      bufs[1] = offs[j];
-      bufs[2] = datas[j];
+    bufs[0] = pl->valid;
+    if (pl->kind == ARROW_BORROW_STR) {
+      const mizu_mizs_geom g = mizu_mizs_geometry(pl->length);
+      const unsigned char *block = base + pl->data_off;
+      bufs[1] = block + g.offsets;
+      bufs[2] = block + g.data;
     } else {
-      bufs[1] = datas[j];
+      bufs[1] = base + pl->data_off;
     }
     a->buffers = bufs;
     a->children = NULL;
@@ -404,5 +490,5 @@ SEXP mizu_arrow_export_call(SEXP x, SEXP idx, SEXP arrays) {
     atomic_fetch_add_explicit(&hd->refs, 1, memory_order_relaxed);
   }
   UNPROTECT(1);
-  return Rf_ScalarLogical(TRUE);
+  return kinds;
 }

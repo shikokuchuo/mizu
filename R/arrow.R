@@ -138,7 +138,11 @@ arrow_batches_to_value <- function(schema, batches) {
 #' Columns still backed by their received shared-memory pages export
 #' zero-copy: the stream's buffers point straight into the shared region
 #' for attribute-free double, integer, `integer64`, and character views
-#' (character as `large_string`). Everything else — factors, Date /
+#' (character as `large_string`). This covers any region-backed column —
+#' the frame's own leaves, remote leaves referencing another region, and
+#' root views assembled into a data frame — with one counted loan per
+#' distinct region; a region whose producer exited degrades only its own
+#' columns to the copy path. Everything else — factors, Date /
 #' POSIXct / difftime columns, logical and raw vectors, and materialized
 #' or never-shared columns — converts per column through
 #' `nanoarrow::as_nanoarrow_array()`. The shared region stays mapped
@@ -162,29 +166,25 @@ mizu_as_arrow <- function(x) {
     stop("mizu: expected a data frame", call. = FALSE)
   }
   ns <- arrow_ns()
-  kinds <- .Call(mizu_arrow_borrow_kinds, x)
   n <- length(x)
   arrays <- vector("list", n)
+  for (i in seq_len(n)) {
+    arrays[[i]] <- ns$nanoarrow_allocate_array()
+  }
+  # one fused call: the per-column borrow decision and the zero-copy fill;
+  # kinds[i] == 0L marks every column taking the nanoarrow copy path
+  kinds <- .Call(mizu_arrow_export, x, arrays)
   schemas <- vector("list", n)
   borrowed <- which(kinds != 0L)
-  if (length(borrowed)) {
-    for (i in borrowed) {
-      schemas[[i]] <- switch(
-        kinds[i],
-        ns$na_double(),
-        ns$na_int32(),
-        ns$na_int64(),
-        ns$na_large_string()
-      )
-      arrays[[i]] <- ns$nanoarrow_allocate_array()
-    }
-    if (!isTRUE(.Call(mizu_arrow_export, x, borrowed, arrays[borrowed]))) {
-      borrowed <- integer(0) # the region went away mid-conversion: all-copy
-    } else {
-      for (i in borrowed) {
-        ns$nanoarrow_array_set_schema(arrays[[i]], schemas[[i]])
-      }
-    }
+  for (i in borrowed) {
+    schemas[[i]] <- switch(
+      kinds[i],
+      ns$na_double(),
+      ns$na_int32(),
+      ns$na_int64(),
+      ns$na_large_string()
+    )
+    ns$nanoarrow_array_set_schema(arrays[[i]], schemas[[i]])
   }
   for (i in setdiff(seq_len(n), borrowed)) {
     arrays[[i]] <- tryCatch(

@@ -1878,6 +1878,26 @@ static inline int32_t mizu_view_index_of(SEXP x) {
   }
 }
 
+/* The region mapping a view's keeper chain anchors at — the shm_tag
+   terminus. Borrowed (the view pins it); NULL on a malformed chain or a
+   finalized mapping. Callers gate on mizu_view_check: the chain and the
+   identifier are the same truth, so addr/size match the parsed
+   identifier's region. */
+mizu_shm *mizu_view_chain_shm(SEXP x) {
+  if (!ALTREP(x)) return NULL;
+  SEXP d1 = R_altrep_data1(x);
+  if (TYPEOF(d1) != EXTPTRSXP ||
+      R_ExternalPtrTag(d1) != mizu_view_owned_tag)
+    return NULL;
+  SEXP hop = R_ExternalPtrProtected(d1);
+  while (TYPEOF(hop) == EXTPTRSXP && R_ExternalPtrTag(hop) != mizu_view_shm_tag)
+    hop = R_ExternalPtrProtected(hop);
+  if (TYPEOF(hop) != EXTPTRSXP) return NULL;
+  mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(hop);
+  if (shm == NULL || shm->addr == NULL) return NULL;
+  return shm;
+}
+
 SEXP mizu_view_shm_name(SEXP x) {
   if (!ALTREP(x)) return R_NilValue;
   SEXP d1 = R_altrep_data1(x);
@@ -1892,13 +1912,11 @@ SEXP mizu_view_shm_name(SEXP x) {
   return Rf_mkString(buf);
 }
 
-/* Unlink shared memory regions by name, or (name == R_NilValue) reap regions
-   orphaned by a dead creating process. Returns the character vector of region
-   names actually removed, or R_NilValue if nothing was removed — including the
-   reap path on platforms that cannot enumerate the SHM namespace (macOS,
-   Windows). Only names matching the view identifier grammar are ever unlinked,
-   so unrelated names are silently ignored; a bracketed sub-object path
-   resolves to its underlying region. */
+/* Reap shared memory regions orphaned by a dead creating process. Returns
+   the character vector of region names actually removed, or R_NilValue if
+   nothing was removed — including on platforms that cannot enumerate the SHM
+   namespace (macOS, Windows). Only names matching the region name grammar
+   are ever unlinked, so unrelated names are silently ignored. */
 SEXP mizu_view_prune(void) {
   int n = 0;
   char **list = mizu_shm_reap(&n);
@@ -2129,33 +2147,50 @@ static void mizu_view_root_descriptor(const unsigned char *base,
   }
 }
 
-/* The resolved leaf's descriptor for a path reference: the terminal
-   directory entry through the vendored mizu_mizl_elem — the view layer's
-   one read of MIZL leaf validity (R reads NA in-band otherwise). The
-   walked structure is trusted: the view-producing walk just validated it
-   over the same pages. A known-NA-free record exists only on an atomic
-   leaf's pair or a chained remote leaf's — STR, serialized and nested-list
-   entries record none. */
-static void mizu_view_path_descriptor(unsigned char *base, int64_t region_size,
-                                      const int32_t *path, int path_len,
-                                      int64_t *length, int64_t *attrs,
-                                      int *na_free) {
-  unsigned char *cur = base;
+/* The terminal directory entry of a path over an open region, and the MIZL
+   base containing it: every hop re-validated (a VEC entry with attrs_size 0,
+   each span bounding the next read — a tag-33 hop fails the VEC check, so a
+   resolved chain's flattened path never meets one), the terminal read
+   through mizu_mizl_elem. The re-validation is the resolve-side discipline:
+   the walk that produced a view ran over the same pages, but a re-sent view
+   resolves against the region as it is now — a peer may have rewritten a
+   directory entry since. 0 on success, -1 on any rejection; non-raising, so
+   the callers shape the error — the descriptor's corrupt-or-newer raise, an
+   embedder's decline. */
+int mizu_view_path_entry(const unsigned char *base, int64_t region_size,
+                         const int32_t *path, int path_len,
+                         const unsigned char **leaf_base,
+                         mizu_mizl_entry *out) {
+  const unsigned char *cur = base;
   int64_t cur_size = region_size;
   for (int k = 0; k < path_len - 1; k++) {
-    /* re-validate every hop: the walk that produced the view ran over the
-       same pages, but a re-sent view resolves against the region as it is
-       now — a peer may have rewritten a directory entry since */
     mizu_mizl_entry step;
     if (mizu_mizl_elem(cur, (size_t) cur_size, path[k], &step) != 0 ||
         (step.sexptype & ~(int32_t) MIZU_MIZL_S4) != MIZU_TYPE_VEC ||
         step.attrs_size != 0)
-      Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
+      return -1;
     cur += step.data_offset;
     cur_size = step.data_size;
   }
+  if (mizu_mizl_elem(cur, (size_t) cur_size, path[path_len - 1], out) != 0)
+    return -1;
+  *leaf_base = cur;
+  return 0;
+}
+
+/* The resolved leaf's descriptor for a path reference: the terminal
+   directory entry through mizu_view_path_entry — the view layer's one read
+   of MIZL leaf validity (R reads NA in-band otherwise). A known-NA-free
+   record exists only on an atomic leaf's pair or a chained remote leaf's —
+   STR, serialized and nested-list entries record none. */
+static void mizu_view_path_descriptor(unsigned char *base, int64_t region_size,
+                                      const int32_t *path, int path_len,
+                                      int64_t *length, int64_t *attrs,
+                                      int *na_free) {
+  const unsigned char *leaf;
   mizu_mizl_entry ent;
-  if (mizu_mizl_elem(cur, (size_t) cur_size, path[path_len - 1], &ent) != 0)
+  if (mizu_view_path_entry(base, region_size, path, path_len, &leaf,
+                           &ent) != 0)
     Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
   int32_t tag = ent.sexptype & ~(int32_t) MIZU_MIZL_S4;
   *length = ent.length;
@@ -2177,12 +2212,8 @@ static int mizu_view_ref_descriptor(SEXP elt, SEXP id, int64_t *length,
   int rc = mizu_view_parse_id(CHAR(STRING_ELT(id, 0)), shm_name,
                               sizeof(shm_name), path, &path_len);
   if (rc < 0) return -1;
-  SEXP hop = R_ExternalPtrProtected(R_altrep_data1(elt));
-  while (TYPEOF(hop) == EXTPTRSXP && R_ExternalPtrTag(hop) != mizu_view_shm_tag)
-    hop = R_ExternalPtrProtected(hop);
-  if (TYPEOF(hop) != EXTPTRSXP) return -1;
-  mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(hop);
-  if (shm == NULL || shm->addr == NULL) return -1;
+  mizu_shm *shm = mizu_view_chain_shm(elt);
+  if (shm == NULL) return -1;
   if (rc == 0)
     mizu_view_root_descriptor((unsigned char *) shm->addr, length, attrs,
                               na_free);

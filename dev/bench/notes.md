@@ -1123,3 +1123,19 @@ borrow vs the full materialize).
 Status: full suite 3584 pass, 0 fail (3 expected macOS skips); rchk
 clean (only R's own "too many states" in RunGenCollect / bcEval_loop /
 strptime_internal).
+
+## 2026-10-12 — the remote-column borrow vs the copy baseline
+
+A/B for mizu_as_arrow's remote-leaf borrow (every region-backed column
+now borrows through the one uniform locate — the frame's own leaves,
+remote leaves, and root views — one counted loan per distinct region),
+dev/bench/arrow-bench.R's relay scenario: a 2e5-row frame whose a / a2
+columns cross back as remote leaves over the host's relayed region (b a
+local leaf), bench::mark medians, >= 10 iterations.
+
+Results (receive): mizu_as_arrow(relay) 0.75 ms, 0.4 KB alloc |
+as_nanoarrow_array_stream(relay) 0.69 ms, 3.8 MB alloc — parity on time
+(a memcpy of fixed-width columns is cheap), the win the ~10^4x fewer
+allocated bytes (no materialization; the pages serve in place).
+
+Status: full suite 3635 pass, 0 fail (3 expected macOS skips).

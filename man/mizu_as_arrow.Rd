@@ -22,7 +22,11 @@ other Arrow C Data Interface consumer.
 Columns still backed by their received shared-memory pages export
 zero-copy: the stream's buffers point straight into the shared region
 for attribute-free double, integer, \code{integer64}, and character views
-(character as \code{large_string}). Everything else — factors, Date /
+(character as \code{large_string}). This covers any region-backed column —
+the frame's own leaves, remote leaves referencing another region, and
+root views assembled into a data frame — with one counted loan per
+distinct region; a region whose producer exited degrades only its own
+columns to the copy path. Everything else — factors, Date /
 POSIXct / difftime columns, logical and raw vectors, and materialized
 or never-shared columns — converts per column through
 \code{nanoarrow::as_nanoarrow_array()}. The shared region stays mapped
