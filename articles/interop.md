@@ -93,17 +93,22 @@ ordinary `data.frame`, each column a view over the region’s pages, and
 converts back to Arrow: a struct-typed `nanoarrow_array_stream` whose
 buffers point straight into the shared region for attribute-free double,
 integer, `integer64`, and character columns, the rest (factors, Date /
-POSIXct / difftime, logical, raw) converting per column. A subset frame,
-or a new data frame assembled from received columns, also keeps the
-backing pages. The export borrows each column through its original
-region, and a column re-sent inside a new frame crosses by reference,
-not by copy. If a region’s producer exited, only that region’s columns
-fall back to the copy path. Two caveats: sending a stream consumes it —
-a streaming RecordBatchReader is fully materialized at send, source
-bytes and region resident at once — and fidelity is frame-level, not
-Arrow-schema-exact (a dictionary returns as a factor, uints widen, an
-`int32` of `INT32_MIN` reads as `NA`, and a `uint64` past 2^53 crosses
-as `NA` with a warning at send).
+POSIXct / difftime, logical, raw) converting per column. A
+`timestamp[ns]` or `duration[ns]` column arrives as a `POSIXct` or
+`difftime` in seconds. The nanosecond counts cross verbatim, then
+convert to doubles with `count * 1e-9` — the same conversion the
+µs-rounded form uses, so the values are identical bit for bit. Only
+sub-microsecond resolution is lost, rounded to double precision. A
+subset frame, or a new data frame assembled from received columns, also
+keeps the backing pages. The export borrows each column through its
+original region, and a column re-sent inside a new frame crosses by
+reference, not by copy. If a region’s producer exited, only that
+region’s columns fall back to the copy path. Two caveats: sending a
+stream consumes it — a streaming RecordBatchReader is fully materialized
+at send, source bytes and region resident at once — and fidelity is
+frame-level, not Arrow-schema-exact (a dictionary returns as a factor,
+uints widen, an `int32` of `INT32_MIN` reads as `NA`, and a `uint64`
+past 2^53 crosses as `NA` with a warning at send).
 
 ``` r
 
