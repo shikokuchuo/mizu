@@ -123,7 +123,7 @@ test_that("the conversion counts warn at send", {
   ws <- grab_warnings(out$u + 0)
   expect_match(ws, "beyond ...2\\^53 convert to NA", all = FALSE)
   expect_identical(as.numeric(out$u)[1:3], c(1, NA_real_, 1))
-  # a pre-cap peer (bits 0-5) gets the conversion — and the send warning
+  # an older-version peer (bits 0-5) gets the conversion — and the send warning
   fp <- foreign_pair(caps = 63L)
   on.exit(channel_end(fp), add = TRUE)
   ws <- grab_warnings(mizu_send(fp$host, tab))

@@ -460,6 +460,76 @@ ch.send(t)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("R -> Python -> R REAL relay via Arrow is exact", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+v = ch.recv(60)
+base = getattr(v, 'base', None)
+while base is not None and not hasattr(base, 'refcount'):
+    base = getattr(base, 'base', None)
+ch.send(pa.table({'x': pa.array(base)}))
+ch.recv(30)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- as.numeric(seq_len(100000)) + 0
+  x[2] <- NA_real_
+  x[3] <- NaN
+  mizu_send(ch, x)
+  df <- mizu_recv(ch, 60)
+  expect_true(is.data.frame(df) && is.double(df$x))
+  expect_identical(length(df$x), length(x))
+  expect_true(is.na(df$x[2]) && !is.nan(df$x[2]))
+  expect_true(is.nan(df$x[3]))
+  expect_identical(df$x[-(2:3)], x[-(2:3)])
+  mizu_send(ch, 0L)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("uint64 frames cross verbatim both directions", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+f = ch.recv(60)
+t = pa.table(f)
+ok = t.column('u').type == pa.uint64() and t.column('u').to_pylist()[:6] == [
+    0, 2**63, None, 2**53 + 2, 1, 1,
+]
+ch.send(ok)
+ch.send(t)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  iv <- c(0, -9.2233720368547758e18, NA, 9007199254740994, rep(1, 9996))
+  orig <- arrow::Array$create(iv)$cast(
+    arrow::int64(),
+    safe = FALSE
+  )$cast(arrow::uint64(), safe = FALSE)
+  mizu_send(ch, arrow::arrow_table(u = orig))
+  expect_true(mizu_recv(ch, 60))
+  df <- mizu_recv(ch, 60)
+  # the value landing stays double + NA past 2^53, warned at the read
+  ws <- grab_warnings(df$u + 0)
+  expect_match(ws, "beyond ...2\\^53 convert to NA", all = FALSE)
+  # the Arrow export is bit-exact
+  s <- mizu_as_arrow(df)
+  fmt <- s$get_schema()$children$u$format
+  back <- arrow::as_arrow_table(s)$u
+  expect_identical(fmt, "L")
+  expect_identical(
+    back$cast(arrow::utf8())$as_vector(),
+    orig$cast(arrow::utf8())$as_vector()
+  )
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("a Python peer mutates the frame and returns it", {
   py <- skip_if_no_pymizu()
   skip_if_no_pyarrow(py)
