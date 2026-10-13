@@ -77,7 +77,7 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
     mizu_stop_not_portable("the Arrow frame", mizu_last_error_message(), "");
   const size_t gate =
     inline_max > MIZU_ZC_FLOOR ? (size_t) inline_max : MIZU_ZC_FLOOR;
-  mizu_arrow_warn warn = { 0, 0 };
+  mizu_arrow_warn warn = { 0, 0, 0 };
   if (mizu_arrow_size(a) <= gate ||
       mizu_arrow_stage(h, a, hdr, payload, &warn) != MIZU_OK) {
     /* at or under the region tier, or declined by the stage's caps/churn
@@ -97,7 +97,7 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
      reclaimed by the next send's rollback */
   if (warn.n_range != 0)
     Rf_warning(
-      "mizu: %llu integer value(s) beyond +/-2^53 convert to NA on the R side",
+      "mizu: %llu uint64 value(s) beyond +/-2^53 convert to NA_real_",
       (unsigned long long) warn.n_range
     );
   if (warn.n_intmin != 0)
@@ -105,16 +105,23 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
       "mizu: %llu int32 value(s) of -2147483648 read as NA_integer_ in R",
       (unsigned long long) warn.n_intmin
     );
+  if (warn.n_int64 != 0)
+    Rf_warning(
+      "mizu: %llu int64 value(s) of -9223372036854775808 read as NA_integer64_ in R",
+      (unsigned long long) warn.n_int64
+    );
 }
 
 // The receive-side export (mizu_as_arrow) -----------------------------------------
 
-/* The borrow kinds: 0 copy / 1 double / 2 int32 / 3 int64 / 4 string. */
+/* The borrow kinds: 0 copy / 1 double / 2 int32 / 3 int64 / 4 string /
+   5 uint64. */
 enum {
   ARROW_BORROW_REAL = 1,
   ARROW_BORROW_INT = 2,
   ARROW_BORROW_INT64 = 3,
-  ARROW_BORROW_STR = 4
+  ARROW_BORROW_STR = 4,
+  ARROW_BORROW_UINT64 = 5
 };
 
 /* The MIZS leaf's encoding gate for the verbatim export, fused with span
@@ -161,10 +168,15 @@ typedef struct {
 } arrow_col_plan;
 
 /* The candidate borrow kind off the live view alone: TYPEOF, the attr
-   gates, the int64-any probe — no wire tag, no region read. */
+   gates, the int64-any probe — no wire tag, no region read. The u64
+   class identity runs first: the view is an attribute-free REALSXP, so
+   it would otherwise classify REAL and fail locate's tag cross-check
+   against the entry's INT64. */
 static int arrow_col_kind(SEXP col) {
   switch (TYPEOF(col)) {
   case REALSXP:
+    if (R_altrep_inherits(col, mizu_view_u64_class))
+      return ARROW_BORROW_UINT64;
     if (mizu_view_is_int64_any(col)) return ARROW_BORROW_INT64;
     return !ANY_ATTRIB(col) ? ARROW_BORROW_REAL : 0;
   case INTSXP:
@@ -177,10 +189,11 @@ static int arrow_col_kind(SEXP col) {
 
 static int32_t arrow_kind_tag(int kind) {
   switch (kind) {
-  case ARROW_BORROW_REAL:  return MIZU_TYPE_REAL;
-  case ARROW_BORROW_INT:   return MIZU_TYPE_INT;
-  case ARROW_BORROW_INT64: return MIZU_TYPE_INT64;
-  default:                 return MIZU_TYPE_STR;
+  case ARROW_BORROW_REAL:   return MIZU_TYPE_REAL;
+  case ARROW_BORROW_INT:    return MIZU_TYPE_INT;
+  case ARROW_BORROW_INT64:  return MIZU_TYPE_INT64;
+  case ARROW_BORROW_UINT64: return MIZU_TYPE_INT64;
+  default:                  return MIZU_TYPE_STR;
   }
 }
 

@@ -27,7 +27,8 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
    every column locates uniformly through its own view identifier (a bare
    root by magic, a path through mizu_view_path_entry), returning the
    per-column borrow kinds (0 copy / 1 double / 2 int32 / 3 int64 /
-   4 string) and filling every borrowed column's pre-allocated ArrowArray
+   4 string / 5 uint64) and filling every borrowed column's pre-allocated
+   ArrowArray
    in place, one counted loan per distinct region. */
 SEXP mizu_arrow_export_call(SEXP x, SEXP arrays);
 

@@ -182,7 +182,8 @@ mizu_as_arrow <- function(x) {
       ns$na_double(),
       ns$na_int32(),
       ns$na_int64(),
-      ns$na_large_string()
+      ns$na_large_string(),
+      ns$na_uint64()
     )
     ns$nanoarrow_array_set_schema(arrays[[i]], schemas[[i]])
   }

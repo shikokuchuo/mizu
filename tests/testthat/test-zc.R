@@ -331,6 +331,30 @@ test_that("REF round-trips at any viewed size", {
   channel_end(p)
 })
 
+test_that("a uint64 frame column lands as the converting view and REFs", {
+  skip_if_not_installed("arrow")
+  uv <- bit64::as.integer64(rep(1, 6000))
+  uv[2] <- bit64::as.integer64("9223372036854775807")
+  tab <- arrow::arrow_table(u = arrow::Array$create(uv, type = arrow::uint64()))
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p[["host"]], tab)
+  df <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(df[["u"]]))
+  expect_identical(rc_of(df[["u"]]), c(2L, 0L))
+  mizu_send(p[["peer"]], df[["u"]]) # REF back to the host
+  z <- mizu_recv(p[["host"]], 5)
+  expect_true(is_view(z))
+  expect_identical(rc_of(z), c(2L, 1L)) # resolved counted; escape marked REFHELD
+  # the u64 class: exact at the Arrow export (uint64, bit-identical)
+  s <- mizu_as_arrow(data.frame(u = z))
+  expect_identical(s$get_schema()$children$u$format, "L")
+  # the value landing converts: double + NA past 2^53, warned at the touch
+  ws <- grab_warnings(z + 0)
+  expect_match(ws, "beyond ...2\\^53 convert to NA", all = FALSE)
+  expect_identical(as.numeric(z)[1:3], c(1, NA_real_, 1))
+})
+
 test_that("string vectors cross as views (MORS), small ones copy", {
   p <- channel_pair(arena_size = 0)
   x <- rep(c("café", "naïve", NA_character_, "", "plain"), 10000) # ~1 MB layout

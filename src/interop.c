@@ -1978,13 +1978,23 @@ static SEXP ix_tsn_landing(SEXP result, SEXP attrs) {
   return out;
 }
 
+/* The verbatim uint64 marker (MIZU_CAP_MIZL_U64V): the blob is exactly
+   {u64 = TRUE} — consumed, never applied as an attribute. */
+static int ix_u64_marker(SEXP attrs) {
+  if (XLENGTH(attrs) != 1) return 0;
+  SEXP u = ix_dict_get(attrs, MIZU_IX_ATTR_U64);
+  return TYPEOF(u) == LGLSXP && XLENGTH(u) == 1 && LOGICAL(u)[0] == TRUE;
+}
+
 /* The blob read hook: the cursor opens the 'I' stream (its own errors
    reject a malformed blob in the corrupt-region house style), the dict
    applies apply-as-is — no frame-shape validation on a layout read: an
    R reader homes any attribute set, whoever wrote the region, and a
    legitimate frame's columns legitimately escape the whitelisted shapes
    (list, matrix, Date and ordered-factor columns ride leaf blobs). A
-   TSN blob substitutes a converted value instead; returns the
+   TSN blob substitutes a converted value instead, and a u64 marker
+   re-wraps the leaf as the converting u64 class (the bits stay
+   authoritative; the integer64 class never lands); returns the
    possibly-converted result. */
 static SEXP mizu_interop_attrs_blob_read(SEXP result,
                                          const unsigned char *buf,
@@ -1994,6 +2004,11 @@ static SEXP mizu_interop_attrs_blob_read(SEXP result,
     SEXP out = ix_tsn_landing(result, attrs);
     if (out != R_NilValue) {
       UNPROTECT(1);
+      return out;
+    }
+    if (ix_u64_marker(attrs)) {
+      out = PROTECT(mizu_view_u64_rewrap(result));
+      UNPROTECT(2);
       return out;
     }
   }

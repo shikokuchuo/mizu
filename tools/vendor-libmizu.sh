@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="52820ea4878f5ef5c76507cf4b48fe7efa3ebfd2"  # libmizu: the verbatim nanosecond temporal form
+PIN="820fb377c22f5c1bd986c5d9dec14986d02f086e"  # libmizu: the verbatim uint64 frame form
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

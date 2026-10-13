@@ -17,6 +17,7 @@ static R_altrep_class_t mizu_view_logical_class;
 static R_altrep_class_t mizu_view_raw_class;
 static R_altrep_class_t mizu_view_complex_class;
 static R_altrep_class_t mizu_view_string_class;
+R_altrep_class_t mizu_view_u64_class;
 static SEXP mizu_view_shm_tag;    /* tag on SHM mapping extptrs (addr is mizu_shm *) */
 static SEXP mizu_view_host_tag;   /* tag on host-only unlink extptrs (addr is mizu_shm *) */
 static SEXP mizu_view_owned_tag;  /* tag on every view ALTREP data1 extptr; addr type dispatched via TYPEOF(x) */
@@ -462,6 +463,145 @@ SEXP mizu_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
   if (sexptype == MIZU_VIEW_TYPE_INT64)
     Rf_classgets(result, mizu_view_int64_class);
   UNPROTECT(2);
+  return result;
+}
+
+// ALTREP uint64 view (the MIZU_CAP_MIZL_U64V landing) ------------------------
+
+/* A verbatim uint64 frame column (an INT64 leaf whose blob carries the
+   u64 marker) lands as this converting class: REALSXP, no class
+   attribute. The region's u64 lanes stay authoritative — the read-only
+   Dataptr builds the converted doubles once into the data1 struct's
+   cache (the warning fires at that first touch: there is no per-element
+   path, so the first touch is the materialization), never data2, so the
+   exact-export borrow keyed on an empty data2 survives prints and
+   summaries; the writable Dataptr COWs the converted values into data2
+   and releases the loan — the value has diverged from the bits, and the
+   exact export is rightly gone ("data2 set means by value").
+   Dataptr_or_null stays NULL while SHM-backed: the u64 bits are not
+   doubles. The prefix layout matches mizu_view_vec, so the shared
+   helpers (mizu_view_index_of) read it unchanged. */
+
+typedef struct {
+  mizu_view_owned owned;
+  const void *data;
+  R_xlen_t length;
+  int32_t index;
+  double *converted;      /* the cached conversion, NULL until touched */
+} mizu_view_u64;
+
+static void mizu_view_u64_finalizer(SEXP ptr) {
+  mizu_view_u64 *v = (mizu_view_u64 *) R_ExternalPtrAddr(ptr);
+  if (v != NULL) {
+    mizu_view_release_once(&v->owned);
+    free(v->converted);
+    free(v);
+    R_ClearExternalPtr(ptr);
+  }
+}
+
+/* The one conversion pass: u64 -> double, NA_real_ past 2^53 — the null
+   slots' sentinel fill (2^63) lands NA by the same rule. */
+static double *mizu_view_u64_convert(mizu_view_u64 *v) {
+  if (v->converted != NULL) return v->converted;
+  const R_xlen_t n = v->length;
+  double *out =
+    (double *) malloc((size_t) (n != 0 ? n : 1) * sizeof(double));
+  if (out == NULL) Rf_error("mizu: allocation failure");
+  const uint64_t *u = (const uint64_t *) v->data;
+  uint64_t lost = 0;
+  for (R_xlen_t i = 0; i < n; i++) {
+    if (u[i] > 9007199254740992ULL) {   /* 2^53 */
+      out[i] = NA_REAL;
+      lost++;
+    } else {
+      out[i] = (double) u[i];
+    }
+  }
+  v->converted = out;
+  if (lost != 0)
+    Rf_warning(
+      "mizu: %llu uint64 value(s) beyond +/-2^53 convert to NA_real_",
+      (unsigned long long) lost
+    );
+  return out;
+}
+
+static R_xlen_t mizu_view_u64_Length(SEXP x) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue)
+    return XLENGTH(d2);
+  mizu_view_u64 *v = (mizu_view_u64 *) R_ExternalPtrAddr(R_altrep_data1(x));
+  return v->length;
+}
+
+static const void *mizu_view_u64_Dataptr_or_null(SEXP x) {
+  SEXP d2 = R_altrep_data2(x);
+  return d2 != R_NilValue ? DATAPTR_RO(d2) : NULL;
+}
+
+static void *mizu_view_u64_Dataptr(SEXP x, Rboolean writable) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue)
+    return mizu_view_data_ptr(d2);
+
+  mizu_view_u64 *v = (mizu_view_u64 *) R_ExternalPtrAddr(R_altrep_data1(x));
+  if (!writable)
+    return mizu_view_u64_convert(v);
+
+  /* COW: the converted values move into data2 and the loan releases, as
+     the vec class's — the converted double is the value from here */
+  const R_xlen_t n = v->length;
+  SEXP mat = PROTECT(Rf_allocVector(REALSXP, n));
+  double *p = mizu_view_data_ptr(mat);
+  memcpy(p, mizu_view_u64_convert(v), (size_t) n * sizeof(double));
+  R_set_altrep_data2(x, mat);
+  UNPROTECT(1);
+  free(v->converted);
+  v->converted = NULL;
+  mizu_view_release_once(&v->owned);
+  return p;
+}
+
+static SEXP mizu_view_u64_Serialized_state(SEXP x) {
+  SEXP data2 = R_altrep_data2(x);
+  if (data2 != R_NilValue) return data2;  /* COW-materialized copy */
+
+  SEXP data1 = R_altrep_data1(x);
+  mizu_view_u64 *v = (mizu_view_u64 *) R_ExternalPtrAddr(data1);
+
+  char buf[MIZU_VIEW_FORMAT_BUFLEN];
+  if (mizu_view_format_chain(R_ExternalPtrProtected(data1), v->index,
+                             buf, sizeof(buf)) == 0) {
+    if (mizu_view_emit_hook != NULL) mizu_view_emit_hook(x);
+    return Rf_mkString(buf);
+  }
+
+  /* Overflow / malformed chain: materialize the converted values. */
+  const R_xlen_t n = v->length;
+  SEXP mat = PROTECT(Rf_allocVector(REALSXP, n));
+  memcpy(mizu_view_data_ptr(mat), mizu_view_u64_convert(v),
+         (size_t) n * sizeof(double));
+  UNPROTECT(1);
+  return mat;
+}
+
+SEXP mizu_view_u64_rewrap(SEXP x) {
+  SEXP d1 = R_altrep_data1(x);
+  mizu_view_vec *src = (mizu_view_vec *) R_ExternalPtrAddr(d1);
+  mizu_view_u64 *v = (mizu_view_u64 *) malloc(sizeof(mizu_view_u64));
+  if (v == NULL) Rf_error("mizu: allocation failure");
+  v->owned = src->owned;                /* the release record transfers */
+  src->owned.release = NULL;
+  v->data = src->data;
+  v->length = src->length;
+  v->index = src->index;
+  v->converted = NULL;
+  SEXP ptr = PROTECT(R_MakeExternalPtr(v, mizu_view_owned_tag,
+                                       R_ExternalPtrProtected(d1)));
+  R_RegisterCFinalizerEx(ptr, mizu_view_u64_finalizer, TRUE);
+  SEXP result = R_new_altrep(mizu_view_u64_class, ptr, R_NilValue);
+  UNPROTECT(1);
   return result;
 }
 
@@ -2431,6 +2571,17 @@ void mizu_view_altrep_init(DllInfo *dll) {
                                                "mizu_raw",     dll);
   mizu_view_complex_class = mizu_view_register_vec_class(R_make_altcomplex_class,
                                                "mizu_complex", dll);
+
+  /* the converting uint64 class (the MIZU_CAP_MIZL_U64V landing) */
+  mizu_view_u64_class = R_make_altreal_class("mizu_u64", "mizu", dll);
+  R_set_altrep_Length_method(mizu_view_u64_class, mizu_view_u64_Length);
+  R_set_altvec_Dataptr_method(mizu_view_u64_class, mizu_view_u64_Dataptr);
+  R_set_altvec_Dataptr_or_null_method(mizu_view_u64_class,
+                                      mizu_view_u64_Dataptr_or_null);
+  R_set_altrep_Serialized_state_method(mizu_view_u64_class,
+                                       mizu_view_u64_Serialized_state);
+  R_set_altrep_Unserialize_method(mizu_view_u64_class,
+                                  mizu_view_Unserialize);
 
   /* ALTSTRING class */
   mizu_view_string_class = R_make_altstring_class("mizu_string", "mizu", dll);

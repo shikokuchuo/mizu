@@ -113,27 +113,91 @@ test_that("the conversion counts warn at send", {
   skip_if_not_installed("arrow")
   uv <- bit64::as.integer64(rep(1, 6000))
   uv[2] <- bit64::as.integer64("9223372036854775807")
+  tab <- arrow::arrow_table(u = arrow::Array$create(uv, type = arrow::uint64()))
   p <- channel_pair()
   on.exit(channel_end(p))
-  tab <- arrow::arrow_table(u = arrow::Array$create(uv, type = arrow::uint64()))
-  ws <- grab_warnings(mizu_send(p$host, tab))
+  # a current peer reads verbatim uint64: no send warning — the landing
+  # warns at the value's first touch instead
+  expect_identical(grab_warnings(mizu_send(p$host, tab)), character())
+  out <- mizu_recv(p$peer, 5)
+  ws <- grab_warnings(out$u + 0)
   expect_match(ws, "beyond ...2\\^53 convert to NA", all = FALSE)
-  expect_identical(mizu_recv(p$peer, 5)$u[1:3], c(1, NA_real_, 1))
+  expect_identical(as.numeric(out$u)[1:3], c(1, NA_real_, 1))
+  # a pre-cap peer (bits 0-5) gets the conversion — and the send warning
+  fp <- foreign_pair(caps = 63L)
+  on.exit(channel_end(fp), add = TRUE)
+  ws <- grab_warnings(mizu_send(fp$host, tab))
+  expect_match(ws, "beyond ...2\\^53 convert to NA", all = FALSE)
+  expect_identical(mizu_recv(fp$peer, 5)$u[1:3], c(1, NA_real_, 1))
   iv <- rep(1, 6000)
   iv[2] <- -2147483648
   iv[3] <- NA_real_
-  p2 <- channel_pair()
-  on.exit(channel_end(p2), add = TRUE)
   tab2 <- arrow::arrow_table(
     i = arrow::Array$create(iv, type = arrow::int32()),
     p = runif(6000)
   )
-  ws2 <- grab_warnings(mizu_send(p2$host, tab2))
+  ws2 <- grab_warnings(mizu_send(p$host, tab2))
   expect_match(ws2, "-2147483648 read as NA_integer_", all = FALSE)
   expect_identical(
-    mizu_recv(p2$peer, 5)$i[1:3],
+    mizu_recv(p$peer, 5)$i[1:3],
     c(1L, NA_integer_, NA_integer_)
   )
+  # a genuine INT64_MIN on a masked int64 column
+  lv <- c(1, -9.2233720368547758e18, NA, 3, runif(5996))
+  tab3 <- arrow::arrow_table(
+    l = arrow::Array$create(lv)$cast(arrow::int64(), safe = FALSE)
+  )
+  ws3 <- grab_warnings(mizu_send(p$host, tab3))
+  expect_match(ws3, "-9223372036854775808 read as NA_integer64_", all = FALSE)
+  expect_identical(
+    mizu_recv(p$peer, 5)$l[1:4],
+    bit64::as.integer64(c(1, NA, NA, 3))
+  )
+})
+
+test_that("an int64 column's nulls and valid INT64_MIN cross exact", {
+  skip_if_not_installed("arrow")
+  lv <- c(1, -9.2233720368547758e18, NA, 3, runif(5996))
+  orig <- arrow::Array$create(lv)$cast(arrow::int64(), safe = FALSE)
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  grab_warnings(mizu_send(p$host, arrow::arrow_table(l = orig)))
+  df <- mizu_recv(p$peer, 5)
+  s <- mizu_as_arrow(df)
+  fmt <- s$get_schema()$children$l$format
+  out <- arrow::as_arrow_table(s)$l
+  expect_identical(fmt, "l")
+  expect_identical(out$null_count, 1L)
+  expect_identical(
+    out$cast(arrow::utf8())$as_vector(),
+    orig$cast(arrow::utf8())$as_vector()
+  )
+})
+
+test_that("the uint64 view exports exact past reads; a write degrades it", {
+  skip_if_not_installed("arrow")
+  uv <- bit64::as.integer64(rep(1, 6000))
+  uv[2] <- bit64::as.integer64("9223372036854775807")
+  orig <- arrow::Array$create(uv, type = arrow::uint64())
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, arrow::arrow_table(u = orig))
+  df <- mizu_recv(p$peer, 5)
+  expect_true(is_view(df$u))
+  # a read-only touch builds the conversion cache outside data2 — the
+  # exact borrow still fires
+  grab_warnings(df$u + 0)
+  s <- mizu_as_arrow(df)
+  fmt <- s$get_schema()$children$u$format
+  back <- arrow::as_arrow_table(s)$u
+  expect_identical(fmt, "L")
+  expect_identical(
+    back$cast(arrow::utf8())$as_vector(),
+    orig$cast(arrow::utf8())$as_vector()
+  )
+  # a write COWs the column — the export degrades to the converted doubles
+  df$u[1] <- 0
+  expect_identical(mizu_as_arrow(df)$get_schema()$children$u$format, "g")
 })
 
 test_that("declines name the column", {
