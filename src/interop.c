@@ -1945,17 +1945,61 @@ static size_t mizu_interop_attrs_blob_write(unsigned char *dst, SEXP x) {
   return total;
 }
 
+/* The verbatim ns temporal landing (MIZU_CAP_MIZL_TSN): an INT64 view
+   whose blob is exactly {class, tzone|units, tscale = "ns"} lands as
+   POSIXct / difftime double seconds — the fallback writer's own
+   (double) count * 1e-9 op, so the values are byte-identical to the
+   fallback form. tscale is consumed; any other tscale shape falls
+   through to apply-as-is (corrupt-or-newer house style). */
+static SEXP ix_tsn_landing(SEXP result, SEXP attrs) {
+  if (XLENGTH(attrs) != 3) return R_NilValue;
+  SEXP tscale = ix_dict_get(attrs, MIZU_IX_ATTR_TSCALE);
+  if (!ix_strv_is(tscale, "ns")) return R_NilValue;
+  SEXP klass = ix_dict_get(attrs, MIZU_IX_ATTR_CLASS);
+  SEXP tz = ix_dict_get(attrs, MIZU_IX_ATTR_TZONE);
+  SEXP units = ix_dict_get(attrs, MIZU_IX_ATTR_UNITS);
+  const int posix = tz != R_NilValue &&
+    ix_strv_is2(klass, MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT) &&
+    TYPEOF(tz) == STRSXP && XLENGTH(tz) == 1 && STRING_ELT(tz, 0) != NA_STRING;
+  const int difftime = !posix && units != R_NilValue &&
+    ix_strv_is(klass, MIZU_IX_CLASS_DIFFTIME) && ix_units_known(units);
+  if (!posix && !difftime) return R_NilValue;
+
+  const R_xlen_t n = XLENGTH(result);
+  SEXP out = PROTECT(Rf_allocVector(REALSXP, n));
+  double *o = REAL(out);
+  /* the read-only Dataptr returns the region buffer: no COW, no release */
+  const int64_t *v = (const int64_t *) DATAPTR_RO(result);
+  for (R_xlen_t i = 0; i < n; i++)
+    o[i] = v[i] == MIZU_NA_INT64 ? NA_REAL : (double) v[i] * 1e-9;
+  Rf_setAttrib(out, posix ? ix_tzone_sym : ix_units_sym, posix ? tz : units);
+  Rf_classgets(out, klass);
+  UNPROTECT(1);
+  return out;
+}
+
 /* The blob read hook: the cursor opens the 'I' stream (its own errors
    reject a malformed blob in the corrupt-region house style), the dict
    applies apply-as-is — no frame-shape validation on a layout read: an
    R reader homes any attribute set, whoever wrote the region, and a
    legitimate frame's columns legitimately escape the whitelisted shapes
-   (list, matrix, Date and ordered-factor columns ride leaf blobs). */
-static void mizu_interop_attrs_blob_read(SEXP result, const unsigned char *buf,
+   (list, matrix, Date and ordered-factor columns ride leaf blobs). A
+   TSN blob substitutes a converted value instead; returns the
+   possibly-converted result. */
+static SEXP mizu_interop_attrs_blob_read(SEXP result,
+                                         const unsigned char *buf,
                                          size_t size) {
   SEXP attrs = PROTECT(mizu_interop_read(buf, size));
+  if (ix_is_int64(result)) {
+    SEXP out = ix_tsn_landing(result, attrs);
+    if (out != R_NilValue) {
+      UNPROTECT(1);
+      return out;
+    }
+  }
   mizu_interop_attrs_build(result, attrs, 0);
   UNPROTECT(1);
+  return result;
 }
 
 /* The err tag's R home: a mizu_error_remote condition as a *value* — the

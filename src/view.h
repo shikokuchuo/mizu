@@ -168,7 +168,10 @@ SEXP mizu_view_str_wrap(const unsigned char *region_base, R_xlen_t n,
                    mizu_view_release_fn release, void *release_arg);
 SEXP mizu_view_list_wrap(unsigned char *base, int64_t region_size, int32_t index,
                     SEXP keeper, mizu_view_release_fn release, void *release_arg);
-void mizu_view_restore_attrs(SEXP result, unsigned char *buf, size_t size);
+/* The one attrs-blob restore: returns the possibly-converted result — the
+   embedder read hook may substitute the value (a landing conversion), so
+   callers reassign. */
+SEXP mizu_view_restore_attrs(SEXP result, unsigned char *buf, size_t size);
 
 /* Layout oracle and writer for embedder-managed regions: the size pass
    walks the tree and returns 0 for anything the layout writer must not
@@ -276,12 +279,15 @@ void mizu_view_set_open_hook(mizu_view_open_hook_fn hook);
    declines and the blob is an R_Serialize stream, the pre-hook form.
    Every blob read passes through mizu_view_restore_attrs, which hands
    the embedder's form to `read` (dispatched on the blob's first byte)
-   and keeps R_Unserialize for anything else. An embedder that leaves
+   and keeps R_Unserialize for anything else. `read` returns the
+   possibly-converted result — `result` itself when it only applies
+   attributes, a substitute value when the blob names a landing
+   conversion. An embedder that leaves
    the triple unset keeps R_Serialize both ways and never meets the
    embedder form on read. */
 typedef size_t (*mizu_view_attrs_size_fn)(SEXP x);
 typedef size_t (*mizu_view_attrs_write_fn)(unsigned char *dst, SEXP x);
-typedef void (*mizu_view_attrs_read_fn)(SEXP result, const unsigned char *buf,
+typedef SEXP (*mizu_view_attrs_read_fn)(SEXP result, const unsigned char *buf,
                                         size_t size);
 void mizu_view_set_attrs_hooks(mizu_view_attrs_size_fn size,
                                mizu_view_attrs_write_fn write,

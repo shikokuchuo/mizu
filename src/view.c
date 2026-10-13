@@ -188,16 +188,16 @@ static void mizu_view_set_attrs_from(SEXP result, SEXP attrs) {
    read hook; anything else is R_Unserialize as before. An R reader homes
    any attribute set, so the hook's apply is shape-free — a malformed
    blob rejects in the corrupt-region house style from the cursor's own
-   errors. */
-void mizu_view_restore_attrs(SEXP result, unsigned char *buf, size_t size) {
+   errors. The return is the possibly-converted result: the hook may
+   substitute the value (a landing conversion), so callers reassign. */
+SEXP mizu_view_restore_attrs(SEXP result, unsigned char *buf, size_t size) {
   if (size > 0 && buf[0] == MIZU_INTEROP_MAGIC &&
-      mizu_view_attrs_read_hook != NULL) {
-    mizu_view_attrs_read_hook(result, buf, size);
-    return;
-  }
+      mizu_view_attrs_read_hook != NULL)
+    return mizu_view_attrs_read_hook(result, buf, size);
   SEXP attrs = PROTECT(mizu_view_unserialize_from(buf, size));
   mizu_view_set_attrs_from(result, attrs);
   UNPROTECT(1);
+  return result;
 }
 
 // Identifier formatter, chain walker, and parser -----------------------------
@@ -675,7 +675,12 @@ static SEXP mizu_view_unwrap_element(unsigned char *base, int64_t region_size,
   if (attrs_size > 0 && sexptype != 0 && sexptype != VECSXP &&
       sexptype != MIZU_VIEW_TAG_REF) {
     size_t attrs_off = (size_t)(data_offset + data_size - attrs_size);
-    mizu_view_restore_attrs(result, base + attrs_off, (size_t) attrs_size);
+    SEXP restored = PROTECT(mizu_view_restore_attrs(
+      result, base + attrs_off, (size_t) attrs_size
+    ));
+    if (s4) restored = Rf_asS4(restored, TRUE, 0);
+    UNPROTECT(2);
+    return restored;
   }
   if (s4) result = Rf_asS4(result, TRUE, 0);
 
@@ -772,10 +777,15 @@ SEXP mizu_view_list_wrap(unsigned char *base, int64_t region_size, int32_t index
   /* Cache is allocated lazily on first Elt access */
   SEXP result = PROTECT(R_new_altrep(mizu_view_list_class, ptr, R_NilValue));
 
-  if (attrs_size > 0)
-    mizu_view_restore_attrs(result, base + (size_t) attrs_offset,
-                       (size_t) attrs_size);
-  result = mizu_view_apply_s4(result, base);
+  if (attrs_size > 0) {
+    result = PROTECT(mizu_view_restore_attrs(
+      result, base + (size_t) attrs_offset, (size_t) attrs_size
+    ));
+    result = mizu_view_apply_s4(result, base);
+    UNPROTECT(1);
+  } else {
+    result = mizu_view_apply_s4(result, base);
+  }
 
   UNPROTECT(2);
   return result;
@@ -1772,10 +1782,14 @@ static SEXP mizu_view_open_vector(SEXP shm_ptr) {
 
   if (attrs_size > 0) {
     size_t data_bytes = (size_t) length * mizu_view_sizeof_elt(sexptype);
-    mizu_view_restore_attrs(result, base + MIZU_HEADER_SIZE + data_bytes,
-                       (size_t) attrs_size);
+    result = PROTECT(mizu_view_restore_attrs(
+      result, base + MIZU_HEADER_SIZE + data_bytes, (size_t) attrs_size
+    ));
+    result = mizu_view_apply_s4(result, base);
+    UNPROTECT(1);
+  } else {
+    result = mizu_view_apply_s4(result, base);
   }
-  result = mizu_view_apply_s4(result, base);
 
   UNPROTECT(1);
   return result;
@@ -1805,10 +1819,16 @@ static SEXP mizu_view_open_string(SEXP shm_ptr) {
     base + MIZU_HEADER_SIZE, (R_xlen_t) n, str_data_size, shm_ptr, NULL, NULL
   ));
 
-  if (attrs_size > 0)
-    mizu_view_restore_attrs(result, base + MIZU_HEADER_SIZE + (size_t) str_data_size,
-                       (size_t) attrs_size);
-  result = mizu_view_apply_s4(result, base);
+  if (attrs_size > 0) {
+    result = PROTECT(mizu_view_restore_attrs(
+      result, base + MIZU_HEADER_SIZE + (size_t) str_data_size,
+      (size_t) attrs_size
+    ));
+    result = mizu_view_apply_s4(result, base);
+    UNPROTECT(1);
+  } else {
+    result = mizu_view_apply_s4(result, base);
+  }
 
   UNPROTECT(1);
   return result;

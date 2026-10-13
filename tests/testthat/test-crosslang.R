@@ -387,7 +387,7 @@ test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     "
-assert ch._h._peer_ident() == (2, 31)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF | MIZL_REF
+assert ch._h._peer_ident() == (2, 63)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF | MIZL_REF | MIZL_TSN
 ch.send('ok')
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
@@ -508,6 +508,43 @@ ch.send(pymizu.Frame.from_arrow(t))
         tz = "UTC"
       )
     )
+  )
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("Python Arrow ns columns land as POSIXct and difftime", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("bit64")
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+ch.send(pa.table({'t': pa.array([1700000000123456789, None, -3600000000001] * 3000,
+                                type=pa.timestamp('ns', tz='America/New_York'))}))
+ch.send(pa.table({'u': pa.array([90, None, 86400000000000] * 3000,
+                                type=pa.duration('ns'))}))
+ch.recv(30)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  sec <- suppressWarnings(
+    as.double(bit64::as.integer64("1700000000123456789")) * 1e-9
+  )
+  df <- mizu_recv(ch, 30)
+  expect_identical(class(df$t), c("POSIXct", "POSIXt"))
+  expect_identical(attr(df$t, "tzone"), "America/New_York")
+  expect_null(attr(df$t, "tscale"))
+  expect_identical(
+    as.double(df$t),
+    rep(c(sec, NA_real_, -3600000000001 * 1e-9), 3000)
+  )
+  df <- mizu_recv(ch, 30)
+  expect_identical(class(df$u), "difftime")
+  expect_identical(attr(df$u, "units"), "secs")
+  expect_null(attr(df$u, "tscale"))
+  expect_identical(
+    as.double(df$u),
+    rep(c(90 * 1e-9, NA_real_, 86400000000000 * 1e-9), 3000)
   )
   expect_true(mizu_close(ch, timeout = 10))
 })

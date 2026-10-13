@@ -290,6 +290,79 @@ test_that("mizu_as_arrow converts the copy-path classes", {
   expect_identical(back, df)
 })
 
+test_that("a timestamp[ns] column lands as POSIXct double seconds", {
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  na <- asNamespace("nanoarrow")
+  n <- 9000L
+  counts <- bit64::as.integer64(
+    c("1700000000123456789", NA, "-3600000000001", seq_len(n))
+  )
+  sch <- na$na_struct(
+    list(t = na$na_timestamp("ns", timezone = "UTC"), x = na$na_int32())
+  )
+  parent <- na$nanoarrow_array_init(sch)
+  parent <- na$nanoarrow_array_modify(
+    parent,
+    list(
+      children = list(
+        na$as_nanoarrow_array(counts),
+        na$as_nanoarrow_array(seq_len(n + 3L))
+      ),
+      length = n + 3L
+    ),
+    validate = FALSE
+  )
+  na$nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+  stream <- na$basic_array_stream(list(parent), schema = sch, validate = FALSE)
+  mizu_send(p$host, stream)
+  df <- mizu_recv(p$peer, 5)
+  expect_identical(length(rc_of(df$x)), 2L)
+  expect_identical(class(df$t), c("POSIXct", "POSIXt"))
+  expect_identical(attr(df$t, "tzone"), "UTC")
+  expect_null(attr(df$t, "tscale"))
+  expect_type(df$t, "double")
+  want <- suppressWarnings(as.double(counts)) * 1e-9
+  expect_identical(as.double(df$t), want)
+  st <- mizu_as_arrow(df)
+  expect_identical(st$get_schema()$children$t$format, "tsu:UTC")
+})
+
+test_that("a duration[ns] column lands as difftime seconds", {
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  na <- asNamespace("nanoarrow")
+  n <- 9000L
+  counts <- bit64::as.integer64(c("90", NA, "86400000000000", seq_len(n)))
+  sch <- na$na_struct(list(u = na$na_duration("ns"), x = na$na_int32()))
+  parent <- na$nanoarrow_array_init(sch)
+  parent <- na$nanoarrow_array_modify(
+    parent,
+    list(
+      children = list(
+        na$as_nanoarrow_array(counts),
+        na$as_nanoarrow_array(seq_len(n + 3L))
+      ),
+      length = n + 3L
+    ),
+    validate = FALSE
+  )
+  na$nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+  stream <- na$basic_array_stream(list(parent), schema = sch, validate = FALSE)
+  mizu_send(p$host, stream)
+  df <- mizu_recv(p$peer, 5)
+  expect_identical(length(rc_of(df$x)), 2L)
+  expect_identical(class(df$u), "difftime")
+  expect_identical(attr(df$u, "units"), "secs")
+  expect_null(attr(df$u, "tscale"))
+  want <- suppressWarnings(as.double(counts)) * 1e-9
+  expect_identical(as.double(df$u), want)
+})
+
 test_that("mizu_as_arrow exports integer64 as int64", {
   skip_if_not_installed("arrow")
   skip_if_not_installed("bit64")

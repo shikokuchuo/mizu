@@ -790,11 +790,16 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
     SEXP view = PROTECT(mizu_view_vec_wrap(base + MIZU_HEADER_SIZE,
                                       (R_xlen_t) length, type, name_xp,
                                       mizu_zc_rel_fire, rel_xp));
-    if (attrs_size > 0)
-      mizu_view_restore_attrs(view,
-                         base + MIZU_HEADER_SIZE + (size_t) length * elt,
-                         (size_t) attrs_size);
-    view = mizu_view_apply_s4(view, base);
+    if (attrs_size > 0) {
+      view = PROTECT(mizu_view_restore_attrs(
+        view, base + MIZU_HEADER_SIZE + (size_t) length * elt,
+        (size_t) attrs_size
+      ));
+      view = mizu_view_apply_s4(view, base);
+      UNPROTECT(1);
+    } else {
+      view = mizu_view_apply_s4(view, base);
+    }
     UNPROTECT(1);
     return view;
   }
@@ -817,10 +822,16 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
     SEXP view = PROTECT(mizu_view_str_wrap(base + MIZU_HEADER_SIZE, (R_xlen_t) n,
                                       str_size, name_xp, mizu_zc_rel_fire,
                                       rel_xp));
-    if (attrs_size > 0)
-      mizu_view_restore_attrs(view, base + MIZU_HEADER_SIZE + (size_t) str_size,
-                         (size_t) attrs_size);
-    view = mizu_view_apply_s4(view, base);
+    if (attrs_size > 0) {
+      view = PROTECT(mizu_view_restore_attrs(
+        view, base + MIZU_HEADER_SIZE + (size_t) str_size,
+        (size_t) attrs_size
+      ));
+      view = mizu_view_apply_s4(view, base);
+      UNPROTECT(1);
+    } else {
+      view = mizu_view_apply_s4(view, base);
+    }
     UNPROTECT(1);
     return view;
   }
