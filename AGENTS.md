@@ -647,7 +647,8 @@ no network, no file access outside the working directory) or
 ## Git
 
 - Commit messages: single-line subject only, no body.
-- The package has no `NEWS.md` — don’t add change bullets.
+- `NEWS.md` is a stub (a dev header + “0.0.0 Initial release”) — don’t
+  add change bullets.
 - Only push when the user explicitly requests it.
 
 ## Pending tasks
