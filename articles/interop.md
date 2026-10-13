@@ -55,13 +55,18 @@ logical/integer/double/complex/character/list values. A `Date` arrives
 as `datetime64[D]`, a `POSIXct` as naive `datetime64[us]`, a factor as
 `list[str | None]` (a dictionary-encoded column inside a frame), and a
 matrix as a Fortran-order array — the data never transposes. A large
-Fortran-order numpy array arrives as a zero-copy matrix view over the
-shared pages — one layout write, no copy or parse; C-order and strided
-arrays still cross value-exact by copy. A `difftime` arrives as
-`timedelta64[us]`, `NA` as `NaT` — and `timedelta64` arrays of any
-non-calendar unit travel back as a `difftime`; units cross by value and
-normalize to seconds on a round trip. A `POSIXlt`, a named vector, and
-S4 objects stay on R’s side: sending one on a Python channel raises at
+numpy array arrives as a zero-copy matrix view over the shared pages in
+any memory order — F order, C order, or strided — one layout write, no
+copy or parse, and a large `datetime64` array crosses the same way as a
+`POSIXct` or `Date` view (`NaT` as `NA`). A large nested Python tree of
+lists, dicts, arrays, and strings arrives as a zero-copy list view over
+one shared region, and a view nested inside one crosses by reference —
+only its region’s name moves, and R resolves it to a view of the
+original region. A `difftime` arrives as `timedelta64[us]`, `NA` as
+`NaT` — and `timedelta64` arrays of any non-calendar unit travel back as
+a `difftime`; units cross by value and normalize to seconds on a round
+trip. A `POSIXlt`, a named vector, and S4 objects stay on R’s side:
+sending one on a Python channel raises at
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md).
 
 A data frame crosses as a `pymizu.Frame` — column dict on one side,
@@ -150,7 +155,7 @@ stages it:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.1980602 0.5397354 0.7745376
+#> [1] 0.2419656 0.5006305 0.7449213
 s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -198,23 +203,23 @@ them:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.1764397 0.1764397
+#> [1] 0.7860778 0.7860778
 #> 
 #> [[2]]
-#> [1] 0.6969044 0.6969044
+#> [1] 0.4849744 0.4849744
 #> 
 #> [[3]]
-#> [1] 0.01163782 0.01163782
+#> [1] 0.4011554 0.4011554
 #> 
 #> [[4]]
-#> [1] 0.2961558 0.2961558
+#> [1] 0.4026075 0.4026075
 #> 
 #> [[5]]
-#> [1] 0.05827685 0.05827685
+#> [1] 0.726138 0.726138
 #> 
 #> [[6]]
-#> [1] 0.4727825 0.4727825
+#> [1] 0.6932611 0.6932611
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -0.4634369 -1.2202721 -0.5148074 -0.5192409 -1.3174920 -0.5995259
+#> [1] -1.10708419 -0.09581509 -0.12506626 -1.73043191 -0.68475271 -0.32956805
 mizu_pool_stop(p)
 ```
