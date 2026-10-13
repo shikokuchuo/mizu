@@ -44,12 +44,14 @@ test_that("a C-order numpy matrix arrives as a zero-copy dim view", {
     "
 import numpy as np
 ch.send(np.arange(600 * 800, dtype=np.float64).reshape(600, 800))
+ch.recv(30)  # wait for the ack: the region must outlive the receive
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   )
   x <- mizu_recv(ch, 30)
   expect_true(.Call(mizu:::mizu_zc_view_check, x))
   expect_identical(x, t(matrix((1:(600 * 800)) * 1.0 - 1, 800, 600)))
+  mizu_send(ch, 0)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
@@ -60,6 +62,7 @@ test_that("a nested Python tree arrives as an ALTLIST view", {
 import numpy as np
 ch.send({'a': list(range(10000)), 'b': ['x', 'y', None, ''],
          'm': np.arange(60000, dtype=np.float64).reshape(200, 300)})
+ch.recv(30)  # wait for the ack: the region must outlive the receive
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   )
@@ -75,6 +78,7 @@ ch.send({'a': list(range(10000)), 'b': ['x', 'y', None, ''],
       m = t(matrix((1:60000) * 1.0 - 1, 300, 200))
     )
   )
+  mizu_send(ch, 0)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
@@ -86,6 +90,7 @@ import numpy as np
 p = np.arange(np.datetime64(1700000000, 's'), np.datetime64(1700100000, 's'))
 p[7::13] = 'NaT'
 ch.send(p)
+ch.recv(30)  # wait for the ack: the region must outlive the receive
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   )
@@ -96,6 +101,7 @@ ch.send(p)
     v[seq(8, 100000, 13)] <- NA
     .POSIXct(v, tz = "UTC")
   })
+  mizu_send(ch, 0)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
@@ -105,6 +111,7 @@ test_that("a view nested in a Python tree returns as a remote leaf", {
     "
 x = ch.recv(30)
 ch.send({'k': x, 'v': list(range(10000))})
+ch.recv(30)  # wait for the ack: the region must outlive the receive
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   )
@@ -117,6 +124,7 @@ ch.send({'k': x, 'v': list(range(10000))})
   expect_identical(.Call(mizu:::mizu_zc_refcount, el)[[2L]] %% 2L, 1L)
   expect_identical(el, x)
   expect_identical(y[["v"]], as.list(0:9999))
+  mizu_send(ch, 0)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
