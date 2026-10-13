@@ -51,7 +51,8 @@ A large Python `list[str | None]` arrives as a zero-copy character-vector view o
 
 Scalars, lists, and dicts with string keys cross both ways as R's own logical/integer/double/complex/character/list values.
 A `Date` arrives as `datetime64[D]`, a `POSIXct` as naive `datetime64[us]`, a factor as `list[str | None]` (a dictionary-encoded column inside a frame), and a matrix as a Fortran-order array — the data never transposes.
-A large Fortran-order numpy array arrives as a zero-copy matrix view over the shared pages — one layout write, no copy or parse; C-order and strided arrays still cross value-exact by copy.
+A large numpy array arrives as a zero-copy matrix view over the shared pages in any memory order — F order, C order, or strided — one layout write, no copy or parse, and a large `datetime64` array crosses the same way as a `POSIXct` or `Date` view (`NaT` as `NA`).
+A large nested Python tree of lists, dicts, arrays, and strings arrives as a zero-copy list view over one shared region, and a view nested inside one crosses by reference — only its region's name moves, and R resolves it to a view of the original region.
 A `difftime` arrives as `timedelta64[us]`, `NA` as `NaT` — and `timedelta64` arrays of any non-calendar unit travel back as a `difftime`; units cross by value and normalize to seconds on a round trip.
 A `POSIXlt`, a named vector, and S4 objects stay on R's side: sending one on a Python channel raises at `mizu_send()`.
 
