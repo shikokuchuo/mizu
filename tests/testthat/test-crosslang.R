@@ -38,6 +38,88 @@ test_that("a Python peer echoes a view by reference", {
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a C-order numpy matrix arrives as a zero-copy dim view", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import numpy as np
+ch.send(np.arange(600 * 800, dtype=np.float64).reshape(600, 800))
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- mizu_recv(ch, 30)
+  expect_true(.Call(mizu:::mizu_zc_view_check, x))
+  expect_identical(x, t(matrix((1:(600 * 800)) * 1.0 - 1, 800, 600)))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a nested Python tree arrives as an ALTLIST view", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import numpy as np
+ch.send({'a': list(range(10000)), 'b': ['x', 'y', None, ''],
+         'm': np.arange(60000, dtype=np.float64).reshape(200, 300)})
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- mizu_recv(ch, 30)
+  expect_true(.Call(mizu:::mizu_zc_view_check, x))
+  expect_true(.Call(mizu:::mizu_zc_view_check, x[["b"]]))
+  expect_identical(.Call(mizu:::mizu_zc_refcount, x[["b"]])[[2L]] %% 2L, 0L)
+  expect_identical(
+    x,
+    list(
+      a = as.list(0:9999),
+      b = c("x", "y", NA, ""),
+      m = t(matrix((1:60000) * 1.0 - 1, 300, 200))
+    )
+  )
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a datetime64 array arrives as a POSIXct view, NaT as NA", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import numpy as np
+p = np.arange(np.datetime64(1700000000, 's'), np.datetime64(1700100000, 's'))
+p[7::13] = 'NaT'
+ch.send(p)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- mizu_recv(ch, 30)
+  expect_true(.Call(mizu:::mizu_zc_view_check, x))
+  expect_identical(x, {
+    v <- as.double(1700000000:1700099999)
+    v[seq(8, 100000, 13)] <- NA
+    .POSIXct(v, tz = "UTC")
+  })
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a view nested in a Python tree returns as a remote leaf", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+x = ch.recv(30)
+ch.send({'k': x, 'v': list(range(10000))})
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  x <- as.numeric(seq_len(200000))
+  mizu_send(ch, x)
+  y <- mizu_recv(ch, 30)
+  el <- y[["k"]]
+  expect_true(.Call(mizu:::mizu_zc_view_check, y))
+  expect_true(.Call(mizu:::mizu_zc_view_check, el))
+  expect_identical(.Call(mizu:::mizu_zc_refcount, el)[[2L]] %% 2L, 1L)
+  expect_identical(el, x)
+  expect_identical(y[["v"]], as.list(0:9999))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("a Python decline raises at the Python send, the channel usable", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
