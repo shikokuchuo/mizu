@@ -99,11 +99,11 @@ test_that("an unclean run marks the handle stale; the next run restages", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   pm <- mizu_map_prepare(p, 1:4 + 0, function(i) {
-    Sys.sleep(i / 2)
+    Sys.sleep(i / 10)
     i
   })
   name1 <- pm[["st"]][["name"]]
-  r <- mizu_map_run(pm, .timeout = 0.3)
+  r <- mizu_map_run(pm, .timeout = 0.05)
   expect_s3_class(r, "mizu_timeout")
   expect_null(pm[["st"]]) # stale: the next run restages
   r <- mizu_map_run(pm, .timeout = 60)

@@ -814,13 +814,13 @@ test_that("an unclean prepared run restages into a fresh region", {
     p,
     1:4 + 0,
     function(i) {
-      Sys.sleep(i / 2)
+      Sys.sleep(i / 10)
       i
     },
     .stream = TRUE
   )
   name1 <- pm[["st"]][["name"]]
-  r <- mizu_map_run(pm, .timeout = 0.3)
+  r <- mizu_map_run(pm, .timeout = 0.05)
   expect_s3_class(r, "mizu_timeout")
   expect_null(pm[["st"]]) # stale: the next run restages
   r <- mizu_map_run(pm, .timeout = 60)
