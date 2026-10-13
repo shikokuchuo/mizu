@@ -224,10 +224,18 @@ mono_time <- function() .Call(mizu_now_call)
 #' sizing of the morsel machinery is lost (skew mitigation is to raise
 #' `.chunks`), and slices cross via the serialized tiers, so per-chunk
 #' staging costs an ordinary submit's serialization rather than the
-#' raw-section path's zero-serialize slicing. A streaming map always
-#' stages its descriptor region (workers materialize the map context at
-#' most once each) and needs same-language workers: a [mizu_call()] spec
-#' as `.f` errors.
+#' raw-section path's zero-serialize slicing. A streaming map with R
+#' workers shares one description of the map with every worker, and each
+#' worker reads that description at most once. A [mizu_call()] spec as
+#' `.f` streams too, over workers of any language. Each chunk in the
+#' window then stages a small shared region of its own (the slice plus
+#' the task that runs on it, one runner task per chunk), removed as soon
+#' as the chunk completes. Shared-memory use stays bounded by the window
+#' plus a small per-worker cache (up to 8 recent slices per worker)
+#' rather than by `sizeof(.x)`. Each chunk also writes its results
+#' separately, so they cannot combine into one view:
+#' `.collect = "view"` errors on a streaming spec map, as does preparing
+#' one with [mizu_map_prepare()].
 #'
 #' @section Very large x:
 #' The serialized runner wrapper needs a little over 200 bytes of entry
@@ -316,6 +324,13 @@ mizu_map <- function(
   .f <- map_check_f(.f, dots)
   map_template_check(.template)
   map_collect_check(.collect, .template)
+  if (.stream && inherits(.f, "mizu_call") && identical(.collect, "view")) {
+    stop(
+      "mizu: .collect = \"view\" cannot compose a streaming spec map \u2014 ",
+      "per-chunk output areas cannot compose into one view",
+      call. = FALSE
+    )
+  }
   if (length(.x) == 0L) {
     return(map_empty(.x, .template))
   }
@@ -404,6 +419,14 @@ mizu_map_prepare <- function(
   dots <- list(...)
   .f <- map_check_f(.f, dots)
   map_template_check(.template)
+  if (.stream && inherits(.f, "mizu_call")) {
+    stop(
+      "mizu: a prepared map with a mizu_call() spec as '.f' cannot stream ",
+      "\u2014 a spec stream stages its chunk regions at run time, so there ",
+      "is nothing to prepare",
+      call. = FALSE
+    )
+  }
   pm <- new.env(parent = emptyenv())
   pm[["pool"]] <- .pool
   pm[["x"]] <- .x
@@ -1055,7 +1078,11 @@ map_stream_geometry <- function(st, caps) {
 # mizu_map_stage with x = NULL: one code path and the worker's ctx cache.
 # Its morsel geometry is inert (no streaming path claims, cursors, or
 # reads the cancel word; fail-fast rides task-level cancellation over the
-# bounded window), so one morsel keeps the header minimal.
+# bounded window), so one morsel keeps the header minimal. A spec f
+# cannot ride same-language chunk tasks, so each in-flight chunk stages
+# its own small map region ('I' descriptor + one-morsel geometry) with
+# exactly one kind-2 runner (ordinal 0, generation 0), closed at the
+# chunk's own turn — parallelism and the residency bound are unchanged.
 map_stage_stream <- function(
   pool,
   x,
@@ -1065,13 +1092,7 @@ map_stage_stream <- function(
   chunks = NULL,
   seed = NULL
 ) {
-  if (inherits(f, "mizu_call")) {
-    stop(
-      "mizu: a mizu_call() spec as '.f' cannot stream \u2014 chunk slices cross ",
-      "as same-language task payloads",
-      call. = FALSE
-    )
-  }
+  spec <- inherits(f, "mizu_call")
   if (typeof(f) == "closure") {
     f <- strip_srcref(f)
   }
@@ -1089,13 +1110,13 @@ map_stage_stream <- function(
 
   st <- new.env(parent = emptyenv())
   st[["stream"]] <- TRUE
-  st[["spec"]] <- FALSE
+  st[["spec"]] <- spec
   st[["n"]] <- n
   st[["nms"]] <- names(x)
   st[["x"]] <- x
   st[["template"]] <- template
   st[["direct"]] <- direct
-  st[["seed_state"]] <- map_seed_state(seed)
+  st[["m"]] <- if (direct) length(template)
 
   caps <- .Call(mizu_pool_map_caps, pool)
   if (caps[[2L]] == 0L) {
@@ -1109,6 +1130,35 @@ map_stage_stream <- function(
   }
   st[["chunks"]] <- chunks
   map_stream_geometry(st, caps)
+
+  if (spec) {
+    # the cross-language stream: no single region — one per in-flight
+    # chunk, staged at refill time. The chunk's raw x section takes
+    # exactly map_stage's verdicts (a bare, non-ALTREP atomic x — an
+    # ALTREP or attributed x coerces to the element list, the same
+    # values the non-streaming spec map hands f), so the 'I' descriptor
+    # builds once with x nil; a list x's slice rides its own descriptor
+    xlen <- .Call(mizu_map_eligible, x)
+    xraw <- xlen >= 0 && map_x_attrs_ok(x)
+    if (!xraw) {
+      x <- as.list(x)
+      st[["x"]] <- x
+    }
+    ident <- .Call(mizu_pool_ident, pool)
+    st[["pymap"]] <- ident[[1L]] != 2L
+    st[["xraw"]] <- xraw
+    st[["f"]] <- f
+    st[["lang"]] <- ident[[1L]]
+    st[["desc"]] <- if (xraw) {
+      .Call(mizu_interop_map_desc_call, f, NULL, ident[[1L]])
+    }
+    st[["seed_pair"]] <- map_seed_pair(seed)
+    st[["wraps"]] <- vector("list", st[["C"]])
+    st[["handles"]] <- vector("list", st[["C"]])
+    st[["timed_out"]] <- FALSE
+    return(st)
+  }
+  st[["seed_state"]] <- map_seed_state(seed)
 
   sr <- .Call(
     mizu_map_stage,
@@ -1157,24 +1207,64 @@ map_stream_payload <- function(st, k) {
 # Refill the window up to W (or C). FALSE marks the state timed out — the
 # deadline expired before or inside a ring-space wait. The pre-check ahead
 # of each payload build mirrors map_submit's: a nested submit never waits
-# on ring space, so an expired deadline must be caught here.
+# on ring space, so an expired deadline must be caught here. The spec
+# variant stages the chunk's region and submits its one kind-2 runner
+# (ordinal 0, generation 0), the seed pair offset by the chunk base.
 map_stream_refill <- function(pool, st, deadline) {
   C <- st[["C"]]
   W <- min(st[["W"]], C)
   next_k <- st[["next_k"]]
   oi <- st[["oi"]]
+  spec <- isTRUE(st[["spec"]])
   while (next_k <= C && length(oi) < W) {
     if (mono_time() >= deadline) {
       st[["timed_out"]] <- TRUE
       return(FALSE)
     }
-    h <- .Call(
-      mizu_pool_submit_try,
-      pool,
-      map_stream_payload(st, next_k),
-      deadline,
-      0L
-    )
+    h <- if (spec) {
+      lo <- st[["lo"]][[next_k]]
+      hi <- st[["hi"]][[next_k]]
+      n_k <- hi - lo + 1
+      desc <- if (st[["xraw"]]) {
+        st[["desc"]]
+      } else {
+        .Call(
+          mizu_interop_map_desc_call,
+          st[["f"]],
+          st[["x"]][lo:hi],
+          st[["lang"]]
+        )
+      }
+      sr <- .Call(
+        mizu_map_stage,
+        desc,
+        if (st[["xraw"]]) .Call(mizu_map_xslice, st[["x"]], lo, hi),
+        NULL,
+        n_k,
+        if (st[["direct"]]) st[["template"]],
+        n_k
+      )
+      st[["wraps"]][[next_k]] <- sr[[2L]]
+      sp <- st[["seed_pair"]]
+      .Call(
+        mizu_pool_submit_map_runner,
+        pool,
+        list(
+          sr[[1L]],
+          0,
+          if (is.null(sp)) NULL else c(sp[[1L]], sp[[2L]] + lo - 1)
+        ),
+        deadline
+      )
+    } else {
+      .Call(
+        mizu_pool_submit_try,
+        pool,
+        map_stream_payload(st, next_k),
+        deadline,
+        0L
+      )
+    }
     if (inherits(h, "mizu_timeout")) {
       st[["timed_out"]] <- TRUE
       return(FALSE)
@@ -1189,9 +1279,17 @@ map_stream_refill <- function(pool, st, deadline) {
 }
 
 # Prime the run: the generic-results accumulator and the outstanding set
-# are per-run state, then the first window fills.
+# are per-run state, then the first window fills. A spec stream's
+# template path accumulates the flat n x m vector each chunk's gather
+# splices into at its turn.
 map_stream_prime <- function(pool, st, deadline) {
-  st[["out"]] <- if (!st[["direct"]]) vector("list", st[["n"]])
+  st[["out"]] <- if (st[["direct"]]) {
+    if (isTRUE(st[["spec"]])) {
+      vector(typeof(st[["template"]]), st[["n"]] * st[["m"]])
+    }
+  } else {
+    vector("list", st[["n"]])
+  }
   st[["oi"]] <- integer(0L)
   st[["next_k"]] <- 1L
   map_stream_refill(pool, st, deadline)
@@ -1209,6 +1307,72 @@ map_stream_prime <- function(pool, st, deadline) {
 # element index among the elements that ran, the set that ran already
 # depending on completion order. An error carrying no element index is not
 # f's (pool stop, infrastructure) and stays fatal, as the runner path's.
+# The spec variant of the fail path: the same drain discipline, but every
+# error reads through map_err_index offset by its chunk's base — `v`
+# arrives from collect_any with "index" the window position and
+# "mizu_map_index" the chunk-local element; the drained siblings collect
+# per handle (no stamp), so their chunk is known. Each observed error's
+# fields normalize to the global element index before the minimum raises.
+map_stream_fail_spec <- function(st, v, k) {
+  died <- NULL
+  elts <- NULL
+  errs <- list()
+  globalize <- function(e, kk) {
+    i <- map_err_index(e)
+    gi <- i + st[["lo"]][[kk]] - 1
+    if (is.integer(i) && gi <= .Machine$integer.max) {
+      gi <- as.integer(gi)
+    }
+    e[["mizu_map_index"]] <- gi
+    if (!is.null(e[["index"]])) {
+      e[["index"]] <- gi
+    }
+    e
+  }
+  if (inherits(v, "mizu_error_worker_died")) {
+    died <- v
+    elts <- rbind(elts, c(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]]))
+  } else if (!is.null(map_err_index(v))) {
+    errs <- list(globalize(v, k))
+  } else {
+    stop(v)
+  }
+  oi <- st[["oi"]]
+  hl <- st[["handles"]][oi]
+  map_cancel(st)
+  now <- mono_time()
+  for (i in seq_along(oi)) {
+    state <- .Call(mizu_pool_task_state, hl[[i]])
+    if (state != "ok" && state != "err" && state != "died") {
+      next
+    }
+    w <- .Call(mizu_pool_collect_try, hl[[i]], now)
+    if (!is.object(w) || !inherits(w, "mizu_caught")) {
+      next
+    }
+    w <- w[[1L]]
+    if (inherits(w, "mizu_error_worker_died")) {
+      # the first death reports slot/pid; every death adds its range
+      if (is.null(died)) {
+        died <- w
+      }
+      elts <- rbind(
+        elts,
+        c(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
+      )
+    } else if (!is.null(map_err_index(w))) {
+      errs[[length(errs) + 1L]] <- globalize(w, oi[[i]])
+    } else if (!inherits(w, "mizu_error_cancelled")) {
+      stop(w)
+    }
+  }
+  if (!is.null(died)) {
+    stop_worker_died(died[["slot"]], died[["pid"]], elts)
+  }
+  idx <- vapply(errs, function(e) as.numeric(e[["mizu_map_index"]]), 0)
+  stop(errs[[which.min(idx)]])
+}
+
 map_stream_fail <- function(st, v, k) {
   died <- NULL
   elts <- NULL
@@ -1261,7 +1425,11 @@ map_stream_fail <- function(st, v, k) {
 # collect_any against the remaining deadline), splice generic results into
 # place (template results are already in the region's output area; the
 # chunk's NULL result is drained and dropped), and refill. Errors take
-# the fail path above; deadline expiry marks the state timed out.
+# the fail path above; deadline expiry marks the state timed out. The spec
+# turn splices by worker language (foreign element ranges through
+# map_splice_ix, R morsel pairs through mizu_map_splice chunk-locally),
+# gathers the template path's per-chunk output area into the flat
+# accumulator, and closes the chunk's region at its own turn.
 map_stream_turn <- function(pool, st, deadline) {
   oi <- st[["oi"]]
   remaining <- deadline - mono_time()
@@ -1281,10 +1449,28 @@ map_stream_turn <- function(pool, st, deadline) {
   k <- oi[[pos]]
   st[["oi"]] <- oi[-pos]
   st[["handles"]][k] <- list(NULL)
+  spec <- isTRUE(st[["spec"]])
   if (inherits(v, "condition")) {
-    map_stream_fail(st, v, k)
+    if (spec) map_stream_fail_spec(st, v, k) else map_stream_fail(st, v, k)
   }
-  if (!st[["direct"]]) {
+  if (spec) {
+    lo <- st[["lo"]][[k]]
+    hi <- st[["hi"]][[k]]
+    wrap <- st[["wraps"]][[k]]
+    st[["wraps"]][k] <- list(NULL)
+    if (st[["direct"]]) {
+      # rows [lo, hi] of the flat n x m accumulator, one atomic splice
+      g <- .Call(mizu_map_gather, wrap)
+      st[["out"]][seq.int((lo - 1) * st[["m"]] + 1, hi * st[["m"]])] <- g
+    } else if (st[["pymap"]]) {
+      st[["out"]] <- map_splice_ix(st[["out"]], list(v[["value"]]), lo - 1)
+    } else {
+      local <- vector("list", hi - lo + 1)
+      .Call(mizu_map_splice, local, list(v[["value"]]), hi - lo + 1)
+      .Call(mizu_map_vsplice, st[["out"]], lo, local)
+    }
+    .Call(mizu_map_close, wrap)
+  } else if (!st[["direct"]]) {
     # the splice is one C pass (the region path's assembly discipline): an
     # R-level `[<-` would dispatch per element, per chunk
     .Call(mizu_map_vsplice, st[["out"]], st[["lo"]][[k]], v[["value"]])
@@ -1387,8 +1573,10 @@ map_err_index <- function(e) {
 # The pymap-shape splice (a spec map on foreign workers): their runners
 # publish batch histories as element ranges (0-based half-open), not this
 # binding's (morsel start, morsel count) pairs — collect splices by
-# position either way. The template path publishes no values.
-map_splice_ix <- function(out, runs) {
+# position either way. The template path publishes no values. `base`
+# offsets every range — a streaming spec map's chunk-local histories shift
+# by the chunk's 0-based base.
+map_splice_ix <- function(out, runs, base = 0) {
   for (run in runs) {
     vals <- run[[2L]]
     if (is.null(vals)) {
@@ -1397,7 +1585,8 @@ map_splice_ix <- function(out, runs) {
     hist <- run[[1L]]
     for (j in seq_along(hist)) {
       rg <- hist[[j]]
-      out[(as.numeric(rg[[1L]]) + 1):as.numeric(rg[[2L]])] <- vals[[j]]
+      out[(as.numeric(rg[[1L]]) + 1 + base):(as.numeric(rg[[2L]]) + base)] <-
+        vals[[j]]
     }
   }
   out
@@ -1617,7 +1806,19 @@ map_assemble <- function(st, out, collect = "value") {
     ))
   }
   res <- if (st[["direct"]]) {
-    .Call(mizu_map_gather, st[["wrap"]])
+    if (isTRUE(st[["spec"]]) && isTRUE(st[["stream"]])) {
+      # a spec stream accumulated the flat vector a chunk gather at a
+      # time; subassignment dropped a classed integer64 gather's class
+      if (
+        typeof(st[["template"]]) == "double" &&
+          identical(class(st[["template"]]), "integer64")
+      ) {
+        class(out) <- "integer64"
+      }
+      out
+    } else {
+      .Call(mizu_map_gather, st[["wrap"]])
+    }
   } else {
     vapply(out, identity, st[["template"]], USE.NAMES = FALSE)
   }
@@ -1638,16 +1839,29 @@ map_assemble <- function(st, out, collect = "value") {
 # within ~a batch of their next transition), then cancel every outstanding
 # (uncollected) task — the PENDING -> CANCEL arm; an executing task's
 # publish CAS discards — and drop the handle references, so slot release
-# completes at the next GC. Total: it runs from on.exit while an error
-# (or pool shutdown) unwinds — both C entries no-op on closed handles.
+# completes at the next GC. A spec stream's per-chunk regions get the
+# same: the cancel word per outstanding chunk, the task cancels, then the
+# close. Total: it runs from on.exit while an error (or pool shutdown)
+# unwinds — the C entries no-op on closed handles.
 map_cancel <- function(st) {
   if (!is.null(st[["wrap"]])) {
     .Call(mizu_map_cancel_set, st[["wrap"]])
+  }
+  if (!is.null(st[["wraps"]])) {
+    for (w in st[["wraps"]]) {
+      if (!is.null(w)) .Call(mizu_map_cancel_set, w)
+    }
   }
   for (h in st[["handles"]]) {
     if (!is.null(h)) .Call(mizu_pool_cancel, h)
   }
   st[["handles"]] <- vector("list", length(st[["handles"]]))
+  if (!is.null(st[["wraps"]])) {
+    for (w in st[["wraps"]]) {
+      if (!is.null(w)) .Call(mizu_map_close, w)
+    }
+    st[["wraps"]] <- vector("list", length(st[["wraps"]]))
+  }
   invisible()
 }
 

@@ -137,3 +137,127 @@ test_that("a killed Python worker's lost-set scan reports the elements", {
   expect_gte(min(elts[, "lo"]), 1)
   expect_lte(max(elts[, "hi"]), 40)
 })
+
+test_that("a spec map streams over foreign workers", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  f <- mizu_call(.source = "x * 2")
+  want <- mizu_map(p, 1:60, f)
+  for (chunks in list(NULL, 1, 7, 60)) {
+    expect_identical(
+      mizu_map(p, 1:60, f, .stream = TRUE, .chunks = chunks),
+      want
+    )
+  }
+  # a bare atomic x slices through the per-chunk raw x sections
+  x <- as.double(1:100)
+  wx <- mizu_map(p, x, f)
+  for (chunks in list(NULL, 8)) {
+    expect_identical(mizu_map(p, x, f, .stream = TRUE, .chunks = chunks), wx)
+  }
+})
+
+test_that("a streaming spec map keeps seed invariance across chunkings", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  f <- mizu_call(.source = "import random\nrandom.random()")
+  want <- mizu_map(p, 1:40, f, .seed = 42)
+  for (chunks in list(NULL, 1, 7, 40)) {
+    expect_identical(
+      mizu_map(p, 1:40, f, .seed = 42, .stream = TRUE, .chunks = chunks),
+      want
+    )
+  }
+})
+
+test_that("a streaming spec map reports the global element index", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  src <- paste("if x == 3:", "    raise ValueError('boom')", "x", sep = "\n")
+  cnd <- tryCatch(
+    mizu_map(p, 1:10, mizu_call(.source = src), .stream = TRUE, .chunks = 5),
+    mizu_error_remote = function(c) c
+  )
+  expect_s3_class(cnd, "mizu_error_remote")
+  # the collect_any position stamp re-homed the chunk-local element index
+  expect_identical(cnd[["index"]], 3L)
+  expect_identical(cnd[["mizu_map_index"]], 3L)
+  expect_match(conditionMessage(cnd), "boom")
+})
+
+test_that("a streaming spec map raises the minimum element index", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(1L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  src <- paste(
+    "if x in (3, 5):",
+    "    raise ValueError('boom')",
+    "x",
+    sep = "\n"
+  )
+  cnd <- tryCatch(
+    mizu_map(p, 1:8, mizu_call(.source = src), .stream = TRUE, .chunks = 4),
+    mizu_error_remote = function(c) c
+  )
+  # chunk 1 fails at 3 strictly before chunk 2 at 5; the drained sibling's
+  # index offsets by its own chunk base either way
+  expect_identical(cnd[["mizu_map_index"]], 3L)
+})
+
+test_that("a streaming spec map gathers per-chunk output areas", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+
+  f <- mizu_call(.source = "x * 2")
+  want <- mizu_map(p, 1:50, f, .template = numeric(1))
+  expect_identical(
+    mizu_map(p, 1:50, f, .template = numeric(1), .stream = TRUE, .chunks = 7),
+    want
+  )
+  src <- paste(
+    "import numpy as np",
+    "np.array([x, x * 2], dtype=float)",
+    sep = "\n"
+  )
+  m <- mizu_map(
+    p,
+    1:6,
+    mizu_call(.source = src),
+    .template = numeric(2),
+    .stream = TRUE,
+    .chunks = 3
+  )
+  expect_identical(dim(m), c(2L, 6L))
+  expect_identical(m[1L, ], as.double(1:6))
+  expect_identical(m[2L, ], as.double(1:6) * 2)
+  # .collect = "view" stays a narrowed entry error
+  expect_error(
+    mizu_map(
+      p,
+      1:4,
+      f,
+      .template = numeric(1),
+      .collect = "view",
+      .stream = TRUE
+    ),
+    "cannot compose"
+  )
+  # as does a prepared streaming spec map
+  expect_error(
+    mizu_map_prepare(p, 1:4, f, .stream = TRUE),
+    "cannot stream"
+  )
+})

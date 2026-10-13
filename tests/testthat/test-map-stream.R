@@ -62,10 +62,69 @@ test_that("streaming stages a descriptor-only region and balanced chunks", {
   pool_end(p)
 })
 
-test_that("a spec .f errors with .stream, informatively", {
+test_that("a spec .f streams over R workers (the same-language shape)", {
+  p <- pool_pair(workers = 2L)
+  st <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:20,
+    mizu_call("base::abs"),
+    list()
+  )
+  expect_identical(run_stream(p, st), as.list(abs(1:20)))
+  # a bare atomic x slices through the per-chunk raw x sections
+  st2 <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    as.double(1:20),
+    mizu_call("base::abs"),
+    list()
+  )
+  expect_identical(run_stream(p, st2), as.list(abs(as.double(1:20))))
+  # the template path accumulates each chunk's gather
+  st3 <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:20,
+    mizu_call("base::abs"),
+    list(),
+    template = numeric(1)
+  )
+  expect_identical(run_stream(p, st3), as.double(abs(1:20)))
+  pool_end(p)
+})
+
+test_that("a streaming spec map keeps seed invariance over R workers", {
+  p <- pool_pair(workers = 2L)
+  f <- mizu_call(.source = "runif(1)")
+  st <- mizu:::map_stage_stream(p[["ctrl"]], 1:30, f, list(), seed = 42)
+  want <- run_stream(p, st)
+  for (chunks in list(1, 7, 30)) {
+    st2 <- mizu:::map_stage_stream(
+      p[["ctrl"]],
+      1:30,
+      f,
+      list(),
+      chunks = chunks,
+      seed = 42
+    )
+    expect_identical(run_stream(p, st2), want)
+  }
+  pool_end(p)
+})
+
+test_that("view collect errors on a streaming spec map, informatively", {
   p <- pool_pair()
   expect_snapshot(
-    mizu:::map_stage_stream(p[["ctrl"]], 1:4, mizu_call("base::abs"), list()),
+    mizu_map(
+      p[["ctrl"]],
+      1:4,
+      mizu_call("base::abs"),
+      .template = numeric(1),
+      .collect = "view",
+      .stream = TRUE
+    ),
+    error = TRUE
+  )
+  expect_snapshot(
+    mizu_map_prepare(p[["ctrl"]], 1:4, mizu_call("base::abs"), .stream = TRUE),
     error = TRUE
   )
   pool_end(p)

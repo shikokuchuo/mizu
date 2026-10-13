@@ -149,6 +149,7 @@ SEXP mizu_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                    SEXP);
 SEXP mizu_map_abandon(SEXP, SEXP);
 SEXP mizu_map_cancel_set(SEXP);
+SEXP mizu_map_close(SEXP);
 SEXP mizu_map_cancel_get(SEXP);
 SEXP mizu_map_reset(SEXP);
 SEXP mizu_map_swap_x(SEXP, SEXP);
@@ -272,6 +273,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_map_batch",              (DL_FUNC) &mizu_map_batch,                 10},
   {"mizu_map_abandon",            (DL_FUNC) &mizu_map_abandon,               2},
   {"mizu_map_cancel_set",         (DL_FUNC) &mizu_map_cancel_set,            1},
+  {"mizu_map_close",              (DL_FUNC) &mizu_map_close,                 1},
   {"mizu_map_cancel_get",         (DL_FUNC) &mizu_map_cancel_get,            1},
   {"mizu_map_reset",              (DL_FUNC) &mizu_map_reset,                 1},
   {"mizu_map_swap_x",             (DL_FUNC) &mizu_map_swap_x,                2},

@@ -46,6 +46,27 @@ NORET void mizu_cond_signal(SEXP cond) {
   Rf_error("mizu: condition not signalled");
 }
 
+/* Preserve a pre-existing "index" field as "mizu_map_index" ahead of
+   mizu_cond_set_index's replace-in-place (the collect_any / collect_all
+   position stamp): a foreign map error's element index rides "index" and
+   would otherwise be silently overwritten. The condition is a fresh
+   collect-time build, so the rename mutates in place. */
+void mizu_cond_preserve_index(SEXP cond) {
+  SEXP names = Rf_getAttrib(cond, R_NamesSymbol);
+  if (TYPEOF(names) != STRSXP) return;
+  R_xlen_t n = XLENGTH(cond), nn = XLENGTH(names);
+  R_xlen_t m = n < nn ? n : nn;
+  R_xlen_t idx = -1;
+  for (R_xlen_t i = 0; i < m; i++) {
+    SEXP nm = STRING_ELT(names, i);
+    if (nm == NA_STRING) continue;
+    if (strcmp(CHAR(nm), "mizu_map_index") == 0) return;
+    if (strcmp(CHAR(nm), "index") == 0) idx = i;
+  }
+  if (idx < 0) return;
+  SET_STRING_ELT(names, idx, Rf_mkChar("mizu_map_index"));
+}
+
 /* Set the "index" field on a condition list with `$<-` semantics: replace
    in place when the name is present, else append one element (attributes,
    class included, carried over). Returns the condition UNPROTECTED — the

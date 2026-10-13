@@ -826,6 +826,30 @@ SEXP mizu_map_cancel_set(SEXP xp) {
   return R_NilValue;
 }
 
+/* Explicit, idempotent region teardown — a streaming spec map's per-chunk
+   regions unlink at their own turns, keeping submitter residency at the
+   window; every other map region unlinks at GC. Runs the wrap's chained
+   finalizers by hand (each clears its extptr, so the GC pass is a no-op —
+   wrap.c's discipline), then frees the handle and clears the map extptr.
+   A consumer-side (worker) context closes too: its wrap carries no host
+   link, so only the mapping releases. */
+SEXP mizu_map_close(SEXP xp) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mizu_map_tag)
+    Rf_error("mizu: not a map handle");
+  mizu_map_h *mh = (mizu_map_h *) R_ExternalPtrAddr(xp);
+  if (mh == NULL) return R_NilValue;   /* idempotent */
+  SEXP wrap = R_ExternalPtrProtected(xp);
+  if (wrap != R_NilValue && TYPEOF(wrap) == EXTPTRSXP) {
+    SEXP host = R_ExternalPtrProtected(wrap);
+    mizu_view_shm_finalizer(wrap);   /* this side's mapping */
+    if (host != R_NilValue && TYPEOF(host) == EXTPTRSXP)
+      mizu_view_host_finalizer(host);   /* the name (producer side) */
+  }
+  free(mh);
+  R_ClearExternalPtr(xp);
+  return R_NilValue;
+}
+
 SEXP mizu_map_cancel_get(SEXP xp) {
   mizu_map_h *mh = map_h_get(xp);
   return Rf_ScalarLogical(mizu_morsel_cancel_get(mh->shm->addr, &mh->h));

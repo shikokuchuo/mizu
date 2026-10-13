@@ -421,6 +421,7 @@ NORET void mizu_stop_not_portable(const char *path, const char *reason,
                                   const char *remedy) MIZU_COLD;
 SEXP mizu_cond_python_payload(void);
 NORET void mizu_cond_signal(SEXP cond);
+void mizu_cond_preserve_index(SEXP cond);
 SEXP mizu_cond_set_index(SEXP cond, int index);
 SEXP mizu_caught(SEXP cond);
 SEXP mizu_caught_cond(const char *subclass, const char *fmt, ...)

@@ -241,10 +241,18 @@ work at any time is bounded by the window, so the bound moves with
 sizing of the morsel machinery is lost (skew mitigation is to raise
 \code{.chunks}), and slices cross via the serialized tiers, so per-chunk
 staging costs an ordinary submit's serialization rather than the
-raw-section path's zero-serialize slicing. A streaming map always
-stages its descriptor region (workers materialize the map context at
-most once each) and needs same-language workers: a \code{\link[=mizu_call]{mizu_call()}} spec
-as \code{.f} errors.
+raw-section path's zero-serialize slicing. A streaming map with R
+workers shares one description of the map with every worker, and each
+worker reads that description at most once. A \code{\link[=mizu_call]{mizu_call()}} spec as
+\code{.f} streams too, over workers of any language. Each chunk in the
+window then stages a small shared region of its own (the slice plus
+the task that runs on it, one runner task per chunk), removed as soon
+as the chunk completes. Shared-memory use stays bounded by the window
+plus a small per-worker cache (up to 8 recent slices per worker)
+rather than by \code{sizeof(.x)}. Each chunk also writes its results
+separately, so they cannot combine into one view:
+\code{.collect = "view"} errors on a streaming spec map, as does preparing
+one with \code{\link[=mizu_map_prepare]{mizu_map_prepare()}}.
 }
 
 \section{Very large x}{

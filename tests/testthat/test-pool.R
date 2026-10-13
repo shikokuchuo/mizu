@@ -572,6 +572,42 @@ test_that("collect_any returns the first terminal task with its index", {
   pool_end(p)
 })
 
+test_that("collect_any and collect_all preserve a foreign map error's index", {
+  p <- pool_pair()
+  # a hand-built remote error carrying the element index, as a pymizu
+  # runner's crosses: the ERR flatten keeps classes and named fields
+  cond <- structure(
+    list(
+      message = "boom",
+      call = NULL,
+      remote_type = "ValueError",
+      index = 7L
+    ),
+    class = c("mizu_error_remote", "mizu_error", "error", "condition")
+  )
+  t1 <- mizu_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  cnd <- tryCatch(
+    mizu_collect_any(list(t1), timeout = 5),
+    mizu_error_remote = function(c) c
+  )
+  # the position stamp re-homes the element index, not replaces it
+  expect_identical(cnd[["index"]], 1L)
+  expect_identical(cnd[["mizu_map_index"]], 7L)
+  t2 <- mizu_submit(p[["ctrl"]], "ok")
+  t3 <- mizu_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  pool_step(p)
+  cnd2 <- tryCatch(
+    mizu_collect_all(list(t2, t3), timeout = 5),
+    mizu_error_remote = function(c) c
+  )
+  expect_identical(cnd2[["index"]], 2L)
+  expect_identical(cnd2[["mizu_map_index"]], 7L)
+  expect_identical(mizu_collect(t2, timeout = 5), "ok")
+  pool_end(p)
+})
+
 test_that("collect_any parks until any result publishes", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], "done")

@@ -797,8 +797,11 @@ SEXP mizu_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   int index = (int) idx + 1;   /* R 1-based */
   if (Rf_inherits(val, "mizu_caught")) {
     SEXP cond = VECTOR_ELT(val, 0);
-    if (TYPEOF(cond) == VECSXP)
+    if (TYPEOF(cond) == VECSXP) {
+      /* a foreign map error's element index survives the position stamp */
+      mizu_cond_preserve_index(cond);
       cond = mizu_cond_set_index(cond, index);
+    }
     PROTECT(cond);
     mizu_cond_signal(cond);          /* no return */
     UNPROTECT(2);        /* unreachable: mizu_cond_signal is NORET */
@@ -837,8 +840,10 @@ SEXP mizu_pool_collect_all_call(SEXP tasks, SEXP timeout) {
     SEXP val = VECTOR_ELT(out, (R_xlen_t) err_idx);
     if (Rf_inherits(val, "mizu_caught")) {
       SEXP cond = VECTOR_ELT(val, 0);
-      if (TYPEOF(cond) == VECSXP)
+      if (TYPEOF(cond) == VECSXP) {
+        mizu_cond_preserve_index(cond);
         cond = mizu_cond_set_index(cond, (int) err_idx + 1);
+      }
       PROTECT(cond);
       mizu_cond_signal(cond);        /* no return */
       UNPROTECT(2);      /* unreachable: mizu_cond_signal is NORET */

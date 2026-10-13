@@ -35,6 +35,29 @@ test_that("staging validates geometry before creating anything", {
   )
 })
 
+test_that("mizu_map_close unlinks explicitly and idempotently", {
+  st <- .Call(
+    mizu:::mizu_map_stage,
+    list(identity, list()),
+    NULL,
+    NULL,
+    4,
+    NULL,
+    1
+  )
+  xp <- st[[2L]]
+  nm <- st[[1L]]
+  expect_identical(.Call(mizu:::mizu_map_info, xp)[["n"]], 4)
+  .Call(mizu:::mizu_map_close, xp)
+  expect_error(.Call(mizu:::mizu_map_info, xp), "map handle is closed")
+  # idempotent, and the closed-handle entries no-op
+  expect_null(.Call(mizu:::mizu_map_close, xp))
+  expect_null(.Call(mizu:::mizu_map_cancel_set, xp))
+  # the region is unlinked at once: a fresh open fails
+  expect_error(.Call(mizu:::mizu_map_open, nm, TRUE), "cannot open map region")
+  expect_error(.Call(mizu:::mizu_map_close, NULL), "not a map handle")
+})
+
 test_that("attach validates each corrupted map header field", {
   st <- .Call(
     mizu:::mizu_map_stage,
