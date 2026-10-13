@@ -147,8 +147,8 @@ test_that("R -> Python -> R documented shifts", {
     mizu_send(ch, x)
     expect_identical(mizu_recv(ch, 30), expect)
   }
-  rt(c("a", "bc"), list("a", "bc")) # a strv returns as a list
-  rt(factor(c("b", "a"), levels = c("a", "b")), list("b", "a"))
+  rt(c("a", "bc"), c("a", "bc")) # a strv round-trips a strv
+  rt(factor(c("b", "a"), levels = c("a", "b")), c("b", "a"))
   rt(NA, NULL)
   rt(NA_integer_, NULL)
   rt(NA_character_, NULL)
