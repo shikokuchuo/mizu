@@ -353,10 +353,18 @@ work at any time is bounded by the window, so the bound moves with
 sizing of the morsel machinery is lost (skew mitigation is to raise
 <code>.chunks</code>), and slices cross via the serialized tiers, so per-chunk
 staging costs an ordinary submit's serialization rather than the
-raw-section path's zero-serialize slicing. A streaming map always
-stages its descriptor region (workers materialize the map context at
-most once each) and needs same-language workers: a <code><a href="mizu_call.html">mizu_call()</a></code> spec
-as <code>.f</code> errors.</p>
+raw-section path's zero-serialize slicing. A streaming map with R
+workers shares one description of the map with every worker, and each
+worker reads that description at most once. A <code><a href="mizu_call.html">mizu_call()</a></code> spec as
+<code>.f</code> streams too, over workers of any language. Each chunk in the
+window then stages a small shared region of its own (the slice plus
+the task that runs on it, one runner task per chunk), removed as soon
+as the chunk completes. Shared-memory use stays bounded by the window
+plus a small per-worker cache (up to 8 recent slices per worker)
+rather than by <code>sizeof(.x)</code>. Each chunk also writes its results
+separately, so they cannot combine into one view:
+<code>.collect = "view"</code> errors on a streaming spec map, as does preparing
+one with <code><a href="mizu_map_prepare.html">mizu_map_prepare()</a></code>.</p>
     </div>
     <div class="section level2">
     <h2 id="very-large-x">Very large x<a class="anchor" aria-label="anchor" href="#very-large-x"></a></h2>

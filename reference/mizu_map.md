@@ -274,11 +274,19 @@ come with fixed chunks: the adaptive batch sizing of the morsel
 machinery is lost (skew mitigation is to raise `.chunks`), and slices
 cross via the serialized tiers, so per-chunk staging costs an ordinary
 submit's serialization rather than the raw-section path's zero-serialize
-slicing. A streaming map always stages its descriptor region (workers
-materialize the map context at most once each) and needs same-language
-workers: a
+slicing. A streaming map with R workers shares one description of the
+map with every worker, and each worker reads that description at most
+once. A
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-spec as `.f` errors.
+spec as `.f` streams too, over workers of any language. Each chunk in
+the window then stages a small shared region of its own (the slice plus
+the task that runs on it, one runner task per chunk), removed as soon as
+the chunk completes. Shared-memory use stays bounded by the window plus
+a small per-worker cache (up to 8 recent slices per worker) rather than
+by `sizeof(.x)`. Each chunk also writes its results separately, so they
+cannot combine into one view: `.collect = "view"` errors on a streaming
+spec map, as does preparing one with
+[`mizu_map_prepare()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md).
 
 ## Very large x
 
