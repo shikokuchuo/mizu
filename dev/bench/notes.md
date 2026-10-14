@@ -1152,13 +1152,20 @@ view, not a copy), the MIZS export null count is a popcount, the Arrow
 send's namespace lookups are cached, and the top-level send's extptr
 finalizer is gone.
 
-Results (channel_pair, 50-row df double/int32/string, bench::mark
-medians, before the 2026-10-14 review's probes): the Arrow path 303 us,
-121 KB alloc -> 30.7 us, 9.4 KB (codec + the stream pull, the stated
-floor); a plain data.frame send 3.5 us, 17 KB -> 738 ns, 0 B. The
-2e5-row suite (dev/bench/arrow-bench.R): send_table 1.54 ms (was 1.8 —
-the dictionary levels no longer copy at open), receive 2.22 ms (was
-2.2), relay 763 us (was 750; drift band). An ns timestamp column's
+Results (channel_pair, 50-row df double/int32/string, send + recv
+round trips with a drain per iteration, bench::mark medians over 3
+rounds): the Arrow path ~200 us round trip (190-294 across rounds) vs
+the review's 303 us pre-fix probe — an honest ~1.5x, the components
+summing consistently: the nanoarrow pull ~51 us, the convert-back ~141
+us, the codec round trip ~2.5 us; serialize(df) 3.36 us / 24.3 KB the
+pre-fix reference. The ~141 us convert-back (a double nanoarrow round
+trip) is the residual the thorough small-frame form would remove (~3x,
+to ~65 us). (An earlier send-only read of this mark ran with no drain —
+the ring and arena filled mid-mark and later iterations returned the
+full sentinel unstaged — and its 30.7 us / 738 ns medians read low.)
+The 2e5-row suite (dev/bench/arrow-bench.R): send_table 1.54 ms (was
+1.8 — the dictionary levels no longer copy at open), receive 2.22 ms
+(was 2.2), relay 763 us (was 750; drift band). An ns timestamp column's
 receive now borrows: the column is a view (test-arrow.R's rc_of pins).
 
 Status: full suite 3782 pass, 0 fail (3 expected macOS skips).
