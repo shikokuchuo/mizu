@@ -48,6 +48,41 @@ skip_if_no_pyarrow <- function(py) {
   testthat::skip_if_not(pyarrow_ok(py), "pyarrow not available")
 }
 
+# The Python-host tests spawn R workers through pymizu's r_pool_launcher():
+# the probe and the workers need an installed mizu visible to a bare
+# Rscript — under R CMD check that is the check library, so it propagates
+# via R_LIBS (read even by a --vanilla Rscript).
+r_libs_env <- function() {
+  paste0("R_LIBS=", paste(.libPaths(), collapse = .Platform$path.sep))
+}
+
+py_r_host_ok <- local({
+  val <- NULL
+  function(py) {
+    if (is.null(val)) {
+      val <<- nzchar(py) &&
+        suppressWarnings(system2(
+          py,
+          c("-c", shQuote("import pymizu; pymizu.r_pool_launcher()")),
+          stdout = FALSE,
+          stderr = FALSE,
+          env = r_libs_env()
+        )) ==
+          0L
+    }
+    val
+  }
+})
+
+# Dogfoods pymizu's own probe (its suite's discipline: one home for the
+# probe logic) so an environment without a resolvable R host skips.
+skip_if_no_py_r_host <- function(py) {
+  testthat::skip_if_not(
+    py_r_host_ok(py),
+    "pymizu's r_pool_launcher() cannot resolve R with an installed mizu"
+  )
+}
+
 # The Python echo peer: the mirror of echo_expr.
 py_echo <- "
 import pymizu

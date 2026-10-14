@@ -87,12 +87,18 @@ test_that("errors cross with remote_type, and result portability is gated", {
 
 test_that("a nested submit keeps the outer task's identity (Python host)", {
   py <- skip_if_no_pymizu()
-  skip_if_no_child_mizu()
+  skip_if_no_py_r_host(py)
   src <- tempfile(fileext = ".py")
   writeLines(py_pool_nested_host, src)
   on.exit(unlink(src))
   out <- suppressWarnings(
-    system2(py, shQuote(src), stdout = TRUE, stderr = TRUE)
+    system2(
+      py,
+      shQuote(src),
+      stdout = TRUE,
+      stderr = TRUE,
+      env = r_libs_env()
+    )
   )
   expect_identical(out, c("value ok", "error ok", "gate ok"))
 })
