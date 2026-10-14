@@ -1217,3 +1217,52 @@ character column) joins mizu-bench.R and test-benchmark.R.
 Status: full suite 3800 pass, 0 fail (3 expected macOS skips); the
 crosslang files green with pymizu's venv on PATH; pymizu crosslang
 suites 119 pass; rchk clean (bcheck, 1152 functions — only R's own "too many states" notes).
+
+## 2026-10-14 — W4: ASCII fast path, one encode per pass in the 'I' string writer
+
+The interop review's string-writer item: ix_char_utf8 tests
+Rf_charIsASCII first on R >= 4.5 (pure-ASCII CHARSXPs are unmarked, so
+every ASCII string paid a full UTF-8 validation — the MIZS gate's
+2026-10-04 pattern), and ixw_str_size now hands the UTF-8 pointer to
+ixw_str_put instead of re-deriving it — the two passes validated and
+encoded each string four times, now once per pass.
+mizu_interop_names_ok rides the same fast path per name.
+
+Results (A/B back-to-back on this build, the review's writer-hook
+repro, 20-byte strings, bench::mark medians, ns/string):
+
+| case | before | after |
+|---|---|---|
+| ASCII, 10k strings | 42.6 | 11.5 |
+| ASCII, 100k | 43.9 | 11.2 |
+| ASCII, 1M | 47.4 (47.4 ms) | 13.9 (13.9 ms) |
+| UTF-8-marked, 10k | 15.9 | 14.0 |
+| UTF-8-marked, 100k | 17.6 | 13.0 |
+
+The acceptance gate was ASCII within ~1.2x of the marked figure; it now
+runs slightly ahead of it.
+
+Status: full suite 3800 pass, 0 fail (3 expected macOS skips); the
+crosslang files green with pymizu's venv on PATH; rchk clean.
+
+## 2026-10-14 — W3: registry-first task name resolution on R workers
+
+The interop review's per-task loadNamespace item: ixt_resolve_name
+calls R_FindNamespace (the registry read, loadNamespace only on a
+miss) instead of eval'ing loadNamespace per kind-0 task — the plan's
+literal Rf_findVarInFrame(R_NamespaceRegistry) is behind
+ENABLE_LEGACY_NONAPI on R 4.6's headers, and R_FindNamespace is the
+public entry implementing the same discipline. pool_task_runner's
+per-runner R_FindNamespace + findFun is cached on first use (the
+arrow_ns pattern). The optional CHARSXP->function cache is skipped:
+resolution is ~1.5 us of a 2.7 us round trip.
+
+Results (A/B back-to-back on this build, 1-worker pool, bench::mark
+medians): spec round trip (base::identity over 100 doubles) 12.8 ->
+2.7 us; plain mizu_submit round trip flat at 1.19 us.
+loadNamespace("stats") on a loaded namespace measures 11.9 us — the
+removed share.
+
+Status: full suite 3803 pass, 0 fail (3 expected macOS skips); the
+crosslang files green with pymizu's venv on PATH; rchk clean (bcheck,
+1153 functions — only R's own "too many states" notes).
