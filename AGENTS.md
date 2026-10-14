@@ -128,10 +128,13 @@ held batches to a value and re-enter through the caller’s own stage
 hook. The hook passes the caps word as a parameter — the channel
 `rh->peer_caps`, the pool this build’s `MIZU_R_CAPS` (pymizu’s
 precedent: a task frame is same-language by construction) — and the
-pulled state lives behind an extptr finalizer (`mizu_arrow_open_r`; the
-core borrows the ArrowArray structs and the batch-pointer array until
-close, so no `R_alloc` accumulates in the worker’s lifetime `.Call`). A
-nested ArrowTabular (a list element, a task argument, the spliced task
+pulled state is stack-held on the top-level path (no R code runs while
+the handle is open there) and rides an extptr finalizer only on the
+codec frame tier (`mizu_arrow_open_r`; the core borrows the ArrowArray
+structs and the batch-pointer array until close, so no `R_alloc`
+accumulates in the worker’s lifetime `.Call`). The R-side namespace and
+helper lookups are cached on first use (`arrow_ns()`). A nested
+ArrowTabular (a list element, a task argument, the spliced task
 expression) instead rides the codec’s frame leaf (below). Conversion
 warnings fire after the write half; at a pool publish they fire on the
 worker and are invisible to the submitter (a documented limit). The
@@ -244,40 +247,43 @@ Cross-cutting invariants (shared by channel and pool):
   R_Unserialize’s read table) is the fixed cost it removes. The writer
   rejects ALTREP anywhere in the graph, so a codec stream carries no
   view identifier and pins no retain entry (`mizu_keeperless`, core-side
-  — the collect-side keeperless-wake gate keys on it) — the one
-  exception is the frame leaf: its stream stamps `aux = 0`, the
-  checkout’s retain riding the retain table. A nested ArrowTabular
-  crosses as a frame leaf (`mizu_frame_tier`, called from the two
-  same-language codec sites once the plain pass declines — the channel’s
-  and pool’s foreign branches return first): the `SC_FRAME` tag (0x28 =
-  `SC_HASTAG | SC_VEC`, unwritable by the plain writer, loud-rejected by
-  a stale reader’s flag validation), a u8 name length, the staged
-  region’s name — at most one per payload, its stream always INLINE (the
-  core’s single-checkout rule), sized at `MIZU_IX_ZC_RESERVE`. The
-  record walk proves the tree in-subset before any pull (a
-  RecordBatchReader is consumed by pulling, and duplicate occurrences of
-  one table dedupe to one candidate); first-past-the-gate selection
-  stages the frame region ahead of any stream byte; every other table
-  converts to its value (the write walk emits converted values’ lazy
-  ALTREP through `*_GET_REGION` — nanoarrow’s conversions are never
-  expanded on the sender — and an unstaged frame converts too, never a
-  partial stream); the resolve is `mizu_view_resolve_id` off `scr_body`,
-  no new view export. A nested table in a zc-eligible tree (a sibling
-  leaf past the zc floor) is claimed by `mizu_zc_eligible` ahead of the
-  codec and still rides a serialized layout leaf. Closures cross with
-  the environment by reference (global/base/empty by kind byte, a
-  package namespace by name — base’s `..getNamespace` on read:
-  R_Unserialize’s own discipline, so a namespace that will not load
-  substitutes `.GlobalEnv`, it does not fail), attributes trailing
-  formals/body so the reader constructs with `R_mkClosure` first;
-  keep.source srcrefs are dropped on write via a stripped copy
-  (`mizu_strip_srcref()` for closures, `mizu_strip_lang()` for language
-  trees, both in map.c — the srcfile cannot cross processes;
-  identical()‘s ignore.srcref discipline). Environments, ALTREP,
-  closures over local environments, bytecode bodies, language nodes with
-  non-srcref attributes, and over-deep graphs fall back to R_Serialize.
-  The gp/LEVELS word is not carried (identical() never compares it);
-  attributes travel as (name, value) pairs via
+  — the collect-side keeperless-wake gate keys on it) — the two
+  exceptions are a data.frame’s automatic row.names (R \>= 4.6’s
+  expanded ALTREP 1:n writes the compact `c(NA, -n)` the reader’s
+  `Rf_setAttrib` restores) and the frame leaf: its stream stamps
+  `aux = 0`, the checkout’s retain riding the retain table. A nested
+  ArrowTabular crosses as a frame leaf (`mizu_frame_tier`, called from
+  the two same-language codec sites once the plain pass declines — the
+  channel’s and pool’s foreign branches return first): the `SC_FRAME`
+  tag (0x28 = `SC_HASTAG | SC_VEC`, unwritable by the plain writer,
+  loud-rejected by a stale reader’s flag validation), a u8 name length,
+  the staged region’s name — at most one per payload, its stream always
+  INLINE (the core’s single-checkout rule), sized at
+  `MIZU_IX_ZC_RESERVE`. The record walk proves the tree in-subset before
+  any pull (a RecordBatchReader is consumed by pulling, and duplicate
+  occurrences of one table dedupe to one candidate); first-past-the-gate
+  selection stages the frame region ahead of any stream byte; every
+  other table converts to its value (the conversion bail materializes
+  nanoarrow’s lazy top-level columns — the plain codec’s framing beats
+  R_Serialize below the gate — while a list column’s lazy elements still
+  emit through `*_GET_REGION` in the write walk, never expanded on the
+  sender; an unstaged frame converts too, never a partial stream); the
+  resolve is `mizu_view_resolve_id` off `scr_body`, no new view export.
+  A nested table in a zc-eligible tree (a sibling leaf past the zc
+  floor) is claimed by `mizu_zc_eligible` ahead of the codec and still
+  rides a serialized layout leaf. Closures cross with the environment by
+  reference (global/base/empty by kind byte, a package namespace by name
+  — base’s `..getNamespace` on read: R_Unserialize’s own discipline, so
+  a namespace that will not load substitutes `.GlobalEnv`, it does not
+  fail), attributes trailing formals/body so the reader constructs with
+  `R_mkClosure` first; keep.source srcrefs are dropped on write via a
+  stripped copy (`mizu_strip_srcref()` for closures, `mizu_strip_lang()`
+  for language trees, both in map.c — the srcfile cannot cross
+  processes; identical()‘s ignore.srcref discipline). Environments,
+  ALTREP, closures over local environments, bytecode bodies, language
+  nodes with non-srcref attributes, and over-deep graphs fall back to
+  R_Serialize. The gp/LEVELS word is not carried (identical() never
+  compares it); attributes travel as (name, value) pairs via
   `R_getAttributes`/`Rf_setAttrib`, class last through `Rf_classgets`.
   `SHM_VEC` (a spill region holding a view-layout object — atomic
   vector, string vector, or list tree — wrapped ALTREP at receive: no
