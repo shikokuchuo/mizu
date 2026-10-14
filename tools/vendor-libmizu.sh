@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="820fb377c22f5c1bd986c5d9dec14986d02f086e"  # libmizu: the verbatim uint64 frame form
+PIN="0f172a854eefdfc23dbd9d5ab7b4ba7e2cb81462"  # libmizu: the Arrow per-column writers, levels off batch 0
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
