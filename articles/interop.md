@@ -87,8 +87,13 @@ Table, RecordBatch, or RecordBatchReader — and any struct-typed
 `nanoarrow_array_stream` or `nanoarrow_array`, which covers
 `DBI::dbGetQueryArrow()`, duckdb, adbc, and polars outputs — stages
 straight off the Arrow buffers, one layout write into the shared region
-rather than a conversion to R values first. The receiver gets an
-ordinary `data.frame`, each column a view over the region’s pages, and
+rather than a conversion to R values first. The same path serves pools:
+an Arrow tabular returned from a task crosses as one frame region, and
+one nested in a payload — a list element, a task argument, the spliced
+task expression itself — crosses by reference as a frame leaf, the
+received object holding a view in place of the table. The receiver gets
+an ordinary `data.frame`, each column a view over the region’s pages,
+and
 [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md)
 converts back to Arrow: a struct-typed `nanoarrow_array_stream` whose
 buffers point straight into the shared region for attribute-free double,
@@ -108,7 +113,8 @@ stream consumes it — a streaming RecordBatchReader is fully materialized
 at send, source bytes and region resident at once — and fidelity is
 frame-level, not Arrow-schema-exact (a dictionary returns as a factor,
 uints widen, an `int32` of `INT32_MIN` reads as `NA`, and a `uint64`
-past 2^53 crosses as `NA` with a warning at send).
+past 2^53 crosses as `NA` with a warning at send — firing on the worker
+for a pool publish, invisible to the submitter).
 
 ``` r
 
@@ -160,7 +166,7 @@ stages it:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.2419656 0.5006305 0.7449213
+#> [1] 0.2095302 0.4755000 0.6880084
 s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -208,23 +214,23 @@ them:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.7860778 0.7860778
+#> [1] 0.1434125 0.1434125
 #> 
 #> [[2]]
-#> [1] 0.4849744 0.4849744
+#> [1] 0.2659144 0.2659144
 #> 
 #> [[3]]
-#> [1] 0.4011554 0.4011554
+#> [1] 0.6339995 0.6339995
 #> 
 #> [[4]]
-#> [1] 0.4026075 0.4026075
+#> [1] 0.1843297 0.1843297
 #> 
 #> [[5]]
-#> [1] 0.726138 0.726138
+#> [1] 0.4566701 0.4566701
 #> 
 #> [[6]]
-#> [1] 0.6932611 0.6932611
+#> [1] 0.4056132 0.4056132
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -1.10708419 -0.09581509 -0.12506626 -1.73043191 -0.68475271 -0.32956805
+#> [1] -0.04634729 -2.91077089 -0.06263358 -0.51582964 -0.39514927 -0.24444677
 mizu_pool_stop(p)
 ```

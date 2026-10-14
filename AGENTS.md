@@ -115,14 +115,27 @@ namespace).
 
 Arrow data is its own path, not the value tiers: the vendored core’s
 `arrow.c` writes the Arrow C Data Interface → MIZL frame (shared with
-pymizu as the byte-identity proof). The send gate lives in
-`mizu_r_stage_channel` (`src/stage_r.c`): `mizu_arrow_check` (two TYPEOF
-compares ahead of any `inherits`) routes to `mizu_arrow_stage_r`, which
-pulls the ABI structs via nanoarrow at R level (`R/arrow.R`’s
-`arrow_batches`; a stream is fully materialized at send),
-size-pre-gates, and calls the core’s `mizu_arrow_stage`; declines and
-below-gate sizes convert the held batches to a value and re-enter the
-value tiers. The receive is
+pymizu as the byte-identity proof). The send gate lives on both stage
+hooks (`mizu_r_stage_channel` and, same-language only,
+`mizu_r_stage_pool` — the §4.2 foreign result policy stays
+byte-identical; on the pool it serves task results, a submitted table
+being always nested): `mizu_arrow_check` (two TYPEOF compares ahead of
+any `inherits`) routes to `mizu_arrow_stage_r`, which pulls the ABI
+structs via nanoarrow at R level (`R/arrow.R`’s `arrow_batches`; a
+stream is fully materialized at send), size-pre-gates, and calls the
+core’s `mizu_arrow_stage`; declines and below-gate sizes convert the
+held batches to a value and re-enter through the caller’s own stage
+hook. The hook passes the caps word as a parameter — the channel
+`rh->peer_caps`, the pool this build’s `MIZU_R_CAPS` (pymizu’s
+precedent: a task frame is same-language by construction) — and the
+pulled state lives behind an extptr finalizer (`mizu_arrow_open_r`; the
+core borrows the ArrowArray structs and the batch-pointer array until
+close, so no `R_alloc` accumulates in the worker’s lifetime `.Call`). A
+nested ArrowTabular (a list element, a task argument, the spliced task
+expression) instead rides the codec’s frame leaf (below). Conversion
+warnings fire after the write half; at a pool publish they fire on the
+worker and are invisible to the submitter (a documented limit). The
+receive is
 [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md):
 one fused decide-and-fill `.Call` (`mizu_arrow_export(x, arrays)` — R
 pre-allocates the schema-less arrays, so the located geometry never
@@ -231,8 +244,28 @@ Cross-cutting invariants (shared by channel and pool):
   R_Unserialize’s read table) is the fixed cost it removes. The writer
   rejects ALTREP anywhere in the graph, so a codec stream carries no
   view identifier and pins no retain entry (`mizu_keeperless`, core-side
-  — the collect-side keeperless-wake gate keys on it). Closures cross
-  with the environment by reference (global/base/empty by kind byte, a
+  — the collect-side keeperless-wake gate keys on it) — the one
+  exception is the frame leaf: its stream stamps `aux = 0`, the
+  checkout’s retain riding the retain table. A nested ArrowTabular
+  crosses as a frame leaf (`mizu_frame_tier`, called from the two
+  same-language codec sites once the plain pass declines — the channel’s
+  and pool’s foreign branches return first): the `SC_FRAME` tag (0x28 =
+  `SC_HASTAG | SC_VEC`, unwritable by the plain writer, loud-rejected by
+  a stale reader’s flag validation), a u8 name length, the staged
+  region’s name — at most one per payload, its stream always INLINE (the
+  core’s single-checkout rule), sized at `MIZU_IX_ZC_RESERVE`. The
+  record walk proves the tree in-subset before any pull (a
+  RecordBatchReader is consumed by pulling, and duplicate occurrences of
+  one table dedupe to one candidate); first-past-the-gate selection
+  stages the frame region ahead of any stream byte; every other table
+  converts to its value (the write walk emits converted values’ lazy
+  ALTREP through `*_GET_REGION` — nanoarrow’s conversions are never
+  expanded on the sender — and an unstaged frame converts too, never a
+  partial stream); the resolve is `mizu_view_resolve_id` off `scr_body`,
+  no new view export. A nested table in a zc-eligible tree (a sibling
+  leaf past the zc floor) is claimed by `mizu_zc_eligible` ahead of the
+  codec and still rides a serialized layout leaf. Closures cross with
+  the environment by reference (global/base/empty by kind byte, a
   package namespace by name — base’s `..getNamespace` on read:
   R_Unserialize’s own discipline, so a namespace that will not load
   substitutes `.GlobalEnv`, it does not fail), attributes trailing
