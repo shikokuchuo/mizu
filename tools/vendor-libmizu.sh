@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="0f172a854eefdfc23dbd9d5ab7b4ba7e2cb81462"  # libmizu: the Arrow per-column writers, levels off batch 0
+PIN="6cdbb0ca87e8967201acc550c24b038c2d753dbe"  # libmizu: the clang-tidy cleanup
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
