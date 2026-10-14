@@ -222,11 +222,10 @@ uninterrupted run.
 `mizu_map(mizu_current_pool(), ...)` inside a task expression uses the
 evaluating worker's own handle. Runner submissions push onto the own
 deque of the worker. The blocked collect executes its own runners while
-idle peers steal the rest: fork/join-shaped recursive parallelism at
-deque cost. The first nested map of a worker claims a submitter slot. So
-at the default `max_submitters = 8` (one held by the controller) at most
-7 workers can nest concurrently. Raise `max_submitters` for wider nested
-fan-outs.
+idle peers steal the rest: nested parallelism at deque cost. The first
+nested map of a worker claims a submitter slot. So at the default
+`max_submitters = 8` (one held by the controller) at most 7 workers can
+nest concurrently. Raise `max_submitters` for wider nested fan-outs.
 
 ## Cross-language maps
 

@@ -121,12 +121,17 @@ hooks (`mizu_r_stage_channel` and, same-language only,
 byte-identical; on the pool it serves task results, a submitted table
 being always nested): `mizu_arrow_check` (two TYPEOF compares ahead of
 any `inherits`) routes to `mizu_arrow_stage_r`, which pulls the ABI
-structs via nanoarrow at R level (`R/arrow.R`’s `arrow_batches`; a
-stream is fully materialized at send), size-pre-gates, and calls the
-core’s `mizu_arrow_stage`; declines and below-gate sizes convert the
-held batches to a value and re-enter through the caller’s own stage
-hook. The hook passes the caps word as a parameter — the channel
-`rh->peer_caps`, the pool this build’s `MIZU_R_CAPS` (pymizu’s
+structs via nanoarrow at R level (`R/arrow.R`‘s `arrow_batches`; a
+stream is fully materialized at send) and size-pre-gates: past the gate
+it calls the core’s `mizu_arrow_stage`, at or under it one ’I’ stream is
+written straight off the Arrow buffers (the core’s
+`mizu_arrow_write_ix`) over the INLINE / arena / SHM_RAW tiers, aux
+keeperless — no convert back, no serialize pass, the same-language read
+paths dispatching the 0x49 first byte to the interop reader
+(`mizu_stream_read`, as they always did the foreign form). Declines
+convert the held batches to a value and re-enter through the caller’s
+own stage hook. The hook passes the caps word as a parameter — the
+channel `rh->peer_caps`, the pool this build’s `MIZU_R_CAPS` (pymizu’s
 precedent: a task frame is same-language by construction) — and the
 pulled state is stack-held on the top-level path (no R code runs while
 the handle is open there) and rides an extptr finalizer only on the
@@ -689,11 +694,3 @@ no network, no file access outside the working directory) or
 - `NEWS.md` is a stub (a dev header + “0.0.0 Initial release”) — don’t
   add change bullets.
 - Only push when the user explicitly requests it.
-
-## Pending tasks
-
-- Reword “fork/join-shaped recursive parallelism” in the
-  [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
-  roxygen (“Nested maps” section, `R/map.R`) to plain language —
-  “nested” is the settled term across the README and vignettes (docs
-  added 2026-10-07) — then re-document.
