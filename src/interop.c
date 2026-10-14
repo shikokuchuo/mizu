@@ -2313,13 +2313,13 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
 /* The exec-hook decode: the task stream's one value, then the cursor's
    finishing check. */
 SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
-                            int *kind_out) {
+                            int *kind_out, uint64_t *ident_out) {
   mizu_ix cur;
   mizu_ix_item it;
   if (mizu_ixt_open(&cur, buf, len, &it, 1) != MIZU_OK) ixr_stop_tls();
-  /* the submitter identity stashes ahead of every field read, so even a
-     torn stream fails the task in the submitter's own format */
-  mizu_curpool_ident = it.u64[0];
+  /* the submitter identity out ahead of every field read, so even a torn
+     stream fails the task in the submitter's own format */
+  *ident_out = it.u64[0];
   const int kind = (int) it.task_kind;
   *kind_out = kind;
   SEXP out = PROTECT(ixt_call(&cur, kind, base, 0));
@@ -2336,13 +2336,15 @@ SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
 /* The kind-2 (runner) decode for the exec hook: region name, the packed
    ordinal+generation i64, and the seed (nil, or the (seed, offset) i64
    pair, returned as doubles). Returns list(name, gen_field, seed|NULL);
-   the R side unpacks and evals. The submitter identity stashes as the
-   call kinds' — the runner's result policy keys on it. */
-SEXP mizu_interop_exec_runner(const unsigned char *buf, size_t len) {
+   the R side unpacks and evals. The submitter identity returns through
+   ident_out as the call kinds' — the runner's result policy keys on
+   it. */
+SEXP mizu_interop_exec_runner(const unsigned char *buf, size_t len,
+                              uint64_t *ident_out) {
   mizu_ix cur;
   mizu_ix_item it, name, gen, seed;
   if (mizu_ixt_open(&cur, buf, len, &it, 2) != MIZU_OK) ixr_stop_tls();
-  mizu_curpool_ident = it.u64[0];   /* stashed as the call kinds' */
+  *ident_out = it.u64[0];   /* out as the call kinds' */
   if (it.task_kind != 2)
     mizu_stop_interop("malformed runner stream: not a runner task");
   ixt_next(&cur, &name);

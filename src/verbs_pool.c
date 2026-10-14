@@ -706,7 +706,7 @@ SEXP mizu_pool_run_outcome(SEXP xp, SEXP cond) {
   /* the D5 outcome sequence on the unwind path: the task failed, so its
      argument loans are all releasable — the flatten emits no refs */
   mizu_zc_ref_reset();
-  mizu_r_publish_err(&sink, cond);
+  mizu_r_publish_err(&sink, cond, mizu_curpool_ident);
   mizu_zc_args_release(mizu_zc_resolved_count());
   return Rf_ScalarInteger(0);
 }

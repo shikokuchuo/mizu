@@ -85,6 +85,18 @@ test_that("errors cross with remote_type, and result portability is gated", {
   expect_identical(d[["language"]], "Python")
 })
 
+test_that("a nested submit keeps the outer task's identity (Python host)", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_child_mizu()
+  src <- tempfile(fileext = ".py")
+  writeLines(py_pool_nested_host, src)
+  on.exit(unlink(src))
+  out <- suppressWarnings(
+    system2(py, shQuote(src), stdout = TRUE, stderr = TRUE)
+  )
+  expect_identical(out, c("value ok", "error ok", "gate ok"))
+})
+
 test_that("a dead Python worker surfaces as the died condition", {
   py <- skip_if_no_pymizu()
   launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)

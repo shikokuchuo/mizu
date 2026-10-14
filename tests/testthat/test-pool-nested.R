@@ -44,6 +44,20 @@ test_that("a task submits and collects a nested subtask in one step", {
   pool_end(p)
 })
 
+test_that("a nested collect leaves the outer task's result policy intact", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], {
+    s <- mizu_submit(mizu_current_pool(), x * 2, x = 21L)
+    mizu_collect(s, timeout = 5)
+    list(a = 1, b = "x")
+  })
+  expect_identical(pool_step(p), 1L)
+  # the codec-tier list crosses privately: the nested exec kept its own
+  # identity word off the outer task's
+  expect_identical(mizu_collect(t, timeout = 5), list(a = 1, b = "x"))
+  pool_end(p)
+})
+
 test_that("a task batch-submits nested subtasks in one step", {
   p <- pool_pair()
   t <- mizu_submit(

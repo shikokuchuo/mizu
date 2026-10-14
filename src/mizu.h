@@ -111,12 +111,14 @@ extern SEXP mizu_sent_full, mizu_sent_timeout, mizu_sent_closed, mizu_sent_gone;
    it. */
 extern SEXP mizu_curpool_xp;
 
-/* The executing task's submitter identity word (stage_r.c): 0 for a
-   private frame (reads as same-language), else the task stream's header
-   word, set at decode before any field is read — the ERR-format and
+/* The outermost executing task's submitter identity word (stage_r.c): 0
+   for a private frame (reads as same-language), else the task stream's
+   header word, set at decode before any field is read — the ERR-format and
    result-policy key of §4.2 (foreign = nonzero with a non-R language
-   byte). Left dangling on the catching = 0 longjmp exactly like
-   mizu_curpool_xp; read by mizu_r_publish_err on both its paths. */
+   byte). Written only through the catching = 0 exec's identp, so a nested
+   exec (help mode, a nested collect) never clobbers it; read by
+   mizu_pool_run_outcome's ERR publish after the catching = 0 longjmp, for
+   which it stays dangling exactly like mizu_curpool_xp. */
 extern uint64_t mizu_curpool_ident;
 
 // Bounded single-pass serialize (bounded.c) ---------------------------------------
@@ -242,14 +244,15 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                SEXP zc_node, int no_zc,
                                mizu_ix_plan *plan);
 /* The exec-hook decode of a task stream: validates the header and the
-   per-kind shape off the cursor, stashes the submitter identity in
-   mizu_curpool_ident, and builds in place — name kind: a LANGSXP (the
-   qualified name resolved); source kind: list(parsed exprs, env) with the
-   arguments bound as names (positional as "..1", "..2", ...) in a fresh
-   frame under base. kind_out takes the kind byte. Raises the informative
-   shape errors (the exec hook contains them). */
+   per-kind shape off the cursor, returns the submitter identity through
+   ident_out ahead of every field read (so even a torn stream fails the
+   task in the submitter's own format), and builds in place — name kind: a
+   LANGSXP (the qualified name resolved); source kind: list(parsed exprs,
+   env) with the arguments bound as names (positional as "..1", "..2", ...)
+   in a fresh frame under base. kind_out takes the kind byte. Raises the
+   informative shape errors (the exec hook contains them). */
 SEXP mizu_interop_exec_task(const unsigned char *buf, size_t len, SEXP base,
-                            int *kind_out);
+                            int *kind_out, uint64_t *ident_out);
 /* The map descriptor's 'I' form (Phase 5): one stream, list[task, x | nil]
    — the f spec nested as a kind 0/1 task tag, the list-x a bare list (nil
    when the raw section carries it). Two-pass; 0 = decline. */
@@ -263,8 +266,9 @@ size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
                                  SEXP name, double gen_field, SEXP seed,
                                  uint32_t target, uint64_t ident);
 /* The exec-hook kind-2 decode: list(name, gen_field, seed|NULL); the
-   submitter identity stashes as the call kinds'. */
-SEXP mizu_interop_exec_runner(const unsigned char *buf, size_t len);
+   submitter identity returns through ident_out as the call kinds'. */
+SEXP mizu_interop_exec_runner(const unsigned char *buf, size_t len,
+                              uint64_t *ident_out);
 /* The map descriptor read: list(kind, product, x|NULL) — name kind: the
    consed LANGSXP; source kind: list(exprs, env) parented on base. */
 SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
@@ -469,7 +473,7 @@ void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
 int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                      size_t limit, mizu_result_sink *sink, int catching,
                      mizu_read_ctx *ctx);
-void mizu_r_publish_err(mizu_result_sink *sink, SEXP cond);
+void mizu_r_publish_err(mizu_result_sink *sink, SEXP cond, uint64_t ident);
 void mizu_r_trace(mizu_trace_event event, uint64_t task_id, void *ctx);
 int mizu_r_check(void *ctx);
 void mizu_r_drop(void *ctx, void *pin);

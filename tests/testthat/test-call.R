@@ -223,6 +223,35 @@ test_that("a foreign task nests a same-language submit", {
   pool_end(p)
 })
 
+test_that("a nested submit keeps the outer task's foreign identity", {
+  p <- pool_pair()
+  submit <- function(spec) {
+    .Call(mizu:::mizu_pool_submit_spec, p$ctrl, spec, Inf, c(3L, 7L))
+  }
+  nested <- paste(
+    "t <- mizu_submit(mizu_current_pool(), x * 2, x = 21L)",
+    "mizu_collect(t)",
+    sep = "\n"
+  )
+  src <- function(tail) paste(nested, tail, sep = "\n")
+  t1 <- submit(mizu_call(.source = src("list(a = 1, b = 'x')")))
+  t2 <- submit(mizu_call(.source = src("stop('boom')")))
+  t3 <- submit(mizu_call(.source = src("function(x) x")))
+  pool_step(p)
+  pool_step(p)
+  pool_step(p)
+  # the nested help-collect must not clobber the outer task's submitter
+  # identity: the outer task keeps the foreign result and err formats
+  expect_identical(mizu_collect(t1), list(a = 1, b = "x"))
+  c2 <- tryCatch(mizu_collect(t2), mizu_error_remote = function(c) c)
+  expect_s3_class(c2, "mizu_error_remote")
+  expect_equal(c2$remote_type, "simpleError")
+  c3 <- tryCatch(mizu_collect(t3), mizu_error_remote = function(c) c)
+  expect_s3_class(c3, "mizu_error_remote")
+  expect_equal(c3$remote_type, "mizu_error_not_portable")
+  pool_end(p)
+})
+
 test_that("collect_any and collect_all cross languages", {
   p <- pool_pair()
   submit <- function(spec) {
