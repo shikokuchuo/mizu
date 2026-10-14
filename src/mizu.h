@@ -92,6 +92,12 @@ typedef struct mizu_r_handle_s {
              MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN | \
              MIZU_CAP_MIZL_U64V)
 
+/* A same-language stage's own capability word (pymizu's precedent: a task
+   frame is same-language by construction, so this build's caps is the
+   real word). The pool Arrow gate's word (stage_r.c) and the codec frame
+   tier's (codec.c) — both run same-language only. */
+#define MIZU_R_CAPS ((uint32_t) (MIZU_R_IDENT >> 32))
+
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */
 extern SEXP mizu_sent_full, mizu_sent_timeout, mizu_sent_closed, mizu_sent_gone;
@@ -127,6 +133,16 @@ SEXP mizu_codec_read(const unsigned char *buf, size_t len);
 int mizu_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
                          SEXP *args);
 SEXP mizu_empty_args(void);
+/* The frame-aware codec tier (codec.c), called from the two same-language
+   codec sites after the plain pass declined: an ArrowTabular nested in
+   the payload crosses as one frame leaf (the tag, a u8 length, the region
+   name) — at most one per payload, its stream always INLINE (the core's
+   single-checkout rule). 1 = hdr filled (INLINE or SHM_RAW, aux stamped);
+   0 = no ArrowTabular found, past the candidate cap, or the rest of the
+   tree outside the codec subset — the caller's serialize fallback runs,
+   exactly as today and with no Arrow stream consumed. */
+int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
+                    uint32_t inline_max, SEXP x, mizu_handle *h);
 
 // Interchange codec (interop.c) ----------------------------------------------------
 

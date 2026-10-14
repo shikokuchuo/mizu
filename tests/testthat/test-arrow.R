@@ -753,3 +753,186 @@ test_that("an orphaned referenced region still borrows", {
   )
   expect_true(mizu_close(ch, 10))
 })
+
+test_that("a pool result past the gate stages as one frame region", {
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- arrow_matrix()
+  t <- mizu_submit(p$ctrl, arrow_matrix()$tab)
+  pool_step(p)
+  out <- mizu_collect(t, 5)
+  expect_true(is_view(out))
+  expect_true(is_view(out$f64))
+  expect_identical(out, m$want)
+  back <- as.data.frame(arrow::as_arrow_table(mizu_as_arrow(out)))
+  # u8 (raw) reads back as integer on the Arrow side, as over channels
+  expect_identical(back[names(back) != "u8"], m$want[names(m$want) != "u8"])
+  expect_identical(back$u8, as.integer(m$want$u8))
+})
+
+test_that("a below-gate pool result converts and crosses as a data.frame", {
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  df <- data.frame(a = 1:3, b = c("x", "y", NA))
+  t <- mizu_submit(p$ctrl, arrow::arrow_table(df), df = df)
+  pool_step(p)
+  out <- mizu_collect(t, 5)
+  expect_identical(out, df)
+  expect_false(is_view(out$a))
+})
+
+test_that("a non-struct nanoarrow payload re-enters the pool tiers", {
+  skip_if_not_installed("nanoarrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  # as the task result
+  t <- mizu_submit(
+    p$ctrl,
+    identity(nanoarrow::as_nanoarrow_array(c(1L, NA, 3L)))
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), c(1L, NA, 3L))
+  # nested as an argument
+  t <- mizu_submit(
+    p$ctrl,
+    identity(x),
+    x = nanoarrow::as_nanoarrow_array_stream(
+      nanoarrow::as_nanoarrow_array(c("a", NA, "z"))
+    )
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), c("a", NA, "z"))
+})
+
+test_that("a table spliced as the task expression round-trips by reference", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- arrow_matrix()
+  t <- do.call(mizu_submit, list(p$ctrl, m$tab))
+  pool_step(p)
+  out <- mizu_collect(t, 5)
+  expect_true(is_view(out))
+  expect_identical(out, m$want)
+  rc <- rc_of(out)
+  expect_identical(bitwAnd(rc[2L], 1L), 1L) # REFHELD: the reference path
+})
+
+test_that("a nested table arg crosses as a frame leaf; a second converts", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- arrow_matrix()
+  small <- data.frame(a = 1:3, b = c("x", "y", NA))
+  t <- mizu_submit(
+    p$ctrl,
+    list(is_view(a), is_view(b), a, b),
+    a = m$tab,
+    b = arrow::arrow_table(small)
+  )
+  pool_step(p)
+  out <- mizu_collect(t, 5)
+  expect_true(out[[1L]])
+  expect_false(out[[2L]])
+  expect_true(is_view(out[[3L]]))
+  expect_identical(out[[3L]], m$want)
+  expect_identical(out[[4L]], small)
+})
+
+test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  df <- data.frame(
+    x = as.double(seq_len(6000)),
+    s = rep(c("a", "b", NA), length.out = 6000)
+  )
+  rbs <- lapply(0:3, function(k) {
+    arrow::record_batch(df[(k * 1500 + 1):((k + 1) * 1500), ])
+  })
+  rdr <- do.call(arrow::RecordBatchReader$create, rbs)
+  t <- mizu_submit(p$ctrl, list(is_view(a), a), a = rdr)
+  pool_step(p)
+  out <- mizu_collect(t, 5)
+  expect_true(out[[1L]])
+  expect_identical(out[[2L]], df)
+  # the pull materializes the reader at send: nothing left to read
+  expect_null(rdr$read_next_batch())
+})
+
+test_that("an over-budget stream converts the table and still crosses", {
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- arrow_matrix()
+  # past the slot's inline budget but below the zc floor, so the payload
+  # reaches the codec tier (a bigger vector stages SHM_VEC ahead of it)
+  v <- runif(200)
+  t <- mizu_submit(p$ctrl, list(is_view(a), a, v), a = m$tab, v = v)
+  pool_step(p)
+  out <- mizu_collect(t, 5)
+  expect_false(out[[1L]])
+  # the by-value conversion lands uint8 as integer (R raw has no NA),
+  # where the frame region's landing is raw
+  want <- m$want
+  want$u8 <- as.integer(want$u8)
+  expect_identical(out[[2L]], want)
+  expect_identical(out[[3L]], v)
+})
+
+test_that("a nested table crosses a channel as a frame leaf", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  m <- arrow_matrix()
+  mizu_send(p$host, list(m$tab, 1L))
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is_view(out[[1L]]))
+  expect_identical(out[[1L]], m$want)
+  expect_identical(out[[2L]], 1L)
+})
+
+test_that("a non-subset sibling takes the fallback with nothing consumed", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(x = 1:3)
+  rdr <- arrow::RecordBatchReader$create(arrow::record_batch(df))
+  e <- new.env()
+  e$a <- 1
+  f <- function() e$a # a closure over a local environment: the codec declines
+  mizu_send(p$host, list(rdr, f))
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is.function(out[[2L]]))
+  expect_identical(out[[2L]](), 1)
+  # the serialize fallback shipped the reader's shell; the sender's stream
+  # is still readable
+  expect_identical(
+    nanoarrow::convert_array_stream(nanoarrow::as_nanoarrow_array_stream(rdr)),
+    df
+  )
+})
+
+test_that("conversion counts fire at a pool publish after the write half", {
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  iv <- rep(1, 6000)
+  iv[2] <- -2147483648
+  iv[3] <- NA_real_
+  expr <- quote(arrow::arrow_table(
+    i = arrow::Array$create(iv, type = arrow::int32()),
+    p = runif(6000)
+  ))
+  t <- do.call(mizu_submit, list(p$ctrl, expr, iv = iv))
+  ws <- grab_warnings(pool_step(p))
+  expect_match(ws, "-2147483648 read as NA_integer_", all = FALSE)
+  out <- mizu_collect(t, 5)
+  expect_true(is_view(out))
+  expect_identical(out$i[1:3], c(1L, NA_integer_, NA_integer_))
+})

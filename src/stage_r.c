@@ -87,7 +87,8 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
     /* an Arrow frame stages as one MIZL region off the Arrow buffers via
        the core writer — the frame grammar's own path, ahead of the value
        tiers (an ArrowTabular environment would otherwise serialize) */
-    mizu_arrow_stage_r(x, hdr, payload, inline_max, h, ctx);
+    mizu_arrow_stage_r(x, hdr, payload, inline_max, h, ctx, rh->peer_caps,
+                       mizu_r_stage_channel);
     return 0;
   }
   if ((!foreign || mizu_zc_ref_foreign_ok(x, rh->peer_caps)) &&
@@ -182,6 +183,9 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
   size_t n = mizu_codec_write(payload, inline_max, x);
   int self_contained = n != 0;
   if (!self_contained) {
+    /* a nested ArrowTabular crosses as the codec's frame leaf (same
+       language only — the foreign branch returned above) */
+    if (mizu_frame_tier(hdr, payload, inline_max, x, h)) return 0;
     mizu_zc_ref_reset();
     n = mizu_serialize_bounded(payload, inline_max, x);
   }
@@ -381,6 +385,19 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
                             total, h, caps, inline_max);
     if (mizu_zc_ref_fired())
       mizu_r_pin(h, ctx, spec);
+    return 0;
+  }
+  /* an Arrow frame stages as one MIZL frame region off the Arrow buffers
+     via the core writer — same-language only (the foreign test mirrors
+     payload.c's), so the §4.2 foreign result policy and its pre-flight
+     gate stay byte-identical. The capability word is this build's: a task
+     frame is same-language by construction. In practice this serves
+     results — a submitted table is always nested in the list(expr, args)
+     payload and rides the codec's frame leaf instead */
+  const int foreign = rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
+  if (!foreign && mizu_arrow_check((SEXP) obj)) {
+    mizu_arrow_stage_r((SEXP) obj, hdr, payload, inline_max, h, ctx,
+                       MIZU_R_CAPS, mizu_r_stage_pool);
     return 0;
   }
   mizu_payload_stage(hdr, payload, inline_max, (SEXP) obj, h, ctx);

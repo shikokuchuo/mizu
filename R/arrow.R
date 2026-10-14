@@ -131,9 +131,21 @@ arrow_batches_to_value <- function(schema, batches) {
 #' Convert a Received Frame to an Arrow Stream
 #'
 #' `mizu_as_arrow()` converts a data frame — typically one received over a
-#' channel — into a struct-typed `nanoarrow_array_stream`, ready for
+#' channel or collected from a pool — into a struct-typed
+#' `nanoarrow_array_stream`, ready for
 #' `nanoarrow::convert_array_stream()`, `arrow::as_arrow_table()`, or any
 #' other Arrow C Data Interface consumer.
+#'
+#' Frames arrive over channels and pools alike: an Arrow tabular sent
+#' top-level stages as one frame region, and an Arrow tabular nested in a
+#' payload (a list element, a task argument, the spliced task expression
+#' itself) crosses by reference as a frame leaf — the received object
+#' holds a view in place of the table. Collect a pool result and the
+#' view is what you get; convert explicitly with this function. One
+#' caveat on sends: the conversion counts (a uint64 past 2^53, an int32
+#' or int64 minimum reading as `NA`) warn at send over a channel, but at
+#' a pool publish they fire on the worker and are not observable by the
+#' submitter.
 #'
 #' Columns still backed by their received shared-memory pages export
 #' zero-copy: the stream's buffers point straight into the shared region

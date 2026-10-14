@@ -324,6 +324,9 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
     mizu_payload_spill_codec(hdr, payload, x, n, h);
     return;
   }
+  /* a nested ArrowTabular crosses as the codec's frame leaf (same
+     language only — the foreign branch returned above) */
+  if (mizu_frame_tier(hdr, payload, inline_max, x, h)) return;
   /* R_Serialize: the stream may carry a view by reference, so pin only
      when the emit hook fired during the pass — an unpinned stream is
      self-contained and claims keeperless. The flag stays live for the
