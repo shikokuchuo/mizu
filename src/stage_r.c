@@ -23,6 +23,47 @@
 #define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
 #endif
 
+// The stage guard ----------------------------------------------------------------
+
+/* Wraps each stage hook: arms the attr-qualification verdict cache's
+   fresh generation at entry (interop.c) and voids it at exit, the raise
+   paths covered by the unwind cleanup so an armed generation never
+   outlives the staged tree's anchoring. Re-entrant by construction — the
+   Arrow decline path re-enters the stage hook, whose arm simply starts
+   another generation. */
+typedef int (*mizu_stage_impl_fn)(void *, mizu_slot_hdr *, unsigned char *,
+                                  uint32_t, mizu_handle *, void *);
+typedef struct {
+  mizu_stage_impl_fn fn;
+  void *obj;
+  mizu_slot_hdr *hdr;
+  unsigned char *payload;
+  uint32_t inline_max;
+  mizu_handle *h;
+  void *ctx;
+  int rc;
+} mizu_stage_guard_s;
+
+static SEXP mizu_stage_guard_run(void *d) {
+  mizu_stage_guard_s *g = (mizu_stage_guard_s *) d;
+  g->rc = g->fn(g->obj, g->hdr, g->payload, g->inline_max, g->h, g->ctx);
+  return R_NilValue;
+}
+
+static void mizu_stage_guard_clean(void *d) {
+  mizu_interop_stage_disarm();
+}
+
+static int mizu_stage_guard(mizu_stage_impl_fn fn, void *obj,
+                            mizu_slot_hdr *hdr, unsigned char *payload,
+                            uint32_t inline_max, mizu_handle *h, void *ctx) {
+  mizu_stage_guard_s g = { fn, obj, hdr, payload, inline_max, h, ctx, 0 };
+  mizu_interop_stage_arm();
+  /* cleanup runs on the normal and the raise exits alike */
+  R_ExecWithCleanup(mizu_stage_guard_run, &g, mizu_stage_guard_clean, &g);
+  return g.rc;
+}
+
 // Channel stage -------------------------------------------------------------------
 
 /* The channel's tier dispatch: frame x as (hdr, payload) — payload capacity
@@ -31,9 +72,10 @@
    the arena base staying core-private; region checkouts ride the spill
    helpers on the handle's free list. Raises on failure, never returns
    nonzero. */
-int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
-                         unsigned char *payload, uint32_t inline_max,
-                         mizu_handle *h, void *ctx) {
+static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
+                                     unsigned char *payload,
+                                     uint32_t inline_max,
+                                     mizu_handle *h, void *ctx) {
   SEXP x = (SEXP) obj;
   mizu_r_handle *rh = (mizu_r_handle *) ctx;
   if (x == rh->err_cond) {
@@ -226,6 +268,13 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
   return 0;
 }
 
+int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
+                         unsigned char *payload, uint32_t inline_max,
+                         mizu_handle *h, void *ctx) {
+  return mizu_stage_guard(mizu_r_stage_channel_impl, obj, hdr, payload,
+                          inline_max, h, ctx);
+}
+
 /* The batch-verb sink (recv_batch_fn / collect_all_fn): anchor each read
    product in a pre-PROTECTed VECSXP as it is delivered, so no SEXP sits
    unprotected across the next read's allocations. SET_VECTOR_ELT does
@@ -273,9 +322,10 @@ void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
    registered at create/join/attach. Serves task payloads at submit and
    result payloads at publish — a pool has no arena, so out-of-line frames
    are always named regions. Raises on failure, never returns nonzero. */
-int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
-                      unsigned char *payload, uint32_t inline_max,
-                      mizu_handle *h, void *ctx) {
+static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
+                                  unsigned char *payload,
+                                  uint32_t inline_max,
+                                  mizu_handle *h, void *ctx) {
   mizu_r_handle *rh = (mizu_r_handle *) ctx;
   if ((SEXP) obj == rh->spec) {
     /* the spec submit (mizu_pool_submit_spec / the map's runner submit):
@@ -404,6 +454,13 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
   }
   mizu_payload_stage(hdr, payload, inline_max, (SEXP) obj, h, ctx);
   return 0;
+}
+
+int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
+                      unsigned char *payload, uint32_t inline_max,
+                      mizu_handle *h, void *ctx) {
+  return mizu_stage_guard(mizu_r_stage_pool_impl, obj, hdr, payload,
+                          inline_max, h, ctx);
 }
 
 // Pool read (collect) ------------------------------------------------------------

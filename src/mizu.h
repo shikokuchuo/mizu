@@ -195,6 +195,12 @@ SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs);
 size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                               SEXP cond);
 int mizu_interop_attrs_qualify(SEXP x);
+/* The per-stage attr-qualification verdict cache (interop.c): the stage
+   hooks arm a fresh generation at entry and void it at exit (the raise
+   paths through the stage wrapper's unwind cleanup), so a cached verdict
+   is only ever consulted while the staged tree stays anchored. */
+void mizu_interop_stage_arm(void);
+void mizu_interop_stage_disarm(void);
 SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate);
 /* The dict-key rules on a names vector (non-NA, UTF-8-writable, unique
    after translation), and the foreign MIZS string gate (every element

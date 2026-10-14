@@ -372,6 +372,48 @@ with_channel(echo_expr, function(ch) {
   )
 })
 
+# the attr-qualification regime: the dict-key uniqueness walk is O(levels)
+# and each node qualifies once per stage, so the factor column must track
+# its character-column neighbour — pre-fix the 5000-level row read ~0.4 s/rt
+# (four quadratic walks over the levels per round trip)
+n <- 1e5
+nlev <- 5000L
+lab <- sprintf("lvl%06d", seq_len(nlev))
+codes <- sample(nlev, n, replace = TRUE)
+df_factor <- data.frame(
+  x = runif(n),
+  g = factor(codes, levels = seq_len(nlev), labels = lab)
+)
+df_char <- data.frame(x = runif(n), g = lab[codes])
+with_channel(echo_expr, function(ch) {
+  mizu_send(ch, df_factor)
+  invisible(mizu_recv(ch, 30))
+  note_us(
+    "100k frame, 5k-level col",
+    "factor column",
+    3L,
+    function() {
+      for (i in 1:3) {
+        mizu_send(ch, df_factor)
+        invisible(mizu_recv(ch, 30))
+      }
+    },
+    "us/rt"
+  )
+  note_us(
+    "100k frame, 5k-level col",
+    "character column",
+    3L,
+    function() {
+      for (i in 1:3) {
+        mizu_send(ch, df_char)
+        invisible(mizu_recv(ch, 30))
+      }
+    },
+    "us/rt"
+  )
+})
+
 # 4. parallel fan-out ----------------------------------------------------------
 
 cat("\n== 4. parallel fan-out (sum(runif(2e3)) x 2000, 4 workers) ==\n")

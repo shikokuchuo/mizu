@@ -547,6 +547,49 @@ test_that("guard: attributed large vector reports the attrs-parse share", {
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("guard: factor-column frame reports the attr-qualification regime", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  ch <- mizu_channel(echo_expr, capacity = 64L)
+
+  # the dict-key uniqueness walk is O(levels) and each node qualifies once
+  # per stage: the factor column tracks its character-column neighbour
+  # (pre-fix the 5000-level row read ~0.4 s/rt — four quadratic walks over
+  # the levels per round trip)
+  n <- 100000L
+  nlev <- 5000L
+  lab <- sprintf("lvl%06d", seq_len(nlev))
+  codes <- sample(nlev, n, replace = TRUE)
+  df_factor <- data.frame(
+    x = runif(n),
+    g = factor(codes, levels = seq_len(nlev), labels = lab)
+  )
+  df_char <- data.frame(x = runif(n), g = lab[codes])
+  rt <- function(df, reps = 10L) {
+    mizu_send(ch, df)
+    expect_identical(mizu_recv(ch, 60), df) # correctness on the warm-up
+    best <- Inf
+    for (r in 1:2) {
+      gc() # the peer's received views release only via finalizers
+      t0 <- proc.time()[[3]]
+      for (i in seq_len(reps)) {
+        mizu_send(ch, df)
+        mizu_recv(ch, 60)
+      }
+      best <- min(best, (proc.time()[[3]] - t0) / reps)
+    }
+    best
+  }
+  sf <- rt(df_factor)
+  sc <- rt(df_char)
+  cat(sprintf(
+    "\n100k-row frame, 5000-level factor column: %.2f ms/rt (character column %.2f)\n",
+    sf * 1e3,
+    sc * 1e3
+  ))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("nested-view fan-in reports the wire-resolve dedup regime", {
   skip_on_cran()
   p <- channel_pair(arena_size = 0)

@@ -1193,3 +1193,27 @@ unchanged at ~2.8 us.
 
 Status: full suite 3789 pass, 0 fail (3 expected macOS skips), rchk
 clean.
+
+## 2026-10-14 — W2: O(n) dict-key uniqueness, one qualification per node per stage
+
+The interop review's cliff item: mizu_interop_names_ok now settles
+uniqueness in one pass over an open-addressed set keyed on each
+element's translated UTF-8 form (was O(n^2), re-validating every earlier
+element per pair), and the attr qualification verdicts ride a
+generation-stamped per-stage pointer cache armed/disarmed by the stage
+hooks (the single-slot ix_blob_memo retired) — a frame's factor levels
+qualified four times per R->R round trip, five to a foreign peer, now
+once. The stage guard (R_ExecWithCleanup around both stage hooks) keeps
+an armed generation from outliving the staged tree's anchoring.
+
+Results (A/B back-to-back on this build): factor frame 100k x 5k-level
+col 424 -> 0.33 ms/rt (character col 0.67 — the acceptance gate); the
+'I' writer hook at 5k levels 212 ms -> 0.4 ms per size+write pair.
+Hot rows flat: channel seq rt 1.11 -> 0.82 us, pool seq rt 0.94 -> 0.94
+us, pool pipelined 767k -> 758k tasks/s (the guard costs nothing
+measurable). New canonical row "100k frame, 5k-level col" (factor vs
+character column) joins mizu-bench.R and test-benchmark.R.
+
+Status: full suite 3800 pass, 0 fail (3 expected macOS skips); the
+crosslang files green with pymizu's venv on PATH; pymizu crosslang
+suites 119 pass; rchk clean (bcheck, 1152 functions — only R's own "too many states" notes).

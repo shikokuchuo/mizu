@@ -131,21 +131,43 @@ static SEXP ix_dict_get(SEXP dict, const char *key) {
 }
 
 /* A names vector qualifies as dict keys: non-NA, UTF-8-writable, unique
-   after translation. */
+   after translation. Uniqueness rides an open-addressed set keyed on each
+   element's translated UTF-8 form (ix_char_utf8's output — the bytes the
+   pairwise rule compared), so the one validity walk per element also
+   settles uniqueness; a stack set keeps small name lists
+   allocation-free. */
 int mizu_interop_names_ok(SEXP names) {
   const R_xlen_t n = XLENGTH(names);
+  typedef struct { const char *p; uint32_t h; int32_t len; } ix_keyent;
+  ix_keyent stack_set[128];
+  ix_keyent *slots = stack_set;
+  uint32_t cap = 128;
+  if (n > 64) {
+    const uint64_t need = (uint64_t) n * 2;
+    if (need >= (uint64_t) 1 << 30) return 0;   /* implausible, as the reader's count */
+    cap = 128;
+    while (cap < need) cap *= 2;
+    slots = (ix_keyent *) R_alloc((size_t) cap, sizeof(ix_keyent));
+  }
+  memset(slots, 0, (size_t) cap * sizeof(ix_keyent));
   for (R_xlen_t i = 0; i < n; i++) {
     int ok;
     int32_t len;
     const char *u = ix_char_utf8(STRING_ELT(names, i), &ok, &len);
     if (!ok) return 0;
-    for (R_xlen_t j = 0; j < i; j++) {
-      int ok2;
-      int32_t len2;
-      const char *u2 = ix_char_utf8(STRING_ELT(names, j), &ok2, &len2);
-      if (ok2 && len == len2 && memcmp(u, u2, (size_t) len) == 0)
+    uint32_t h = 2166136261u;
+    for (int32_t k = 0; k < len; k++)
+      h = (h ^ (uint8_t) u[k]) * 16777619u;
+    uint32_t m = h & (cap - 1);
+    while (slots[m].p != NULL) {
+      if (slots[m].h == h && slots[m].len == len &&
+          memcmp(slots[m].p, u, (size_t) len) == 0)
         return 0;
+      m = (m + 1) & (cap - 1);
     }
+    slots[m].p = u;
+    slots[m].h = h;
+    slots[m].len = len;
   }
   return 1;
 }
@@ -450,14 +472,17 @@ static int ix_encodable(SEXP x, unsigned depth) {
 #endif
 }
 
-/* The one qualification function (the inline writer's gate on foreign
-   handles — whitelisted required; the §3.5 layout writer's — encodable
-   suffices for an R peer): a (class, attribute set) pair is a shape the
-   foreign reader homes, or the attribute set is at least encodable. */
-int mizu_interop_attrs_qualify(SEXP x) {
+/* The one qualification chain (the attrs form the inline writer's
+   foreign gate consumes — whitelisted required; MIZU_IXQ_ENCODABLE is
+   the §3.5 layout blob's R-peer answer): a (class, attribute set) pair
+   is a shape the foreign reader homes, or the attribute set is at least
+   encodable. rn_seq1n takes the frame row.names seq verdict (its scan
+   doubles as the qualification's NA check, so the blob's normalization
+   never re-scans); untouched for a non-frame. */
+static int ix_qualify_full(SEXP x, int *rn_seq1n) {
   if (Rf_isS4(x) || !ANY_ATTRIB(x)) return MIZU_IXQ_NONE;
   if (ix_qualify_factor(x)) return MIZU_IXQ_FACTOR;
-  if (ix_qualify_frame(x, NULL)) return MIZU_IXQ_FRAME;
+  if (ix_qualify_frame(x, rn_seq1n)) return MIZU_IXQ_FRAME;
   if (ix_qualify_dim(x)) return MIZU_IXQ_DIM;
   if (ix_qualify_date(x)) return MIZU_IXQ_DATE;
   if (ix_qualify_posixct(x)) return MIZU_IXQ_POSIXCT;
@@ -465,54 +490,74 @@ int mizu_interop_attrs_qualify(SEXP x) {
   return ix_encodable(x, 0) ? MIZU_IXQ_ENCODABLE : MIZU_IXQ_NONE;
 }
 
-/* The blob hooks' half: the qualification, with the frame row.names
-   seq verdict handed back (its scan doubles as the qualification's NA
-   check, so the blob's normalization never re-scans). */
-static int ix_qualify_blob(SEXP x, int *rn_seq1n) {
-  if (Rf_isS4(x) || !ANY_ATTRIB(x)) return MIZU_IXQ_NONE;
-  if (ix_qualify_factor(x)) return MIZU_IXQ_FACTOR;
-  if (ix_qualify_frame(x, rn_seq1n)) return MIZU_IXQ_FRAME;
-  if (ix_qualify_dim(x)) return MIZU_IXQ_DIM;
-  if (ix_qualify_date(x)) return MIZU_IXQ_DATE;
-  if (ix_qualify_posixct(x)) return MIZU_IXQ_POSIXCT;
-  return ix_encodable(x, 0) ? MIZU_IXQ_ENCODABLE : MIZU_IXQ_NONE;
+/* The per-stage verdict cache. One stage qualifies the same nodes
+   repeatedly — the zc gates, the 'I' writer's two passes, and the
+   layout layer's size/write blob hooks — so verdicts ride an
+   open-addressed pointer table stamped with the stage's generation:
+   the stage hook arms a fresh generation at entry and voids it at
+   every exit (the raise paths through the stage wrapper's unwind
+   cleanup), so a naked key is compared only while the staged tree
+   stays anchored, and a stale generation is never consulted. A full
+   table stops inserting (the stage computes fresh past it — a wide
+   frame's one expensive verdict, the root's, is still cached);
+   disarmed callers always compute fresh. */
+#define IX_QC_CAP 256u
+#define IX_QC_MAX 192u
+static struct {
+  SEXP node;
+  uint64_t gen;
+  int q;
+  int rn_seq1n;
+} ix_qc[IX_QC_CAP];
+static uint64_t ix_qc_gen;        /* 0: disarmed */
+static unsigned ix_qc_n;
+
+void mizu_interop_stage_arm(void) {
+  ix_qc_gen++;
+  ix_qc_n = 0;
 }
 
-/* The size→write verdict memo: the blob write hook re-runs the
-   qualification by contract (the two passes must agree), but the common
-   layout has exactly one attributed node — a frame's root, a factor, a
-   named vector — whose verdict the size hook computed moments ago.
-   Reuse it, one pointer-compared entry consumed on hit; a miss runs the
-   full qualification and restocks. The naked pointer is compare-only
-   and never aliases a different object: the stage keeps x anchored
-   through both passes, and every layout write's own size pass restocks
-   the entry before any write hook compares it. */
-static SEXP ix_blob_memo_x;
-static int ix_blob_memo_q = MIZU_IXQ_NONE;
-static int ix_blob_memo_seq = -1;
-
-/* The size hook's half: restock the verdict (it always computes fresh —
-   the object may have been mutated between stages). */
-static void ix_blob_memo_store(SEXP x, int q, int rn_seq1n) {
-  ix_blob_memo_x = x;
-  ix_blob_memo_q = q;
-  ix_blob_memo_seq = rn_seq1n;
+void mizu_interop_stage_disarm(void) {
+  ix_qc_gen = 0;
 }
 
-/* The write hook's half: consume the size hook's verdict when it is for
-   this object, else run the full qualification and restock (a tree's
-   attributed leaves do this; the root's hit is then a miss — correct,
-   just unsaved). */
-static int ix_qualify_blob_mixed(SEXP x, int *rn_seq1n) {
-  if (x == ix_blob_memo_x) {
-    ix_blob_memo_x = NULL;   /* one-shot: a tree's later sites re-qualify */
-    *rn_seq1n = ix_blob_memo_seq;
-    return ix_blob_memo_q;
+/* The qualification behind the cache: a hit returns the verdict this
+   stage already computed for x; a miss runs the chain and inserts. */
+static int ix_qualify_cached(SEXP x, int *rn_seq1n) {
+  uint32_t m = 0;
+  if (ix_qc_gen != 0) {
+    m = (uint32_t) ((uintptr_t) x >> 4) & (IX_QC_CAP - 1u);
+    while (ix_qc[m].gen == ix_qc_gen) {
+      if (ix_qc[m].node == x) {
+        *rn_seq1n = ix_qc[m].rn_seq1n;
+        return ix_qc[m].q;
+      }
+      m = (m + 1u) & (IX_QC_CAP - 1u);
+    }
   }
-  *rn_seq1n = -1;
-  const int q = ix_qualify_blob(x, rn_seq1n);
-  ix_blob_memo_store(x, q, *rn_seq1n);
+  const int q = ix_qualify_full(x, rn_seq1n);
+  if (ix_qc_gen != 0 && ix_qc_n < IX_QC_MAX) {
+    ix_qc[m].node = x;
+    ix_qc[m].gen = ix_qc_gen;
+    ix_qc[m].q = q;
+    ix_qc[m].rn_seq1n = *rn_seq1n;
+    ix_qc_n++;
+  }
   return q;
+}
+
+int mizu_interop_attrs_qualify(SEXP x) {
+  int rn_seq1n = -1;
+  return ix_qualify_cached(x, &rn_seq1n);
+}
+
+/* The blob hooks' half: the verdict in the blob chain's form (that
+   chain carries no difftime check, so DIFFTIME reads as its own
+   answer there, ENCODABLE), with the frame row.names seq verdict
+   handed back. */
+static int ix_qualify_blob(SEXP x, int *rn_seq1n) {
+  const int q = ix_qualify_cached(x, rn_seq1n);
+  return q == MIZU_IXQ_DIFFTIME ? MIZU_IXQ_ENCODABLE : q;
 }
 
 // Writer ------------------------------------------------------------------------
@@ -1921,7 +1966,6 @@ static SEXP ix_attrs_list(SEXP x, int seq1n) {
 static size_t mizu_interop_attrs_blob_size(SEXP x) {
   int rn_seq1n = -1;
   const int q = ix_qualify_blob(x, &rn_seq1n);
-  ix_blob_memo_store(x, q, rn_seq1n);
   if (q == MIZU_IXQ_NONE) return 0;
   SEXP attrs = PROTECT(ix_attrs_list(x, q == MIZU_IXQ_FRAME ? rn_seq1n : -1));
   size_t total = attrs == R_NilValue ? 0 :
@@ -1931,12 +1975,13 @@ static size_t mizu_interop_attrs_blob_size(SEXP x) {
 }
 
 /* The blob write hook: emits behind the size pass's total — the two
-   passes run the same qualification over the same object, so they agree
-   (a zero return after a nonzero size is the view layer's bug guard,
-   never a fallback). */
+   passes run the same qualification over the same object (the per-stage
+   verdict cache makes the write pass's the size pass's own), so they
+   agree (a zero return after a nonzero size is the view layer's bug
+   guard, never a fallback). */
 static size_t mizu_interop_attrs_blob_write(unsigned char *dst, SEXP x) {
   int rn_seq1n = -1;
-  const int q = ix_qualify_blob_mixed(x, &rn_seq1n);
+  const int q = ix_qualify_blob(x, &rn_seq1n);
   if (q == MIZU_IXQ_NONE) return 0;
   SEXP attrs = PROTECT(ix_attrs_list(x, q == MIZU_IXQ_FRAME ? rn_seq1n : -1));
   size_t total = attrs == R_NilValue ? 0 :
