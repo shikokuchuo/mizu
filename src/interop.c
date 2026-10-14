@@ -2237,10 +2237,12 @@ static void ixt_next(mizu_ix *cur, mizu_ix_item *it) {
 }
 
 /* Resolve the qualified name through the worker's own namespace machinery
-   (there is no name registry): pkg::fn / pkg:::fn, the namespace loaded
-   on demand; findFun searches the namespace, its imports and base — R's
-   own resolution order — and raises on a miss (the exec hook contains
-   it). The span is the validated UTF-8 code string. */
+   (there is no name registry): pkg::fn / pkg:::fn. R_FindNamespace reads
+   the namespace registry first and evals loadNamespace only on a miss —
+   the eval costs ~12 us on an already-loaded namespace, and this runs per
+   task. findFun searches the namespace, its imports and base — R's own
+   resolution order — and raises on a miss (the exec hook contains it).
+   The span is the validated UTF-8 code string. */
 static SEXP ixt_resolve_name(const unsigned char *code, uint64_t len) {
   uint64_t sep = 0;
   while (sep + 1 < len && !(code[sep] == ':' && code[sep + 1] == ':')) sep++;
@@ -2251,9 +2253,8 @@ static SEXP ixt_resolve_name(const unsigned char *code, uint64_t len) {
                       "qualified");
   SEXP pkg = PROTECT(Rf_mkCharLenCE((const char *) code, (int) sep,
                                     CE_UTF8));
-  SEXP call = PROTECT(Rf_lang2(Rf_install("loadNamespace"),
-                               Rf_ScalarString(pkg)));
-  SEXP ns = PROTECT(Rf_eval(call, R_BaseEnv));
+  SEXP info = PROTECT(Rf_ScalarString(pkg));
+  SEXP ns = PROTECT(R_FindNamespace(info));
   SEXP fn = PROTECT(Rf_mkCharLenCE((const char *) code + fn_off,
                                    (int) (len - fn_off), CE_UTF8));
   SEXP value = Rf_findFun(Rf_installChar(fn), ns);

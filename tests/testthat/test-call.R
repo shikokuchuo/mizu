@@ -39,6 +39,17 @@ test_that("spec tasks run on a same-language pool, errors stay rich", {
   expect_match(conditionMessage(cnd), "non-numeric")
 })
 
+test_that("spec name resolution: unloaded package, ::: internal, missing fn", {
+  p <- mizu_pool(1L)
+  on.exit(mizu_pool_stop(p))
+  t <- mizu_submit_call(p, mizu_call("parallel::detectCores"))
+  expect_gte(mizu_collect(t), 1L)
+  i <- mizu_submit_call(p, mizu_call("parallel:::isChild"))
+  expect_false(mizu_collect(i))
+  e <- mizu_submit_call(p, mizu_call("base::no_such_fn_xyz"))
+  expect_error(mizu_collect(e), "could not find function")
+})
+
 test_that("a pool no worker has joined: spec and map error, plain submit queues", {
   ctrl <- .Call(
     mizu:::mizu_pool_create,
