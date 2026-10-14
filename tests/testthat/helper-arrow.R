@@ -1,3 +1,23 @@
+# arrow_table() conversions queue one parallel task per plain-vector
+# column on libarrow's eternal CPU thread pool; the launched workers and
+# the task queue are not freed at process exit, which --use-valgrind
+# reports as definite leaks. Disable arrow threading for the test
+# session — the frame paths are agnostic to how a producer converts —
+# and propagate it to spawned children through R_TESTS: options are
+# session-local, but every Rscript child sources that file at startup
+# (the check's own R_TESTS, when set, is chained first).
+options(arrow.use_threads = FALSE)
+rt <- Sys.getenv("R_TESTS")
+startup <- tempfile(fileext = ".R")
+writeLines(
+  c(
+    if (nzchar(rt) && file.exists(rt)) sprintf("source(%s)", deparse(rt)),
+    "options(arrow.use_threads = FALSE)"
+  ),
+  startup
+)
+Sys.setenv(R_TESTS = startup)
+
 is_view <- function(x) .Call(mizu:::mizu_zc_view_check, x)
 
 # The fused decide-and-fill export, driven directly: x's pre-allocated
