@@ -24,6 +24,37 @@
 #define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
 #endif
 
+/* R_getAttributes() joined the C API in R 4.6.0, returning the named-list
+   form; on earlier R the same attributes read off the pairlist (codec.c's
+   backport). */
+#if R_VERSION < R_Version(4, 6, 0)
+#define R_getAttributes(x) ATTRIB(x)
+#endif
+
+/* The attributes, if any: the (name, value) pairs, class last through
+   Rf_classgets — the object bit follows the class as R's own setAttrib
+   maintains it (view.c's apply discipline). */
+static void arrow_copy_attrs(SEXP out, SEXP x) {
+  SEXP attrs = PROTECT(R_getAttributes(x));
+  SEXP classv = R_NilValue;
+  if (TYPEOF(attrs) == VECSXP) {
+    SEXP names = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
+    for (R_xlen_t i = 0, n = XLENGTH(attrs); i < n; i++) {
+      SEXP sym = Rf_installChar(STRING_ELT(names, i));
+      if (sym == R_ClassSymbol) { classv = VECTOR_ELT(attrs, i); continue; }
+      Rf_setAttrib(out, sym, VECTOR_ELT(attrs, i));
+    }
+    UNPROTECT(1);                /* names */
+  } else {
+    for (SEXP a = attrs; a != R_NilValue; a = CDR(a)) {
+      if (TAG(a) == R_ClassSymbol) { classv = CAR(a); continue; }
+      Rf_setAttrib(out, TAG(a), CAR(a));
+    }
+  }
+  if (classv != R_NilValue) Rf_classgets(out, classv);
+  UNPROTECT(1);
+}
+
 int mizu_arrow_check(SEXP x) {
   switch (TYPEOF(x)) {
   case ENVSXP:
@@ -36,39 +67,122 @@ int mizu_arrow_check(SEXP x) {
   return 0;
 }
 
+/* The mizu namespace and the three R helpers, cached on first use (they
+   do not exist when R_init_mizu runs — the namespace's R code loads after
+   the DLL — and R_FindNamespace + the two lookups otherwise repeat per
+   send). */
+static SEXP mizu_ns;
+static SEXP fn_arrow_batches, fn_arrow_to_value, fn_batches_to_value;
+
+static void arrow_ns(void) {
+  if (mizu_ns != NULL) return;
+  mizu_ns = R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu")));
+  R_PreserveObject(mizu_ns);
+  fn_arrow_batches = Rf_findFun(Rf_install("arrow_batches"), mizu_ns);
+  R_PreserveObject(fn_arrow_batches);
+  fn_arrow_to_value = Rf_findFun(Rf_install("arrow_to_value"), mizu_ns);
+  R_PreserveObject(fn_arrow_to_value);
+  fn_batches_to_value =
+    Rf_findFun(Rf_install("arrow_batches_to_value"), mizu_ns);
+  R_PreserveObject(fn_batches_to_value);
+}
+
 /* fn(arg) in the mizu namespace, the fresh result returned UNPROTECTED. */
-static SEXP arrow_call1(const char *fn, SEXP arg, SEXP ns) {
-  SEXP f = Rf_findFun(Rf_install(fn), ns);
-  SEXP call = PROTECT(Rf_lang2(f, arg));
-  SEXP out = Rf_eval(call, ns);
+static SEXP arrow_call1(SEXP fn, SEXP arg) {
+  SEXP call = PROTECT(Rf_lang2(fn, arg));
+  SEXP out = Rf_eval(call, mizu_ns);
   UNPROTECT(1);
   return out;
 }
 
 /* fn(arg1, arg2) in the mizu namespace, the fresh result UNPROTECTED. */
-static SEXP arrow_call2(const char *fn, SEXP arg1, SEXP arg2, SEXP ns) {
-  SEXP f = Rf_findFun(Rf_install(fn), ns);
-  SEXP call = PROTECT(Rf_lang3(f, arg1, arg2));
-  SEXP out = Rf_eval(call, ns);
+static SEXP arrow_call2(SEXP fn, SEXP arg1, SEXP arg2) {
+  SEXP call = PROTECT(Rf_lang3(fn, arg1, arg2));
+  SEXP out = Rf_eval(call, mizu_ns);
   UNPROTECT(1);
   return out;
 }
 
 SEXP mizu_arrow_pull(SEXP x) {
-  SEXP ns = PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
-  SEXP out = arrow_call1("arrow_batches", x, ns);
+  arrow_ns();
+  return arrow_call1(fn_arrow_batches, x);
+}
+
+/* A plain copy of an atomic ALTREP vector, filled through the read-only
+   accessors — nanoarrow's string conversions are lazy ALTREP, which the
+   codec's plain walk declines; below the frame gate the data is small,
+   so the conversion bail trades one bounded copy for the codec's framing.
+   The CHARSXP conversions themselves are paid either way (the write walk
+   would force them element by element); the copy adds the pointer array. */
+static SEXP arrow_plain(SEXP x) {
+  const SEXPTYPE ty = TYPEOF(x);
+  const R_xlen_t n = XLENGTH(x);
+  SEXP out = PROTECT(Rf_allocVector(ty, n));
+  if (ty == STRSXP) {
+    for (R_xlen_t i = 0; i < n; i++)
+      SET_STRING_ELT(out, i, STRING_ELT(x, i));
+  } else {
+    const size_t elt = mizu_view_sizeof_elt((int) ty);
+    unsigned char *dst = (unsigned char *) mizu_vec_ptr(out);
+    unsigned char buf[8192];
+    for (R_xlen_t i = 0; i < n; ) {
+      R_xlen_t m = (R_xlen_t) (sizeof buf / elt);
+      if (m > n - i) m = n - i;
+      switch (ty) {
+      case LGLSXP: LOGICAL_GET_REGION(x, i, m, (int *) buf); break;
+      case INTSXP: INTEGER_GET_REGION(x, i, m, (int *) buf); break;
+      case REALSXP: REAL_GET_REGION(x, i, m, (double *) buf); break;
+      case CPLXSXP: COMPLEX_GET_REGION(x, i, m, (Rcomplex *) buf); break;
+      default:     RAW_GET_REGION(x, i, m, (Rbyte *) buf); break;
+      }
+      memcpy(dst + (size_t) i * elt, buf, (size_t) m * elt);
+      i += m;
+    }
+  }
+  if (ANY_ATTRIB(x)) arrow_copy_attrs(out, x);
   UNPROTECT(1);
   return out;
 }
 
+/* The conversion bail's lazies materialized: the bare vector itself, or
+   each ALTREP column of the converted frame (a list column's elements
+   can still arrive lazy — the codec's frame-tier write walk serves them
+   through the region accessors). */
+static SEXP arrow_materialize(SEXP x) {
+  const SEXPTYPE ty = TYPEOF(x);
+  if (ALTREP(x)) {
+    if (ty == STRSXP || ty == LGLSXP || ty == INTSXP || ty == REALSXP ||
+        ty == CPLXSXP || ty == RAWSXP)
+      return arrow_plain(x);
+    return x;
+  }
+  if (ty == VECSXP) {
+    for (R_xlen_t i = 0, n = XLENGTH(x); i < n; i++) {
+      SEXP col = VECTOR_ELT(x, i);
+      const SEXPTYPE cty = TYPEOF(col);
+      if (ALTREP(col) &&
+          (cty == STRSXP || cty == LGLSXP || cty == INTSXP ||
+           cty == REALSXP || cty == CPLXSXP || cty == RAWSXP)) {
+        SEXP plain = PROTECT(arrow_plain(col));
+        SET_VECTOR_ELT(x, i, plain);
+        UNPROTECT(1);
+      }
+    }
+  }
+  return x;
+}
+
 SEXP mizu_arrow_value(SEXP triple) {
-  SEXP ns = PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
+  arrow_ns();
   SEXP batches = VECTOR_ELT(triple, 1);
-  SEXP out = batches == R_NilValue ?
-    arrow_call1("arrow_to_value", VECTOR_ELT(triple, 2), ns) :
-    arrow_call2("arrow_batches_to_value", VECTOR_ELT(triple, 0), batches, ns);
+  SEXP out = PROTECT(
+    batches == R_NilValue ?
+      arrow_call1(fn_arrow_to_value, VECTOR_ELT(triple, 2)) :
+      arrow_call2(fn_batches_to_value, VECTOR_ELT(triple, 0), batches)
+  );
+  SEXP plain = arrow_materialize(out);
   UNPROTECT(1);
-  return out;
+  return plain;
 }
 
 // The held open handle ---------------------------------------------------------
@@ -96,28 +210,43 @@ static void mizu_arrow_held_finalize(SEXP xp) {
   R_ClearExternalPtr(xp);
 }
 
-SEXP mizu_arrow_open_r(SEXP triple, uint32_t caps, size_t *fsize) {
+/* The open into a caller's held struct (the top-level path's is
+   stack-held): 0 opened, -1 the core's decline, -2 the allocation
+   failure — the caller raises (and frees its struct). */
+static int arrow_open_into(mizu_arrow_held *hd, SEXP triple, uint32_t caps,
+                           size_t *fsize) {
   SEXP schema = VECTOR_ELT(triple, 0);
   SEXP batches = VECTOR_ELT(triple, 1);
   const R_xlen_t nb = XLENGTH(batches);
-  mizu_arrow_held *hd = (mizu_arrow_held *) calloc(1, sizeof *hd);
-  if (hd == NULL) Rf_error("mizu: allocation failure");
+  hd->a = NULL;
   hd->bp = (const ArrowArray **)
     malloc((size_t) (nb > 0 ? nb : 1) * sizeof(ArrowArray *));
-  if (hd->bp == NULL) {
-    free(hd);
-    Rf_error("mizu: allocation failure");
-  }
+  if (hd->bp == NULL) return -2;
   for (R_xlen_t i = 0; i < nb; i++)
     hd->bp[i] = (const ArrowArray *) R_ExternalPtrAddr(VECTOR_ELT(batches, i));
   if (mizu_arrow_open(&hd->a,
                       (const ArrowSchema *) R_ExternalPtrAddr(schema),
                       hd->bp, (size_t) nb, caps) != MIZU_OK) {
     free(hd->bp);
-    free(hd);
-    mizu_stop_not_portable("the Arrow frame", mizu_last_error_message(), "");
+    return -1;
   }
   *fsize = mizu_arrow_size(hd->a);
+  return 0;
+}
+
+NORET static void arrow_open_raise(int rc) {
+  if (rc == -2) Rf_error("mizu: allocation failure");
+  mizu_stop_not_portable("the Arrow frame", mizu_last_error_message(), "");
+}
+
+SEXP mizu_arrow_open_r(SEXP triple, uint32_t caps, size_t *fsize) {
+  mizu_arrow_held *hd = (mizu_arrow_held *) calloc(1, sizeof *hd);
+  if (hd == NULL) Rf_error("mizu: allocation failure");
+  const int rc = arrow_open_into(hd, triple, caps, fsize);
+  if (rc != 0) {
+    free(hd);
+    arrow_open_raise(rc);
+  }
   SEXP xp = PROTECT(
     R_MakeExternalPtr(hd, Rf_install("mizu_arrow_held"), triple)
   );
@@ -134,9 +263,12 @@ void mizu_arrow_close_held(SEXP xp) {
   }
 }
 
-int mizu_arrow_stage_held(SEXP xp, mizu_handle *h, unsigned char *name,
-                          uint32_t *name_len, mizu_arrow_warn *warn) {
-  mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
+/* The stage over a held handle, closed either way: 0 staged, -1 the
+   core's decline (the gate or the reservation), the (hdr, payload) stamp
+   left in the struct's scratch. */
+static int arrow_stage_held(mizu_arrow_held *hd, mizu_handle *h,
+                            unsigned char *name, uint32_t *name_len,
+                            mizu_arrow_warn *warn) {
   const int staged =
     mizu_arrow_stage(h, hd->a, &hd->hdr, hd->name, warn) == MIZU_OK;
   mizu_arrow_close(hd->a);
@@ -145,6 +277,13 @@ int mizu_arrow_stage_held(SEXP xp, mizu_handle *h, unsigned char *name,
   if (name != NULL) memcpy(name, hd->name, hd->hdr.len);
   if (name_len != NULL) *name_len = (uint32_t) hd->hdr.len;
   return 0;
+}
+
+int mizu_arrow_stage_held(SEXP xp, mizu_handle *h, unsigned char *name,
+                          uint32_t *name_len, mizu_arrow_warn *warn) {
+  return arrow_stage_held(
+    (mizu_arrow_held *) R_ExternalPtrAddr(xp), h, name, name_len, warn
+  );
 }
 
 void mizu_arrow_warn_raise(const mizu_arrow_warn *warn) {
@@ -179,30 +318,37 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
   }
   const size_t gate =
     inline_max > MIZU_ZC_FLOOR ? (size_t) inline_max : MIZU_ZC_FLOOR;
+  /* the stack-held open handle: no R code runs while it is open (every
+     branch closes before the conversion bail), so the codec frame tier's
+     extptr + finalizer backstop has no work here */
+  mizu_arrow_held hd;
   size_t fsize;
-  SEXP xp = PROTECT(mizu_arrow_open_r(triple, caps, &fsize));
+  const int orc = arrow_open_into(&hd, triple, caps, &fsize);
+  if (orc != 0) arrow_open_raise(orc);
   if (fsize <= gate) {
     /* at or under the region tier: the held batches convert (never a
        re-stream) and re-enter as an ordinary data.frame */
-    mizu_arrow_close_held(xp);
+    mizu_arrow_close(hd.a);
+    free(hd.bp);
     SEXP value = PROTECT(mizu_arrow_value(triple));
     reenter((void *) value, hdr, payload, inline_max, h, ctx);
-    UNPROTECT(3);
+    UNPROTECT(2);
     return;
   }
   mizu_arrow_warn warn = { 0, 0, 0 };
-  if (mizu_arrow_stage_held(xp, h, NULL, NULL, &warn) != 0) {
+  if (arrow_stage_held(&hd, h, NULL, NULL, &warn) != 0) {
     /* declined by the stage's caps/churn gate or a failed reservation:
        the held batches convert and re-enter as an ordinary data.frame */
+    free(hd.bp);
     SEXP value = PROTECT(mizu_arrow_value(triple));
     reenter((void *) value, hdr, payload, inline_max, h, ctx);
-    UNPROTECT(3);
+    UNPROTECT(2);
     return;
   }
-  mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
-  *hdr = hd->hdr;
-  memcpy(payload, hd->name, hd->hdr.len);
-  UNPROTECT(2);
+  *hdr = hd.hdr;
+  memcpy(payload, hd.name, hd.hdr.len);
+  free(hd.bp);
+  UNPROTECT(1);
   /* the conversion counts raise after the write half completed: a handler
      longjmp abandons the stage here with the unpublished reservation
      reclaimed by the next send's rollback */
@@ -525,9 +671,17 @@ SEXP mizu_arrow_export_call(SEXP x, SEXP arrays) {
       const unsigned char *block = base + pl->data_off;
       const mizu_mizs_geom g = mizu_mizs_geometry(pl->length);
       const uint8_t *validity = block + g.validity;
-      int64_t nn = 0;
-      for (int64_t k = 0; k < pl->length; k++)
-        nn += (validity[k >> 3] & (1u << (k & 7))) == 0;
+      /* the null count is a popcount over the validity bytes, the tail
+         byte masked so the unused-high-bits convention never enters */
+      int64_t ones = 0;
+      const int64_t nb = pl->length / 8;
+      for (int64_t k = 0; k < nb; k++)
+        ones += __builtin_popcount(validity[k]);
+      if ((pl->length & 7) != 0)
+        ones += __builtin_popcount(
+          validity[nb] & (0xFFu >> (8 - (pl->length & 7)))
+        );
+      const int64_t nn = pl->length - ones;
       pl->valid = nn != 0 ? (const void *) validity : NULL;
       pl->nulls = nn;
       continue;

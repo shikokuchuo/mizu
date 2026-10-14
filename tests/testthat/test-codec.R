@@ -190,6 +190,20 @@ test_that("keep.source language trees cross with srcrefs dropped", {
   )
 })
 
+test_that("a data.frame's automatic row.names write as the compact form", {
+  df <- data.frame(x = c(1L, 2L, 3L), y = c("a", "b", "c"))
+  expect_identical(codec_rt(df), df)
+  big <- data.frame(x = seq_len(1e5) + 0)
+  expect_identical(codec_rt(big), big)
+  # non-automatic row.names keep the plain write
+  chr <- data.frame(x = c(1L, 2L, 3L))
+  row.names(chr) <- c("a", "b", "c")
+  expect_identical(codec_rt(chr), chr)
+  off <- data.frame(x = c(1L, 2L, 3L))
+  row.names(off) <- c(1L, 2L, 4L)
+  expect_identical(codec_rt(off), off)
+})
+
 test_that("the subset declines cleanly: NULL from the write surface", {
   expect_null(.Call(mizu:::mizu_codec_write_call, 1:5)) # ALTREP
   expect_null(.Call(mizu:::mizu_codec_write_call, globalenv())) # environment
@@ -209,8 +223,6 @@ test_that("the subset declines cleanly: NULL from the write surface", {
   src <- eval(quote(function(x) f(x)), globalenv())
   body(src) <- structure(body(src), note = 1)
   expect_null(.Call(mizu:::mizu_codec_write_call, src))
-  # a data.frame's row.names are an ALTREP compact sequence
-  expect_null(.Call(mizu:::mizu_codec_write_call, data.frame(x = 1:3)))
   # a language node with a non-srcref attribute still declines
   expect_null(.Call(
     mizu:::mizu_codec_write_call,

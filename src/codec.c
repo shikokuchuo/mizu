@@ -215,6 +215,49 @@ static void scw_string(mizu_scw *w, SEXP cs) {
 
 static void scw_node(mizu_scw *w, SEXP x, unsigned depth);
 
+/* A 1:n verdict for an integer vector: R's compact sequence carries the
+   answer in its info (REALSXP c(length, first, incr) — three reads);
+   anything else is one chunked scan. The interop writer's
+   ix_int_is_seq1n discipline, minus its warm buffer (a row.names attr
+   pays this at most once per payload). */
+static int scw_int_is_seq1n(SEXP rn, R_xlen_t n) {
+  if (ALTREP(rn)) {
+    SEXP info = R_altrep_data1(rn);
+    if (TYPEOF(info) == REALSXP && !ALTREP(info) && XLENGTH(info) == 3) {
+      const double *d = REAL(info);
+      if (d[0] == (double) n && d[1] == 1 && d[2] == 1) return 1;
+    }
+  }
+  int buf[8192];
+  for (R_xlen_t i = 0; i < n; ) {
+    const R_xlen_t m = n - i < 8192 ? n - i : 8192;
+    INTEGER_GET_REGION(rn, i, m, buf);
+    for (R_xlen_t j = 0; j < m; j++)
+      if (buf[j] != (int) (i + j + 1)) return 0;
+    i += m;
+  }
+  return 1;
+}
+
+/* The row.names attribute: on R >= 4.6 R_getAttributes presents the
+   compact form expanded — an ALTREP 1:n the plain node write declines
+   (every ordinary data.frame took the R_Serialize fallback for it).
+   An ALTREP INTSXP equal to 1:n writes the two-element compact form
+   c(NA, -n) instead, which the reader's Rf_setAttrib restores; any other
+   value keeps the plain write. */
+static int scw_rownames_compact(mizu_scw *w, SEXP value) {
+  if (TYPEOF(value) != INTSXP) return 0;
+  const R_xlen_t n = XLENGTH(value);
+  if (n <= 0 || n > INT32_MAX || !scw_int_is_seq1n(value, n)) return 0;
+  int32_t v[2];
+  v[0] = NA_INTEGER;
+  v[1] = (int32_t) -n;
+  scw_u8(w, SC_INT);
+  scw_u64(w, 2);
+  scw_bytes(w, v, sizeof v);
+  return 1;
+}
+
 /* Attributes as (name, value) pairs, read out through R_getAttributes —
    the named-list form on R >= 4.6, the pairlist before. The object bit is
    not carried: it is the class attribute's shadow (Rf_setAttrib maintains
@@ -232,8 +275,13 @@ static void scw_attrs(mizu_scw *w, SEXP x, unsigned depth) {
     R_xlen_t n = XLENGTH(attrs);
     scw_u32(w, (uint32_t) n);
     for (R_xlen_t i = 0; i < n; i++) {
-      scw_string(w, STRING_ELT(names, i));
-      scw_node(w, VECTOR_ELT(attrs, i), depth + 1);
+      SEXP name = STRING_ELT(names, i);
+      SEXP value = VECTOR_ELT(attrs, i);
+      scw_string(w, name);
+      if (name == PRINTNAME(R_RowNamesSymbol) && ALTREP(value) &&
+          scw_rownames_compact(w, value))
+        continue;
+      scw_node(w, value, depth + 1);
     }
     UNPROTECT(1);                /* names */
   } else {
@@ -248,6 +296,9 @@ static void scw_attrs(mizu_scw *w, SEXP x, unsigned depth) {
       } else {
         scw_string(w, PRINTNAME(tag));
       }
+      if (tag == R_RowNamesSymbol && ALTREP(CAR(a)) &&
+          scw_rownames_compact(w, CAR(a)))
+        continue;
       scw_node(w, CAR(a), depth + 1);
     }
   }
@@ -360,9 +411,10 @@ static void scw_node(mizu_scw *w, SEXP x, unsigned depth) {
       /* ALTREP rejects — except inside the frame tier's converted values
          (write mode): the record walk proved the original tree
          ALTREP-free, so an ALTREP node here belongs to a converted value
-         (nanoarrow's lazy conversions, a compact row.names) and emits its
-         materialized form through the region accessors — never expanded
-         on the sender, the 'I' writer's discipline */
+         (a list column's lazy elements — the bail materializes the
+         top level) and emits its materialized form through the region
+         accessors — never expanded on the sender, the 'I' writer's
+         discipline */
       if (w->fp == NULL || w->fp->mode != 1) { w->fail = 1; return; }
       scw_header(w, (uint32_t) type, x, depth);
       if (w->fail) return;
@@ -601,8 +653,9 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
      context-free — no ref table — so one count-only write per value
      replaces a second tree walk), the slot's reserve coming out of the
      record walk's total occurrence-for-occurrence. The write-mode walk
-     carries the converted values' lazy ALTREP (nanoarrow's conversions
-     are never expanded on the sender). */
+     carries any lazy ALTREP left inside the converted values (the bail
+     materializes the top level; a list column's elements can still
+     arrive lazy). */
   plan.mode = 1;
   for (int i = 0; i < plan.ncand; i++) {
     if (i == plan.frame) continue;

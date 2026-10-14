@@ -1139,3 +1139,26 @@ as_nanoarrow_array_stream(relay) 0.69 ms, 3.8 MB alloc — parity on time
 allocated bytes (no materialization; the pages serve in place).
 
 Status: full suite 3635 pass, 0 fail (3 expected macOS skips).
+
+## 2026-10-14 — the small-table codec path + the ns/dict/null-count trims
+
+The cheap half of the Arrow review's small-table item: a data.frame's
+automatic row.names now write as the compact c(NA, -n) in the codec
+(R >= 4.6's expanded ALTREP 1:n declined every ordinary data.frame to
+R_Serialize), and the conversion bail materializes nanoarrow's lazy
+ALTREP strings so the codec takes a below-gate Arrow frame. Also in this
+build: MIZU_CAP_MIZL_TSN dropped from R's caps (an ns column lands as a
+view, not a copy), the MIZS export null count is a popcount, the Arrow
+send's namespace lookups are cached, and the top-level send's extptr
+finalizer is gone.
+
+Results (channel_pair, 50-row df double/int32/string, bench::mark
+medians, before the 2026-10-14 review's probes): the Arrow path 303 us,
+121 KB alloc -> 30.7 us, 9.4 KB (codec + the stream pull, the stated
+floor); a plain data.frame send 3.5 us, 17 KB -> 738 ns, 0 B. The
+2e5-row suite (dev/bench/arrow-bench.R): send_table 1.54 ms (was 1.8 —
+the dictionary levels no longer copy at open), receive 2.22 ms (was
+2.2), relay 763 us (was 750; drift band). An ns timestamp column's
+receive now borrows: the column is a view (test-arrow.R's rc_of pins).
+
+Status: full suite 3782 pass, 0 fail (3 expected macOS skips).

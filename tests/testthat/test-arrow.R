@@ -387,6 +387,7 @@ test_that("a timestamp[ns] column lands as POSIXct double seconds", {
   mizu_send(p$host, stream)
   df <- mizu_recv(p$peer, 5)
   expect_identical(length(rc_of(df$x)), 2L)
+  expect_identical(length(rc_of(df$t)), 2L)
   expect_identical(class(df$t), c("POSIXct", "POSIXt"))
   expect_identical(attr(df$t, "tzone"), "UTC")
   expect_null(attr(df$t, "tscale"))
@@ -423,6 +424,7 @@ test_that("a duration[ns] column lands as difftime seconds", {
   mizu_send(p$host, stream)
   df <- mizu_recv(p$peer, 5)
   expect_identical(length(rc_of(df$x)), 2L)
+  expect_identical(length(rc_of(df$u)), 2L)
   expect_identical(class(df$u), "difftime")
   expect_identical(attr(df$u, "units"), "secs")
   expect_null(attr(df$u, "tscale"))
@@ -584,6 +586,21 @@ test_that("the export borrows a crafted remote string column with NA", {
   expect_identical(ex$kinds, 4L)
   back <- array_value(ex$arrays[[1L]], nanoarrow::na_large_string())
   expect_identical(sum(is.na(back)), sum(is.na(x))) # the block-validity count
+  expect_identical(back, x)
+})
+
+test_that("the string export's null count masks the tail byte", {
+  skip_if_not_installed("nanoarrow")
+  x <- rep(c("alpha", "beta", "héllo ✓"), length.out = 20001)
+  x[c(2L, 1000L, 20001L)] <- NA_character_ # a null in the tail byte's used bit
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x))
+  col <- fx[["yb"]][[1L]]
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 4L)
+  back <- array_value(ex$arrays[[1L]], nanoarrow::na_large_string())
+  expect_identical(sum(is.na(back)), 3L)
   expect_identical(back, x)
 })
 

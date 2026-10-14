@@ -86,11 +86,13 @@ typedef struct mizu_r_handle_s {
   mizu_zc_cache zoc;        /* the R-side zc view cache */
 } mizu_r_handle;
 
-/* This build's identity word, the one binding fill (channel and pool). */
+/* This build's identity word, the one binding fill (channel and pool).
+   MIZU_CAP_MIZL_TSN deliberately absent: R lands ns counts as double
+   seconds either way (ix_tsn_landing), so the bit would only cost the
+   receive-side copy and the view. */
 #define MIZU_R_IDENT \
   MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS | \
-             MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_TSN | \
-             MIZU_CAP_MIZL_U64V)
+             MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_U64V)
 
 /* A same-language stage's own capability word (pymizu's precedent: a task
    frame is same-language by construction, so this build's caps is the
