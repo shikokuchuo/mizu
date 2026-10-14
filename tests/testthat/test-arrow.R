@@ -759,7 +759,7 @@ test_that("a pool result past the gate stages as one frame region", {
   p <- pool_pair()
   on.exit(pool_end(p))
   m <- arrow_matrix()
-  t <- mizu_submit(p$ctrl, arrow_matrix()$tab)
+  t <- mizu_submit(p$ctrl, arrow::arrow_table(w), w = m$want)
   pool_step(p)
   out <- mizu_collect(t, 5)
   expect_true(is_view(out))
@@ -824,13 +824,18 @@ test_that("a table spliced as the task expression round-trips by reference", {
 test_that("a nested table arg crosses as a frame leaf; a second converts", {
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
-  p <- pool_pair()
+  p <- pool_pair(slot_size = 1024L)
   on.exit(pool_end(p))
   m <- arrow_matrix()
   small <- data.frame(a = 1:3, b = c("x", "y", NA))
   t <- mizu_submit(
     p$ctrl,
-    list(is_view(a), is_view(b), a, b),
+    list(
+      .Call(mizu:::mizu_zc_view_check, a),
+      .Call(mizu:::mizu_zc_view_check, b),
+      a,
+      b
+    ),
     a = m$tab,
     b = arrow::arrow_table(small)
   )
@@ -856,7 +861,11 @@ test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
     arrow::record_batch(df[(k * 1500 + 1):((k + 1) * 1500), ])
   })
   rdr <- do.call(arrow::RecordBatchReader$create, rbs)
-  t <- mizu_submit(p$ctrl, list(is_view(a), a), a = rdr)
+  t <- mizu_submit(
+    p$ctrl,
+    list(.Call(mizu:::mizu_zc_view_check, a), a),
+    a = rdr
+  )
   pool_step(p)
   out <- mizu_collect(t, 5)
   expect_true(out[[1L]])
@@ -873,7 +882,12 @@ test_that("an over-budget stream converts the table and still crosses", {
   # past the slot's inline budget but below the zc floor, so the payload
   # reaches the codec tier (a bigger vector stages SHM_VEC ahead of it)
   v <- runif(200)
-  t <- mizu_submit(p$ctrl, list(is_view(a), a, v), a = m$tab, v = v)
+  t <- mizu_submit(
+    p$ctrl,
+    list(.Call(mizu:::mizu_zc_view_check, a), a, v),
+    a = m$tab,
+    v = v
+  )
   pool_step(p)
   out <- mizu_collect(t, 5)
   expect_false(out[[1L]])
