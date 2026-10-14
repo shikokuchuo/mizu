@@ -61,6 +61,14 @@ static int ix_int_is_seq1n(SEXP rn, R_xlen_t n);
    valid UTF-8 by construction. */
 static const char *ix_char_utf8(SEXP cs, int *ok, int32_t *out_len) {
   *ok = 1;
+#if R_VERSION >= R_Version(4, 5, 0)
+  /* R clears every mark on pure-ASCII CHARSXPs at creation, so the bit
+     means unmarked native; pure ASCII is valid UTF-8 by construction. */
+  if (Rf_charIsASCII(cs)) {
+    *out_len = (int32_t) LENGTH(cs);
+    return CHAR(cs);
+  }
+#endif
   switch (Rf_getCharCE(cs)) {
   case CE_UTF8:
     *out_len = (int32_t) LENGTH(cs);
@@ -646,32 +654,23 @@ static void ixw_path_pop(mizu_ixw *w, size_t saved) {
 static void ixw_node(mizu_ixw *w, SEXP x);
 static void ixw_value(mizu_ixw *w, SEXP x);
 
-/* One CHARSXP's wire form: the byte length through out_len (-1 = NA), 0
-   on a decline. */
-static int ixw_str_size(SEXP cs, int32_t *out_len) {
+/* One CHARSXP's wire form: the UTF-8 bytes through out_p (NULL = NA), the
+   byte length through out_len (-1 = NA), 0 on a decline. */
+static int ixw_str_size(SEXP cs, int32_t *out_len, const char **out_p) {
   if (cs == NA_STRING) {
     *out_len = -1;
+    *out_p = NULL;
     return 1;
   }
   int ok;
-  ix_char_utf8(cs, &ok, out_len);
+  *out_p = ix_char_utf8(cs, &ok, out_len);
   return ok;
 }
 
 /* The emit half of ixw_str_size: bare (strv element / dict key) or the
-   0x04 scalar. latin1 re-reads the cached translation. */
-static void ixw_str_put(mizu_ixw *w, SEXP cs, int32_t len, int bare) {
-  if (len < 0) {
-    if (bare) {
-      IXW_PUT(w, mizu_ix_put_strelt, NULL, -1);
-    } else {
-      IXW_PUT(w, mizu_ix_put_str, NULL, -1);
-    }
-    return;
-  }
-  int ok;
-  int32_t ulen;
-  const char *u = ix_char_utf8(cs, &ok, &ulen);
+   0x04 scalar. The pointer is the size call's — the size pass validated
+   it, so the write pass encodes nothing again. */
+static void ixw_str_put(mizu_ixw *w, const char *u, int32_t len, int bare) {
   if (bare) {
     IXW_PUT(w, mizu_ix_put_strelt, u, len);
   } else {
@@ -737,12 +736,13 @@ static void ixw_strv_elts(mizu_ixw *w, SEXP x) {
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP cs = STRING_ELT(x, i);
     int32_t len;
-    if (!ixw_str_size(cs, &len)) {
+    const char *u;
+    if (!ixw_str_size(cs, &len, &u)) {
       ixw_decline(w, "a string is not writable as UTF-8 (CE_BYTES or "
                      "invalid native bytes)", NULL);
       return;
     }
-    ixw_str_put(w, cs, len, 1);
+    ixw_str_put(w, u, len, 1);
     if (w->depth < 0) return;
   }
 }
@@ -753,11 +753,12 @@ static void ixw_dict_pairs(mizu_ixw *w, SEXP names, SEXP values) {
   for (R_xlen_t i = 0; i < n; i++) {
     SEXP cs = STRING_ELT(names, i);
     int32_t len;
-    if (!ixw_str_size(cs, &len) || len < 0) {
+    const char *u;
+    if (!ixw_str_size(cs, &len, &u) || len < 0) {
       ixw_decline(w, "a name is NA or not writable as UTF-8", NULL);
       return;
     }
-    ixw_str_put(w, cs, len, 1);
+    ixw_str_put(w, u, len, 1);
     size_t saved = w->path_len;
     ixw_path_key(w, CHAR(STRING_ELT(names, i)));
     ixw_node(w, VECTOR_ELT(values, i));
@@ -1187,12 +1188,13 @@ static void ixw_value(mizu_ixw *w, SEXP x) {
     if (n == 1) {
       SEXP cs = STRING_ELT(x, 0);
       int32_t len;
-      if (!ixw_str_size(cs, &len)) {
+      const char *u;
+      if (!ixw_str_size(cs, &len, &u)) {
         ixw_decline(w, "a string is not writable as UTF-8 (CE_BYTES or "
                        "invalid native bytes)", NULL);
         return;
       }
-      ixw_str_put(w, cs, len, 0);
+      ixw_str_put(w, u, len, 0);
       return;
     }
     IXW_PUT(w, mizu_ix_put_strv_begin, (uint64_t) n);
@@ -1297,12 +1299,13 @@ static int ixw_spec_check(SEXP spec) {
 static void ixw_task_fields(mizu_ixw *w, SEXP spec) {
   SEXP cs = STRING_ELT(VECTOR_ELT(spec, 0), 0);
   int32_t clen;
-  if (!ixw_str_size(cs, &clen)) {
+  const char *cu;
+  if (!ixw_str_size(cs, &clen, &cu)) {
     ixw_decline(w, "the task code is not writable as UTF-8 (CE_BYTES or "
                    "invalid native bytes)", NULL);
     return;
   }
-  ixw_str_put(w, cs, clen, 0);
+  ixw_str_put(w, cu, clen, 0);
   if (w->depth < 0) return;
 
   SEXP positional = VECTOR_ELT(spec, 2);
