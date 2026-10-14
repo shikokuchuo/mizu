@@ -4,7 +4,10 @@
 #
 # rhub::rhub_setup()
 #
-# It is unlikely that you need to modify this file manually.
+# Local amendments to re-apply after regenerating:
+# - the container job sets --shm-size=2g (Docker's 64MB default /dev/shm is
+#   too small for the test suite) and installs the Quarto CLI, which the
+#   r-hub images lack and R CMD build needs for the vignettes.
 
 name: R-hub
 run-name: >-
@@ -53,6 +56,8 @@ jobs:
         config: ${{ fromJson(needs.setup.outputs.containers) }}
     container:
       image: ${{ matrix.config.container }}
+      # Docker's 64MB default /dev/shm is too small for the test suite.
+      options: --shm-size=2g
 
     steps:
       - uses: r-hub/actions/checkout@v1
@@ -64,6 +69,15 @@ jobs:
         with:
           token: ${{ secrets.RHUB_TOKEN }}
           job-config: ${{ matrix.config.job-config }}
+      # The images lack the quarto CLI, needed to build the vignettes at
+      # R CMD build. rchk runs its own script on the source tree instead.
+      - name: Install Quarto CLI
+        if: matrix.config.label != 'rchk'
+        run: |
+          curl -sLO https://quarto.org/download/latest/quarto-linux-amd64.tar.gz
+          mkdir -p /opt/quarto
+          tar -xzf quarto-linux-amd64.tar.gz -C /opt/quarto --strip-components=1
+          echo "/opt/quarto/bin" >> "$GITHUB_PATH"
       - uses: r-hub/actions/run-check@v1
         with:
           token: ${{ secrets.RHUB_TOKEN }}
