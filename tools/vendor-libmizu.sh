@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="6cdbb0ca87e8967201acc550c24b038c2d753dbe"  # libmizu: the clang-tidy cleanup
+PIN="0c6f5c9b50868b02a6589601f29afec79a50d990"  # libmizu: mizu_arrow_write_ix (the inline small-table 'I' form)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

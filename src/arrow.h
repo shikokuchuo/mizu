@@ -15,10 +15,12 @@
    pays nothing. */
 int mizu_arrow_check(SEXP x);
 
-/* Stage x as one MIZL frame region through the core's mizu_arrow_stage.
-   The size pre-gate (the region-span proxy) and every stage decline
-   convert the held batches (or the unconsumed stream) to a value and
-   re-enter through the stage-fn parameter (mizu_r_stage_channel or
+/* Stage x as one MIZL frame region through the core's mizu_arrow_stage,
+   or — at or under the size pre-gate (the region-span proxy) — as one 'I'
+   stream written straight off the Arrow buffers (the core's
+   mizu_arrow_write_ix) over the INLINE / arena / SHM_RAW tiers. A stage
+   decline (or a non-struct stream) converts the held batches to a value
+   and re-enters through the stage-fn parameter (mizu_r_stage_channel or
    mizu_r_stage_pool); the writer's declines raise
    mizu_error_not_portable. caps is the capability word the core's
    conjunction gates on: the channel passes the peer's (rh->peer_caps),

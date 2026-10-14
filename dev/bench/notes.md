@@ -1169,3 +1169,27 @@ The 2e5-row suite (dev/bench/arrow-bench.R): send_table 1.54 ms (was
 receive now borrows: the column is a view (test-arrow.R's rc_of pins).
 
 Status: full suite 3782 pass, 0 fail (3 expected macOS skips).
+
+## 2026-10-14 — the thorough small-table form: one 'I' write off the Arrow buffers
+
+The Arrow review's small-table item, thorough form: a below-gate frame
+now crosses as one 'I' stream written straight off the Arrow buffers
+(libmizu's new mizu_arrow_write_ix, 0c6f5c9, re-vendored into both
+bindings) over the INLINE / arena / SHM_RAW tiers, aux keeperless — the
+convert-back to a data.frame (the ~141 us residual) is gone. pymizu's
+inline emitters are deleted (~200 lines) for the same core writer; the
+stream bytes are pinned identical by the libmizu unit tests and the
+unmodified cross-language suites. The same-language read paths needed
+no change: mizu_stream_read already dispatches the 0x49 first byte
+ahead of the codec and the R native streams.
+
+Results (the 2026-10-14 methodology: channel_pair, 50-row df
+double/int32/string, send + recv round trips drained per iteration,
+bench::mark medians over 3 rounds, A/B back-to-back on this build):
+238/255/289 us -> 80.5/83.5/85.2 us round trip (~3.1x; the ~65 us
+projection inside the host-drift band — the ~51 us nanoarrow pull is
+the irreducible floor), steady-state alloc 36.8 KB -> 11.4 KB. df_rt
+unchanged at ~2.8 us.
+
+Status: full suite 3789 pass, 0 fail (3 expected macOS skips), rchk
+clean.

@@ -84,9 +84,10 @@ int mizu_r_stage_channel(void *obj, mizu_slot_hdr *hdr,
     return 0;
   }
   if (mizu_arrow_check(x)) {
-    /* an Arrow frame stages as one MIZL region off the Arrow buffers via
-       the core writer — the frame grammar's own path, ahead of the value
-       tiers (an ArrowTabular environment would otherwise serialize) */
+    /* an Arrow frame stages off the Arrow buffers via the core writer —
+       one MIZL region past the size gate, one 'I' stream at or under it;
+       the frame grammar's own path, ahead of the value tiers (an
+       ArrowTabular environment would otherwise serialize) */
     mizu_arrow_stage_r(x, hdr, payload, inline_max, h, ctx, rh->peer_caps,
                        mizu_r_stage_channel);
     return 0;
@@ -387,13 +388,14 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
       mizu_r_pin(h, ctx, spec);
     return 0;
   }
-  /* an Arrow frame stages as one MIZL frame region off the Arrow buffers
-     via the core writer — same-language only (the foreign test mirrors
-     payload.c's), so the §4.2 foreign result policy and its pre-flight
-     gate stay byte-identical. The capability word is this build's: a task
-     frame is same-language by construction. In practice this serves
-     results — a submitted table is always nested in the list(expr, args)
-     payload and rides the codec's frame leaf instead */
+  /* an Arrow frame stages off the Arrow buffers via the core writer — one
+     MIZL region past the size gate, one 'I' stream at or under it;
+     same-language only (the foreign test mirrors payload.c's), so the
+     §4.2 foreign result policy and its pre-flight gate stay
+     byte-identical. The capability word is this build's: a task frame is
+     same-language by construction. In practice this serves results — a
+     submitted table is always nested in the list(expr, args) payload and
+     rides the codec's frame leaf instead */
   const int foreign = rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
   if (!foreign && mizu_arrow_check((SEXP) obj)) {
     mizu_arrow_stage_r((SEXP) obj, hdr, payload, inline_max, h, ctx,

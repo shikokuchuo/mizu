@@ -326,13 +326,52 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
   const int orc = arrow_open_into(&hd, triple, caps, &fsize);
   if (orc != 0) arrow_open_raise(orc);
   if (fsize <= gate) {
-    /* at or under the region tier: the held batches convert (never a
-       re-stream) and re-enter as an ordinary data.frame */
+    /* at or under the region tier: one 'I' stream straight off the Arrow
+       buffers (the core's inline frame form, dst NULL sizing) — inline
+       within the budget with the keeperless claim (the stream commits no
+       retain-table entry of its own), else the arena copy or a SHM_RAW
+       spill per the tier machinery. No convert back to a value, no
+       serialize pass; the same-language read paths dispatch the stream on
+       its 0x49 first byte (mizu_stream_read), the foreign reader always
+       did. */
+    mizu_arrow_warn warn = { 0, 0, 0 };
+    const size_t n = mizu_arrow_write_ix(hd.a, NULL, &warn);
+    if (n <= (size_t) inline_max) {
+      mizu_arrow_write_ix(hd.a, payload, &warn);
+      hdr->kind = MIZU_KIND_INLINE;
+      hdr->len = (uint32_t) n;
+      hdr->aux = MIZU_AUX_F_KEEPERLESS;
+    } else {
+      uint64_t off;
+      unsigned char *chunk =
+        mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off);
+      if (chunk != NULL) {
+        mizu_arrow_write_ix(hd.a, chunk, &warn);
+        hdr->kind = MIZU_KIND_ARENA;
+        hdr->len = 0;
+        hdr->aux = off;
+        uint64_t n64 = (uint64_t) n;
+        memcpy(payload, &n64, sizeof(n64));
+      } else {
+        /* the pool has no arena (and a full channel arena declines): the
+           SHM_RAW spill, the region alone retained — the stream is
+           self-contained */
+        mizu_stage_reap(h);
+        mizu_shm *shm = mizu_spill_get_raise(h, n);
+        mizu_arrow_write_ix(hd.a, (unsigned char *) shm->addr, &warn);
+        hdr->kind = MIZU_KIND_SHM_RAW;
+        hdr->len = (uint32_t) shm->name_len;
+        hdr->aux = (uint64_t) n;
+        memcpy(payload, shm->name, shm->name_len);
+        mizu_stage_retain(h, shm);
+      }
+    }
     mizu_arrow_close(hd.a);
     free(hd.bp);
-    SEXP value = PROTECT(mizu_arrow_value(triple));
-    reenter((void *) value, hdr, payload, inline_max, h, ctx);
-    UNPROTECT(2);
+    UNPROTECT(1);
+    /* the conversion counts raise after the write half completed (the
+       MIZL path's discipline below) */
+    mizu_arrow_warn_raise(&warn);
     return;
   }
   mizu_arrow_warn warn = { 0, 0, 0 };

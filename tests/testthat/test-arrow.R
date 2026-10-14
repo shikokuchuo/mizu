@@ -24,7 +24,7 @@ test_that("the mapped families round-trip with NAs", {
   expect_identical(mizu_recv(p$peer, 5), m$want)
 })
 
-test_that("a small table converts and claims no region (single-pass)", {
+test_that("a small table crosses below the gate, claiming no region", {
   skip_if_not_installed("arrow")
   df <- data.frame(a = 1:3, b = c("x", "y", NA))
   p <- channel_pair()
@@ -40,6 +40,51 @@ test_that("a small table converts and claims no region (single-pass)", {
   out2 <- mizu_recv(p2$peer, 5)
   expect_identical(out2, df)
   expect_false(is_view(out2$a))
+})
+
+test_that("a below-gate frame round-trips per column kind", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(
+    str = rep(c("alpha", NA, "γ"), 3),
+    fct = factor(rep(c("b", "a", NA), 3), levels = c("a", "b", "zzz")),
+    dat = as.Date("2024-01-01") + c(0, NA, 1, 2, 3, 4, 5, 6, 7),
+    tms = as.POSIXct("2024-01-01 00:00:00.5", tz = "UTC") + 0:8,
+    dur = as.difftime(rep(c(1, NA, 300), 3), units = "secs"),
+    i64 = bit64::as.integer64(c(1, NA, -3, 4, 5, 6, 7, 8, 9))
+  )
+  mizu_send(p$host, arrow::arrow_table(df))
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(out, df)
+  expect_false(is_view(out$str))
+})
+
+test_that("a below-gate frame claims keeperless inline", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  ko <- function() .Call(mizu:::mizu_channel_keep_out, p$host)
+  n0 <- ko()
+  df <- data.frame(a = 1:3, b = c("x", "y", NA))
+  mizu_send(p$host, arrow::arrow_table(df))
+  expect_identical(ko(), n0)
+  expect_identical(mizu_recv(p$peer, 5), df)
+})
+
+test_that("a below-gate frame crosses the arena and spill tiers", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # the 'I' stream past the 256-byte slot but within the 4 KiB arena
+  df <- data.frame(s = paste(rep("a", 500), collapse = ""), x = 1.5)
+  mizu_send(p$host, arrow::arrow_table(df))
+  expect_identical(mizu_recv(p$peer, 5), df)
+  # past the arena but below the zc floor: the SHM_RAW spill
+  big <- data.frame(s = paste(rep("b", 6000), collapse = ""), x = 2.5)
+  mizu_send(p$host, arrow::arrow_table(big))
+  expect_identical(mizu_recv(p$peer, 5), big)
 })
 
 test_that("a non-struct nanoarrow_array arrives as a vector", {
@@ -788,7 +833,7 @@ test_that("a pool result past the gate stages as one frame region", {
   expect_identical(back$u8, as.integer(m$want$u8))
 })
 
-test_that("a below-gate pool result converts and crosses as a data.frame", {
+test_that("a below-gate pool result crosses as a data.frame", {
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -798,6 +843,11 @@ test_that("a below-gate pool result converts and crosses as a data.frame", {
   out <- mizu_collect(t, 5)
   expect_identical(out, df)
   expect_false(is_view(out$a))
+  # a result stream past the result-slot budget spills SHM_RAW
+  big <- data.frame(s = paste(rep("b", 2000), collapse = ""), x = 2.5)
+  t2 <- mizu_submit(p$ctrl, arrow::arrow_table(big), big = big)
+  pool_step(p)
+  expect_identical(mizu_collect(t2, 5), big)
 })
 
 test_that("a non-struct nanoarrow payload re-enters the pool tiers", {
