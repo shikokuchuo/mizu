@@ -693,10 +693,12 @@ test_that("a corrupt task payload is the task's ERR, not worker death", {
 })
 
 test_that("a raise inside the OK publish is the task's error, not worker death (R-03)", {
+  n <- cstack_trigger_depth()
+  skip_if(n == 0L, "serialize recursion does not hit the C-stack limit here")
   p <- pool_pair()
-  # a 40000-deep result: the guarded stage walkers raise inside the OK
-  # publish — armed across it, the eval mark routes the raise to this
-  # task's ERR instead of taking the worker down
+  # a result nested past the probed C-stack raise: the guarded stage
+  # walkers raise inside the OK publish — armed across it, the eval mark
+  # routes the raise to this task's ERR instead of taking the worker down
   t <- mizu_submit(
     p$ctrl,
     {
@@ -706,7 +708,7 @@ test_that("a raise inside the OK publish is the task's error, not worker death (
       }
       x
     },
-    n = 40000L
+    n = n
   )
   pool_step(p)
   err <- tryCatch(mizu_collect(t, timeout = 30), error = identity)
@@ -720,6 +722,8 @@ test_that("a raise inside the OK publish is the task's error, not worker death (
 })
 
 test_that("a deeply nested task argument raises at the guarded walkers (R-04)", {
+  n <- cstack_trigger_depth()
+  skip_if(n == 0L, "serialize recursion does not hit the C-stack limit here")
   p <- pool_pair()
   deep <- function(n) {
     x <- NULL
@@ -731,7 +735,7 @@ test_that("a deeply nested task argument raises at the guarded walkers (R-04)", 
   # a plain tryCatch: see the channel variant's comment on the C-stack margin
   r <- tryCatch(
     {
-      mizu_submit(p$ctrl, length(x), x = deep(200000L))
+      mizu_submit(p$ctrl, length(x), x = deep(n))
       "submitted"
     },
     error = conditionMessage

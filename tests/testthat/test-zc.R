@@ -858,6 +858,8 @@ test_that("a remote leaf's region is held from the root's wrap (R-02)", {
 })
 
 test_that("a deeply nested payload raises at the guarded walkers (R-04)", {
+  n <- cstack_trigger_depth()
+  skip_if(n == 0L, "serialize recursion does not hit the C-stack limit here")
   p <- channel_pair()
   deep <- function(n) {
     x <- NULL
@@ -870,7 +872,7 @@ test_that("a deeply nested payload raises at the guarded walkers (R-04)", {
   # C-stack limit for expect_error's handling
   r <- tryCatch(
     {
-      mizu_send(p[["host"]], deep(200000L))
+      mizu_send(p[["host"]], deep(n))
       "sent"
     },
     error = conditionMessage

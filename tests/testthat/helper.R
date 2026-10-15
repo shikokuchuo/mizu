@@ -153,6 +153,42 @@ skip_if_no_fork <- function() {
   testthat::skip_if_not(fork_ok(), "fork is unavailable in this session")
 }
 
+# The nesting depth at which R_Serialize's recursion hits the C-stack limit
+# is platform-specific (frame sizes, R's stack limit): probe it and hand
+# back a depth safely past the first raising one. 0 = no raise up to the
+# probe cap (a very large C stack) — the caller skips.
+cstack_trigger_depth <- local({
+  val <- NULL
+  function() {
+    if (is.null(val)) {
+      deep <- function(n) {
+        x <- NULL
+        for (i in seq_len(n)) {
+          x <- list(x)
+        }
+        x
+      }
+      val <<- 0L
+      for (d in c(25000L, 50000L, 100000L, 200000L)) {
+        raised <- tryCatch(
+          {
+            serialize(deep(d), NULL)
+            FALSE
+          },
+          error = function(e) {
+            grepl("C stack", conditionMessage(e), fixed = TRUE)
+          }
+        )
+        if (raised) {
+          val <<- 2L * d
+          break
+        }
+      }
+    }
+    val
+  }
+})
+
 # In-process channel pair: both ends of one region attached from this
 # process — the deterministic harness for ring mechanics, with no process
 # management involved. The host end produces on the same ring the peer end
