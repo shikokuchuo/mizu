@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="ad83f59d64b8fac7a5a9a595571031b6f73f1b3d"  # libmizu: park atfork-orphaned liveness registry nodes (valgrind-clean)
+PIN="730f8d134410aeab6abebe724abbacf817f93c3d"  # libmizu: mizu_stage_rollback joins the ext tier
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
