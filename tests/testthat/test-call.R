@@ -306,6 +306,7 @@ test_that("task arguments cross by reference: the SHM_VEC stage and the REF re-s
   t2 <- mizu_submit_call(p$ctrl, mizu_call("base::mean", xv))
   pool_step(p)
   expect_equal(mizu_collect(t2), mean(big))
+  gc() # the worker's argument loan rides the view's release record
   rc1 <- .Call(mizu:::mizu_zc_refcount, xv)
   expect_identical(rc1[2L], 1L) # REFHELD
   expect_identical(rc1[1L], rc0[1L])
@@ -338,6 +339,7 @@ test_that("multiple ref args and a nested view cross, loans balanced", {
   )
   pool_step(p)
   expect_equal(mizu_collect(t), sum(a) + sum(b) + sum(a) + sum(b))
+  gc() # the workers' argument loans ride the views' release records
   expect_identical(.Call(mizu:::mizu_zc_refcount, va)[1L], rc0a)
   expect_identical(.Call(mizu:::mizu_zc_refcount, vb)[1L], rc0b)
   channel_end(ch)
@@ -453,7 +455,7 @@ test_that("a task that keeps its argument view keeps the loan (R-01)", {
   expect_true(.Call(mizu:::mizu_zc_view_check, keep))
   expect_identical(sum(keep), sum(x1))
   rm(keep, envir = globalenv()) # the task's <<- lands outside the test env
-  # an unkept argument still releases deterministically at the outcome write
+  # an unkept argument's loan rides the view's ordinary release record
   t3 <- mizu_submit_call(p$ctrl, mizu_call("base::mean", x1))
   pool_step(p)
   expect_equal(mizu_collect(t3, timeout = 5), mean(x1))

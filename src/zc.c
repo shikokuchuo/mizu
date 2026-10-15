@@ -40,8 +40,8 @@
 static SEXP mizu_rel_tag;      /* the release-record extptr */
 static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminus */
 
-/* The by-reference traffic record (F1's retain protocol). Two small
-   process-global lists, preserved containers refilled per pass — safe
+/* The by-reference traffic record (F1's retain protocol). One small
+   process-global list, a preserved container refilled per pass — safe
    because R staging is single-threaded per process (pool workers are
    separate processes):
 
@@ -49,30 +49,21 @@ static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminu
      since the last reset (the REF tier's claim, the serialize fallback's
      wire-hook emissions, the 'I' ref gate's). Non-empty is the stage's
      pin-and-no-keeperless signal (conservative — pin when unsure — is
-     the correct failure direction), and the worker's emitted-set for the
-     argument-loan release pass: the release pass keeps a loan whose view
-     the outcome write emitted, from whatever graph position, by whichever
-     writer, at whatever depth — coverage is definitional because every
-     emission funnels through the one mark.
-   - the resolve list: every view the wire resolve hook armed while
-     recording (armed at a task-stream decode, sealed at its end). The
-     worker's release pass force-fires the once-only release record of
-     each decoded argument view absent from the mark list — R's GC would
-     otherwise linger the counted adds across tasks, accumulating lent
-     regions. Membership is pointer identity, not region identity: two
-     view objects over one region each hold a count, so force-firing the
-     argument's object is safe even when the write emitted a different
-     object over the same region.
+     the correct failure direction); coverage is definitional because
+     every emission funnels through the one mark. A worker's outcome
+     write resets it once the publish has consumed it — the records hold
+     views, so a count-only reset would pin them across tasks.
 
-   Reset clears the count only; stale slots beyond it stay valid (the
-   container is preserved) and once-only release records make a stale
-   entry's re-fire a no-op, so a nested task's reset degrades the outer
-   task's pass to the GC-gated behavior, never to a wrong fire. */
+   A worker's decoded argument loans ride the views' ordinary release
+   records (GC-gated), like every other view flow: there is no
+   deterministic outcome-write fire. R's public API has no exact
+   reference count (REFCNT is libR-internal and off-limits), and the
+   eval's own machinery — the spliced call cells, the callee frame's
+   promise bindings — keeps an unkept argument referenced past the
+   eval, so nothing short of a collection can tell one from a view the
+   task's R code kept. */
 static SEXP mizu_zc_marks;
 static int mizu_zc_nmarks;
-static SEXP mizu_zc_resolved;
-static int mizu_zc_nresolved;
-static int mizu_zc_resolved_armed;
 
 static void zc_list_clear(SEXP list, int *pn) {
   const int n = *pn;
@@ -84,16 +75,9 @@ static void zc_list_clear(SEXP list, int *pn) {
 void mizu_zc_ref_reset(void) { zc_list_clear(mizu_zc_marks, &mizu_zc_nmarks); }
 int mizu_zc_ref_fired(void) { return mizu_zc_nmarks > 0; }
 
-void mizu_zc_resolved_reset(void) {
-  zc_list_clear(mizu_zc_resolved, &mizu_zc_nresolved);
-  mizu_zc_resolved_armed = 1;
-}
-
-int mizu_zc_resolved_count(void) { return mizu_zc_nresolved; }
-
 /* Append to a preserved list, doubling on growth. The pushed view is
-   always anchored elsewhere already (the decode product, the staged
-   object), so the list is a record, never the last reference. */
+   always anchored elsewhere already (the staged object), so the list is
+   a record, never the last reference. */
 static SEXP zc_list_push(SEXP list, int *pn, SEXP x) {
   const int n = *pn;
   if (n >= XLENGTH(list)) {
@@ -110,108 +94,17 @@ static SEXP zc_list_push(SEXP list, int *pn, SEXP x) {
   return list;
 }
 
-static int zc_list_has(SEXP list, int n, SEXP x) {
-  for (int i = 0; i < n; i++)
-    if (VECTOR_ELT(list, i) == x) return 1;
-  return 0;
-}
-
 void mizu_zc_ref_mark(SEXP x);
 static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm);
 typedef struct mizu_zc_rel_s mizu_zc_rel;
 static void mizu_zc_mizl_loans(unsigned char *base, int64_t region_size,
                                mizu_zc_rel *rel);
 
-/* The decode-end seal: snapshot each resolved view's REFCNT and the
-   eval-machinery bumps the task's eval adds on top — a view spliced as a
-   literal argument is promised by the eval (one bump per occurrence), a
-   named source argument bound in the task's closure env is not. The
-   release pass force-fires a loan only when the live REFCNT still equals
-   base + bumps: anything more means the task's own R code kept a
-   reference (a binding, an attribute, a container — or saturation), and
-   the loan stays GC-gated. splice_pool is the positional-argument vector
-   of a source-kind task (each occurrence is spliced and promised); for a
-   name-kind task (R_NilValue) every decode store is a spliced call cell,
-   so the bumps equal the base minus the resolve-list slot. REFCNT is
-   libR-internal but exported; a stubbed-out or saturated counter simply
-   never matches, degrading the pass to GC-gated. A -1 return (allocation
-   failure) seals nothing: the pass degrades to GC-gated. */
-static int *mizu_zc_resolved_base;
-static int *mizu_zc_resolved_bumps;
-static int mizu_zc_resolved_seal_cap;
-
-int REFCNT(SEXP);
-
-int mizu_zc_resolved_seal(SEXP splice_pool) {
-  const int n = mizu_zc_nresolved;
-  if (n > mizu_zc_resolved_seal_cap) {
-    int cap = 2 * mizu_zc_resolved_seal_cap;
-    if (cap < n) cap = n;
-    int *base = realloc(mizu_zc_resolved_base, (size_t) cap * sizeof(int));
-    int *bumps = realloc(mizu_zc_resolved_bumps, (size_t) cap * sizeof(int));
-    if (base == NULL || bumps == NULL) {
-      free(base != NULL ? base : mizu_zc_resolved_base);
-      free(bumps != NULL ? bumps : mizu_zc_resolved_bumps);
-      mizu_zc_resolved_base = mizu_zc_resolved_bumps = NULL;
-      mizu_zc_resolved_seal_cap = 0;
-      return -1;
-    }
-    mizu_zc_resolved_base = base;
-    mizu_zc_resolved_bumps = bumps;
-    mizu_zc_resolved_seal_cap = cap;
-  }
-  for (int i = 0; i < n; i++) {
-    SEXP v = VECTOR_ELT(mizu_zc_resolved, i);
-    const int base = REFCNT(v);
-    int bumps = 0;
-    if (splice_pool == R_NilValue) {
-      bumps = base - 1;
-    } else {
-      for (R_xlen_t j = 0; j < XLENGTH(splice_pool); j++)
-        if (VECTOR_ELT(splice_pool, j) == v) bumps++;
-    }
-    mizu_zc_resolved_base[i] = base;
-    mizu_zc_resolved_bumps[i] = bumps;
-  }
-  return n;
-}
-
-/* The outcome-write pass (D5): force-fire the once-only release record
-   of each decoded argument view the write did not emit, [0, seal) of the
-   resolve list (the decode-end snapshot — eval-time resolves, a nested
-   collect's, are not argument loans), but only where the view is provably
-   unreferenced past the resolve list and the eval machinery the seal
-   accounted for (REFCNT exactly as sealed); a view the task's own R code
-   kept stays GC-gated instead of dropping the region count under it.
-   ALTLIST views keep their finalizer-only discipline: extracted element
-   views ride the list's single loan, so an early fire could drop the
-   count under a live element. Ends disarmed with both lists cleared:
-   the marks' last consumer is this pass (the stage's pin decision and
-   the emitted-set diff are both done), and the records hold views — a
-   count-only reset would keep them alive indefinitely. */
-void mizu_zc_args_release(int seal) {
-  if (seal < 0) seal = 0;
-  const int n = seal < mizu_zc_nresolved ? seal : mizu_zc_nresolved;
-  for (int i = 0; i < n; i++) {
-    SEXP v = VECTOR_ELT(mizu_zc_resolved, i);
-    if (TYPEOF(v) == VECSXP) continue;
-    if (zc_list_has(mizu_zc_marks, mizu_zc_nmarks, v)) continue;
-    const int base = mizu_zc_resolved_base[i];
-    if (base > 0 && REFCNT(v) == base + mizu_zc_resolved_bumps[i])
-      mizu_view_release_now(v);
-  }
-  zc_list_clear(mizu_zc_resolved, &mizu_zc_nresolved);
-  zc_list_clear(mizu_zc_marks, &mizu_zc_nmarks);
-  mizu_zc_resolved_armed = 0;
-}
-
 void mizu_zc_init(void) {
   mizu_rel_tag = Rf_install("mizu_view_release");
   mizu_shm_tag_sym = Rf_install(MIZU_VIEW_TAG_SHM);
   mizu_zc_marks = Rf_allocVector(VECSXP, 0);
   R_PreserveObject(mizu_zc_marks);
-  mizu_zc_resolved = Rf_allocVector(VECSXP, 0);
-  R_PreserveObject(mizu_zc_resolved);
   mizu_view_set_wire_hooks(mizu_zc_ref_mark, mizu_zc_wire_resolve);
   /* the vendored resolve cache opens through mizu's split open, so every
      consumer mapping — cached or prep-path — has a writable page 0 */
@@ -1179,12 +1072,6 @@ static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm) {
       (mizu_view_list *) R_ExternalPtrAddr(R_altrep_data1(view));
     mizu_zc_mizl_loans(lv->base, lv->region_size, rel);
   }
-  /* the F1 argument-loan record: a worker's task-stream decode arms this
-     so the release pass can fire the loan deterministically at the
-     outcome write; submits and collects never arm */
-  if (mizu_zc_resolved_armed)
-    mizu_zc_resolved =
-      zc_list_push(mizu_zc_resolved, &mizu_zc_nresolved, view);
 }
 
 // Test / debug surface --------------------------------------------------------------

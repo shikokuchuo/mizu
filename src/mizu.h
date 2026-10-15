@@ -383,24 +383,14 @@ void mizu_zc_init(void);
 /* The by-reference emission record: the mark list holds every view a
    by-reference emission marked REFHELD since the last reset — the stage's
    pin-and-no-keeperless signal (a payload carrying a reference must pin
-   and cannot claim MIZU_AUX_F_KEEPERLESS) and the worker's emitted-set
-   for the argument-loan release pass. Reset at a stage's entry; read
-   after it. */
+   and cannot claim MIZU_AUX_F_KEEPERLESS). Reset at a stage's entry and
+   again once a worker's outcome write has consumed it; read after it. */
 void mizu_zc_ref_reset(void);
 int mizu_zc_ref_fired(void);
 /* The funnel every by-reference emission goes through: mark the view's
    region REFHELD and record it on the mark list. The REF tier, the
    serialize fallback's wire hooks, and the 'I' ref gate all call it. */
 void mizu_zc_ref_mark(SEXP x);
-/* The F1 argument-loan record (the worker's D5 release): reset arms the
-   resolve list at a task-stream decode; count seals it at the decode's
-   end; the release pass force-fires the once-only release record of each
-   decoded argument view in [0, seal) absent from the mark list, after
-   the outcome stream is written. */
-void mizu_zc_resolved_reset(void);
-int mizu_zc_resolved_seal(SEXP splice_pool);
-int mizu_zc_resolved_count(void);
-void mizu_zc_args_release(int seal);
 /* The consumer split open (page 0 RW, the tail RO): registered as the view
    layer's embedder open hook, so the wire-resolve cache's mappings carry the
    same protection split as the prep path's, which calls it directly. */

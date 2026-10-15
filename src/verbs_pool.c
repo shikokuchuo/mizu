@@ -731,11 +731,11 @@ SEXP mizu_pool_run_outcome(SEXP xp, SEXP cond) {
   if (!mizu_pool_unwind_sink((mizu_pool *) h->core, &sink))
     return Rf_ScalarInteger(1);
   h->eval_marked = 0;   /* the unwind sink consumed the mark */
-  /* the D5 outcome sequence on the unwind path: the task failed, so its
-     argument loans are all releasable — the flatten emits no refs */
+  /* the D5 outcome sequence on the unwind path: the flatten emits no
+     refs; the argument loans ride the views' ordinary release records */
   mizu_zc_ref_reset();
   mizu_r_publish_err(&sink, cond, mizu_curpool_ident);
-  mizu_zc_args_release(mizu_zc_resolved_count());
+  mizu_zc_ref_reset();
   return Rf_ScalarInteger(0);
 }
 

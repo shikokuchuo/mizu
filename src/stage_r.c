@@ -652,7 +652,6 @@ struct mizu_task_ctx {
   int fail;                       /* test-only: a decode failure on demand */
   int died;                       /* decode: the enqueuer's region is gone */
   int ok;                         /* 0 once the catch handler has fired */
-  int nresolved;                  /* the decode's ref-resolve seal (F1) */
 };
 
 static SEXP pool_task_handler(SEXP cond, void *data) {
@@ -737,18 +736,8 @@ static SEXP pool_task_spec(struct mizu_task_ctx *c,
   if (TYPEOF(base) != ENVSXP)
     Rf_error("mizu: no evaluator registered on this worker handle");
   int kind;
-  /* the F1 argument-loan record: arm the resolve list at the decode and
-     seal it at its end — the release pass (mizu_r_exec_pool, after the
-     outcome write) fires the loans the write did not re-emit */
-  mizu_zc_resolved_reset();
   SEXP task =
     PROTECT(mizu_interop_exec_task(bytes, blen, base, &kind, c->identp));
-  /* seal the resolve list with its REFCNT baseline: a source-kind task
-     promises each positional argument at eval, a name-kind task every
-     spliced call cell — the release pass fires only loans the baseline
-     and those bumps still explain */
-  c->nresolved =
-    mizu_zc_resolved_seal(kind == 0 ? R_NilValue : VECTOR_ELT(task, 1));
   SEXP value = R_NilValue;
   if (kind == 0) {
     value = Rf_eval(task, R_GlobalEnv);
@@ -977,7 +966,7 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   uint64_t ident_word = 0;
   struct mizu_task_ctx c =
     { rh->prot, hdr, payload, limit, ctx, sink,
-      catching ? &ident_word : &mizu_curpool_ident, rh->exec_fail, 0, 1, 0 };
+      catching ? &ident_word : &mizu_curpool_ident, rh->exec_fail, 0, 1 };
   if (!catching) {
     mizu_pool_eval_mark(p, 1);
     rh->eval_marked = 1;
@@ -1005,8 +994,7 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   SEXP v = PROTECT(value);
   /* the D5 outcome sequence: one mark-list reset for the whole write
      (the §4.2 result write, or the ERR flatten inside the containment),
-     then the release pass — the worker's argument loans cross
-     deterministically instead of lingering to the next GC */
+     and one after it — the emission records hold views */
   mizu_zc_ref_reset();
   if (c.ok) {
     /* a foreign submitter's result stages under the §4.2 foreign writer
@@ -1025,11 +1013,11 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   } else {
     mizu_r_publish_err(sink, v, *c.identp);
   }
-  /* the D5 release pass: force-fire the once-only release record of each
-     decoded argument view the write did not emit and the seal's baseline
-     proves unreferenced (a no-op when the decode resolved no refs — the
-     common case) */
-  mizu_zc_args_release(c.nresolved);
+  /* the second D5 reset: the write's emission record has served the
+     publish. The argument loans themselves ride the views' ordinary
+     release records — GC-gated like every other view flow (no public
+     exact reference count exists to prove a task kept none) */
+  mizu_zc_ref_reset();
   /* the mark stays armed across the publish: a raise inside it is this
      task's error, and the unwind path mints its ERR */
   if (!catching) {
