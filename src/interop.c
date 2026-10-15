@@ -603,16 +603,32 @@ typedef struct mizu_ixw_s {
 } mizu_ixw;
 
 /* One emit: the put helpers count with a NULL dst; past the limit the
-   count runs on but the writes stop (the codec.c overflow discipline). */
+   count runs on but the writes stop (the codec.c overflow discipline).
+   IXW_PUT0 is the no-extra-arguments form (the comma paste an empty
+   __VA_ARGS__ needs is a GNU extension). */
 #define IXW_PUT(w, fn, ...)                              \
   do {                                                   \
-    size_t n_ = fn(NULL, ##__VA_ARGS__);                 \
+    size_t n_ = fn(NULL, __VA_ARGS__);                   \
     if ((w)->dst != NULL) {                              \
       if ((w)->total + n_ > (w)->limit) {                \
         (w)->overflow = 1;                               \
         (w)->dst = NULL;                                 \
       } else {                                           \
-        (void) fn((w)->dst + (w)->total, ##__VA_ARGS__); \
+        (void) fn((w)->dst + (w)->total, __VA_ARGS__);   \
+      }                                                  \
+    }                                                    \
+    (w)->total += n_;                                    \
+  } while (0)
+
+#define IXW_PUT0(w, fn)                                  \
+  do {                                                   \
+    size_t n_ = fn(NULL);                                \
+    if ((w)->dst != NULL) {                              \
+      if ((w)->total + n_ > (w)->limit) {                \
+        (w)->overflow = 1;                               \
+        (w)->dst = NULL;                                 \
+      } else {                                           \
+        (void) fn((w)->dst + (w)->total);                \
       }                                                  \
     }                                                    \
     (w)->total += n_;                                    \
@@ -934,7 +950,7 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
     w->refs = saved_refs;
     return;
   }
-  IXW_PUT(w, mizu_ix_put_attr);
+  IXW_PUT0(w, mizu_ix_put_attr);
   switch (q) {
   case MIZU_IXQ_FACTOR:
     ixw_atomic_put(w, MIZU_TYPE_INT, x);
@@ -1089,7 +1105,7 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
    by-value subtree walk. */
 static void ixw_value(mizu_ixw *w, SEXP x) {
   if (x == R_NilValue) {
-    IXW_PUT(w, mizu_ix_put_nil);
+    IXW_PUT0(w, mizu_ix_put_nil);
     return;
   }
 
@@ -1268,7 +1284,7 @@ size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
     rec->reason[0] = '\0';
     rec->remedy[0] = '\0';
   }
-  IXW_PUT(&w, mizu_ix_put_header);
+  IXW_PUT0(&w, mizu_ix_put_header);
   ixw_node(&w, x);
   if (w.depth < 0) return 0;
   return w.total;
@@ -1370,7 +1386,7 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                  .path = "args", .path_len = 4, .h = h, .caps = caps,
                  .inline_max = inline_max, .refs = 1, .no_zc = no_zc,
                  .zc_node = zc_node, .plan = plan, .plan_nocand = nocand };
-  IXW_PUT(&w, mizu_ix_put_header);
+  IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
   if (w.abandon) return SIZE_MAX;
@@ -1409,13 +1425,13 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
      descriptor read */
   mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
                  .path = "args", .path_len = 4, .refs = 1 };
-  IXW_PUT(&w, mizu_ix_put_header);
+  IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_list_begin, 2);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
   if (w.depth < 0) return 0;
   if (x == R_NilValue) {
-    IXW_PUT(&w, mizu_ix_put_nil);
+    IXW_PUT0(&w, mizu_ix_put_nil);
   } else if (mizu_view_check(x)) {
     /* a view x: one ref leaf, never an element walk — the worker's batch
        loop reads the resolved view off the shared pages */
@@ -1452,13 +1468,13 @@ size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
                                  SEXP name, double gen_field, SEXP seed,
                                  uint32_t target, uint64_t ident) {
   mizu_ixw w = { .dst = dst, .limit = limit, .path = "x", .path_len = 1 };
-  IXW_PUT(&w, mizu_ix_put_header);
+  IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, 2, ident);
   SEXP cs = STRING_ELT(name, 0);
   IXW_PUT(&w, mizu_ix_put_str, CHAR(cs), (int32_t) LENGTH(cs));
   IXW_PUT(&w, mizu_ix_put_int, (int64_t) gen_field);
   if (seed == R_NilValue) {
-    IXW_PUT(&w, mizu_ix_put_nil);
+    IXW_PUT0(&w, mizu_ix_put_nil);
   } else {
     int64_t pair[2];
     pair[0] = (int64_t) REAL(seed)[0];
