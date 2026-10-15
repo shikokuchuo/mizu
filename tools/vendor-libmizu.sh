@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="0c6f5c9b50868b02a6589601f29afec79a50d990"  # libmizu: mizu_arrow_write_ix (the inline small-table 'I' form)
+PIN="fd8e633efbda5e755c3260ae575aff0280de7160"  # libmizu: hardened Arrow record bounds; self-contained DESIGN.md
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
