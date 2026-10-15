@@ -67,24 +67,35 @@ int mizu_arrow_check(SEXP x) {
   return 0;
 }
 
-/* The mizu namespace and the three R helpers, cached on first use (they
-   do not exist when R_init_mizu runs — the namespace's R code loads after
-   the DLL — and R_FindNamespace + the two lookups otherwise repeat per
-   send). */
+/* The mizu namespace and the R helpers, cached on first use (they do not
+   exist when R_init_mizu runs — the namespace's R code loads after the DLL
+   — and R_FindNamespace + the lookups otherwise repeat per send). The
+   nanoarrow namespace and its entry points sit behind the requireNamespace
+   gate (mizu:::arrow_ns), cached by nano_gate on the first pull. */
 static SEXP mizu_ns;
-static SEXP fn_arrow_batches, fn_arrow_to_value, fn_batches_to_value;
+static SEXP fn_arrow_ns, fn_arrow_to_value, fn_batches_to_value;
+static SEXP nano_ns;
+static SEXP fn_as_stream, fn_alloc_schema, fn_alloc_array;
 
 static void arrow_ns(void) {
   if (mizu_ns != NULL) return;
   mizu_ns = R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu")));
   R_PreserveObject(mizu_ns);
-  fn_arrow_batches = Rf_findFun(Rf_install("arrow_batches"), mizu_ns);
-  R_PreserveObject(fn_arrow_batches);
+  fn_arrow_ns = Rf_findFun(Rf_install("arrow_ns"), mizu_ns);
+  R_PreserveObject(fn_arrow_ns);
   fn_arrow_to_value = Rf_findFun(Rf_install("arrow_to_value"), mizu_ns);
   R_PreserveObject(fn_arrow_to_value);
   fn_batches_to_value =
     Rf_findFun(Rf_install("arrow_batches_to_value"), mizu_ns);
   R_PreserveObject(fn_batches_to_value);
+}
+
+/* fn() in the mizu namespace, the fresh result returned UNPROTECTED. */
+static SEXP arrow_call0(SEXP fn) {
+  SEXP call = PROTECT(Rf_lang1(fn));
+  SEXP out = Rf_eval(call, mizu_ns);
+  UNPROTECT(1);
+  return out;
 }
 
 /* fn(arg) in the mizu namespace, the fresh result returned UNPROTECTED. */
@@ -103,9 +114,141 @@ static SEXP arrow_call2(SEXP fn, SEXP arg1, SEXP arg2) {
   return out;
 }
 
-SEXP mizu_arrow_pull(SEXP x) {
+/* The requireNamespace gate: the first pull evals mizu:::arrow_ns() (its
+   error is the "nanoarrow required" text) and preserves the namespace and
+   entry points it returns. */
+static void nano_gate(void) {
+  if (nano_ns != NULL) return;
   arrow_ns();
-  return arrow_call1(fn_arrow_batches, x);
+  nano_ns = arrow_call0(fn_arrow_ns);
+  R_PreserveObject(nano_ns);
+  fn_as_stream =
+    Rf_findFun(Rf_install("as_nanoarrow_array_stream"), nano_ns);
+  R_PreserveObject(fn_as_stream);
+  fn_alloc_schema =
+    Rf_findFun(Rf_install("nanoarrow_allocate_schema"), nano_ns);
+  R_PreserveObject(fn_alloc_schema);
+  fn_alloc_array =
+    Rf_findFun(Rf_install("nanoarrow_allocate_array"), nano_ns);
+  R_PreserveObject(fn_alloc_array);
+}
+
+// The held pulled state ------------------------------------------------------
+
+/* A send candidate, pulled: the schema and every batch owned as bare ABI
+   structs (pymizu's ixs ownership model), the core handle and the
+   batch-pointer array it borrows joining at the open. Behind an extptr
+   whose finalizer releases everything — the longjmp backstop for every R
+   call that may run while the structs are held (the conversion bails). The
+   prot is the unconsumed stream on a non-struct pull, the only state its
+   bail needs. The scratch slot header and name buffer serve
+   mizu_arrow_stage's (hdr, payload) form — a top-level stage copies the
+   SHM_VEC stamp off them, the codec's frame leaf reads only the name. */
+typedef struct {
+  mizu_arrow *a;              /* NULL until open / once closed */
+  ArrowSchema schema;         /* owned; released at the probe on a
+                                 non-struct pull (only its format gates) */
+  ArrowArray *batches;        /* owned pulled batches */
+  size_t nbatches;
+  int nonstruct;              /* the schema probe declined a struct */
+  const ArrowArray **bp;      /* the pointer array the core reads (at open) */
+  mizu_slot_hdr hdr;
+  unsigned char name[MIZU_NAME_MAX];
+} mizu_arrow_held;
+
+/* The pulled structs released (idempotent): every batch through its own
+   release, the schema likewise. A successful stage reclaims them early —
+   the frame is self-contained off the Arrow buffers; the bail's ABI move
+   marks its structs with a NULL release; the finalizer takes the rest. */
+static void arrow_release_pulled(mizu_arrow_held *hd) {
+  for (size_t i = 0; i < hd->nbatches; i++)
+    if (hd->batches[i].release != NULL) {
+      hd->batches[i].release(&hd->batches[i]);
+      hd->batches[i].release = NULL;
+    }
+  free(hd->batches);
+  hd->batches = NULL;
+  hd->nbatches = 0;
+  if (hd->schema.release != NULL) {
+    hd->schema.release(&hd->schema);
+    hd->schema.release = NULL;
+  }
+}
+
+static void mizu_arrow_held_finalize(SEXP xp) {
+  mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
+  if (hd == NULL) return;
+  if (hd->a != NULL) mizu_arrow_close(hd->a);
+  arrow_release_pulled(hd);
+  free(hd->bp);
+  free(hd);
+  R_ClearExternalPtr(xp);
+}
+
+/* A stream pull failure, get_last_error when the producer offers it. */
+NORET static void arrow_stream_raise(ArrowArrayStream *st) {
+  const char *e = st->get_last_error != NULL ? st->get_last_error(st) : NULL;
+  Rf_error(
+    "mizu: the Arrow stream failed: %s", e != NULL ? e : "unknown error"
+  );
+}
+
+/* The pull: one R call (as_nanoarrow_array_stream(x) — arrow's own S3
+   export is the bulk of the pull cost and stays), then the schema probe
+   and every batch pull in C off the extptr's ArrowArrayStream. Sending a
+   stream consumes it: a streaming RecordBatchReader is fully materialized
+   at send, source bytes and region resident at once (inherent to the
+   one-region design). The fresh extptr is returned UNPROTECTED. */
+SEXP mizu_arrow_pull(SEXP x) {
+  nano_gate();
+  SEXP stream = PROTECT(arrow_call1(fn_as_stream, x));
+  ArrowArrayStream *st = (ArrowArrayStream *) R_ExternalPtrAddr(stream);
+  mizu_arrow_held *hd = (mizu_arrow_held *) calloc(1, sizeof *hd);
+  if (hd == NULL) Rf_error("mizu: allocation failure");
+  SEXP xp = PROTECT(
+    R_MakeExternalPtr(hd, Rf_install("mizu_arrow_held"), stream)
+  );
+  R_RegisterCFinalizerEx(xp, mizu_arrow_held_finalize, TRUE);
+  if (st->get_schema(st, &hd->schema) != 0) arrow_stream_raise(st);
+  if (hd->schema.format == NULL || strcmp(hd->schema.format, "+s") != 0) {
+    /* a non-struct stream: the bail converts on the unconsumed stream */
+    if (hd->schema.release != NULL) {
+      hd->schema.release(&hd->schema);
+      hd->schema.release = NULL;
+    }
+    hd->nonstruct = 1;
+    UNPROTECT(2);
+    return xp;
+  }
+  size_t cap = 0;
+  for (;;) {
+    if (hd->nbatches == cap) {
+      const size_t ncap = cap != 0 ? 2 * cap : 4;
+      ArrowArray *nb =
+        (ArrowArray *) realloc(hd->batches, ncap * sizeof(ArrowArray));
+      if (nb == NULL) Rf_error("mizu: allocation failure");
+      hd->batches = nb;
+      cap = ncap;
+    }
+    ArrowArray *a = &hd->batches[hd->nbatches];
+    memset(a, 0, sizeof *a);
+    if (st->get_next(st, a) != 0) arrow_stream_raise(st);
+    if (a->release == NULL) break;    /* the end of the stream */
+    hd->nbatches++;
+  }
+  /* the stream is consumed: release it C-side (nanoarrow's finalizer
+     no-ops on a NULL release) and drop the husk from the prot */
+  if (st->release != NULL) {
+    st->release(st);
+    st->release = NULL;
+  }
+  R_SetExternalPtrProtected(xp, R_NilValue);
+  UNPROTECT(2);
+  return xp;
+}
+
+int mizu_arrow_nonstruct(SEXP xp) {
+  return ((mizu_arrow_held *) R_ExternalPtrAddr(xp))->nonstruct;
 }
 
 /* A plain copy of an atomic ALTREP vector, filled through the read-only
@@ -172,62 +315,51 @@ static SEXP arrow_materialize(SEXP x) {
   return x;
 }
 
-SEXP mizu_arrow_value(SEXP triple) {
-  arrow_ns();
-  SEXP batches = VECTOR_ELT(triple, 1);
-  SEXP out = PROTECT(
-    batches == R_NilValue ?
-      arrow_call1(fn_arrow_to_value, VECTOR_ELT(triple, 2)) :
-      arrow_call2(fn_batches_to_value, VECTOR_ELT(triple, 0), batches)
-  );
+/* The by-value form of a pulled candidate: a non-struct stream converts on
+   the unconsumed stream (arrow_to_value); the held schema and batches move
+   into fresh nanoarrow extptrs (the ABI move: memcpy, then the source's
+   release NULLed) and stream back as a struct (arrow_batches_to_value,
+   which re-associates the schema per batch). At most once per pull, with
+   the core handle already closed. */
+SEXP mizu_arrow_value(SEXP xp) {
+  nano_gate();
+  mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
+  if (hd->nonstruct)
+    return arrow_call1(fn_arrow_to_value, R_ExternalPtrProtected(xp));
+  SEXP schema = PROTECT(arrow_call0(fn_alloc_schema));
+  memcpy(R_ExternalPtrAddr(schema), &hd->schema, sizeof(ArrowSchema));
+  hd->schema.release = NULL;
+  SEXP batches = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) hd->nbatches));
+  for (size_t i = 0; i < hd->nbatches; i++) {
+    SEXP arr = PROTECT(arrow_call0(fn_alloc_array));
+    memcpy(R_ExternalPtrAddr(arr), &hd->batches[i], sizeof(ArrowArray));
+    hd->batches[i].release = NULL;
+    SET_VECTOR_ELT(batches, (R_xlen_t) i, arr);
+    UNPROTECT(1);
+  }
+  SEXP out = PROTECT(arrow_call2(fn_batches_to_value, schema, batches));
   SEXP plain = arrow_materialize(out);
-  UNPROTECT(1);
+  UNPROTECT(3);
   return plain;
 }
 
-// The held open handle ---------------------------------------------------------
+// The open over a pulled candidate ----------------------------------------------
 
-/* The core handle and the batch-pointer array it reads, malloc'd behind an
-   extptr whose prot is the pulled triple (the core borrows the ArrowArray
-   structs and the pointer array — both must outlive the handle): the
-   finalizer is the longjmp backstop for every R call that may run while
-   the handle is open. The scratch slot header and name buffer serve
-   mizu_arrow_stage's (hdr, payload) form — a top-level stage copies the
-   SHM_VEC stamp off them, the codec's frame leaf reads only the name. */
-typedef struct {
-  mizu_arrow *a;                     /* NULL once closed */
-  const ArrowArray **bp;
-  mizu_slot_hdr hdr;
-  unsigned char name[MIZU_NAME_MAX];
-} mizu_arrow_held;
-
-static void mizu_arrow_held_finalize(SEXP xp) {
-  mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
-  if (hd == NULL) return;
-  if (hd->a != NULL) mizu_arrow_close(hd->a);
-  free(hd->bp);
-  free(hd);
-  R_ClearExternalPtr(xp);
-}
-
-/* The open into a caller's held struct (the top-level path's is
-   stack-held): 0 opened, -1 the core's decline, -2 the allocation
-   failure — the caller raises (and frees its struct). */
-static int arrow_open_into(mizu_arrow_held *hd, SEXP triple, uint32_t caps,
+/* The open: the core borrows the schema, the batch structs, and the
+   pointer array — all owned by the held struct, outliving the handle.
+   0 opened, -1 the core's decline, -2 the allocation failure — the caller
+   raises. */
+static int arrow_open_into(mizu_arrow_held *hd, uint32_t caps,
                            size_t *fsize) {
-  SEXP schema = VECTOR_ELT(triple, 0);
-  SEXP batches = VECTOR_ELT(triple, 1);
-  const R_xlen_t nb = XLENGTH(batches);
+  const size_t nb = hd->nbatches;
   hd->a = NULL;
   hd->bp = (const ArrowArray **)
-    malloc((size_t) (nb > 0 ? nb : 1) * sizeof(ArrowArray *));
+    malloc((nb > 0 ? nb : 1) * sizeof(ArrowArray *));
   if (hd->bp == NULL) return -2;
-  for (R_xlen_t i = 0; i < nb; i++)
-    hd->bp[i] = (const ArrowArray *) R_ExternalPtrAddr(VECTOR_ELT(batches, i));
-  if (mizu_arrow_open(&hd->a,
-                      (const ArrowSchema *) R_ExternalPtrAddr(schema),
-                      hd->bp, (size_t) nb, caps) != MIZU_OK) {
+  for (size_t i = 0; i < nb; i++) hd->bp[i] = &hd->batches[i];
+  if (mizu_arrow_open(&hd->a, &hd->schema, hd->bp, nb, caps) != MIZU_OK) {
     free(hd->bp);
+    hd->bp = NULL;
     return -1;
   }
   *fsize = mizu_arrow_size(hd->a);
@@ -239,20 +371,10 @@ NORET static void arrow_open_raise(int rc) {
   mizu_stop_not_portable("the Arrow frame", mizu_last_error_message(), "");
 }
 
-SEXP mizu_arrow_open_r(SEXP triple, uint32_t caps, size_t *fsize) {
-  mizu_arrow_held *hd = (mizu_arrow_held *) calloc(1, sizeof *hd);
-  if (hd == NULL) Rf_error("mizu: allocation failure");
-  const int rc = arrow_open_into(hd, triple, caps, fsize);
-  if (rc != 0) {
-    free(hd);
-    arrow_open_raise(rc);
-  }
-  SEXP xp = PROTECT(
-    R_MakeExternalPtr(hd, Rf_install("mizu_arrow_held"), triple)
-  );
-  R_RegisterCFinalizerEx(xp, mizu_arrow_held_finalize, TRUE);
-  UNPROTECT(1);
-  return xp;
+void mizu_arrow_open_r(SEXP xp, uint32_t caps, size_t *fsize) {
+  const int rc =
+    arrow_open_into((mizu_arrow_held *) R_ExternalPtrAddr(xp), caps, fsize);
+  if (rc != 0) arrow_open_raise(rc);
 }
 
 void mizu_arrow_close_held(SEXP xp) {
@@ -261,11 +383,15 @@ void mizu_arrow_close_held(SEXP xp) {
     mizu_arrow_close(hd->a);
     hd->a = NULL;
   }
+  free(hd->bp);
+  hd->bp = NULL;
 }
 
-/* The stage over a held handle, closed either way: 0 staged, -1 the
-   core's decline (the gate or the reservation), the (hdr, payload) stamp
-   left in the struct's scratch. */
+/* The stage over a held handle, closed either way: 0 staged, the pulled
+   structs released with the close (the frame is self-contained off the
+   Arrow buffers), the (hdr, payload) stamp left in the struct's scratch;
+   -1 declined (the gate or the reservation), the pull kept for the
+   caller's conversion bail. */
 static int arrow_stage_held(mizu_arrow_held *hd, mizu_handle *h,
                             unsigned char *name, uint32_t *name_len,
                             mizu_arrow_warn *warn) {
@@ -273,7 +399,10 @@ static int arrow_stage_held(mizu_arrow_held *hd, mizu_handle *h,
     mizu_arrow_stage(h, hd->a, &hd->hdr, hd->name, warn) == MIZU_OK;
   mizu_arrow_close(hd->a);
   hd->a = NULL;
+  free(hd->bp);
+  hd->bp = NULL;
   if (!staged) return -1;
+  arrow_release_pulled(hd);
   if (name != NULL) memcpy(name, hd->name, hd->hdr.len);
   if (name_len != NULL) *name_len = (uint32_t) hd->hdr.len;
   return 0;
@@ -307,23 +436,23 @@ void mizu_arrow_warn_raise(const mizu_arrow_warn *warn) {
 void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, mizu_handle *h, void *ctx,
                         uint32_t caps, mizu_stage_fn reenter) {
-  SEXP triple = PROTECT(mizu_arrow_pull(x));
-  if (VECTOR_ELT(triple, 1) == R_NilValue) {
+  SEXP xp = PROTECT(mizu_arrow_pull(x));
+  mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
+  if (hd->nonstruct) {
     /* a non-struct stream: convert on the unconsumed stream and re-enter
        as an ordinary vector */
-    SEXP value = PROTECT(mizu_arrow_value(triple));
+    SEXP value = PROTECT(mizu_arrow_value(xp));
     reenter((void *) value, hdr, payload, inline_max, h, ctx);
     UNPROTECT(2);
     return;
   }
   const size_t gate =
     inline_max > MIZU_ZC_FLOOR ? (size_t) inline_max : MIZU_ZC_FLOOR;
-  /* the stack-held open handle: no R code runs while it is open (every
-     branch closes before the conversion bail), so the codec frame tier's
-     extptr + finalizer backstop has no work here */
-  mizu_arrow_held hd;
+  /* the pulled structs ride the extptr: the conversion bail's R calls run
+     while batches are C-owned, so the finalizer is the longjmp backstop
+     on this path too */
   size_t fsize;
-  const int orc = arrow_open_into(&hd, triple, caps, &fsize);
+  const int orc = arrow_open_into(hd, caps, &fsize);
   if (orc != 0) arrow_open_raise(orc);
   if (fsize <= gate) {
     /* at or under the region tier: one 'I' stream straight off the Arrow
@@ -335,9 +464,9 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
        its 0x49 first byte (mizu_stream_read), the foreign reader always
        did. */
     mizu_arrow_warn warn = { 0, 0, 0 };
-    const size_t n = mizu_arrow_write_ix(hd.a, NULL, &warn);
+    const size_t n = mizu_arrow_write_ix(hd->a, NULL, &warn);
     if (n <= (size_t) inline_max) {
-      mizu_arrow_write_ix(hd.a, payload, &warn);
+      mizu_arrow_write_ix(hd->a, payload, &warn);
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
       hdr->aux = MIZU_AUX_F_KEEPERLESS;
@@ -346,7 +475,7 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
       unsigned char *chunk =
         mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off);
       if (chunk != NULL) {
-        mizu_arrow_write_ix(hd.a, chunk, &warn);
+        mizu_arrow_write_ix(hd->a, chunk, &warn);
         hdr->kind = MIZU_KIND_ARENA;
         hdr->len = 0;
         hdr->aux = off;
@@ -358,7 +487,7 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
            self-contained */
         mizu_stage_reap(h);
         mizu_shm *shm = mizu_spill_get_raise(h, n);
-        mizu_arrow_write_ix(hd.a, (unsigned char *) shm->addr, &warn);
+        mizu_arrow_write_ix(hd->a, (unsigned char *) shm->addr, &warn);
         hdr->kind = MIZU_KIND_SHM_RAW;
         hdr->len = (uint32_t) shm->name_len;
         hdr->aux = (uint64_t) n;
@@ -366,8 +495,11 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
         mizu_stage_retain(h, shm);
       }
     }
-    mizu_arrow_close(hd.a);
-    free(hd.bp);
+    mizu_arrow_close(hd->a);
+    hd->a = NULL;
+    free(hd->bp);
+    hd->bp = NULL;
+    arrow_release_pulled(hd);
     UNPROTECT(1);
     /* the conversion counts raise after the write half completed (the
        MIZL path's discipline below) */
@@ -375,18 +507,16 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
     return;
   }
   mizu_arrow_warn warn = { 0, 0, 0 };
-  if (arrow_stage_held(&hd, h, NULL, NULL, &warn) != 0) {
+  if (arrow_stage_held(hd, h, NULL, NULL, &warn) != 0) {
     /* declined by the stage's caps/churn gate or a failed reservation:
        the held batches convert and re-enter as an ordinary data.frame */
-    free(hd.bp);
-    SEXP value = PROTECT(mizu_arrow_value(triple));
+    SEXP value = PROTECT(mizu_arrow_value(xp));
     reenter((void *) value, hdr, payload, inline_max, h, ctx);
     UNPROTECT(2);
     return;
   }
-  *hdr = hd.hdr;
-  memcpy(payload, hd.name, hd.hdr.len);
-  free(hd.bp);
+  *hdr = hd->hdr;
+  memcpy(payload, hd->name, hd->hdr.len);
   UNPROTECT(1);
   /* the conversion counts raise after the write half completed: a handler
      longjmp abandons the stage here with the unpublished reservation

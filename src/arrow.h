@@ -30,36 +30,44 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, mizu_handle *h, void *ctx,
                         uint32_t caps, mizu_stage_fn reenter);
 
-/* The pull: arrow_batches(x) — R calls; the fresh triple UNPROTECTED.
-   batches NULL = a non-struct stream (the triple's third slot). */
+/* The pull: as_nanoarrow_array_stream(x) at R level (the one R call left —
+   arrow's own S3 export dominates the pull cost), then the schema probe
+   and every batch pull in C off the stream extptr. The pulled structs are
+   owned behind a fresh extptr whose finalizer releases them (the bails' R
+   calls run while batches are C-owned); a non-struct schema probe marks
+   the extptr instead and keeps the unconsumed stream on its prot. The
+   extptr is returned UNPROTECTED. */
 SEXP mizu_arrow_pull(SEXP x);
-/* The open + size over a pulled triple at caps. The core handle and the
-   batch-pointer array it reads live in a malloc'd struct behind an extptr
-   whose prot is the triple and whose finalizer closes and frees — the
-   longjmp backstop for every R call that may run while it is open; the
-   stage and the convert close early. *fsize = the frame span
-   (mizu_arrow_size, memoized in the core). An open failure raises
-   not-portable with the core's decline text, as the channel does today. */
-SEXP mizu_arrow_open_r(SEXP triple, uint32_t caps, size_t *fsize);
-/* The by-value form of a pulled triple: arrow_to_value on a non-struct
-   stream, arrow_batches_to_value on held batches — R calls, fresh,
-   UNPROTECTED. */
-SEXP mizu_arrow_value(SEXP triple);
+/* 1 when the pull's schema probe declined a struct: the bail converts on
+   the prot's unconsumed stream. */
+int mizu_arrow_nonstruct(SEXP xp);
+/* The open + size over a pulled candidate at caps: the core handle and the
+   batch-pointer array it borrows join the extptr's held struct. *fsize =
+   the frame span (mizu_arrow_size, memoized in the core). An open failure
+   raises not-portable with the core's decline text, as the channel does
+   today. */
+void mizu_arrow_open_r(SEXP xp, uint32_t caps, size_t *fsize);
+/* The by-value form of a pulled candidate: arrow_to_value on a non-struct
+   stream; the held schema and batches moved into fresh nanoarrow extptrs
+   (the ABI move) and re-streamed through arrow_batches_to_value — R calls,
+   fresh, UNPROTECTED. At most once per pull, the core handle closed. */
+SEXP mizu_arrow_value(SEXP xp);
 /* Close a held handle early (the finalizer frees the struct either way):
    the convert path's early close — the core's classification state need
-   not wait on the GC. */
+   not wait on the GC. The pulled batches stay held for the bail. */
 void mizu_arrow_close_held(SEXP xp);
 /* The stage of an open handle into the stage's single checkout (pure C:
-   mizu_arrow_stage, then close). 0 = staged, name/name_len filled, warn
-   the conversion counts, the checkout held; nonzero = declined (the caps
-   gate, a churn race, a region failure) with nothing claimed — the handle
-   closed either way, the caller converts. The core's mizu_arrow_stage
-   takes hdr/payload: the extptr struct carries a scratch slot header and
-   name buffer for the call — a top-level caller copies the SHM_VEC stamp
-   onto its own hdr/payload, the codec's frame leaf reads name/name_len
-   off the scratch and the surrounding stream's header stays the codec
-   tier's. name / name_len may be NULL (the top-level form reads the
-   struct directly). */
+   mizu_arrow_stage, then close; a successful stage releases the pulled
+   structs — the frame is self-contained). 0 = staged, name/name_len
+   filled, warn the conversion counts, the checkout held; nonzero =
+   declined (the caps gate, a churn race, a region failure) with nothing
+   claimed — the handle closed either way, the pull kept, the caller
+   converts. The core's mizu_arrow_stage takes hdr/payload: the extptr
+   struct carries a scratch slot header and name buffer for the call — a
+   top-level caller copies the SHM_VEC stamp onto its own hdr/payload, the
+   codec's frame leaf reads name/name_len off the scratch and the
+   surrounding stream's header stays the codec tier's. name / name_len may
+   be NULL (the top-level form reads the struct directly). */
 int mizu_arrow_stage_held(SEXP xp, mizu_handle *h, unsigned char *name,
                           uint32_t *name_len, mizu_arrow_warn *warn);
 /* The conversion counts raise after the write half completed: a handler

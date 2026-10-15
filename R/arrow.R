@@ -1,10 +1,11 @@
 # The Arrow send path's R half (called from src/arrow.c): nanoarrow is the
-# hub, called at R level only. arrow_batches() pulls a send candidate into
-# the ABI structs the core writer reads; the bails convert the held state
-# back to a value. Neither bail ever re-streams x: a released stream errors
-# on a re-read, a consumed-but-unreleased one yields zero batches, and a
-# re-streamed RecordBatchReader likewise (nanoarrow 0.9.0 behaviour) — the
-# bails hold the pulled batches or the unconsumed stream.
+# hub. The pull (mizu_arrow_pull) keeps the one R call
+# (as_nanoarrow_array_stream — arrow's own S3 export) and reads the schema
+# and batches off the stream extptr in C; the bails below convert the held
+# state back to a value. Neither bail ever re-streams x: a released stream
+# errors on a re-read, a consumed-but-unreleased one yields zero batches,
+# and a re-streamed RecordBatchReader likewise (nanoarrow 0.9.0 behaviour)
+# — the bails hold the pulled batches or the unconsumed stream.
 
 # The requireNamespace gate + the cached namespace lookup.
 nano <- new.env(parent = emptyenv())
@@ -22,23 +23,6 @@ arrow_ns <- function() {
     nano$ns <- ns
   }
   ns
-}
-
-# Pull x into the schema + owned batch structs the core writer reads. A
-# non-struct schema returns the unconsumed stream for the arrow_to_value()
-# bail; a struct schema collects and releases. Sending a stream consumes
-# it: a streaming RecordBatchReader is fully materialized at send, source
-# bytes and region resident at once (inherent to the one-region design).
-arrow_batches <- function(x) {
-  ns <- arrow_ns()
-  stream <- ns$as_nanoarrow_array_stream(x)
-  schema <- stream$get_schema()
-  if (!identical(schema$format, "+s")) {
-    return(list(schema = schema, batches = NULL, stream = stream))
-  }
-  batches <- ns$collect_array_stream(stream)
-  stream$release()
-  list(schema = schema, batches = batches, stream = NULL)
 }
 
 # The fidelity-keeping ptype: nanoarrow's inference widens int64 to double
@@ -108,11 +92,16 @@ arrow_to_value <- function(stream) {
 }
 
 # The post-collect bails: the held batches stream back as a struct — a
-# data.frame. String dictionary columns convert flat, then rebuild as the
-# factor they encode off batch 0's dictionary (a zero-batch export carries
-# none — the stream then holds no levels at all).
+# data.frame. The C pull moves bare batch structs into fresh extptrs (the
+# ABI move), so each takes its schema association here. String dictionary
+# columns convert flat, then rebuild as the factor they encode off batch
+# 0's dictionary (a zero-batch export carries none — the stream then holds
+# no levels at all).
 arrow_batches_to_value <- function(schema, batches) {
   ns <- arrow_ns()
+  for (i in seq_along(batches)) {
+    ns$nanoarrow_array_set_schema(batches[[i]], schema, validate = FALSE)
+  }
   out <- ns$convert_array_stream(
     ns$basic_array_stream(batches, schema = schema),
     to = arrow_ptype(schema, FALSE)

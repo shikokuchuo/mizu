@@ -595,9 +595,9 @@ static size_t frame_walk(unsigned char *dst, size_t limit, SEXP x,
    an ArrowTabular nested in the payload stages as one MIZL frame region
    and crosses in the stream as a frame leaf. Proof before any R call,
    plan before the write (the fold's plan.cand discipline): the record
-   walk proves the whole tree in-subset ahead of any stream pull —
-   arrow_batches consumes a RecordBatchReader, and the serialize fallback
-   must not ship a drained one. First-past-the-gate selection: the first
+   walk proves the whole tree in-subset ahead of any stream pull — the
+   pull consumes a RecordBatchReader, and the serialize fallback must not
+   ship a drained one. First-past-the-gate selection: the first
    table whose frame span passes the gate is the frame (its by-value size
    would cost a conversion to learn, and a past-gate table's stream
    exceeds the budget on its own in all but a string-heavy corner — the
@@ -620,32 +620,32 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
   if (total == 0 || plan.ncand == 0) return 0;
 
   /* 2. pull / open / convert in pre-order between the walks; every fresh
-     SEXP anchors in the one PROTECTed vector (the frame's handle extptr
-     in the last slot, its prot the triple it reads). */
+     value anchors in the one PROTECTed vector, the frame's pulled-state
+     extptr in the last slot (its finalizer releases the pull either
+     way). */
   plan.anchor = PROTECT(Rf_allocVector(VECSXP, plan.ncand + 1));
   const size_t gate =
     inline_max > MIZU_ZC_FLOOR ? (size_t) inline_max : MIZU_ZC_FLOOR;
   for (int i = 0; i < plan.ncand; i++) {
-    SEXP triple = PROTECT(mizu_arrow_pull(plan.cand[i]));
-    if (VECTOR_ELT(triple, 1) == R_NilValue) {
+    SEXP xp = PROTECT(mizu_arrow_pull(plan.cand[i]));
+    if (mizu_arrow_nonstruct(xp)) {
       /* a non-struct stream converts on the unconsumed stream */
-      SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_value(triple));
+      SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_value(xp));
       UNPROTECT(1);
       continue;
     }
     if (plan.frame < 0) {
       size_t fsize;
-      SEXP xp = PROTECT(mizu_arrow_open_r(triple, MIZU_R_CAPS, &fsize));
+      mizu_arrow_open_r(xp, MIZU_R_CAPS, &fsize);
       if (fsize > gate) {
         plan.frame = i;
         SET_VECTOR_ELT(plan.anchor, plan.ncand, xp);
-        UNPROTECT(2);    /* the extptr anchors the triple through its prot */
+        UNPROTECT(1);
         continue;
       }
       mizu_arrow_close_held(xp);
-      UNPROTECT(1);      /* xp — the finalizer frees the struct */
     }
-    SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_value(triple));
+    SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_value(xp));
     UNPROTECT(1);
   }
 
@@ -697,8 +697,7 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
        value — never a partial stream, never an orphaned checkout (the
        core rolls back an uncommitted checkout at the next verb) */
     SEXP xp = VECTOR_ELT(plan.anchor, plan.ncand);
-    SEXP triple = R_ExternalPtrProtected(xp);
-    SET_VECTOR_ELT(plan.anchor, plan.frame, mizu_arrow_value(triple));
+    SET_VECTOR_ELT(plan.anchor, plan.frame, mizu_arrow_value(xp));
     size_t vn = frame_walk(NULL, 0, VECTOR_ELT(plan.anchor, plan.frame),
                            &plan);
     if (vn == 0) {
