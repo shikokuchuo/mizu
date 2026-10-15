@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="de5948cf0de5bd7b19ad6f155fd91a22ff8e112a"  # libmizu: pool + channel correctness fixes, Arrow writer hardening
+PIN="ad83f59d64b8fac7a5a9a595571031b6f73f1b3d"  # libmizu: park atfork-orphaned liveness registry nodes (valgrind-clean)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
