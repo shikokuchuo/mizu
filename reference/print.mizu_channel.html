@@ -5,7 +5,7 @@ or peer gone — the verdict of mizu_alive(), probed at print. A pool
 prints its region name, the role of this handle, live workers out of
 registry capacity, and pending (uncompleted) tasks. A task handle
 prints its state, probed without consuming the result. The state is
-pending, ok, err, cancel, or died in the result-slot
+pending, ok, err, cancel, died, or lost in the result-slot
 vocabulary of mizu_pool_status(). It is collected once the result is
 taken, or dropped when its pool is gone. Sentinels print as their
 class. The handle methods never error and never touch the rings. A
@@ -16,7 +16,7 @@ or peer gone — the verdict of mizu_alive(), probed at print. A pool
 prints its region name, the role of this handle, live workers out of
 registry capacity, and pending (uncompleted) tasks. A task handle
 prints its state, probed without consuming the result. The state is
-pending, ok, err, cancel, or died in the result-slot
+pending, ok, err, cancel, died, or lost in the result-slot
 vocabulary of mizu_pool_status(). It is collected once the result is
 taken, or dropped when its pool is gone. Sentinels print as their
 class. The handle methods never error and never touch the rings. A
@@ -78,7 +78,7 @@ or <code>peer gone</code> — the verdict of <code><a href="mizu_alive.html">miz
 prints its region name, the role of this handle, live workers out of
 registry capacity, and pending (uncompleted) tasks. A task handle
 prints its state, probed without consuming the result. The state is
-<code>pending</code>, <code>ok</code>, <code>err</code>, <code>cancel</code>, or <code>died</code> in the result-slot
+<code>pending</code>, <code>ok</code>, <code>err</code>, <code>cancel</code>, <code>died</code>, or <code>lost</code> in the result-slot
 vocabulary of <code><a href="mizu_pool_status.html">mizu_pool_status()</a></code>. It is <code>collected</code> once the result is
 taken, or <code>dropped</code> when its pool is gone. Sentinels print as their
 class. The handle methods never error and never touch the rings. A
@@ -128,7 +128,7 @@ prints as closed. So auto-printing is always safe.</p>
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_pool.html">mizu_pool</a></span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">p</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1a71_851e2c1b: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_19af_ad926c1d: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span> <span class="op">+</span> <span class="fl">1</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">t</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_task: ok&gt;</span>

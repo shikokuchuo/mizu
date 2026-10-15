@@ -101,6 +101,7 @@ exceptional outcome is raised as a classed condition (see
 | task raised an error | re-signalled on collect | the condition classes of the task itself |
 | cancelled, or pool stopped | raised on collect | `mizu_error_cancelled` |
 | executing worker died | raised on collect | `mizu_error_worker_died` |
+| payload region vanished before execution | raised on collect | `mizu_error_task_lost` |
 
 A re-signalled task error is a transport condition: it carries the
 original classes, `message`, `call`, and every named field the payload

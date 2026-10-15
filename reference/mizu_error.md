@@ -49,6 +49,13 @@ carry as condition elements:
   runner-granular and conservative (see the Errors section of
   [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)).
 
+- `mizu_error_task_lost` —
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+  on a task whose payload region vanished before any worker could read
+  it (its submitter died or released the pool with the task still
+  queued). Unlike `mizu_error_worker_died` no death verdict is involved:
+  the task never started executing anywhere.
+
 - `mizu_error_startup` —
   [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md),
   [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)

@@ -86,6 +86,7 @@
   [`mizu_error_stopped`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_cancelled`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_worker_died`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_task_lost`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_startup`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_shm`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_python_payload`](https://shikokuchuo.net/mizu/reference/mizu_error.md)

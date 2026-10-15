@@ -26,7 +26,8 @@ A list with elements `name`, `role`, `max_workers`, `max_submitters`,
 `injection_cap`, `result_slots`, `slot_size`, `workers` (per-slot
 states), `parked`, `submitters` (per-slot states), `injection` (entries
 queued and unclaimed), `tasks` (result slots by state: pending / ok /
-err / cancel / died), `deque` (per-worker deque depths), and `shutdown`.
+err / cancel / died / lost), `deque` (per-worker deque depths), and
+`shutdown`.
 
 ## Examples
 
@@ -34,7 +35,7 @@ err / cancel / died), `deque` (per-worker deque depths), and `shutdown`.
 p <- mizu_pool()
 mizu_pool_status(p)
 #> $name
-#> [1] "/mizu_1a71_851e2c14"
+#> [1] "/mizu_19af_ad926c16"
 #> 
 #> $role
 #> [1] "controller"
@@ -67,8 +68,8 @@ mizu_pool_status(p)
 #> [1] 0
 #> 
 #> $tasks
-#> pending      ok     err  cancel    died 
-#>       0       0       0       0       0 
+#> pending      ok     err  cancel    died    lost 
+#>       0       0       0       0       0       0 
 #> 
 #> $deque
 #> [1] 0

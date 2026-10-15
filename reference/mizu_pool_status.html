@@ -77,8 +77,8 @@ inside a task, the evaluating worker's own handle from
 <code>max_submitters</code>, <code>injection_cap</code>, <code>result_slots</code>, <code>slot_size</code>,
 <code>workers</code> (per-slot states), <code>parked</code>, <code>submitters</code> (per-slot states),
 <code>injection</code> (entries queued and unclaimed), <code>tasks</code> (result slots by
-state: pending / ok / err / cancel / died), <code>deque</code> (per-worker deque
-depths), and <code>shutdown</code>.</p>
+state: pending / ok / err / cancel / died / lost), <code>deque</code> (per-worker
+deque depths), and <code>shutdown</code>.</p>
     </div>
 
     <div class="section level2">
@@ -86,7 +86,7 @@ depths), and <code>shutdown</code>.</p>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_pool.html">mizu_pool</a></span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu">mizu_pool_status</span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $name</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_1a71_851e2c14"</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_19af_ad926c16"</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $role</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] "controller"</span>
@@ -119,8 +119,8 @@ depths), and <code>shutdown</code>.</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $tasks</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> pending      ok     err  cancel    died </span>
-<span class="r-out co"><span class="r-pr">#&gt;</span>       0       0       0       0       0 </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> pending      ok     err  cancel    died    lost </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span>       0       0       0       0       0       0 </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $deque</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0</span>

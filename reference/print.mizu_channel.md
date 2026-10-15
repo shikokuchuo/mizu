@@ -7,8 +7,8 @@ or `peer gone` — the verdict of
 probed at print. A pool prints its region name, the role of this handle,
 live workers out of registry capacity, and pending (uncompleted) tasks.
 A task handle prints its state, probed without consuming the result. The
-state is `pending`, `ok`, `err`, `cancel`, or `died` in the result-slot
-vocabulary of
+state is `pending`, `ok`, `err`, `cancel`, `died`, or `lost` in the
+result-slot vocabulary of
 [`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md).
 It is `collected` once the result is taken, or `dropped` when its pool
 is gone. Sentinels print as their class. The handle methods never error
@@ -57,7 +57,7 @@ print(x, ...)
 ``` r
 p <- mizu_pool()
 p
-#> <mizu_pool /mizu_1a71_851e2c1b: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_19af_ad926c1d: controller, 1/1 workers live, 0 pending>
 t <- mizu_submit(p, 1 + 1)
 t
 #> <mizu_task: ok>

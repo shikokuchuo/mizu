@@ -91,6 +91,11 @@ recorded. <code><a href="mizu_map.html">mizu_map()</a></code> signals this class
 as an additional <code>elements</code> field: a two-column matrix of inclusive
 <code>lo, hi</code> ranges, runner-granular and conservative (see the Errors
 section of <code><a href="mizu_map.html">mizu_map()</a></code>).</p></li>
+<li><p><code>mizu_error_task_lost</code> — <code><a href="mizu_submit.html">mizu_collect()</a></code> on a task whose payload
+region vanished before any worker could read it (its submitter died
+or released the pool with the task still queued). Unlike
+<code>mizu_error_worker_died</code> no death verdict is involved: the task never
+started executing anywhere.</p></li>
 <li><p><code>mizu_error_startup</code> — <code><a href="mizu_channel.html">mizu_channel()</a></code>, <code><a href="mizu_pool.html">mizu_pool()</a></code> and
 <code><a href="mizu_spawn_workers.html">mizu_spawn_workers()</a></code> when a child process fails to attach within
 <code>startup_timeout</code>.</p></li>
