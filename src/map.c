@@ -514,7 +514,8 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
      mizu view, a foreign shared vector, a materialized one) the shared
      pages — the per-element writable accessors would COW-materialize the
      whole vector per worker. NULL when an ALTREP has no data block (a
-     compact 1:n), where the standard accessors stand. */
+     compact 1:n), where the element accessors stand (never DATAPTR: a
+     writable request would expand the whole sequence per chunk task). */
   const void *xd = NULL;
   if (mizu_view_sizeof_elt(xt) != 0)
     xd = ALTREP(x) ? DATAPTR_OR_NULL(x) : mizu_vec_ptr(x);
@@ -537,23 +538,23 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
       elt = VECTOR_ELT(x, idx);
       break;
     case LGLSXP:
-      elt = Rf_ScalarLogical(xd == NULL ? LOGICAL(x)[idx]
+      elt = Rf_ScalarLogical(xd == NULL ? LOGICAL_ELT(x, idx)
                                         : ((const int *) xd)[idx]);
       break;
     case INTSXP:
-      elt = Rf_ScalarInteger(xd == NULL ? INTEGER(x)[idx]
+      elt = Rf_ScalarInteger(xd == NULL ? INTEGER_ELT(x, idx)
                                         : ((const int *) xd)[idx]);
       break;
     case REALSXP:
-      elt = Rf_ScalarReal(xd == NULL ? REAL(x)[idx]
+      elt = Rf_ScalarReal(xd == NULL ? REAL_ELT(x, idx)
                                      : ((const double *) xd)[idx]);
       break;
     case CPLXSXP:
-      elt = Rf_ScalarComplex(xd == NULL ? COMPLEX(x)[idx]
+      elt = Rf_ScalarComplex(xd == NULL ? COMPLEX_ELT(x, idx)
                                         : ((const Rcomplex *) xd)[idx]);
       break;
     case RAWSXP:
-      elt = Rf_ScalarRaw(xd == NULL ? RAW(x)[idx]
+      elt = Rf_ScalarRaw(xd == NULL ? RAW_ELT(x, idx)
                                     : ((const Rbyte *) xd)[idx]);
       break;
     case STRSXP:  elt = Rf_ScalarString(STRING_ELT(x, idx)); break;

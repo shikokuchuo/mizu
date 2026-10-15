@@ -1290,3 +1290,20 @@ from the wrap-time walk or the REFCNT gate.
 Status: full suite 3582 pass, 0 fail (51 skips, the expected set); the
 crosslang files green with pymizu's venv on PATH (238 + 86); rchk
 clean (bcheck, 1174 functions — only R's own "too many states" notes).
+## 2026-10-16 — latent-bug fixes (R-07..R-21): A/B against 75beb21
+
+The second mizu audit PR: Elt / Get_region on the five vec classes
+and u64 (R-07), the read-hook containment (R-21 — an R_ToplevelExec
+catch scoped to the serialize / zc tiers, the trivial tiers
+unguarded), and the non-performance items (R-08..R-20). A/B is
+dev/bench/mizu-bench.R back-to-back (A = 75beb21, B = the PR tree).
+
+Results: every touched row within band — sequential rt flat (1.0 /
+1.4-1.5 us), serialize / codec results flat (3.2-3.4 / 1.8-2.2 us),
+payloads and frames within run-to-run variance, streaming flat; the
+containment measures at baseline on direct probes (REF / codec /
+STR1 roundtrips unchanged). No measurable regression.
+Status: full suite 3738 pass, 0 fail (51 skips, the expected set);
+crosslang green with pymizu's venv on PATH (4 runs); rchk clean
+(bcheck, 1199 functions — only R's own "too many states" notes).
+

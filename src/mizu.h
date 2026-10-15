@@ -453,7 +453,10 @@ NORET void mizu_stop_not_portable(const char *path, const char *reason,
                                   const char *remedy) MIZU_COLD;
 SEXP mizu_cond_python_payload(void);
 NORET void mizu_cond_signal(SEXP cond);
+SEXP mizu_cond_make(const char *subclass, const char *fmt, ...)
+  R_PRINTF_FORMAT(2, 3);
 void mizu_cond_preserve_index(SEXP cond);
+SEXP mizu_cond_set_field(SEXP cond, const char *field, SEXP value);
 SEXP mizu_cond_set_index(SEXP cond, int index);
 SEXP mizu_caught(SEXP cond);
 SEXP mizu_caught_cond(const char *subclass, const char *fmt, ...)
@@ -496,6 +499,9 @@ NORET void mizu_r_raise_tls(void) MIZU_COLD;
 int mizu_r_pow2(uint64_t v);
 const char *mizu_r_suffix_arg(SEXP suffix_sexp);
 uint64_t mizu_r_ident_override(SEXP ident_sexp, uint64_t dflt);
+/* The seconds argument of every verb's timeout: NA (from NA input or any
+   non-numeric coercion) rejected — the core maps it to an indefinite wait. */
+double mizu_r_timeout_arg(SEXP timeout_sexp);
 /* The handle unwrap: tag check, released check (peek returns NULL), fork
    guard. `what` ("channel" / "pool") composes the messages. */
 mizu_r_handle *mizu_r_handle_peek(SEXP xp, SEXP tag, const char *what);

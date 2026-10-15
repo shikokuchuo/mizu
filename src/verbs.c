@@ -42,6 +42,17 @@ uint64_t mizu_r_ident_override(SEXP ident_sexp, uint64_t dflt) {
                     (uint32_t) INTEGER(ident_sexp)[1]);
 }
 
+/* The seconds value of a verb's timeout: Rf_asReal coerces non-numeric
+   input (a non-numeric string, a logical NA) to NA, and the core maps
+   every non-finite value to an indefinite wait — an NA would park forever
+   where a 0 or a negative returns at once. Non-coercible input fails in
+   Rf_asReal itself. */
+double mizu_r_timeout_arg(SEXP timeout_sexp) {
+  const double t = Rf_asReal(timeout_sexp);
+  if (ISNAN(t)) Rf_error("mizu: timeout must be a number of seconds, not NA");
+  return t;
+}
+
 /* NULL when the handle has already been released (closed / destroyed).
    `what` is "channel" or "pool" and composes the exact messages the
    per-type wrappers always raised. */

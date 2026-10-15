@@ -67,21 +67,22 @@ void mizu_cond_preserve_index(SEXP cond) {
   SET_STRING_ELT(names, idx, Rf_mkChar("mizu_map_index"));
 }
 
-/* Set the "index" field on a condition list with `$<-` semantics: replace
-   in place when the name is present, else append one element (attributes,
+/* Set a named field on a condition list with `$<-` semantics: replace in
+   place when the name is present, else append one element (attributes,
    class included, carried over). Returns the condition UNPROTECTED — the
    caller PROTECTs at the call site (nothing allocates between). */
-SEXP mizu_cond_set_index(SEXP cond, int index) {
+SEXP mizu_cond_set_field(SEXP cond, const char *field, SEXP value) {
   PROTECT(cond);
+  PROTECT(value);
   SEXP names = Rf_getAttrib(cond, R_NamesSymbol);
   R_xlen_t n = XLENGTH(cond);
   R_xlen_t nn = TYPEOF(names) == STRSXP ? XLENGTH(names) : 0;
   R_xlen_t m = n < nn ? n : nn;
   for (R_xlen_t i = 0; i < m; i++) {
     SEXP nm = STRING_ELT(names, i);
-    if (nm != NA_STRING && strcmp(CHAR(nm), "index") == 0) {
-      SET_VECTOR_ELT(cond, i, Rf_ScalarInteger(index));
-      UNPROTECT(1);
+    if (nm != NA_STRING && strcmp(CHAR(nm), field) == 0) {
+      SET_VECTOR_ELT(cond, i, value);
+      UNPROTECT(2);
       return cond;
     }
   }
@@ -92,12 +93,33 @@ SEXP mizu_cond_set_index(SEXP cond, int index) {
     SET_VECTOR_ELT(out, i, VECTOR_ELT(cond, i));
     SET_STRING_ELT(onames, i, i < nn ? STRING_ELT(names, i) : R_BlankString);
   }
-  SET_VECTOR_ELT(out, n, Rf_ScalarInteger(index));
-  SET_STRING_ELT(onames, n, Rf_mkChar("index"));
+  SET_VECTOR_ELT(out, n, value);
+  SET_STRING_ELT(onames, n, Rf_mkChar(field));
   Rf_setAttrib(out, R_NamesSymbol, onames);
   Rf_copyMostAttrib(cond, out);
-  UNPROTECT(4);                  /* cond, names, out, onames */
+  UNPROTECT(5);                  /* cond, value, names, out, onames */
   return out;
+}
+
+/* Set the "index" field on a condition list with `$<-` semantics: replace
+   in place when the name is present, else append one element (attributes,
+   class included, carried over). Returns the condition UNPROTECTED — the
+   caller PROTECTs at the call site (nothing allocates between). */
+SEXP mizu_cond_set_index(SEXP cond, int index) {
+  SEXP value = PROTECT(Rf_ScalarInteger(index));
+  SEXP out = mizu_cond_set_field(cond, "index", value);
+  UNPROTECT(1);
+  return out;
+}
+
+/* The building half of mizu_stop: the condition, UNPROTECTED — the caller
+   PROTECTs at the call site (nothing allocates between). */
+SEXP mizu_cond_make(const char *subclass, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  SEXP cond = mizu_cond(subclass, NULL, 0, fmt, ap);
+  va_end(ap);
+  return cond;
 }
 
 NORET void mizu_stop(const char *subclass, const char *fmt, ...) {

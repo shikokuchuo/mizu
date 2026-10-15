@@ -75,13 +75,14 @@ static void pool_binding(mizu_r_handle *h, mizu_binding *b, int worker) {
 
 /* Build the extptr around a created/joined/attached core handle: the prot
    chain ([0] eval env, [1] trace fn, [2] map cache, [3] the zc view cache's
-   wrap table, [4] the pin chain) and the finalizer. */
+   wrap table, [4] the pin chain, [5] the decline record) and the finalizer. */
 static SEXP pool_wrap(mizu_r_handle *h) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 5));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
   SET_VECTOR_ELT(prot, 3, Rf_allocVector(VECSXP, MIZU_OPEN_CACHE_MAX));
   h->zoc.wraps = VECTOR_ELT(prot, 3);
   h->prot = prot;
   h->pin_slot = 4;
+  h->decline_slot = 5;
   SEXP xp = PROTECT(R_MakeExternalPtr(h, mizu_pool_tag, prot));
   R_RegisterCFinalizerEx(xp, mizu_pool_finalizer, TRUE);
   Rf_setAttrib(xp, R_ClassSymbol, mizu_class_pool);
@@ -93,12 +94,15 @@ static SEXP pool_wrap(mizu_r_handle *h) {
 static void mizu_pool_finalizer(SEXP xp) {
   mizu_r_handle *h = (mizu_r_handle *) R_ExternalPtrAddr(xp);
   if (h == NULL) return;
-  if (h->core != NULL) {
+  /* the fork guard the verbs carry: a forked child that finalizes a handle
+     (a quit() runs exit finalizers) must not destroy the parent's pool —
+     the destroy would broadcast shutdown and unlink its regions */
+  if (h->core != NULL && h->self_pid == mizu_self_pid()) {
     /* a controller destroy broadcasts shutdown (no wait); a participant
        releases its slot */
     mizu_pool_destroy((mizu_pool *) h->core);
-    h->core = NULL;
   }
+  h->core = NULL;
   if (mizu_curpool_xp == xp) mizu_curpool_xp = R_NilValue;
   free(h);
   R_ClearExternalPtr(xp);
@@ -149,19 +153,39 @@ static mizu_task task_get(SEXP xp, mizu_r_handle **h_out) {
 
 // Small helpers -------------------------------------------------------------------
 
-/* Raise a pool verb's MIZU_ERR as a classed error with the handle's recorded
-   message (the core's messages are the R contract's). */
-NORET static void pool_raise(mizu_pool *p) {
+/* Build a pool verb's MIZU_ERR as a classed condition with the handle's
+   recorded message (the core's messages are the R contract's). Returns it
+   UNPROTECTED — the caller PROTECTs at the call site (nothing allocates
+   between). */
+static SEXP pool_cond(mizu_pool *p) {
   mizu_errcat cat = mizu_pool_errcat(p);
   const char *msg = mizu_pool_error(p);
   switch (cat) {
   case MIZU_ERRCAT_STOPPED:
-    mizu_stop("mizu_error_stopped", "mizu: %s", msg);
+    return mizu_cond_make("mizu_error_stopped", "mizu: %s", msg);
   case MIZU_ERRCAT_EXHAUSTED:
-    mizu_stop("mizu_error_slots_exhausted", "mizu: %s", msg);
+    return mizu_cond_make("mizu_error_slots_exhausted", "mizu: %s", msg);
   default:
-    mizu_stop("mizu_error", "mizu: %s", msg);
+    return mizu_cond_make("mizu_error", "mizu: %s", msg);
   }
+}
+
+/* Raise a pool verb's MIZU_ERR as a classed error with the handle's recorded
+   message. */
+NORET static void pool_raise(mizu_pool *p) {
+  SEXP cond = PROTECT(pool_cond(p));
+  mizu_cond_signal(cond);
+  UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
+}
+
+/* The collect verbs' decline discipline (the channel recv's shape): the
+   read hook's containment stashes the condition it caught on the handle's
+   decline slot; on MIZU_ERR signal it in place of the core's generic
+   read-failure record ("payload read failed" et al). */
+NORET static void pool_collect_raise(mizu_r_handle *h, mizu_pool *p) {
+  SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
+  if (decline != R_NilValue) mizu_cond_signal(decline);   /* no return */
+  pool_raise(p);
 }
 
 // Create (controller) ---------------------------------------------------------------
@@ -245,7 +269,7 @@ SEXP mizu_pool_ready_wait_call(SEXP xp, SEXP slots_sexp, SEXP timeout) {
   for (R_xlen_t i = 0; i < n; i++)
     slots[i] = (uint32_t) INTEGER(slots_sexp)[i];
   mizu_status st = mizu_pool_ready_wait(p, slots, (size_t) n,
-                                      mizu_timeout_ms(Rf_asReal(timeout)));
+                                      mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_ERR) pool_raise(p);
   if (st == MIZU_OK) (void) pool_word(h);
   return Rf_ScalarLogical(st == MIZU_OK);
@@ -399,7 +423,7 @@ static SEXP pool_submit(SEXP xp, SEXP payload, SEXP timeout, int flags,
   mizu_task t;
   mizu_status st = mizu_pool_submit_flags(p, (void *) payload,
                                        (uint16_t) flags, &t,
-                                       mizu_timeout_ms(Rf_asReal(timeout)));
+                                       mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_OK) return mizu_task_wrap(xp, &t);
   if (st == MIZU_FULL) {
     if (tryflag) return mizu_sent_timeout;
@@ -640,7 +664,7 @@ SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   size_t done = 0;
   mizu_status st = mizu_pool_submit_batch_fn(p, mizu_batch_supply_next, &supply,
                                            (size_t) n, ts, &done,
-                                           mizu_timeout_ms(Rf_asReal(timeout)));
+                                           mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   UNPROTECT(1);
   if (st == MIZU_ERR) pool_raise(p);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) done));
@@ -668,7 +692,7 @@ SEXP mizu_pool_step_call(SEXP xp, SEXP timeout) {
   mizu_pool *p = (mizu_pool *) h->core;
   /* the core heals the eval mark at step entry; the binding's copy follows */
   h->eval_marked = 0;
-  int rc = mizu_pool_step(p, mizu_timeout_ms(Rf_asReal(timeout)));
+  int rc = mizu_pool_step(p, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (rc == MIZU_STEP_SHUTDOWN && mizu_pool_errcat(p) != MIZU_ERRCAT_NONE)
     pool_raise(p);   /* an exec infrastructure failure, not a real shutdown */
   return Rf_ScalarInteger(rc);
@@ -742,10 +766,11 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   mizu_r_handle *h;
   mizu_task t = task_get(xp, &h);
   void *v = NULL;
+  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st =
-    mizu_pool_collect((mizu_pool *) h->core, &t, &v, mizu_timeout_ms(Rf_asReal(timeout)));
+    mizu_pool_collect((mizu_pool *) h->core, &t, &v, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_TIMEOUT) return mizu_sent_timeout;
-  if (st == MIZU_ERR) pool_raise((mizu_pool *) h->core);
+  if (st == MIZU_ERR) pool_collect_raise(h, (mizu_pool *) h->core);
   SEXP val = (SEXP) v;
   if (Rf_inherits(val, "mizu_caught")) {
     if (tryflag) return val;
@@ -766,7 +791,8 @@ SEXP mizu_pool_collect_try(SEXP xp, SEXP deadline) {
 }
 
 /* Extract a task list's handles and shared pool. */
-static mizu_pool *tasks_get(SEXP tasks, mizu_task **ts_out, R_xlen_t *n_out) {
+static mizu_pool *tasks_get(SEXP tasks, mizu_task **ts_out,
+                            mizu_r_handle **h_out, R_xlen_t *n_out) {
   if (TYPEOF(tasks) != VECSXP || XLENGTH(tasks) == 0)
     Rf_error("mizu: tasks must be a non-empty list of task handles");
   R_xlen_t n = XLENGTH(tasks);
@@ -780,6 +806,7 @@ static mizu_pool *tasks_get(SEXP tasks, mizu_task **ts_out, R_xlen_t *n_out) {
       Rf_error("mizu: task handles must belong to the same pool handle");
   }
   *ts_out = ts;
+  *h_out = h;
   *n_out = n;
   return (mizu_pool *) h->core;
 }
@@ -789,14 +816,16 @@ static mizu_pool *tasks_get(SEXP tasks, mizu_task **ts_out, R_xlen_t *n_out) {
    condition's "index" field. */
 SEXP mizu_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   mizu_task *ts;
+  mizu_r_handle *h;
   R_xlen_t n;
-  mizu_pool *p = tasks_get(tasks, &ts, &n);
+  mizu_pool *p = tasks_get(tasks, &ts, &h, &n);
   void *v = NULL;
   size_t idx = 0;
+  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st = mizu_pool_collect_any(p, ts, (size_t) n, &idx, &v,
-                                       mizu_timeout_ms(Rf_asReal(timeout)));
+                                       mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_TIMEOUT) return mizu_sent_timeout;
-  if (st == MIZU_ERR) pool_raise(p);
+  if (st == MIZU_ERR) pool_collect_raise(h, p);
   SEXP val = PROTECT((SEXP) v);
   int index = (int) idx + 1;   /* R 1-based */
   if (Rf_inherits(val, "mizu_caught")) {
@@ -827,18 +856,39 @@ SEXP mizu_pool_collect_any_call(SEXP tasks, SEXP timeout) {
    consumes nothing. */
 SEXP mizu_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   mizu_task *ts;
+  mizu_r_handle *h;
   R_xlen_t n;
-  mizu_pool *p = tasks_get(tasks, &ts, &n);
+  mizu_pool *p = tasks_get(tasks, &ts, &h, &n);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
-  size_t err_idx = 0;
+  size_t err_idx = 0, consumed = 0;
+  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st = mizu_pool_collect_all_fn(p, ts, (size_t) n, mizu_vec_sink,
-                                          out, &err_idx, NULL,
-                                          mizu_timeout_ms(Rf_asReal(timeout)));
+                                          out, &err_idx, &consumed,
+                                          mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_TIMEOUT) {
     UNPROTECT(1);
     return mizu_sent_timeout;
   }
-  if (st == MIZU_ERR) pool_raise(p);
+  if (st == MIZU_ERR) {
+    /* a mid-batch read failure: attach the consumed prefix and the failing
+       slot's 1-based index to the raised condition — dropping them would
+       lose results the core already handed to the sink (the contained
+       read-hook raise's own condition rides the decline slot when set) */
+    SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
+    if (decline == R_NilValue && consumed == 0) pool_raise(p);
+    SEXP cond = PROTECT(decline != R_NilValue ? decline : pool_cond(p));
+    if (TYPEOF(cond) == VECSXP) {
+      SEXP prefix = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) consumed));
+      for (size_t i = 0; i < consumed; i++)
+        SET_VECTOR_ELT(prefix, (R_xlen_t) i, VECTOR_ELT(out, (R_xlen_t) i));
+      cond = PROTECT(mizu_cond_set_field(cond, "values", prefix));
+      cond = mizu_cond_set_index(cond, (int) err_idx + 1);
+      UNPROTECT(2);                /* prefix, the first build */
+    }
+    PROTECT(cond);
+    mizu_cond_signal(cond);        /* no return */
+    UNPROTECT(3);                  /* unreachable: mizu_cond_signal is NORET */
+  }
   if (err_idx < (size_t) n) {
     /* the first non-OK by position: signal with the 1-based index */
     SEXP val = VECTOR_ELT(out, (R_xlen_t) err_idx);
@@ -909,7 +959,7 @@ SEXP mizu_pool_stop_call(SEXP xp, SEXP timeout) {
   if (h->role != MIZU_ROLE_CONTROLLER)
     Rf_error("mizu: only the controller can stop a pool");
   mizu_pool *p = (mizu_pool *) h->core;
-  mizu_status st = mizu_pool_stop(p, mizu_timeout_ms(Rf_asReal(timeout)));
+  mizu_status st = mizu_pool_stop(p, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_ERR) pool_raise(p);
   /* MIZU_TIMEOUT: the workers still exit on their own */
   return Rf_ScalarLogical(st == MIZU_OK);

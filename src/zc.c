@@ -855,7 +855,8 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
     if (elt == 0 || length < 0 || attrs_size < 0 ||
         length > (region_size - (int64_t) MIZU_HEADER_SIZE) / (int64_t) elt ||
         attrs_size >
-          region_size - (int64_t) MIZU_HEADER_SIZE - length * (int64_t) elt)
+          region_size - (int64_t) MIZU_HEADER_SIZE - length * (int64_t) elt ||
+        !mizu_view_flags_known(base))
       Rf_error("mizu: corrupt payload slot");
     /* the three-state validity pair (mizu.h): {0, 0} absent, {0, -1}
        known-NA-free, or a 64-aligned offset whose bitmap fits the region
@@ -903,7 +904,8 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
     memcpy(&str_size, base + 16, 8);
     if (n < 0 || str_size < 0 || attrs_size < 0 ||
         str_size > region_size - (int64_t) MIZU_HEADER_SIZE ||
-        attrs_size > region_size - (int64_t) MIZU_HEADER_SIZE - str_size)
+        attrs_size > region_size - (int64_t) MIZU_HEADER_SIZE - str_size ||
+        !mizu_view_flags_known(base))
       Rf_error("mizu: corrupt payload slot");
     if (aux != 0 &&
         ((uint32_t) mizu_aux_type(aux) != (uint32_t) STRSXP ||
@@ -1009,11 +1011,13 @@ int mizu_zc_ref_stage(mizu_slot_hdr *hdr, unsigned char *payload,
   const char *s = CHAR(STRING_ELT(id, 0));
   size_t len = strlen(s);
   if (len == 0 || len > (size_t) inline_max) return 0;
-  mizu_zc_ref_mark(x);
+  /* the copy precedes the mark: id is unprotected and the mark allocates
+     (the mark list's growth) — reading s after it could GC the CHARSXP */
   hdr->kind = MIZU_KIND_REF;
   hdr->len = (uint32_t) len;
   hdr->aux = 0;
   memcpy(payload, s, len);
+  mizu_zc_ref_mark(x);
   return 1;
 }
 

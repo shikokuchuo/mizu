@@ -166,6 +166,43 @@ test_that("a finite-timeout empty recv expires both parked and mid-spin", {
   channel_end(p)
 })
 
+test_that("verbs reject an NA timeout instead of waiting forever (R-08)", {
+  p <- channel_pair()
+  expect_error(mizu_recv(p[["host"]], timeout = NA_real_), "not NA")
+  expect_error(mizu_recv(p[["host"]], timeout = NA), "not NA")
+  expect_error(mizu_recv_batch(p[["host"]], timeout = NA_real_), "not NA")
+  expect_error(mizu_close(p[["host"]], timeout = NA_real_), "not NA")
+  expect_error(
+    .Call(mizu:::mizu_channel_ready_wait, p[["host"]], NA_real_),
+    "not NA"
+  )
+  # the channel survives the rejections: never a wait entered
+  mizu_send(p[["host"]], 42L)
+  expect_identical(mizu_recv(p[["peer"]], 5), 42L)
+  channel_end(p)
+})
+
+test_that("a forked child's GC does not destroy the parent's channel (R-14)", {
+  skip_on_os("windows") # no fork
+  skip_if_no_fork() # Positron/RStudio sessions block mcfork
+  p <- channel_pair()
+  mizu_send(p[["host"]], "before")
+  expect_identical(mizu_recv(p[["peer"]], 5), "before")
+  env <- environment()
+  res <- parallel::mcparallel(
+    {
+      rm(list = ls(env), envir = env) # the child drops its inherited handles
+      invisible(gc()) # their finalizers run here — guarded by the pid check
+      TRUE
+    },
+    silent = TRUE
+  )
+  expect_identical(parallel::mccollect(res)[[1L]], TRUE)
+  mizu_send(p[["host"]], "after")
+  expect_identical(mizu_recv(p[["peer"]], 5), "after")
+  channel_end(p)
+})
+
 test_that("a closure over a missing namespace reads as unserialize does", {
   ns <- new.env()
   info <- new.env()

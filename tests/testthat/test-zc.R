@@ -204,6 +204,97 @@ test_that("integer, logical, raw and complex views are copy-on-write too", {
   channel_end(p)
 })
 
+test_that("element and range reads keep the view's loan (R-07)", {
+  p <- channel_pair(arena_size = 0)
+  set.seed(1)
+  fresh <- function(x) {
+    mizu_send(p[["host"]], x)
+    v <- mizu_recv(p[["peer"]], 5)
+    expect_true(is_view(v))
+    v
+  }
+  # the Elt / Get_region methods: without them R's defaults issue a writable
+  # DATAPTR request, COW-materializing the whole view on the first x[1]
+  common <- list(
+    function(v) v[1L],
+    function(v) v[[1L]],
+    function(v) v[1:10],
+    function(v) v[c(TRUE, FALSE)],
+    function(v) head(v),
+    function(v) rev(v)[1L],
+    function(v) length(v),
+    function(v) as.list(v[1:3]),
+    function(v) lapply(v[1:3], identity),
+    function(v) vapply(v[1:2], identity, v[[1L]]),
+    function(v) length(unique(v)),
+    function(v) anyNA(v),
+    function(v) {
+      for (e in v) {
+        break
+      }
+      e
+    },
+    function(v) capture.output(print(head(v, 2))),
+    function(v) identical(v, v)
+  )
+  numeric_only <- list(
+    function(v) sum(v),
+    function(v) v + 1,
+    function(v) any(v %in% v[1L]),
+    function(v) match(v[1L], v)
+  )
+  for (x in list(runif(2e5), sample.int(1e6, 2e5), sprintf("s%d", 1:2e5))) {
+    ops <- if (is.character(x)) common else c(common, numeric_only)
+    for (op in ops) {
+      v <- fresh(x)
+      invisible(op(v))
+      expect_identical(rc_of(v)[1L], 2L)
+      rm(v)
+      invisible(gc())
+    }
+  }
+  # and the values read straight off the shared pages
+  x <- runif(2e5)
+  v <- fresh(x)
+  expect_identical(v[1L], x[1L])
+  expect_identical(v[[1L]], x[[1L]])
+  expect_identical(v[1:10], x[1:10])
+  expect_identical(head(v), head(x))
+  channel_end(p)
+})
+
+test_that("a REF-sent view is not retained across later stages (R-09)", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(2e5))
+  v <- mizu_recv(p[["peer"]], 5)
+  mizu_send(p[["host"]], v) # REF: the claim records the view on the mark list
+  v2 <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(v2))
+  expect_identical(rc_of(v)[1L], 2L) # v + v2
+  mizu_send(p[["host"]], 42L) # a raw-tier stage: the mark list resets at entry
+  expect_identical(mizu_recv(p[["peer"]], 5), 42L)
+  rm(v2)
+  invisible(gc())
+  expect_identical(rc_of(v)[1L], 1L) # v alone — the stale mark held v2 pre-fix
+  channel_end(p)
+})
+
+test_that("an unknown layout flags word rejects as corrupt, the ring flows on (R-16, R-21)", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(2e5))
+  v <- mizu_recv(p[["peer"]], 5)
+  nm <- .Call(mizu:::mizu_zc_view_name, v)
+  mizu_send(p[["host"]], v) # REF: the wrap re-validates the layout header
+  rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+  # the [32-35] format flags word: a bit past the S4 flag is corrupt-or-newer
+  .Call(mizu:::mizu_poke, rw, 32L, as.raw(c(2L, 0L, 0L, 0L)))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  # the raise out of the read hook was contained and consumed: no wedge
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+})
+
 test_that("a received view re-sends as REF — zero bytes move", {
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)

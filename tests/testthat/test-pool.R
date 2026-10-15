@@ -305,6 +305,43 @@ test_that("dropping the controller handle shuts the pool down at GC", {
   expect_error(.Call(mizu:::mizu_pool_attach_call, suffix), "cannot open")
 })
 
+test_that("verbs reject an NA timeout instead of waiting forever (R-08)", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], 1 + 1)
+  expect_error(mizu_collect(t, timeout = NA_real_), "not NA")
+  expect_error(mizu_collect_any(list(t), timeout = NA), "not NA")
+  expect_error(mizu_collect_all(list(t), timeout = NA_real_), "not NA")
+  expect_error(mizu_pool_stop(p[["ctrl"]], timeout = NA_real_), "not NA")
+  expect_error(
+    .Call(mizu:::mizu_pool_ready_wait, p[["ctrl"]], 0L, NA_real_),
+    "not NA"
+  )
+  # the rejections consumed nothing: the task still runs and collects
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 2)
+  pool_end(p)
+})
+
+test_that("a forked child's GC does not destroy the parent's pool (R-14)", {
+  skip_on_os("windows") # no fork
+  skip_if_no_fork() # Positron/RStudio sessions block mcfork
+  p <- pool_pair()
+  env <- environment()
+  res <- parallel::mcparallel(
+    {
+      rm(list = ls(env), envir = env) # the child drops its inherited handles
+      invisible(gc()) # their finalizers run here — guarded by the pid check
+      TRUE
+    },
+    silent = TRUE
+  )
+  expect_identical(parallel::mccollect(res)[[1L]], TRUE)
+  t <- mizu_submit(p[["ctrl"]], 40 + 2)
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 42)
+  pool_end(p)
+})
+
 test_that("pool teardown releases outstanding submitter pins", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], runif(100000))

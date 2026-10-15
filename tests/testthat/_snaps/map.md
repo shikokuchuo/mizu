@@ -44,7 +44,7 @@
       run_map(p, 1:4, identity, seed = c(42, -1))
     Condition
       Error:
-      ! mizu: .seed[2] (stream offset) must be a non-negative integer
+      ! mizu: .seed[2] (stream offset) must be a non-negative integer no larger than 2^53
 
 ---
 
@@ -52,7 +52,7 @@
       run_map(p, 1:4, identity, seed = c(42, 0.5))
     Condition
       Error:
-      ! mizu: .seed[2] (stream offset) must be a non-negative integer
+      ! mizu: .seed[2] (stream offset) must be a non-negative integer no larger than 2^53
 
 ---
 
@@ -65,8 +65,16 @@
 ---
 
     Code
+      run_map(p, 1:4, identity, seed = c(42, Inf))
+    Condition
+      Error:
+      ! mizu: .seed[2] (stream offset) must be a non-negative integer no larger than 2^53
+
+---
+
+    Code
       run_map(p, 1:4, identity, seed = c(42, 2^53 + 2))
     Condition
-      Error in `map_seed_state()`:
-      ! mizu: invalid stream index
+      Error:
+      ! mizu: .seed[2] (stream offset) must be a non-negative integer no larger than 2^53
 

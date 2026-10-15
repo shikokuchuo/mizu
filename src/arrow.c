@@ -922,6 +922,10 @@ SEXP mizu_arrow_export_call(SEXP x, SEXP arrays) {
     a->release = mizu_arrow_array_release;
     atomic_fetch_add_explicit(&hd->refs, 1, memory_order_relaxed);
   }
+  /* every acquire failed: no array references the holder, so no release
+     callback ever frees it — free it here */
+  if (atomic_load_explicit(&hd->refs, memory_order_acquire) == 0)
+    mizu_arrow_holder_free(hd);
   UNPROTECT(1);
   return kinds;
 }

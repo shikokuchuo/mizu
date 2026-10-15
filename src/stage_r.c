@@ -30,7 +30,12 @@
    paths covered by the unwind cleanup so an armed generation never
    outlives the staged tree's anchoring. Re-entrant by construction — the
    Arrow decline path re-enters the stage hook, whose arm simply starts
-   another generation. */
+   another generation. Also resets the by-reference mark list at entry:
+   the list is one stage's emission record (the pin-and-no-keeperless
+   signal, the worker's emitted-set for the argument-loan release), so a
+   view marked by an earlier send must not stay referenced by it — the
+   serialize-fallback reset alone left every REF-tier / remote-leaf mark
+   pinned across all later stages. */
 typedef int (*mizu_stage_impl_fn)(void *, mizu_slot_hdr *, unsigned char *,
                                   uint32_t, mizu_handle *, void *);
 typedef struct {
@@ -58,6 +63,7 @@ static int mizu_stage_guard(mizu_stage_impl_fn fn, void *obj,
                             mizu_slot_hdr *hdr, unsigned char *payload,
                             uint32_t inline_max, mizu_handle *h, void *ctx) {
   mizu_stage_guard_s g = { fn, obj, hdr, payload, inline_max, h, ctx, 0 };
+  mizu_zc_ref_reset();
   mizu_interop_stage_arm();
   /* cleanup runs on the normal and the raise exits alike */
   R_ExecWithCleanup(mizu_stage_guard_run, &g, mizu_stage_guard_clean, &g);
@@ -283,6 +289,75 @@ void mizu_vec_sink(void *ctx, size_t i, void *obj) {
   SET_VECTOR_ELT((SEXP) ctx, (R_xlen_t) i, (SEXP) obj);
 }
 
+// Read-hook containment -----------------------------------------------------------
+
+/* R's longjmp is the only out-of-band escape a read hook has (a corrupt-
+   payload guard, an R_Unserialize resource raise): the core learns the
+   consume intent only from a returned read, so an escaping raise leaves the
+   slot at the ring head and every later receive re-raises — the wedge the
+   foreign-decline arm already handles in-band. Contain the hook body and
+   convert: the channel consumes the slot and stashes the caught condition
+   on the handle's decline slot (the mizu_decline_foreign shape generalized;
+   the recv veneer signals it ahead of chan_raise). The pool returns NULL
+   without CONSUME — pymizu's deliberate trade-off ("a freed result slot is
+   a separate decision"), the result slot staying published-but-unread for
+   the task finalizer — with the same stash for the collect veneers to
+   signal in place of the core's generic read-failure record. */
+typedef void *(*mizu_read_impl_fn)(const mizu_slot_hdr *,
+                                   const unsigned char *, size_t,
+                                   mizu_read_ctx *);
+typedef struct {
+  mizu_read_impl_fn fn;
+  const mizu_slot_hdr *hdr;
+  const unsigned char *payload;
+  size_t limit;
+  mizu_read_ctx *ctx;
+  void *out;
+  int failed;
+  SEXP cond;
+} mizu_read_catch_s;
+
+static SEXP mizu_read_catch_body(void *d) {
+  mizu_read_catch_s *c = (mizu_read_catch_s *) d;
+  c->out = c->fn(c->hdr, c->payload, c->limit, c->ctx);
+  return R_NilValue;
+}
+
+static SEXP mizu_read_catch_handler(SEXP cond, void *d) {
+  mizu_read_catch_s *c = (mizu_read_catch_s *) d;
+  c->failed = 1;
+  c->cond = cond;
+  return R_NilValue;
+}
+
+static void mizu_read_toplevel_run(void *d) {
+  (void) mizu_read_catch_body(d);
+}
+
+/* consume is the channel's answer (a ring slot cannot be retried — leaving
+   it wedges the head); the pool passes 0. The stash is a SET_VECTOR_ELT
+   only: nothing allocates between the catch and the store. */
+static void *mizu_read_guard(mizu_read_impl_fn fn,
+                             const mizu_slot_hdr *hdr,
+                             const unsigned char *payload, size_t limit,
+                             mizu_read_ctx *ctx, int consume) {
+  mizu_read_catch_s c = { fn, hdr, payload, limit, ctx, NULL, 0, R_NilValue };
+  /* the catch is R_ToplevelExec, not R_tryCatchError: it restores the
+     protect stack across the jump at context cost only (~0.1 us against
+     ~6-9 us for the handler form — this is a hot verb) */
+  if (R_ToplevelExec(mizu_read_toplevel_run, &c)) return c.out;
+  /* the cold path alone captures the condition: re-run under the handler
+     form — a deterministic guard or resource raise re-raises identically
+     (the read's partial side effects are idempotent: a cached open, the
+     GC-balanced wire loans), a transient one simply succeeds now */
+  R_tryCatchError(mizu_read_catch_body, &c, mizu_read_catch_handler, &c);
+  if (!c.failed) return c.out;
+  mizu_r_handle *rh = (mizu_r_handle *) ctx->binding_ctx;
+  SET_VECTOR_ELT(rh->prot, rh->decline_slot, c.cond);
+  if (consume) ctx->flags |= MIZU_READ_CONSUME;
+  return NULL;
+}
+
 // Channel read --------------------------------------------------------------------
 
 /* The transport has already resolved an arena-referencing frame to its byte
@@ -295,9 +370,10 @@ void mizu_vec_sink(void *ctx, size_t i, void *obj) {
    with MIZU_READ_CONSUME, so the core consumes the slot before the recv
    veneer signals the record — a plain failure here would leave the slot in
    place and wedge the ring behind it. */
-void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
-                          const unsigned char *payload, size_t limit,
-                          mizu_read_ctx *ctx) {
+static void *mizu_r_read_channel_impl(const mizu_slot_hdr *hdr,
+                                      const unsigned char *payload,
+                                      size_t limit,
+                                      mizu_read_ctx *ctx) {
   if (hdr->kind == MIZU_KIND_ARENA) {
     /* resolved stream bytes; limit is the arena-validated length */
     return (void *) mizu_stream_read(payload, limit, ctx, 1);
@@ -314,6 +390,27 @@ void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
     return (void *) y;
   }
   return mizu_payload_read(hdr, payload, (uint32_t) limit, ctx, 1);
+}
+
+/* The registered read_fn: the contained form of the above (CONSUME on a
+   caught raise — a channel slot cannot be left to wedge the ring). The
+   trivial tiers stay unguarded: NIL / STR1 / RAWVEC / RAWSPILL have no
+   unserialize and no layout walk — only a catastrophic allocation failure
+   could raise there, and that stays the unhandled case (pymizu's
+   MemoryError carve-out alike) — so the hot verbs pay no context cost. */
+void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
+                          const unsigned char *payload, size_t limit,
+                          mizu_read_ctx *ctx) {
+  switch (hdr->kind) {
+  case MIZU_KIND_NIL:
+  case MIZU_KIND_STR1:
+  case MIZU_KIND_RAWVEC:
+  case MIZU_KIND_RAWSPILL:
+    return mizu_r_read_channel_impl(hdr, payload, limit, ctx);
+  default:
+    return mizu_read_guard(mizu_r_read_channel_impl, hdr, payload, limit,
+                           ctx, 1);
+  }
 }
 
 // Pool stage --------------------------------------------------------------------
@@ -472,8 +569,9 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
    a mizu_caught list — the marker the collect veneer branches on (a task
    value that is itself a condition stays bare). The product is unprotected:
    the core's claim tail allocates nothing before the verb returns it. */
-void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
-                       size_t limit, mizu_read_ctx *ctx) {
+static void *mizu_r_read_pool_impl(const mizu_slot_hdr *hdr,
+                                   const unsigned char *payload,
+                                   size_t limit, mizu_read_ctx *ctx) {
   switch (ctx->outcome) {
   case MIZU_RS_OK:
     /* no consume_foreign: a pool is R-only, so a foreign stream is
@@ -497,6 +595,26 @@ void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                             "mizu: task cancelled or pool stopped");
   }
   return NULL;
+}
+
+/* The registered read_fn: the contained form of the above (no CONSUME on a
+   caught raise — the result slot stays published for the task finalizer,
+   pymizu's deliberate pool choice; the stash surfaces at the collect
+   veneers). The trivial tiers stay unguarded, as the channel's: a NIL
+   header also stands in for the CANCEL / DIED / LOST outcomes, whose
+   caught-box builds cannot raise short of allocation failure. */
+void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
+                       size_t limit, mizu_read_ctx *ctx) {
+  switch (hdr->kind) {
+  case MIZU_KIND_NIL:
+  case MIZU_KIND_STR1:
+  case MIZU_KIND_RAWVEC:
+  case MIZU_KIND_RAWSPILL:
+    return mizu_r_read_pool_impl(hdr, payload, limit, ctx);
+  default:
+    return mizu_read_guard(mizu_r_read_pool_impl, hdr, payload, limit,
+                           ctx, 0);
+  }
 }
 
 // Pool exec ---------------------------------------------------------------------

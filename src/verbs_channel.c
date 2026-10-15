@@ -98,12 +98,15 @@ static SEXP chan_wrap(mizu_r_handle *h) {
 static void mizu_chan_finalizer(SEXP xp) {
   mizu_r_handle *h = (mizu_r_handle *) R_ExternalPtrAddr(xp);
   if (h == NULL) return;
-  if (h->core != NULL) {
+  /* the fork guard the verbs carry: a forked child that finalizes a handle
+     (a quit() runs exit finalizers) must not destroy the parent's channel —
+     the destroy would set its close bit and unlink its regions */
+  if (h->core != NULL && h->self_pid == mizu_self_pid()) {
     /* destroy signals close and runs the non-blocking rendezvous check —
        unlink only on the peer's bit or its confirmed death */
     mizu_channel_destroy((mizu_channel *) h->core);
-    h->core = NULL;
   }
+  h->core = NULL;
   free(h);
   R_ClearExternalPtr(xp);
 }
@@ -217,7 +220,7 @@ SEXP mizu_channel_suffix(SEXP xp) {
 SEXP mizu_channel_ready_wait_call(SEXP xp, SEXP timeout) {
   mizu_r_handle *h = chan_get(xp);
   mizu_channel *c = (mizu_channel *) h->core;
-  mizu_status st = mizu_channel_ready_wait(c, mizu_timeout_ms(Rf_asReal(timeout)));
+  mizu_status st = mizu_channel_ready_wait(c, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_ERR) chan_raise(c);
   if (st == MIZU_OK) {
     /* the host learns its peer's reader before its first public send:
@@ -338,7 +341,7 @@ SEXP mizu_channel_recv_call(SEXP xp, SEXP timeout) {
   mizu_channel *c = (mizu_channel *) h->core;
   SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   void *obj = NULL;
-  mizu_status st = mizu_channel_recv(c, &obj, mizu_timeout_ms(Rf_asReal(timeout)));
+  mizu_status st = mizu_channel_recv(c, &obj, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   /* a declining read hook stashes its condition on the handle and fails the
      read with MIZU_READ_CONSUME: the slot is already consumed, so the
      informative error costs the message, not the channel — and the core
@@ -367,7 +370,7 @@ SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st = mizu_channel_recv_batch_fn(c, (size_t) n, &count,
                                             mizu_vec_sink, out,
-                                            mizu_timeout_ms(Rf_asReal(timeout)));
+                                            mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   /* a declining read in the batch: the stashed condition rides the handle
      and its slot is consumed (MIZU_READ_CONSUME), so the informative error
      costs the message, not the channel */
@@ -407,7 +410,7 @@ SEXP mizu_channel_close_call(SEXP xp, SEXP timeout) {
   mizu_r_handle *h = chan_peek(xp);
   if (h == NULL) return Rf_ScalarLogical(TRUE);   /* close is idempotent */
   mizu_channel *c = (mizu_channel *) h->core;
-  mizu_status st = mizu_channel_close(c, mizu_timeout_ms(Rf_asReal(timeout)));
+  mizu_status st = mizu_channel_close(c, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_ERR) chan_raise(c);
   if (st == MIZU_OK) {
     /* rendezvoused: the handle is dead — destroy releases it */

@@ -630,9 +630,11 @@ map_seed_pair <- function(seed) {
     return(c(s, 0))
   }
   offset <- seed[2L]
-  if (is.na(offset) || offset < 0 || offset != floor(offset)) {
+  if (
+    !is.finite(offset) || offset < 0 || offset != floor(offset) || offset > 2^53
+  ) {
     stop(
-      "mizu: .seed[2] (stream offset) must be a non-negative integer",
+      "mizu: .seed[2] (stream offset) must be a non-negative integer no larger than 2^53",
       call. = FALSE
     )
   }
@@ -640,12 +642,19 @@ map_seed_pair <- function(seed) {
 }
 
 # The worker-side RNG guard shared by map_chunk and map_runner: captures
-# the worker's own .Random.seed (possibly absent — workers seed lazily)
-# and returns the nullary restore the caller registers with on.exit, so a
-# seeded batch leaves the worker's RNG state exactly as it found it.
+# the worker's own .Random.seed (possibly absent — workers seed lazily) and
+# the RNG kind, and returns the nullary restore the caller registers with
+# on.exit, so a seeded batch leaves the worker's RNG state exactly as it
+# found it. The kind rides along: f's first draw off the installed
+# L'Ecuyer-CMRG state switches the process-global generator, and restoring
+# .Random.seed alone leaves the next unseeded draw randomizing under CMRG.
 rng_save <- function() {
   os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
+  ok <- RNGkind()[1L]
   function() {
+    if (RNGkind()[1L] != ok) {
+      RNGkind(ok)
+    }
     if (is.null(os)) {
       if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
         rm(".Random.seed", envir = globalenv())
@@ -1332,7 +1341,11 @@ map_stream_fail_spec <- function(st, v, k) {
   if (inherits(v, "mizu_error_worker_died")) {
     died <- v
     elts <- rbind(elts, c(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]]))
-  } else if (!is.null(map_err_index(v))) {
+  } else if (!is.null(v[["mizu_map_index"]])) {
+    # the element-index test is mizu_map_index only: collect_any stamps
+    # every raised outcome with "index" the window position, and
+    # map_err_index's fallback would fabricate an element index for an
+    # infrastructure error — those take the stop arm below
     errs <- list(globalize(v, k))
   } else {
     stop(v)
@@ -1444,6 +1457,11 @@ map_stream_turn <- function(pool, st, deadline) {
   if (inherits(v, "mizu_timeout")) {
     st[["timed_out"]] <- TRUE
     return(invisible())
+  }
+  # an infrastructure error from collect_any (pool stopped, owner dead)
+  # carries no position stamp — fail with it, not a subscript error
+  if (is.null(v[["index"]])) {
+    stop(v)
   }
   pos <- v[["index"]]
   k <- oi[[pos]]

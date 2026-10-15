@@ -3,7 +3,7 @@
     Code
       mizu_recv(p[["host"]], 5)
     Condition
-      Error in `mizu_recv()`:
+      Error in `doTryCatch()`:
       ! mizu: corrupt payload slot
 
 # remote-leaf declines are corrupt-or-newer shaped

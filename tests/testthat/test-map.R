@@ -104,6 +104,29 @@ test_that("language and symbol elements and dots reach f as values (R-05)", {
   pool_end(p)
 })
 
+test_that("a compact sequence stays compact through a batch (R-11)", {
+  x <- 1:1e6
+  bytes <- object.size(x)
+  # the blob path unserializes a fresh compact per chunk task: the element
+  # loop must read it with the ELT accessors, never DATAPTR — a writable
+  # request expands the whole sequence per chunk
+  r <- .Call(
+    mizu:::mizu_map_batch,
+    NULL,
+    function(i) i,
+    list(),
+    x,
+    0,
+    1,
+    2,
+    NULL,
+    numeric(1),
+    environment()
+  )
+  expect_identical(r, list(1L, 2L))
+  expect_identical(object.size(x), bytes)
+})
+
 test_that("map staging is keep.source-invariant", {
   p <- pool_pair()
   sourced <- eval(parse(
@@ -1095,11 +1118,15 @@ test_that("a vector .seed is validated", {
   expect_snapshot(error = TRUE, run_map(p, 1:4, identity, seed = c(42, -1)))
   expect_snapshot(error = TRUE, run_map(p, 1:4, identity, seed = c(42, 0.5)))
   expect_snapshot(error = TRUE, run_map(p, 1:4, identity, seed = "x"))
-  # past the 2^53 ceiling the error comes from the C seek
+  # Inf and huge offsets fail the same R validation (R-20) — never the
+  # C seek's, and never an out-of-range double->int64 cast on the spec path
+  expect_snapshot(error = TRUE, run_map(p, 1:4, identity, seed = c(42, Inf)))
   expect_snapshot(
     error = TRUE,
     run_map(p, 1:4, identity, seed = c(42, 2^53 + 2))
   )
+  # 2^53 itself still seeks exactly
+  expect_length(run_map(p, 1:2, function(i) runif(1), seed = c(42, 2^53)), 2L)
   pool_end(p)
 })
 
@@ -1111,11 +1138,15 @@ test_that("seeded chunks restore the evaluating process's RNG state", {
   before <- .Random.seed
   invisible(run_map(p, 1:4, function(i) runif(1), chunks = 2, seed = 9L))
   expect_identical(.Random.seed, before)
+  # ... and the generator kind rides along (R-19): the batch's L'Ecuyer-CMRG
+  # draws must not leave the process switched
+  expect_identical(RNGkind()[1L], "Mersenne-Twister")
   # ... and a worker with no .Random.seed yet (workers seed lazily) is
   # left with none
   rm(".Random.seed", envir = globalenv())
   invisible(run_map(p, 1:4, function(i) runif(1), chunks = 2, seed = 9L))
   expect_false(exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+  expect_identical(RNGkind()[1L], "Mersenne-Twister")
   pool_end(p)
 })
 

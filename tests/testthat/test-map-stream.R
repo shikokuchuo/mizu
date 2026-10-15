@@ -985,3 +985,37 @@ test_that("a streaming rearm with a full subrange errors before any reset", {
   }
   pool_end(p)
 })
+
+test_that("a streaming turn surfaces an infrastructure error, not a subscript error (R-17)", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], 1 + 1)
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 2)
+  # a stale handle makes collect_any raise pool-side ("already collected"),
+  # which carries no window-position stamp: pre-fix the turn indexed with
+  # NULL and the map abort masked the cause as a subscript error
+  st <- list(oi = 1L, handles = list(t))
+  expect_error(
+    mizu:::map_stream_turn(p[["ctrl"]], st, mizu:::mono_time() + 5),
+    "already collected"
+  )
+  pool_end(p)
+})
+
+test_that("map_stream_fail_spec classifies on mizu_map_index only (R-18)", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], 1)
+  # collect_any stamps every raised outcome with "index" the window
+  # position: an infrastructure error (no element index) must take the
+  # stop arm as-is, not the errs branch with a fabricated element index
+  st <- list(lo = 1, hi = 1, oi = 1L, handles = list(t), spec = TRUE)
+  v <- simpleError("infrastructure boom")
+  err <- tryCatch(
+    mizu:::map_stream_fail_spec(st, v, 1L),
+    error = function(e) e
+  )
+  expect_identical(conditionMessage(err), "infrastructure boom")
+  expect_null(err[["mizu_map_index"]])
+  expect_null(err[["index"]])
+  pool_end(p)
+})

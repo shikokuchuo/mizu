@@ -431,6 +431,90 @@ static void *mizu_view_vec_Dataptr(SEXP x, Rboolean writable) {
   return p;
 }
 
+/* Element and range reads straight off the shared pages (data2 once
+   materialized): without them R's defaults issue a writable DATAPTR
+   request, so the first x[1] would COW-materialize the whole view and fire
+   the loan. */
+static double mizu_view_real_Elt(SEXP x, R_xlen_t i) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue) return REAL_ELT(d2, i);
+  mizu_view_vec *v = (mizu_view_vec *) R_ExternalPtrAddr(R_altrep_data1(x));
+  return ((const double *) v->data)[i];
+}
+
+static int mizu_view_integer_Elt(SEXP x, R_xlen_t i) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue) return INTEGER_ELT(d2, i);
+  mizu_view_vec *v = (mizu_view_vec *) R_ExternalPtrAddr(R_altrep_data1(x));
+  return ((const int *) v->data)[i];
+}
+
+static int mizu_view_logical_Elt(SEXP x, R_xlen_t i) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue) return LOGICAL_ELT(d2, i);
+  mizu_view_vec *v = (mizu_view_vec *) R_ExternalPtrAddr(R_altrep_data1(x));
+  return ((const int *) v->data)[i];
+}
+
+static Rbyte mizu_view_raw_Elt(SEXP x, R_xlen_t i) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue) return RAW_ELT(d2, i);
+  mizu_view_vec *v = (mizu_view_vec *) R_ExternalPtrAddr(R_altrep_data1(x));
+  return ((const Rbyte *) v->data)[i];
+}
+
+static Rcomplex mizu_view_complex_Elt(SEXP x, R_xlen_t i) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue) return COMPLEX_ELT(d2, i);
+  mizu_view_vec *v = (mizu_view_vec *) R_ExternalPtrAddr(R_altrep_data1(x));
+  return ((const Rcomplex *) v->data)[i];
+}
+
+static R_xlen_t mizu_view_vec_region(SEXP x, R_xlen_t i, R_xlen_t n,
+                                     void *buf) {
+  SEXP d2 = R_altrep_data2(x);
+  const size_t elt = mizu_view_sizeof_elt(TYPEOF(x));
+  const char *src;
+  R_xlen_t len;
+  if (d2 != R_NilValue) {
+    src = (const char *) DATAPTR_RO(d2);
+    len = XLENGTH(d2);
+  } else {
+    mizu_view_vec *v = (mizu_view_vec *) R_ExternalPtrAddr(R_altrep_data1(x));
+    src = (const char *) v->data;
+    len = v->length;
+  }
+  if (i >= len) return 0;
+  const R_xlen_t ncopy = len - i < n ? len - i : n;
+  memcpy(buf, src + (size_t) i * elt, (size_t) ncopy * elt);
+  return ncopy;
+}
+
+static R_xlen_t mizu_view_real_Get_region(SEXP x, R_xlen_t i, R_xlen_t n,
+                                          double *buf) {
+  return mizu_view_vec_region(x, i, n, buf);
+}
+
+static R_xlen_t mizu_view_integer_Get_region(SEXP x, R_xlen_t i, R_xlen_t n,
+                                             int *buf) {
+  return mizu_view_vec_region(x, i, n, buf);
+}
+
+static R_xlen_t mizu_view_logical_Get_region(SEXP x, R_xlen_t i, R_xlen_t n,
+                                             int *buf) {
+  return mizu_view_vec_region(x, i, n, buf);
+}
+
+static R_xlen_t mizu_view_raw_Get_region(SEXP x, R_xlen_t i, R_xlen_t n,
+                                         Rbyte *buf) {
+  return mizu_view_vec_region(x, i, n, buf);
+}
+
+static R_xlen_t mizu_view_complex_Get_region(SEXP x, R_xlen_t i, R_xlen_t n,
+                                             Rcomplex *buf) {
+  return mizu_view_vec_region(x, i, n, buf);
+}
+
 /* keeper: SEXP kept alive via the extptr's protected slot (parent SHM).
    release/release_arg: embedder once-hook (mizu_view_owned member). */
 SEXP mizu_view_vec_wrap(const void *data, R_xlen_t length, int sexptype,
@@ -562,6 +646,34 @@ static void *mizu_view_u64_Dataptr(SEXP x, Rboolean writable) {
   v->converted = NULL;
   mizu_view_release_once(&v->owned);
   return p;
+}
+
+/* The u64 element reads: per element off the conversion cache (the first
+   touch builds it, warning included — the Dataptr discipline). */
+static double mizu_view_u64_Elt(SEXP x, R_xlen_t i) {
+  SEXP d2 = R_altrep_data2(x);
+  if (d2 != R_NilValue) return REAL_ELT(d2, i);
+  mizu_view_u64 *v = (mizu_view_u64 *) R_ExternalPtrAddr(R_altrep_data1(x));
+  return mizu_view_u64_convert(v)[i];
+}
+
+static R_xlen_t mizu_view_u64_Get_region(SEXP x, R_xlen_t i, R_xlen_t n,
+                                         double *buf) {
+  SEXP d2 = R_altrep_data2(x);
+  const double *src;
+  R_xlen_t len;
+  if (d2 != R_NilValue) {
+    src = (const double *) DATAPTR_RO(d2);
+    len = XLENGTH(d2);
+  } else {
+    mizu_view_u64 *v = (mizu_view_u64 *) R_ExternalPtrAddr(R_altrep_data1(x));
+    src = mizu_view_u64_convert(v);
+    len = v->length;
+  }
+  if (i >= len) return 0;
+  const R_xlen_t ncopy = len - i < n ? len - i : n;
+  memcpy(buf, src + i, (size_t) ncopy * sizeof(double));
+  return ncopy;
 }
 
 static SEXP mizu_view_u64_Serialized_state(SEXP x) {
@@ -2592,7 +2704,8 @@ typedef R_altrep_class_t (*mizu_view_make_class_fn)(const char *, const char *,
                                                DllInfo *);
 
 /* Register one of the 5 atomic ALTREP vector classes, all sharing the same
-   method set (mizu_view_vec_*). */
+   method set (mizu_view_vec_*); the per-type Elt / Get_region pair joins at
+   the call sites below. */
 static R_altrep_class_t mizu_view_register_vec_class(mizu_view_make_class_fn make,
                                                 const char *name,
                                                 DllInfo *dll) {
@@ -2636,14 +2749,29 @@ void mizu_view_altrep_init(DllInfo *dll) {
   /* ALTREP atomic vector classes (all share the same mizu_view_vec_* methods) */
   mizu_view_real_class    = mizu_view_register_vec_class(R_make_altreal_class,
                                                "mizu_real",    dll);
+  R_set_altreal_Elt_method(mizu_view_real_class, mizu_view_real_Elt);
+  R_set_altreal_Get_region_method(mizu_view_real_class,
+                                  mizu_view_real_Get_region);
   mizu_view_integer_class = mizu_view_register_vec_class(R_make_altinteger_class,
                                                "mizu_integer", dll);
+  R_set_altinteger_Elt_method(mizu_view_integer_class, mizu_view_integer_Elt);
+  R_set_altinteger_Get_region_method(mizu_view_integer_class,
+                                     mizu_view_integer_Get_region);
   mizu_view_logical_class = mizu_view_register_vec_class(R_make_altlogical_class,
                                                "mizu_logical", dll);
+  R_set_altlogical_Elt_method(mizu_view_logical_class, mizu_view_logical_Elt);
+  R_set_altlogical_Get_region_method(mizu_view_logical_class,
+                                     mizu_view_logical_Get_region);
   mizu_view_raw_class     = mizu_view_register_vec_class(R_make_altraw_class,
                                                "mizu_raw",     dll);
+  R_set_altraw_Elt_method(mizu_view_raw_class, mizu_view_raw_Elt);
+  R_set_altraw_Get_region_method(mizu_view_raw_class,
+                                 mizu_view_raw_Get_region);
   mizu_view_complex_class = mizu_view_register_vec_class(R_make_altcomplex_class,
                                                "mizu_complex", dll);
+  R_set_altcomplex_Elt_method(mizu_view_complex_class, mizu_view_complex_Elt);
+  R_set_altcomplex_Get_region_method(mizu_view_complex_class,
+                                     mizu_view_complex_Get_region);
 
   /* the converting uint64 class (the MIZU_CAP_MIZL_U64V landing) */
   mizu_view_u64_class = R_make_altreal_class("mizu_u64", "mizu", dll);
@@ -2651,6 +2779,9 @@ void mizu_view_altrep_init(DllInfo *dll) {
   R_set_altvec_Dataptr_method(mizu_view_u64_class, mizu_view_u64_Dataptr);
   R_set_altvec_Dataptr_or_null_method(mizu_view_u64_class,
                                       mizu_view_u64_Dataptr_or_null);
+  R_set_altreal_Elt_method(mizu_view_u64_class, mizu_view_u64_Elt);
+  R_set_altreal_Get_region_method(mizu_view_u64_class,
+                                  mizu_view_u64_Get_region);
   R_set_altrep_Serialized_state_method(mizu_view_u64_class,
                                        mizu_view_u64_Serialized_state);
   R_set_altrep_Unserialize_method(mizu_view_u64_class,
