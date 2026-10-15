@@ -121,21 +121,22 @@ hooks (`mizu_r_stage_channel` and, same-language only,
 byte-identical; on the pool it serves task results, a submitted table
 being always nested): `mizu_arrow_check` (two TYPEOF compares ahead of
 any `inherits`) routes to `mizu_arrow_stage_r`, which pulls the ABI
-structs via nanoarrow at R level (`R/arrow.R`‘s `arrow_batches`; a
-stream is fully materialized at send) and size-pre-gates: past the gate
-it calls the core’s `mizu_arrow_stage`, at or under it one ’I’ stream is
-written straight off the Arrow buffers (the core’s
-`mizu_arrow_write_ix`) over the INLINE / arena / SHM_RAW tiers, aux
-keeperless — no convert back, no serialize pass, the same-language read
-paths dispatching the 0x49 first byte to the interop reader
-(`mizu_stream_read`, as they always did the foreign form). Declines
-convert the held batches to a value and re-enter through the caller’s
-own stage hook. The hook passes the caps word as a parameter — the
-channel `rh->peer_caps`, the pool this build’s `MIZU_R_CAPS` (pymizu’s
-precedent: a task frame is same-language by construction) — and the
-pulled state is stack-held on the top-level path (no R code runs while
-the handle is open there) and rides an extptr finalizer only on the
-codec frame tier (`mizu_arrow_open_r`; the core borrows the ArrowArray
+structs through nanoarrow (`src/arrow.c`‘s `mizu_arrow_pull`: the
+`as_nanoarrow_array_stream(x)` export at R level, then the schema probe
+and every batch pull in C off the stream extptr; a stream is fully
+materialized at send) and size-pre-gates: past the gate it calls the
+core’s `mizu_arrow_stage`, at or under it one ’I’ stream is written
+straight off the Arrow buffers (the core’s `mizu_arrow_write_ix`) over
+the INLINE / arena / SHM_RAW tiers, aux keeperless — no convert back, no
+serialize pass, the same-language read paths dispatching the 0x49 first
+byte to the interop reader (`mizu_stream_read`, as they always did the
+foreign form). Declines convert the held batches to a value and re-enter
+through the caller’s own stage hook. The hook passes the caps word as a
+parameter — the channel `rh->peer_caps`, the pool this build’s
+`MIZU_R_CAPS` (pymizu’s precedent: a task frame is same-language by
+construction) — and the pulled state rides an extptr finalizer on both
+paths (the bails’ R calls run while batches are C-owned, so the
+finalizer is the longjmp backstop; the core borrows the ArrowArray
 structs and the batch-pointer array until close, so no `R_alloc`
 accumulates in the worker’s lifetime `.Call`). The R-side namespace and
 helper lookups are cached on first use (`arrow_ns()`). A nested
