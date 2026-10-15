@@ -505,10 +505,14 @@ static int ix_qualify_full(SEXP x, int *rn_seq1n) {
    the stage hook arms a fresh generation at entry and voids it at
    every exit (the raise paths through the stage wrapper's unwind
    cleanup), so a naked key is compared only while the staged tree
-   stays anchored, and a stale generation is never consulted. A full
-   table stops inserting (the stage computes fresh past it — a wide
-   frame's one expensive verdict, the root's, is still cached);
-   disarmed callers always compute fresh. */
+   stays anchored, and a stale generation is never consulted. The mint
+   never reissues a generation — a disarmed 0 rearmed to 1 would let
+   entries accumulate across stages until the probe cycle closes — and
+   IX_QC_MAX < IX_QC_CAP keeps a full table of one generation
+   impossible, so the probe always terminates. A full table stops
+   inserting (the stage computes fresh past it — a wide frame's one
+   expensive verdict, the root's, is still cached); disarmed callers
+   always compute fresh. */
 #define IX_QC_CAP 256u
 #define IX_QC_MAX 192u
 static struct {
@@ -518,10 +522,11 @@ static struct {
   int rn_seq1n;
 } ix_qc[IX_QC_CAP];
 static uint64_t ix_qc_gen;        /* 0: disarmed */
+static uint64_t ix_qc_mint;
 static unsigned ix_qc_n;
 
 void mizu_interop_stage_arm(void) {
-  ix_qc_gen++;
+  ix_qc_gen = ++ix_qc_mint;
   ix_qc_n = 0;
 }
 
