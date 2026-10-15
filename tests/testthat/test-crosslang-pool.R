@@ -265,10 +265,10 @@ test_that("a view x crosses to foreign map workers as a ref (D6)", {
   expect_equal(unlist(res), big^2)
   rc1 <- .Call(mizu:::mizu_zc_refcount, xv)
   expect_identical(rc1[2L], 1L) # REFHELD
-  # the workers' map contexts hold their resolved x views (pymizu's ctx
-  # cache releases at map-context eviction or worker teardown — the
-  # deterministic balance row is the in-process R-worker row in
-  # test-call.R)
-  expect_true(.Call(mizu:::mizu_zc_refcount, xv)[1L] > rc0[1L])
+  # the workers' resolved x views release at their idle sweep (pymizu's
+  # ctx cache clears there — the deterministic balance row is the
+  # in-process R-worker row in test-call.R)
+  wait_until(.Call(mizu:::mizu_zc_refcount, xv)[1L] == rc0[1L])
+  expect_identical(.Call(mizu:::mizu_zc_refcount, xv)[1L], rc0[1L])
   channel_end(ch)
 })
