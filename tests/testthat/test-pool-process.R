@@ -21,7 +21,7 @@ test_that("a spawned worker round-trips every payload kind", {
   )
   st <- mizu_pool_status(p)
   expect_identical(st[["workers"]], "live")
-  expect_identical(unname(st[["tasks"]]), rep(0L, 5L))
+  expect_identical(unname(st[["tasks"]]), rep(0L, 6L))
   expect_true(mizu_pool_stop(p, timeout = 10))
   expect_error(mizu_submit(p, 1), "pool handle is closed")
 })

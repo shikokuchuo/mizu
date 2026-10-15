@@ -372,7 +372,7 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
   # the executing chunk finishes, its publish CAS consumes the CANCEL; the
   # queued chunk drops at claim: every slot frees without a collect
   expect_true(wait_until(
-    identical(unname(mizu_pool_status(p)[["tasks"]]), rep(0L, 5L)),
+    identical(unname(mizu_pool_status(p)[["tasks"]]), rep(0L, 6L)),
     timeout = 10
   ))
   expect_identical(
@@ -603,7 +603,7 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
   # the survivor drains the orphaned deque — the re-homed entry drops at
   # the CANCEL skip once collect's cancel lands — and the pool empties
   expect_true(wait_until(
-    identical(unname(mizu_pool_status(p)[["tasks"]]), rep(0L, 5L)),
+    identical(unname(mizu_pool_status(p)[["tasks"]]), rep(0L, 6L)),
     timeout = 30
   ))
   d <- mizu_pool_dump(p)

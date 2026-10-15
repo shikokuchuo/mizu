@@ -1,5 +1,6 @@
 #include <limits.h>
 #include <stdlib.h>
+#include <R_ext/Utils.h>
 #include "view.h"
 
 /* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
@@ -1247,6 +1248,7 @@ static int mizu_view_ref_descriptor(SEXP elt, SEXP id, int64_t *length,
 static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign,
                                     mizu_view_sump *sp) {
 
+  R_CheckStack();   /* deep trees must raise here, not segfault below */
   R_xlen_t n = XLENGTH(x);
   size_t total = MIZU_VIEW_ALIGN64(MIZU_HEADER_SIZE + 32 * (size_t) n);
   size_t valid_reserve = 0;
@@ -1337,6 +1339,7 @@ static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign,
    already ran is never repeated here. */
 static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
 
+  R_CheckStack();   /* deep trees must raise here, not segfault below */
   R_xlen_t n = XLENGTH(x);
   size_t cur = MIZU_VIEW_ALIGN64(MIZU_HEADER_SIZE + 32 * (size_t) n);
 
@@ -2478,6 +2481,76 @@ void mizu_view_release_now(SEXP x) {
   if (!mizu_view_check(x)) return;
   mizu_view_owned *o = (mizu_view_owned *) R_ExternalPtrAddr(R_altrep_data1(x));
   if (o != NULL) mizu_view_release_once(o);
+}
+
+// Remote-leaf directory walk ----------------------------------------------------
+
+/* Report every tag-33 identifier span in an MIZL tree to fn, once per
+   occurrence (dedupe is the caller's). The lazy element reader counts a
+   remote leaf's region only at first access — after the consumer-done
+   signal — so an embedder that wants the referenced regions held from the
+   wrap walks here and loans them itself. Iterates with an explicit stack
+   (nesting depth is region-bounded, not call-bounded) and validates every
+   header and span it reads, mirroring the lazy readers' corrupt-or-newer
+   rejections. */
+void mizu_view_mizl_remote_walk(unsigned char *base, int64_t region_size,
+                                mizu_view_remote_fn fn, void *ctx) {
+  struct walk_frame { unsigned char *base; int64_t size; };
+  size_t cap = 8, top = 0;
+  struct walk_frame *st = malloc(cap * sizeof *st);
+  if (st == NULL) Rf_error("mizu: allocation failure");
+#define MIZU_WALK_FAIL(...) do { free(st); Rf_error(__VA_ARGS__); } while (0)
+  st[top++] = (struct walk_frame) { base, region_size };
+  while (top > 0) {
+    struct walk_frame f = st[--top];
+    if (f.size < MIZU_HEADER_SIZE)
+      MIZU_WALK_FAIL("mizu: invalid nested list region");
+    uint32_t magic;
+    memcpy(&magic, f.base, 4);
+    if (magic != MIZU_MAGIC_LIST)
+      MIZU_WALK_FAIL("mizu: invalid nested list region");
+    int32_t n;
+    int64_t attrs_offset, attrs_size;
+    memcpy(&n, f.base + 4, 4);
+    memcpy(&attrs_offset, f.base + 8, 8);
+    memcpy(&attrs_size, f.base + 16, 8);
+    if (n < 0 || n > (f.size - MIZU_HEADER_SIZE) / 32 ||
+        mizu_view_oob(attrs_offset, attrs_size, f.size) ||
+        !mizu_view_flags_known(f.base))
+      MIZU_WALK_FAIL("mizu: invalid nested list region");
+    for (int32_t i = 0; i < n; i++) {
+      mizu_view_elem entry;
+      memcpy(&entry, f.base + MIZU_HEADER_SIZE + 32 * (size_t) i,
+             sizeof(entry));
+      int32_t tag = entry.sexptype & ~MIZU_VIEW_ELEM_S4;
+      if (mizu_view_oob(entry.data_offset, entry.data_size, f.size) ||
+          (entry.data_offset & 63) != 0)
+        MIZU_WALK_FAIL("mizu: invalid element data");
+      if (tag == MIZU_VIEW_TAG_REF) {
+        if (entry.data_size < 1 || entry.data_size > 255)
+          MIZU_WALK_FAIL(
+            "mizu: invalid MIZL remote leaf — corrupt or newer region");
+        fn((const char *) f.base + entry.data_offset,
+           (int) entry.data_size, ctx);
+      } else if (tag == VECSXP) {
+        if (top == cap) {
+          cap *= 2;
+          struct walk_frame *bigger =
+            realloc(st, cap * sizeof *st);
+          if (bigger == NULL) {
+            free(st);
+            Rf_error("mizu: allocation failure");
+          }
+          st = bigger;
+        }
+        st[top++] = (struct walk_frame) {
+          f.base + entry.data_offset, entry.data_size
+        };
+      }
+    }
+  }
+  free(st);
+#undef MIZU_WALK_FAIL
 }
 
 /* Vec and list classes: a STRSXP state is always an SHM identifier (their

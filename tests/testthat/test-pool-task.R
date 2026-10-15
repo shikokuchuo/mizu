@@ -109,7 +109,7 @@ test_that("a task error is published and re-signalled at collect", {
   # the slot released with the collect: reusable immediately
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -546,7 +546,7 @@ test_that("cancel discards a still-queued task; the worker frees the slot", {
   pool_step(p)
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -569,7 +569,7 @@ test_that("a dropped handle cancels its pending task at finalization", {
   pool_step(p) # consume + free
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -583,7 +583,7 @@ test_that("a dropped handle frees an uncollected published result", {
   gc() # OK -> FREE without mapping
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -691,6 +691,78 @@ test_that("a corrupt task payload is the task's ERR, not worker death", {
   expect_identical(mizu_collect(t3, timeout = 5), "alive")
   pool_end(p)
 })
+
+test_that("a raise inside the OK publish is the task's error, not worker death (R-03)", {
+  p <- pool_pair()
+  # a 40000-deep result: the guarded stage walkers raise inside the OK
+  # publish — armed across it, the eval mark routes the raise to this
+  # task's ERR instead of taking the worker down
+  t <- mizu_submit(
+    p$ctrl,
+    {
+      x <- NULL
+      for (i in seq_len(n)) {
+        x <- list(x)
+      }
+      x
+    },
+    n = 40000L
+  )
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, timeout = 30), error = identity)
+  expect_s3_class(err, "error")
+  expect_false(inherits(err, "mizu_error_worker_died"))
+  expect_match(conditionMessage(err), "C stack")
+  t2 <- mizu_submit(p$ctrl, "alive")
+  pool_step(p)
+  expect_identical(mizu_collect(t2, timeout = 5), "alive")
+  pool_end(p)
+})
+
+test_that("a deeply nested task argument raises at the guarded walkers (R-04)", {
+  p <- pool_pair()
+  deep <- function(n) {
+    x <- NULL
+    for (i in seq_len(n)) {
+      x <- list(x)
+    }
+    x
+  }
+  # a plain tryCatch: see the channel variant's comment on the C-stack margin
+  r <- tryCatch(
+    {
+      mizu_submit(p$ctrl, length(x), x = deep(200000L))
+      "submitted"
+    },
+    error = conditionMessage
+  )
+  expect_match(r, "C stack")
+  # the worker never saw the task; the pool stays serviceable
+  t <- mizu_submit(p$ctrl, "alive")
+  pool_step(p)
+  expect_identical(mizu_collect(t, timeout = 5), "alive")
+  pool_end(p)
+})
+
+test_that("a lost task collects as mizu_error_task_lost (C-03)", {
+  # the real gone read: a transient region-open failure, or a payload whose
+  # creator died before the claim (Windows, where mappings die with it) —
+  # deterministic in-process only through the exec seam; the core's own
+  # LOST path is covered upstream (libmizu test_lost_task)
+  p <- pool_pair()
+  .Call(mizu:::mizu_pool_exec_fail, p$wk, 2L)
+  t <- mizu_submit(p$ctrl, 1 + 1)
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "mizu_error_task_lost")
+  expect_match(conditionMessage(err), "task lost")
+  .Call(mizu:::mizu_pool_exec_fail, p$wk, 0L)
+  t2 <- mizu_submit(p$ctrl, "alive")
+  pool_step(p)
+  expect_identical(mizu_collect(t2, timeout = 5), "alive")
+  pool_end(p)
+})
+
 
 test_that("a trace-hook error outside any task eval is not attributed", {
   p <- pool_pair()

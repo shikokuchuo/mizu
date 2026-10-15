@@ -89,7 +89,7 @@ test_that("a full deque runs nested subtasks inline (work-first)", {
   expect_identical(mizu_collect(t, timeout = 5), 100L)
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -110,7 +110,7 @@ test_that("help mode contains an erroring subtask at its own boundary", {
   expect_identical(mizu_collect(t, timeout = 5), "caught: sub boom")
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -136,7 +136,7 @@ test_that("a full deque's inline execution contains subtask errors", {
   expect_identical(mizu_collect(t, timeout = 5), paste("boom", 1:4))
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -158,7 +158,7 @@ test_that("a task error after nested activity publishes to its own slot", {
   expect_identical(conditionMessage(err), "outer boom")
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })
@@ -251,7 +251,7 @@ test_that("a cancelled nested entry frees at its later pop", {
   expect_identical(pool_step(p), 1L)
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })

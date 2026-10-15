@@ -67,7 +67,7 @@ test_that("a fresh pool reports its layout and registry state", {
   expect_identical(st[["workers"]], "live")
   expect_identical(st[["submitters"]], c("live", rep("free", 3L)))
   expect_identical(st[["injection"]], 0)
-  expect_identical(unname(st[["tasks"]]), rep(0L, 5L))
+  expect_identical(unname(st[["tasks"]]), rep(0L, 6L))
   expect_false(st[["shutdown"]])
   expect_identical(mizu_pool_status(p[["wk"]])[["role"]], "worker")
   expect_s3_class(p[["ctrl"]], "mizu_pool")

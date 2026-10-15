@@ -807,7 +807,78 @@ test_that("a view nested in a big list tree keeps the tree on the serialize tier
     .Call(mizu:::mizu_zc_view_name, w[[2L]]),
     .Call(mizu:::mizu_zc_view_name, v)
   )
-  expect_identical(rc_of(v), c(2L, 1L))
+  # v + the remote leaf's lazy resolve + the wrap-time loan that holds the
+  # referenced region from the wrap (the lazy resolve alone would count
+  # only after the consumer-done signal)
+  expect_identical(rc_of(v), c(3L, 1L))
+  channel_end(p)
+})
+
+test_that("a remote leaf's region is held from the root's wrap (R-02)", {
+  ch1 <- channel_pair()
+  ch2 <- channel_pair()
+  set.seed(3)
+  b1 <- as.double(sample(1e5))
+  mizu_send(ch1$host, b1)
+  vB <- mizu_recv(ch1$peer, 5)
+  bname <- .Call(mizu:::mizu_zc_view_name, vB)
+  mizu_send(ch2$host, list(vB, runif(2e4)))
+  vA <- mizu_recv(ch2$peer, 5) # MIZL A with a remote leaf -> B, unresolved
+  for (k in 1:3) {
+    mizu_send(ch2$host, k)
+    mizu_recv(ch2$peer, 5)
+  } # A's pin reaped
+  mizu_send(ch2$host, new.env())
+  mizu_recv(ch2$peer, 5) # mark list reset
+  rm(vB)
+  invisible(gc())
+  invisible(gc()) # B: only the producer's loan is left
+  for (k in 1:2) {
+    mizu_send(ch1$host, k)
+    mizu_recv(ch1$peer, 5)
+  } # the reaper runs; the wrap loan holds B
+  reused <- FALSE
+  for (k in 1:4) {
+    bk <- rev(b1) * (k + 1)
+    mizu_send(ch1$host, bk)
+    vk <- mizu_recv(ch1$peer, 5)
+    if (identical(.Call(mizu:::mizu_zc_view_name, vk), bname)) {
+      reused <- TRUE
+      break
+    }
+    rm(vk)
+    invisible(gc())
+  }
+  expect_false(reused) # the wrap loan keeps B out of the free list
+  e <- vA[[1L]]
+  expect_true(is_view(e))
+  expect_identical(sum(e), sum(b1))
+  channel_end(ch1)
+  channel_end(ch2)
+})
+
+test_that("a deeply nested payload raises at the guarded walkers (R-04)", {
+  p <- channel_pair()
+  deep <- function(n) {
+    x <- NULL
+    for (i in seq_len(n)) {
+      x <- list(x)
+    }
+    x
+  }
+  # a plain tryCatch: testthat's own frames leave no margin past the
+  # C-stack limit for expect_error's handling
+  r <- tryCatch(
+    {
+      mizu_send(p[["host"]], deep(200000L))
+      "sent"
+    },
+    error = conditionMessage
+  )
+  expect_match(r, "C stack")
+  # the stage is transactional: the channel still flows after the raise
+  mizu_send(p[["host"]], 42L)
+  expect_identical(mizu_recv(p[["peer"]], 5), 42L)
   channel_end(p)
 })
 

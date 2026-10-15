@@ -7,6 +7,7 @@
 \alias{mizu_error_stopped}
 \alias{mizu_error_cancelled}
 \alias{mizu_error_worker_died}
+\alias{mizu_error_task_lost}
 \alias{mizu_error_startup}
 \alias{mizu_error_shm}
 \alias{mizu_error_python_payload}
@@ -43,6 +44,11 @@ recorded. \code{\link[=mizu_map]{mizu_map()}} signals this class again with the 
 as an additional \code{elements} field: a two-column matrix of inclusive
 \verb{lo, hi} ranges, runner-granular and conservative (see the Errors
 section of \code{\link[=mizu_map]{mizu_map()}}).
+\item \code{mizu_error_task_lost} — \code{\link[=mizu_collect]{mizu_collect()}} on a task whose payload
+region vanished before any worker could read it (its submitter died
+or released the pool with the task still queued). Unlike
+\code{mizu_error_worker_died} no death verdict is involved: the task never
+started executing anywhere.
 \item \code{mizu_error_startup} — \code{\link[=mizu_channel]{mizu_channel()}}, \code{\link[=mizu_pool]{mizu_pool()}} and
 \code{\link[=mizu_spawn_workers]{mizu_spawn_workers()}} when a child process fails to attach within
 \code{startup_timeout}.

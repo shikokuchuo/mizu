@@ -20,6 +20,21 @@ run_stream <- function(p, st, collect = "value") {
   mizu:::map_assemble(st, st[["out"]], collect)
 }
 
+test_that("a streaming map slices an integer64 view classed (R-06)", {
+  skip_if_not_installed("bit64")
+  p <- pool_pair()
+  t <- mizu_submit(p$ctrl, bit64::as.integer64(seq_len(2e4)))
+  pool_step(p)
+  v <- mizu_collect(t, 5)
+  expect_true(.Call(mizu:::mizu_zc_view_check, v))
+  st <- mizu:::map_stage_stream(p$ctrl, v, function(i) format(i), list())
+  r <- run_stream(p, st)
+  # the strict int64 gate would drop the class off the ALTREP slice and
+  # hand f bare doubles holding int64 bit patterns
+  expect_identical(r[[2L]], "2")
+  pool_end(p)
+})
+
 test_that("streaming stages a descriptor-only region and balanced chunks", {
   p <- pool_pair(workers = 2L)
   st <- mizu:::map_stage_stream(p[["ctrl"]], 1:100, identity, list())
@@ -634,7 +649,7 @@ test_that("a deadline expiring mid-run cancels the window, sentinel returned", {
   }
   expect_identical(
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 5L)
+    rep(0L, 6L)
   )
   pool_end(p)
 })

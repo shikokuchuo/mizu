@@ -78,6 +78,7 @@ exceptional outcome is raised as a classed condition (see \link{mizu_error}):\ta
    task raised an error \tab re-signalled on collect \tab the condition classes of the task itself \cr
    cancelled, or pool stopped \tab raised on collect \tab \code{mizu_error_cancelled} \cr
    executing worker died \tab raised on collect \tab \code{mizu_error_worker_died} \cr
+   payload region vanished before execution \tab raised on collect \tab \code{mizu_error_task_lost} \cr
 }
 
 

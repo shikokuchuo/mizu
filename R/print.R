@@ -6,7 +6,7 @@
 #' prints its region name, the role of this handle, live workers out of
 #' registry capacity, and pending (uncompleted) tasks. A task handle
 #' prints its state, probed without consuming the result. The state is
-#' `pending`, `ok`, `err`, `cancel`, or `died` in the result-slot
+#' `pending`, `ok`, `err`, `cancel`, `died`, or `lost` in the result-slot
 #' vocabulary of [mizu_pool_status()]. It is `collected` once the result is
 #' taken, or `dropped` when its pool is gone. Sentinels print as their
 #' class. The handle methods never error and never touch the rings. A

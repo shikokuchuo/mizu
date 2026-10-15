@@ -666,6 +666,8 @@ SEXP mizu_pool_step_call(SEXP xp, SEXP timeout) {
   if (TYPEOF(VECTOR_ELT(h->prot, 0)) != ENVSXP)
     Rf_error("mizu: no evaluator registered on this worker handle");
   mizu_pool *p = (mizu_pool *) h->core;
+  /* the core heals the eval mark at step entry; the binding's copy follows */
+  h->eval_marked = 0;
   int rc = mizu_pool_step(p, mizu_timeout_ms(Rf_asReal(timeout)));
   if (rc == MIZU_STEP_SHUTDOWN && mizu_pool_errcat(p) != MIZU_ERRCAT_NONE)
     pool_raise(p);   /* an exec infrastructure failure, not a real shutdown */
@@ -678,6 +680,7 @@ SEXP mizu_pool_run(SEXP xp, SEXP timeout) {
     Rf_error("mizu: no evaluator registered on this worker handle");
   (void) timeout;
   mizu_pool *p = (mizu_pool *) h->core;
+  h->eval_marked = 0;   /* the core heals the eval mark at run entry */
   mizu_worker_exit ex = mizu_pool_worker_run(p);
   switch (ex) {
   case MIZU_EXIT_SHUTDOWN:
@@ -703,6 +706,7 @@ SEXP mizu_pool_run_outcome(SEXP xp, SEXP cond) {
   mizu_result_sink sink;
   if (!mizu_pool_unwind_sink((mizu_pool *) h->core, &sink))
     return Rf_ScalarInteger(1);
+  h->eval_marked = 0;   /* the unwind sink consumed the mark */
   /* the D5 outcome sequence on the unwind path: the task failed, so its
      argument loans are all releasable — the flatten emits no refs */
   mizu_zc_ref_reset();
@@ -720,12 +724,12 @@ SEXP mizu_pool_deque_pull_call(SEXP xp, SEXP n_sexp) {
   return Rf_ScalarInteger(moved);
 }
 
-/* Test-only: arm/disarm the exec fault flag — the next task-frame decode
-   on this worker fails as if the payload were corrupt, exercising the
-   decode-failure-is-the-task's-ERR discipline on demand. */
+/* Test-only: arm/disarm the exec fault flag — 1 fails the next task-frame
+   decode as if the payload were corrupt (the decode-failure-is-the-task's-
+   ERR discipline), 2 reports its region gone (the LOST publish). */
 SEXP mizu_pool_exec_fail_call(SEXP xp, SEXP on) {
   mizu_r_handle *h = pool_get_worker(xp);
-  h->exec_fail = Rf_asLogical(on) == TRUE;
+  h->exec_fail = Rf_asInteger(on);
   return R_NilValue;
 }
 
@@ -947,10 +951,10 @@ SEXP mizu_pool_status_call(SEXP xp) {
   }
   SET_VECTOR_ELT(out, 10, Rf_ScalarReal(queued));
 
-  /* pending ok err cancel died (MIZU_RS_PENDING .. MIZU_RS_DIED) */
-  SEXP tasks = Rf_allocVector(INTSXP, 5);
+  /* pending ok err cancel died lost (MIZU_RS_PENDING .. MIZU_RS_LOST) */
+  SEXP tasks = Rf_allocVector(INTSXP, 6);
   SET_VECTOR_ELT(out, 11, tasks);
-  for (int s = 0; s < 5; s++)
+  for (int s = 0; s < 6; s++)
     INTEGER(tasks)[s] = (int) st.tasks_by_state[s + MIZU_RS_PENDING];
 
   SEXP dq = Rf_allocVector(REALSXP, (R_xlen_t) st.max_workers);

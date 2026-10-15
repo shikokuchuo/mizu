@@ -28,6 +28,7 @@
    with it the view) until then. */
 
 #include <stdlib.h>
+#include <R_ext/Utils.h>
 #include "mizu.h"
 
 /* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
@@ -117,23 +118,86 @@ static int zc_list_has(SEXP list, int n, SEXP x) {
 
 void mizu_zc_ref_mark(SEXP x);
 static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm);
+typedef struct mizu_zc_rel_s mizu_zc_rel;
+static void mizu_zc_mizl_loans(unsigned char *base, int64_t region_size,
+                               mizu_zc_rel *rel);
+
+/* The decode-end seal: snapshot each resolved view's REFCNT and the
+   eval-machinery bumps the task's eval adds on top — a view spliced as a
+   literal argument is promised by the eval (one bump per occurrence), a
+   named source argument bound in the task's closure env is not. The
+   release pass force-fires a loan only when the live REFCNT still equals
+   base + bumps: anything more means the task's own R code kept a
+   reference (a binding, an attribute, a container — or saturation), and
+   the loan stays GC-gated. splice_pool is the positional-argument vector
+   of a source-kind task (each occurrence is spliced and promised); for a
+   name-kind task (R_NilValue) every decode store is a spliced call cell,
+   so the bumps equal the base minus the resolve-list slot. REFCNT is
+   libR-internal but exported; a stubbed-out or saturated counter simply
+   never matches, degrading the pass to GC-gated. A -1 return (allocation
+   failure) seals nothing: the pass degrades to GC-gated. */
+static int *mizu_zc_resolved_base;
+static int *mizu_zc_resolved_bumps;
+static int mizu_zc_resolved_seal_cap;
+
+int REFCNT(SEXP);
+
+int mizu_zc_resolved_seal(SEXP splice_pool) {
+  const int n = mizu_zc_nresolved;
+  if (n > mizu_zc_resolved_seal_cap) {
+    int cap = 2 * mizu_zc_resolved_seal_cap;
+    if (cap < n) cap = n;
+    int *base = realloc(mizu_zc_resolved_base, (size_t) cap * sizeof(int));
+    int *bumps = realloc(mizu_zc_resolved_bumps, (size_t) cap * sizeof(int));
+    if (base == NULL || bumps == NULL) {
+      free(base != NULL ? base : mizu_zc_resolved_base);
+      free(bumps != NULL ? bumps : mizu_zc_resolved_bumps);
+      mizu_zc_resolved_base = mizu_zc_resolved_bumps = NULL;
+      mizu_zc_resolved_seal_cap = 0;
+      return -1;
+    }
+    mizu_zc_resolved_base = base;
+    mizu_zc_resolved_bumps = bumps;
+    mizu_zc_resolved_seal_cap = cap;
+  }
+  for (int i = 0; i < n; i++) {
+    SEXP v = VECTOR_ELT(mizu_zc_resolved, i);
+    const int base = REFCNT(v);
+    int bumps = 0;
+    if (splice_pool == R_NilValue) {
+      bumps = base - 1;
+    } else {
+      for (R_xlen_t j = 0; j < XLENGTH(splice_pool); j++)
+        if (VECTOR_ELT(splice_pool, j) == v) bumps++;
+    }
+    mizu_zc_resolved_base[i] = base;
+    mizu_zc_resolved_bumps[i] = bumps;
+  }
+  return n;
+}
 
 /* The outcome-write pass (D5): force-fire the once-only release record
    of each decoded argument view the write did not emit, [0, seal) of the
    resolve list (the decode-end snapshot — eval-time resolves, a nested
-   collect's, are not argument loans). ALTLIST views keep their
-   finalizer-only discipline: extracted element views ride the list's
-   single loan, so an early fire could drop the count under a live
-   element — they stay GC-gated. Ends disarmed with both lists cleared:
+   collect's, are not argument loans), but only where the view is provably
+   unreferenced past the resolve list and the eval machinery the seal
+   accounted for (REFCNT exactly as sealed); a view the task's own R code
+   kept stays GC-gated instead of dropping the region count under it.
+   ALTLIST views keep their finalizer-only discipline: extracted element
+   views ride the list's single loan, so an early fire could drop the
+   count under a live element. Ends disarmed with both lists cleared:
    the marks' last consumer is this pass (the stage's pin decision and
    the emitted-set diff are both done), and the records hold views — a
    count-only reset would keep them alive indefinitely. */
 void mizu_zc_args_release(int seal) {
+  if (seal < 0) seal = 0;
   const int n = seal < mizu_zc_nresolved ? seal : mizu_zc_nresolved;
   for (int i = 0; i < n; i++) {
     SEXP v = VECTOR_ELT(mizu_zc_resolved, i);
     if (TYPEOF(v) == VECSXP) continue;
-    if (!zc_list_has(mizu_zc_marks, mizu_zc_nmarks, v))
+    if (zc_list_has(mizu_zc_marks, mizu_zc_nmarks, v)) continue;
+    const int base = mizu_zc_resolved_base[i];
+    if (base > 0 && REFCNT(v) == base + mizu_zc_resolved_bumps[i])
       mizu_view_release_now(v);
   }
   zc_list_clear(mizu_zc_resolved, &mizu_zc_nresolved);
@@ -162,19 +226,42 @@ void mizu_zc_init(void) {
    ordinary R objects that cross mclapply forks, and a child-side GC must
    not sub a count it never added. shm is the view's mapping handle —
    the prep path's own, or the vendored resolve cache's shared one (pinned
-   by the view's keeper chain there, never by the record). */
+   by the view's keeper chain there, never by the record). loans holds the
+   counted adds an MIZL wrap took on its remote leaves' regions (the lazy
+   element reader would count them only at first access — after the
+   consumer-done signal — leaving the regions recyclable underneath):
+   one fresh mapping + counted loan per distinct region, subs and closes
+   with the record. */
 typedef struct mizu_zc_rel_s {
   mizu_shm *shm;
   long pid;
   int armed;
+  mizu_shm **loans;
+  int nloans;
+  int loans_cap;
 } mizu_zc_rel;
+
+/* The shared teardown: the armed sub and every loan, pid-guarded like the
+   main count; the loan mappings close unconditionally (a child's copy of
+   a mapping is its own to release, the consumer finalizer's discipline). */
+static void mizu_zc_rel_destroy(mizu_zc_rel *rel) {
+  if (rel->armed && rel->pid == mizu_self_pid())
+    mizu_zc_unref(rel->shm);
+  for (int i = 0; i < rel->nloans; i++) {
+    mizu_shm *loan = rel->loans[i];
+    if (rel->pid == mizu_self_pid())
+      mizu_zc_unref(loan);
+    mizu_shm_close_stack(loan, 0);
+    free(loan);
+  }
+  free(rel->loans);
+  free(rel);
+}
 
 static void mizu_rel_finalizer(SEXP ptr) {
   mizu_zc_rel *rel = (mizu_zc_rel *) R_ExternalPtrAddr(ptr);
   if (rel != NULL) {
-    if (rel->armed && rel->pid == mizu_self_pid())
-      mizu_zc_unref(rel->shm);
-    free(rel);
+    mizu_zc_rel_destroy(rel);
     R_ClearExternalPtr(ptr);
   }
 }
@@ -270,6 +357,7 @@ static void mizu_zc_sums_record(mizu_zc_sums *sums, size_t body) {
    visited, so a non-REF-able view past the clearing point rejects as the
    uncapped walk did. */
 static size_t mizu_zc_tree_probe(SEXP x, size_t budget, int *reject) {
+  R_CheckStack();   /* deep trees must raise here, not segfault below */
   if (*reject) return 0;
   if (ALTREP(x)) {
     if (mizu_view_check(x)) {
@@ -394,6 +482,7 @@ int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total,
    lazy ALTREP string leaf's true bytes included. */
 static size_t mizu_zc_tree_walk_fx(SEXP x, uint32_t caps, int *reject,
                                    mizu_zc_sums *sums) {
+  R_CheckStack();   /* deep trees must raise here, not segfault below */
   if (*reject) return 0;
   switch (TYPEOF(x)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
@@ -729,6 +818,9 @@ static SEXP mizu_zc_prep(const char *name, uint32_t name_len, int *gone,
   rel->shm = shm;
   rel->pid = mizu_self_pid();
   rel->armed = 0;
+  rel->loans = NULL;
+  rel->nloans = 0;
+  rel->loans_cap = 0;
   SEXP rel_xp = PROTECT(R_MakeExternalPtr(rel, mizu_rel_tag, map_wrap));
   R_RegisterCFinalizerEx(rel_xp, mizu_rel_finalizer, TRUE);
   /* the vendored chain walk (identifier formatting) ends at the first
@@ -835,13 +927,21 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
     UNPROTECT(1);
     return view;
   }
-  case MIZU_MAGIC_LIST:
+  case MIZU_MAGIC_LIST: {
     /* the list wrap validates the header and directory internally; the
        layout size isn't header-derivable, so aux cross-checks the type */
     if (aux != 0 && (uint32_t) mizu_aux_type(aux) != (uint32_t) VECSXP)
       Rf_error("mizu: corrupt payload slot");
-    return mizu_view_list_wrap(base, region_size, -1, name_xp, mizu_zc_rel_fire,
-                          rel_xp);
+    SEXP view = PROTECT(mizu_view_list_wrap(base, region_size, -1, name_xp,
+                                       mizu_zc_rel_fire, rel_xp));
+    /* remote leaves would count at lazy first access — after the
+       consumer-done signal: hold every referenced region with the root's
+       record from the wrap */
+    mizu_zc_mizl_loans(base, region_size,
+                       (mizu_zc_rel *) R_ExternalPtrAddr(rel_xp));
+    UNPROTECT(1);
+    return view;
+  }
   }
   Rf_error("mizu: corrupt payload slot");
 }
@@ -953,6 +1053,13 @@ SEXP mizu_zc_ref_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
         o->release_arg = (void *) rel_xp;
         mizu_zc_ref(shm);
         ((mizu_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
+        if (TYPEOF(view) == VECSXP) {
+          /* a list view: loan its remote leaves' regions with its record */
+          mizu_view_list *lv =
+            (mizu_view_list *) R_ExternalPtrAddr(R_altrep_data1(view));
+          mizu_zc_mizl_loans(lv->base, lv->region_size,
+                             (mizu_zc_rel *) R_ExternalPtrAddr(rel_xp));
+        }
       }
     }
   }
@@ -972,10 +1079,69 @@ SEXP mizu_zc_ref_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
    head-first; de-facto but long-stable — the prep path's
    map_wrap -> rel_xp prot chain already relies on it). */
 static void mizu_zc_wire_rel(void *arg) {
-  mizu_zc_rel *rel = (mizu_zc_rel *) arg;
-  if (rel->armed && rel->pid == mizu_self_pid())
-    mizu_zc_unref(rel->shm);
-  free(rel);
+  mizu_zc_rel_destroy((mizu_zc_rel *) arg);
+}
+
+/* One counted loan per distinct region a wrapped MIZL tree references by
+   remote leaf, hung off the view's release record. The walk's counted add
+   lands at the wrap — before the consumer-done signal — where the lazy
+   element reader's first-access add would come after it, letting the
+   producer recycle a referenced region whose claims then resolve onto new
+   data. A fresh split mapping per region (never the vendored resolve
+   cache: a loan holds no view, so the cache's same-cycle GC order
+   guarantee does not cover it). A gone or unparseable region is skipped:
+   the lazy reader raises there exactly as before. */
+struct mizl_loan_ctx {
+  mizu_zc_rel *rel;
+  char (*names)[MIZU_NAME_MAX];
+  int n, cap;
+};
+
+static void mizu_zc_mizl_loan(const char *id, int len, void *ctx) {
+  struct mizl_loan_ctx *c = (struct mizl_loan_ctx *) ctx;
+  char buf[256];
+  memcpy(buf, id, (size_t) len);
+  buf[len] = '\0';
+  char name[MIZU_NAME_MAX];
+  int32_t path[MIZU_VIEW_MAX_PATH];
+  int path_len = 0;
+  if (mizu_view_parse_id(buf, name, sizeof(name), path, &path_len) < 0)
+    return;
+  for (int i = 0; i < c->n; i++)
+    if (strcmp(c->names[i], name) == 0) return;
+  mizu_shm *loan = mizu_zc_open(name);
+  if (loan == NULL) return;
+  mizu_zc_ref(loan);
+  mizu_zc_rel *rel = c->rel;
+  if (rel->nloans == rel->loans_cap) {
+    int cap = rel->loans_cap == 0 ? 4 : 2 * rel->loans_cap;
+    mizu_shm **l = realloc(rel->loans, (size_t) cap * sizeof(mizu_shm *));
+    if (l == NULL) {         /* skip the loan: the lazy read stays correct */
+      mizu_zc_unref(loan);
+      mizu_shm_close_stack(loan, 0);
+      free(loan);
+      return;
+    }
+    rel->loans = l;
+    rel->loans_cap = cap;
+  }
+  rel->loans[rel->nloans++] = loan;
+  if (c->n == c->cap) {
+    int cap = c->cap == 0 ? 4 : 2 * c->cap;
+    char (*names)[MIZU_NAME_MAX] =
+      realloc(c->names, (size_t) cap * sizeof *names);
+    if (names == NULL) return;   /* unrecorded: a later occurrence re-loans */
+    c->names = names;
+    c->cap = cap;
+  }
+  memcpy(c->names[c->n++], name, sizeof(name));
+}
+
+static void mizu_zc_mizl_loans(unsigned char *base, int64_t region_size,
+                               mizu_zc_rel *rel) {
+  struct mizl_loan_ctx c = { rel, NULL, 0, 0 };
+  mizu_view_mizl_remote_walk(base, region_size, mizu_zc_mizl_loan, &c);
+  free(c.names);
 }
 
 /* Mori's resolve hook: a view arriving via the serialize-hook path (nested
@@ -996,10 +1162,19 @@ static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm) {
   rel->shm = shm;
   rel->pid = mizu_self_pid();
   rel->armed = 0;
+  rel->loans = NULL;
+  rel->nloans = 0;
+  rel->loans_cap = 0;
   o->release = mizu_zc_wire_rel;
   o->release_arg = rel;
   mizu_zc_ref(shm);
   rel->armed = 1;
+  if (TYPEOF(view) == VECSXP) {
+    /* a list view's remote leaves count at the wrap, not at lazy access */
+    mizu_view_list *lv =
+      (mizu_view_list *) R_ExternalPtrAddr(R_altrep_data1(view));
+    mizu_zc_mizl_loans(lv->base, lv->region_size, rel);
+  }
   /* the F1 argument-loan record: a worker's task-stream decode arms this
      so the release pass can fire the loan deterministically at the
      outcome write; submits and collects never arm */

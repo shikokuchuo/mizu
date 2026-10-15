@@ -243,6 +243,7 @@ mizu_pool_attach <- function(name) {
 #' | task raised an error | re-signalled on collect | the condition classes of the task itself |
 #' | cancelled, or pool stopped | raised on collect | `mizu_error_cancelled` |
 #' | executing worker died | raised on collect | `mizu_error_worker_died` |
+#' | payload region vanished before execution | raised on collect | `mizu_error_task_lost` |
 #'
 #' A re-signalled task error is a transport condition: it carries the
 #' original classes, `message`, `call`, and every named field the
@@ -669,7 +670,7 @@ mizu_pool_stop <- function(pool, timeout = 5) {
 # codes + 1, so a core-side enum change touches exactly these lines.
 worker_states <- c("free", "claiming", "live", "leaving", "reaping")
 submitter_states <- c("free", "live", "reaping")
-slot_states <- c("free", "pending", "ok", "err", "cancel", "died")
+slot_states <- c("free", "pending", "ok", "err", "cancel", "died", "lost")
 park_states <- c("running", "idle", "parked", "waking")
 
 # Recode a C registry enum vector onto its labels (C enums are 0-based).
@@ -688,8 +689,8 @@ recode_states <- function(x, states) {
 #'   `max_submitters`, `injection_cap`, `result_slots`, `slot_size`,
 #'   `workers` (per-slot states), `parked`, `submitters` (per-slot states),
 #'   `injection` (entries queued and unclaimed), `tasks` (result slots by
-#'   state: pending / ok / err / cancel / died), `deque` (per-worker deque
-#'   depths), and `shutdown`.
+#'   state: pending / ok / err / cancel / died / lost), `deque` (per-worker
+#'   deque depths), and `shutdown`.
 #'
 #' @examples
 #' p <- mizu_pool()

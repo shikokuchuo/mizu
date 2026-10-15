@@ -12,6 +12,7 @@
    the worker handle (pool.c) and the chunk loop in R/map.R. */
 
 #include <stdlib.h>
+#include <R_ext/Utils.h>
 #include "mizu.h"
 
 static SEXP mizu_map_tag;
@@ -331,7 +332,10 @@ SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
   const R_xlen_t len = (R_xlen_t) (hi - lo + 1);
   switch (xt) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP: {
-    const int i64 = xt == REALSXP && mizu_view_is_int64(x);
+    /* the slice is a fresh owning vector either way, so the ALTREP-
+       tolerant gate covers int64 views (the strict gate would drop the
+       class and hand f bare doubles holding int64 bit patterns) */
+    const int i64 = xt == REALSXP && mizu_view_is_int64_any(x);
     const int wt = i64 ? MIZU_TYPE_INT64 : (int) xt;
     const size_t elt = mizu_view_sizeof_elt(wt);
     const void *src = ALTREP(x) ? DATAPTR_OR_NULL(x) : mizu_vec_ptr(x);
@@ -471,7 +475,18 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
   SEXP dnames = ndots > 0 ? Rf_getAttrib(dots, R_NamesSymbol) : R_NilValue;
   for (R_xlen_t j = 0; j < ndots; j++) {
     tail = CDR(tail);
-    SETCAR(tail, VECTOR_ELT(dots, j));
+    SEXP dv = VECTOR_ELT(dots, j);
+    /* language values reach f as values, not as argument expressions to
+       re-evaluate (the lapply discipline: FUN(X[[i]], ...) extracts, so a
+       symbol / call / promise constant crosses unevaluated) */
+    switch (TYPEOF(dv)) {
+    case SYMSXP: case LANGSXP: case PROMSXP:
+      SETCAR(tail, Rf_lang2(R_QuoteSymbol, dv));
+      break;
+    default:
+      SETCAR(tail, dv);
+      break;
+    }
     if (dnames != R_NilValue) {
       SEXP nm = STRING_ELT(dnames, j);
       if (nm != NA_STRING && CHAR(nm)[0] != '\0')
@@ -479,9 +494,12 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     }
   }
   SEXP call = PROTECT(Rf_lcons(f, args));
+  /* one shared quote(.) cell for language elements, its argument swapped
+     per element (the dots' discipline above, without per-element churn) */
+  SEXP elt_quote = PROTECT(Rf_lang2(R_QuoteSymbol, R_NilValue));
 
   SEXP out = R_NilValue;
-  int np = 2;
+  int np = 3;
   if (!tmpl) {
     out = PROTECT(Rf_allocVector(VECSXP, len));
     np++;
@@ -541,7 +559,15 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     case STRSXP:  elt = Rf_ScalarString(STRING_ELT(x, idx)); break;
     default:      Rf_error("mizu: unsupported map element type");
     }
-    SETCAR(elt_cell, elt);
+    switch (TYPEOF(elt)) {
+    case SYMSXP: case LANGSXP: case PROMSXP:
+      SETCADR(elt_quote, elt);
+      SETCAR(elt_cell, elt_quote);
+      break;
+    default:
+      SETCAR(elt_cell, elt);
+      break;
+    }
     if (xi64) {
       /* anchored by the SETCAR above: classgets allocates */
       Rf_classgets(elt, mizu_view_int64_class);
@@ -961,6 +987,7 @@ SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env) {
    are walked iteratively; only child recursion grows the stack, so depth
    stays the expression nesting the parser already bounded. */
 static void mizu_strip_walk(SEXP x) {
+  R_CheckStack();   /* a programmatically deep call must raise, not segfault */
   switch (TYPEOF(x)) {
   case LANGSXP:
   case LISTSXP:

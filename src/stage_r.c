@@ -625,7 +625,12 @@ static SEXP pool_task_spec(struct mizu_task_ctx *c,
   mizu_zc_resolved_reset();
   SEXP task =
     PROTECT(mizu_interop_exec_task(bytes, blen, base, &kind, c->identp));
-  c->nresolved = mizu_zc_resolved_count();
+  /* seal the resolve list with its REFCNT baseline: a source-kind task
+     promises each positional argument at eval, a name-kind task every
+     spliced call cell — the release pass fires only loans the baseline
+     and those bumps still explain */
+  c->nresolved =
+    mizu_zc_resolved_seal(kind == 0 ? R_NilValue : VECTOR_ELT(task, 1));
   SEXP value = R_NilValue;
   if (kind == 0) {
     value = Rf_eval(task, R_GlobalEnv);
@@ -730,8 +735,12 @@ static SEXP pool_task_body(void *data) {
   *c->identp = 0;
   rh->peer_lang = 0;
   rh->peer_caps = 0;
-  if (c->fail)                   /* test-only seam: see mizu_pool_exec_fail */
+  if (c->fail == 1)              /* test-only seam: see mizu_pool_exec_fail */
     Rf_error("mizu: corrupt task payload");
+  if (c->fail == 2) {            /* test-only: a vanished task payload */
+    c->died = 1;
+    return R_NilValue;
+  }
   size_t blen = 0;
   const unsigned char *bytes =
     pool_entry_bytes(c->hdr, c->payload, c->limit, c->ctx, &blen);
@@ -832,11 +841,12 @@ void mizu_r_publish_err(mizu_result_sink *sink, SEXP cond, uint64_t ident) {
 SEXP mizu_curpool_xp;
 
 /* The worker's task: the eval mark rides the whole exec — set here ahead
-   of the body, cleared at every normal return, both under catching = 0
-   only (the design comment above) — so a longjmp out of the body, a frame
-   that fails to decode included, unwinds to worker_main with this task's
-   sink mintable through mizu_pool_run_outcome and comes back as its ERR
-   result: fail the task, never the worker. */
+   of the body, cleared only after the outcome write, both under
+   catching = 0 only (the design comment above) — so a longjmp out of the
+   body OR out of the OK publish's stage (a deep result's R_CheckStack
+   error, a region-create failure), unwinds to worker_main with this
+   task's sink mintable through mizu_pool_run_outcome and comes back as
+   its ERR result: fail the task, never the worker. */
 int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                      size_t limit, mizu_result_sink *sink, int catching,
                      mizu_read_ctx *ctx) {
@@ -850,8 +860,10 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   struct mizu_task_ctx c =
     { rh->prot, hdr, payload, limit, ctx, sink,
       catching ? &ident_word : &mizu_curpool_ident, rh->exec_fail, 0, 1, 0 };
-  if (!catching)
+  if (!catching) {
     mizu_pool_eval_mark(p, 1);
+    rh->eval_marked = 1;
+  }
   /* the current-pool global rides the task body only: the catching = 0
      unwind may longjmp past the restore (the worker is unwinding;
      accepted) */
@@ -861,13 +873,15 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                                           pool_task_handler, &c) :
                           pool_task_body(&c);
   mizu_curpool_xp = old_pool;
-  if (!catching)
-    mizu_pool_eval_mark(p, 0);
   if (c.died) {
     /* the enqueuer died and its region went along: the task can never run
        anywhere — it fails as LOST (no death verdict on the worker), and
        the drain continues */
     mizu_result_publish_lost(sink);
+    if (!catching) {
+      mizu_pool_eval_mark(p, 0);
+      rh->eval_marked = 0;
+    }
     return 0;
   }
   SEXP v = PROTECT(value);
@@ -894,9 +908,16 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
     mizu_r_publish_err(sink, v, *c.identp);
   }
   /* the D5 release pass: force-fire the once-only release record of each
-     decoded argument view the write did not emit (a no-op when the
-     decode resolved no refs — the common case) */
+     decoded argument view the write did not emit and the seal's baseline
+     proves unreferenced (a no-op when the decode resolved no refs — the
+     common case) */
   mizu_zc_args_release(c.nresolved);
+  /* the mark stays armed across the publish: a raise inside it is this
+     task's error, and the unwind path mints its ERR */
+  if (!catching) {
+    mizu_pool_eval_mark(p, 0);
+    rh->eval_marked = 0;
+  }
   UNPROTECT(1);                    /* v */
   return 0;
 }
@@ -905,12 +926,16 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
 
 /* The trace thunk: the core's emit sites call through the handle's
    registration; the R closure rides prot[1]. An error raised here longjmps
-   like any infrastructure error at the emit site. */
+   like any infrastructure error at the emit site — never the in-flight
+   task's own error, so the eval mark lifts around the R call (restored on
+   return; the emit sites are not the task's computation, its own "done"
+   emit at the publish included). */
 void mizu_r_trace(mizu_trace_event event, uint64_t task_id, void *ctx) {
   static const char *const events[] = {
     "submit", "start", "done", "error", "drop", "rehome"
   };
-  SEXP fn = VECTOR_ELT(((mizu_r_handle *) ctx)->prot, 1);
+  mizu_r_handle *rh = (mizu_r_handle *) ctx;
+  SEXP fn = VECTOR_ELT(rh->prot, 1);
   if (TYPEOF(fn) != CLOSXP) return;
   char buf[32];
   snprintf(buf, sizeof(buf), "%u:%llu", (unsigned) (task_id >> 48),
@@ -918,7 +943,11 @@ void mizu_r_trace(mizu_trace_event event, uint64_t task_id, void *ctx) {
   SEXP ev = PROTECT(Rf_mkString(events[event]));
   SEXP tid = PROTECT(Rf_mkString(buf));
   SEXP call = PROTECT(Rf_lang3(fn, ev, tid));
+  mizu_pool *p = (mizu_pool *) rh->core;
+  const int marked = rh->eval_marked;
+  if (marked) mizu_pool_eval_mark(p, 0);
   Rf_eval(call, R_GlobalEnv);
+  if (marked) mizu_pool_eval_mark(p, 1);
   UNPROTECT(3);
 }
 

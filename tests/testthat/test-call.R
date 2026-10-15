@@ -429,6 +429,36 @@ test_that("the emitted set keeps loans: attribute and condition-field probes", {
   channel_end(ch)
 })
 
+test_that("a task that keeps its argument view keeps the loan (R-01)", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x1 <- as.double(sample(1e5))
+  t1 <- mizu_submit_call(
+    p$ctrl,
+    mizu_call(.source = "keep <<- x; length(x)", x = x1)
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t1, timeout = 5), 100000L)
+  expect_true(.Call(mizu:::mizu_zc_view_check, keep))
+  # the loan stays GC-gated (not force-fired at the outcome write), so a
+  # same-size task cannot recycle the region under the kept view
+  rc0 <- .Call(mizu:::mizu_zc_refcount, keep)
+  expect_gte(rc0[1L], 1L)
+  t2 <- mizu_submit_call(
+    p$ctrl,
+    mizu_call(.source = "length(x)", x = rev(x1) * 2)
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t2, timeout = 5), 100000L)
+  expect_true(.Call(mizu:::mizu_zc_view_check, keep))
+  expect_identical(sum(keep), sum(x1))
+  rm(keep, envir = globalenv()) # the task's <<- lands outside the test env
+  # an unkept argument still releases deterministically at the outcome write
+  t3 <- mizu_submit_call(p$ctrl, mizu_call("base::mean", x1))
+  pool_step(p)
+  expect_equal(mizu_collect(t3, timeout = 5), mean(x1))
+})
+
 test_that("a ref candidate to a pool without TASKREF declines locally", {
   p <- pool_pair(ident = c(2L, 7L)) # R workers without the ref reader
   on.exit(pool_end(p))

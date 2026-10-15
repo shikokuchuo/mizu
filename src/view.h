@@ -257,6 +257,17 @@ SEXP mizu_view_resolve_id(const char *id, SEXP keeper);
    the pages without its own count. */
 void mizu_view_release_now(SEXP x);
 
+/* The remote-leaf directory walk: report every tag-33 identifier span in
+   an MIZL tree (recursively) to fn, once per occurrence (dedupe is the
+   caller's). The lazy element reader counts a remote leaf's region only
+   at first access — after the consumer-done signal — so an embedder that
+   wants the referenced regions held from the wrap walks here and loans
+   them itself. Validates every header and span it reads, raising the
+   lazy readers' corrupt-or-newer errors. */
+typedef void (*mizu_view_remote_fn)(const char *id, int len, void *ctx);
+void mizu_view_mizl_remote_walk(unsigned char *base, int64_t region_size,
+                                mizu_view_remote_fn fn, void *ctx);
+
 /* Embedder wire hooks (optional; set once at embedder load): `emit` fires
    from the Serialized_state methods when an identifier — not a
    materialization — is emitted for a view (the holder set then widens

@@ -57,6 +57,9 @@ typedef struct mizu_r_handle_s {
   int role;                 /* pool: MIZU_ROLE_*; channel: -1 */
   int exec_fail;            /* pool, test-only: fail the next task-frame
                                decode (mizu_pool_exec_fail) */
+  int eval_marked;          /* pool worker: the binding's copy of the eval
+                               mark's armed state, for the trace thunk's
+                               lift-and-restore (the core has no read API) */
   int pin_slot;             /* prot slot of the pin chain */
   int decline_slot;         /* channel: prot slot of the decline record (a
                                stashed condition, R_NilValue when empty) */
@@ -395,6 +398,7 @@ void mizu_zc_ref_mark(SEXP x);
    decoded argument view in [0, seal) absent from the mark list, after
    the outcome stream is written. */
 void mizu_zc_resolved_reset(void);
+int mizu_zc_resolved_seal(SEXP splice_pool);
 int mizu_zc_resolved_count(void);
 void mizu_zc_args_release(int seal);
 /* The consumer split open (page 0 RW, the tail RO): registered as the view
