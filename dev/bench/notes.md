@@ -1266,3 +1266,27 @@ removed share.
 Status: full suite 3803 pass, 0 fail (3 expected macOS skips); the
 crosslang files green with pymizu's venv on PATH; rchk clean (bcheck,
 1153 functions — only R's own "too many states" notes).
+
+## 2026-10-16 — latent-bug fixes (R-01..R-06, C-03): A/B against a854d76
+
+The corruption-first audit PR (077de8b): the MIZL wrap-time remote-leaf
+walk + loans (R-02), the spec-task release gate on REFCNT (R-01), the
+eval mark across the OK publish (R-03), R_CheckStack in the five zc
+walkers (R-04), map batch quote-splicing (R-05), the streaming int64
+gate (R-06). A/B is dev/bench/mizu-bench.R back-to-back, two runs per
+side interleaved (A = a854d76, B = 077de8b), same flags both sides,
+min-of-two per row. The mizu-free anchor (serial lapply ~10us) drifted
+-6.1% across the session, so ±5% reads as noise.
+
+Rows touching the changes: MIZL receives (100k frame) +1.3% / +1.6%
+(inside the drift envelope); spec plans k = 0..16 (the REFCNT gate)
+-4.7% .. +0.9%; payloads (SHM_VEC churn) -3.3% .. +1.5% with large
+within-A variance on the 8 MB row (589 vs 468); streaming -4.9% and
+pipelined pool batch +16.9% both unattributable (untouched paths,
+within-run drift comparable); sequential rt / fan-out / serialize /
+codec / map rows all flat (+/-1%). Verdict: no measurable regression
+from the wrap-time walk or the REFCNT gate.
+
+Status: full suite 3582 pass, 0 fail (51 skips, the expected set); the
+crosslang files green with pymizu's venv on PATH (238 + 86); rchk
+clean (bcheck, 1174 functions — only R's own "too many states" notes).
