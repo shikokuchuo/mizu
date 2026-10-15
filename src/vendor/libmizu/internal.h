@@ -232,6 +232,10 @@ int mizu_live_ident(intptr_t h, uint64_t *dev, uint64_t *ino);
 /* The join-token charset check shared by the channel and pool attach
    paths ("<pid hex>_<counter hex>"; NULL and empty are malformed). */
 int mizu_token_valid(const char *token);
+/* The exact region-name grammar for a wire-carried name (the prefix
+   plus "<hex>_<hex>", nothing else): the gate for the read-side opens
+   against a "/../" traversal from a corrupt or hostile peer. */
+int mizu_name_valid(const char *name);
 /* The pool header's magic + version + layout check (pool.c), the attach
    path's counterpart of mizu_preamble_validate. */
 const char *mizu_pool_hdr_validate(const void *region, size_t region_size,
@@ -278,6 +282,7 @@ typedef struct mizu_spill_fl_s {
   mizu_shm *led_regions[MIZU_LEDGER_MAX];  /* lent: views outstanding */
   int32_t  led_key[MIZU_LEDGER_MAX];      /* consumer identity; -1 channel */
   uint32_t led_n;
+  uint32_t sweep_next;                  /* quota-sweep rotation start */
   /* ledger-overflow drops: the mapping closes at the drop; the name is
      kept so a REF in flight can still resolve, and unlinks at teardown */
   mizu_shm **dropped;
@@ -348,10 +353,19 @@ void mizu_zc_release(mizu_spill_fl *fl, mizu_shm *shm, int32_t key);
 /* Move zero-count ledger entries to the free list, up to quota
    (MIZU_LEDGER_MAX = full sweep). */
 void mizu_ledger_sweep(mizu_spill_fl *fl, uint32_t quota);
-/* Force-reclaim ledger entries after a confirmed consumer death: key >= 0
-   matches that consumer only, key < 0 all entries (the channel's single
-   peer). REFHELD entries leak + unlink; the rest rejoin the free list. */
-void mizu_ledger_force(mizu_spill_fl *fl, int32_t key);
+/* Lent-region ledger keys carry the consumer's kind in the high half:
+   a worker handle's ledger holds both result regions (consumed by a
+   submitter slot) and task-arg regions (consumed by a worker slot), and
+   a death force-reclaim must match exactly one namespace. */
+#define MIZU_LED_SUB 1          /* the consumer is a submitter slot */
+#define MIZU_LED_WK  2          /* the consumer is a worker slot */
+#define MIZU_LED_KEY(kind, slot) \
+  ((int32_t) (((kind) << 16) | ((slot) & 0xffff)))
+/* Force-reclaim ledger entries after a confirmed consumer death:
+   (kind, slot) encodes the one consumer to match, kind < 0 all entries
+   (the channel's single peer). REFHELD entries leak + unlink; the rest
+   rejoin the free list. */
+void mizu_ledger_force(mizu_spill_fl *fl, int32_t kind, int32_t slot);
 
 /* Consumer-side SHM_RAW mapping cache: a name -> mapping table that
    skips the open/fstat/mmap per payload once producers repeat region

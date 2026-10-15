@@ -487,6 +487,11 @@ void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
   case MIZU_RS_DIED:
     return mizu_caught_died((int) ctx->died_slot, (double) ctx->died_pid,
                             "mizu: worker died while executing this task");
+  case MIZU_RS_LOST:
+    /* the claimant published LOST itself (no death verdict), so ctx
+       carries no claimant record */
+    return mizu_caught_cond("mizu_error_task_lost",
+                            "mizu: task lost: payload region vanished");
   case MIZU_RS_CANCEL:
     return mizu_caught_cond("mizu_error_cancelled",
                             "mizu: task cancelled or pool stopped");
@@ -860,8 +865,9 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
     mizu_pool_eval_mark(p, 0);
   if (c.died) {
     /* the enqueuer died and its region went along: the task can never run
-       anywhere — it fails as DIED, and the drain continues */
-    mizu_result_publish_died(sink);
+       anywhere — it fails as LOST (no death verdict on the worker), and
+       the drain continues */
+    mizu_result_publish_lost(sink);
     return 0;
   }
   SEXP v = PROTECT(value);

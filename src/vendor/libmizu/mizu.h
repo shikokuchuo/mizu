@@ -88,8 +88,8 @@ extern "C" {
 #endif
 
 #define MIZU_VERSION_MAJOR 0
-#define MIZU_VERSION_MINOR 0
-#define MIZU_VERSION_PATCH 1
+#define MIZU_VERSION_MINOR 1
+#define MIZU_VERSION_PATCH 0
 
 /** Library version, "major.minor.patch". Static storage; never freed. */
 MIZU_API const char *mizu_version(void);
@@ -458,18 +458,22 @@ typedef struct mizu_rs_hdr_s {
 
 MIZU_STATIC_ASSERT(sizeof(mizu_rs_hdr) == 40, "mizu_rs_hdr is the wire format");
 
-/** Injection ring / deque entry header; payload framing at offset 16,
-   payload bytes at 32. flags bit 0 is MIZU_ENTRY_RUNNER; bits 1-2 are
-   reserved for a future language tag (homogeneous pools in v1). */
+/** Injection ring / deque entry header; payload framing at offset 24,
+   payload bytes at 40. flags bit 0 is MIZU_ENTRY_RUNNER; bits 1-2 are
+   reserved for a future language tag (homogeneous pools in v1). rs_seq
+   binds the entry to its result slot's incarnation (the sequence at
+   submit): a claimed entry whose stamp no longer matches the slot is a
+   zombie left by a dead claimant and never executes. */
 typedef struct mizu_entry_hdr_s {
   uint64_t task_id;           /**< submitter slot << 48 | counter; debug only */
+  uint64_t rs_seq;            /**< result-slot incarnation at submit */
   uint32_t rs_index;
   uint16_t submitter_slot;
   uint16_t flags;
   mizu_slot_hdr ph;
 } mizu_entry_hdr;
 
-MIZU_STATIC_ASSERT(sizeof(mizu_entry_hdr) == 32, "mizu_entry_hdr is the wire format");
+MIZU_STATIC_ASSERT(sizeof(mizu_entry_hdr) == 40, "mizu_entry_hdr is the wire format");
 
 #define MIZU_ENTRY_RUNNER 1u
 
@@ -480,10 +484,13 @@ typedef enum mizu_sub_status_e { MIZU_SUB_FREE = 0, MIZU_SUB_LIVE,
 /** DIED is the reaper's terminal: status-word only, no payload — a reap
    cannot write payload bytes without racing a live worker's concurrent
    publish. The "worker died" error object is built collect-side, keyed
-   off the status. */
+   off the status. LOST is the same shape without a death verdict: the
+   task's out-of-line payload vanished before it could run, so the claim
+   performs no force-reclaim of the claimant's lent regions and the
+   collect builds no claimant record. */
 typedef enum mizu_rs_status_e { MIZU_RS_FREE = 0, MIZU_RS_PENDING, MIZU_RS_OK,
                                MIZU_RS_ERR, MIZU_RS_CANCEL,
-                               MIZU_RS_DIED } mizu_rs_status;
+                               MIZU_RS_DIED, MIZU_RS_LOST } mizu_rs_status;
 typedef enum mizu_park_state_e { MIZU_WPK_RUNNING = 0, MIZU_WPK_IDLE,
                                 MIZU_WPK_PARKED, MIZU_WPK_WAKING } mizu_park_state;
 
@@ -806,7 +813,8 @@ MIZU_API mizu_status mizu_pool_submit_batch_fn(mizu_pool *, mizu_obj_supply,
 
 /** collect waits for the task's terminal state and sets *value_out to
    the read_fn's product — including for non-OK outcomes, where
-   ctx.outcome (MIZU_RS_ERR / MIZU_RS_CANCEL / MIZU_RS_DIED) lets the
+   ctx.outcome (MIZU_RS_ERR / MIZU_RS_CANCEL / MIZU_RS_DIED /
+   MIZU_RS_LOST) lets the
    read_fn build the binding's error object (a binding re-raises it: the task's
    own condition, the cancellation, or the worker-death error).
    MIZU_TIMEOUT consumes nothing. A task is collected exactly once: the
@@ -824,7 +832,14 @@ MIZU_API mizu_status mizu_pool_submit_batch_fn(mizu_pool *, mizu_obj_supply,
    consumed (its error object rides read_fn like any value into
    values_out[err]), and every other handle — the OK results ahead of
    it included — stays collectible. *err_index_out == n means all OK.
-   MIZU_TIMEOUT consumes nothing: every handle stays valid. */
+   A read failure after an all-OK wait returns MIZU_ERR with
+   *err_index_out the failing slot's index (unconsumed when retryable)
+   and *consumed_out the number of leading results already handed to
+   the sink / written to values_out — the consumed prefix, for the
+   binding to return or attach; every handle past the prefix stays
+   collectible. *consumed_out is n on a fully collected run, 0 when the
+   run reported a non-OK outcome. MIZU_TIMEOUT consumes nothing: every
+   handle stays valid. */
 MIZU_API mizu_status mizu_pool_collect(mizu_pool *, const mizu_task *,
                                     void **value_out, double timeout_ms);
 MIZU_API mizu_status mizu_pool_collect_any(mizu_pool *, const mizu_task *,
@@ -833,6 +848,7 @@ MIZU_API mizu_status mizu_pool_collect_any(mizu_pool *, const mizu_task *,
 MIZU_API mizu_status mizu_pool_collect_all(mizu_pool *, const mizu_task *,
                                         size_t n, void **values_out,
                                         size_t *err_index_out,
+                                        size_t *consumed_out,
                                         double timeout_ms);
 
 /** The sink-callback form of collect_all: each value is handed to sink
@@ -844,6 +860,7 @@ MIZU_API mizu_status mizu_pool_collect_all_fn(mizu_pool *, const mizu_task *,
                                            size_t n, mizu_obj_sink,
                                            void *ctx,
                                            size_t *err_index_out,
+                                           size_t *consumed_out,
                                            double timeout_ms);
 
 /** Task lifecycle trace hook: per-handle, per-process; NULL removes.
@@ -874,7 +891,7 @@ MIZU_API mizu_status mizu_pool_set_trace(mizu_pool *, mizu_trace_fn, void *ctx);
 MIZU_API int mizu_pool_cancel(mizu_pool *, const mizu_task *);
 /** The finalizer release for a task handle that was never collected: a
    still-pending task is cancelled (as mizu_pool_cancel); a completed
-   (OK/ERR/DIED) slot is freed, letting the producing worker's keeper
+   (OK/ERR/DIED/LOST) slot is freed, letting the producing worker's keeper
    sweep drop what the result retained. Returns 1 only when this call
    cancelled a pending task. Total, no error path: a stale handle, a
    released pool, or a forked child answers 0. */
@@ -907,7 +924,7 @@ typedef struct mizu_pool_status_s {
   uint8_t sub_state[64];                   /**< MIZU_SUB_* */
   int64_t deque_depth[MIZU_MAX_WORKERS];    /**< bottom - top */
   uint64_t parked_mask;                    /**< one bit per worker slot */
-  uint32_t tasks_by_state[6];              /**< occupancy indexed by MIZU_RS_* */
+  uint32_t tasks_by_state[7];              /**< occupancy indexed by MIZU_RS_* */
   uint32_t inj_queued[64];                 /**< unclaimed injection entries */
   int32_t shutdown;
 } mizu_pool_status;

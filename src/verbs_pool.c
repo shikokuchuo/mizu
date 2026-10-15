@@ -828,7 +828,7 @@ SEXP mizu_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
   size_t err_idx = 0;
   mizu_status st = mizu_pool_collect_all_fn(p, ts, (size_t) n, mizu_vec_sink,
-                                          out, &err_idx,
+                                          out, &err_idx, NULL,
                                           mizu_timeout_ms(Rf_asReal(timeout)));
   if (st == MIZU_TIMEOUT) {
     UNPROTECT(1);
@@ -890,6 +890,7 @@ SEXP mizu_pool_task_state_call(SEXP xp) {
   case MIZU_RS_ERR:     return Rf_mkString("err");
   case MIZU_RS_CANCEL:  return Rf_mkString("cancel");
   case MIZU_RS_DIED:    return Rf_mkString("died");
+  case MIZU_RS_LOST:    return Rf_mkString("lost");
   default:             return Rf_mkString("collected");   /* FREE / stale */
   }
 }

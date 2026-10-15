@@ -69,10 +69,14 @@ struct mizu_pool_s {
   char livedir[1024];
 
   /* controller-only: per-worker death watches whose C callbacks run the
-     reap off the calling thread */
+     reap off the calling thread. reap_owner serializes a callback reap
+     with the handle thread's probe on the same kept fd: a same-OFD flock
+     re-acquire would otherwise admit both reapers at once, and the first
+     finisher's unlock would drop the grant under the other */
   mizu_death_watch **wk_watch;
   _Atomic int *wk_dead;
   struct mizu_reap_ctx_s *reap_ctx;
+  _Atomic int *reap_owner;
 
   /* submitter-local */
   uint32_t rs_cursor;
@@ -286,10 +290,13 @@ static int pool_live_path(mizu_pool *p, char *buf, size_t size,
 // Forward declarations for the cross-section call graph ------------------------------
 
 static void pool_unpark_result_waiter(mizu_pool *p, mizu_rs_hdr *rs);
+static void pool_unpark_keeper_drop(mizu_pool *p, int32_t w);
 static void pool_unpark_one_worker(mizu_pool *p);
 static void pool_fail_in_flight(mizu_pool *p, mizu_wk_slot *w);
+static void pool_fail_executing(mizu_pool *p, uint32_t slot);
 static int pool_reaping_free(mizu_wk_slot *w);
 static int pool_probe_worker(mizu_pool *p, uint32_t slot);
+static void pool_reap_submitter(mizu_pool *p, uint32_t j);
 static void pool_probe_submitter(mizu_pool *p, uint32_t j);
 static void pool_orphan_teardown_try(mizu_pool *p);
 static void pool_idle_sweep(mizu_pool *p);
@@ -300,6 +307,52 @@ static int pool_watch_workers(mizu_pool *p, const uint32_t *slots, size_t n);
 static int pool_watch_owner(mizu_pool *p, mizu_parker *own_pk);
 
 // Release ----------------------------------------------------------------------------
+
+/* Orderly submitter-slot release at handle teardown (destroy, leave, a
+   failed attach walk-back — the slot's lock is still held, so no reaper
+   or claimant can contest). With nothing PENDING outstanding the slot
+   needs no death reaper: free its published-but-uncollected results
+   (releasing the producing workers' keepers) exactly as the reaper
+   would, leave CANCEL slots to free at pop, and mark it FREE ahead of
+   the lock close so the next claim needs no probe. PENDING work means
+   the slot keeps LIVE: the released lock lets a later probe reap it. */
+static void pool_release_sub(mizu_pool *p) {
+  if (p->sub_slot < 0 || p->base == NULL) return;
+  mizu_sub_slot *s = &p->sub[p->sub_slot];
+  if (atomic_load_explicit(&s->status, memory_order_acquire) !=
+      MIZU_SUB_LIVE)
+    return;
+  for (uint32_t k = 0; k < s->rs_count; k++) {
+    mizu_rs_hdr *rs = pool_rs(p, s->rs_start + k);
+    if (atomic_load_explicit(&rs->status, memory_order_acquire) ==
+        MIZU_RS_PENDING)
+      return;
+  }
+  for (uint32_t k = 0; k < s->rs_count; k++) {
+    mizu_rs_hdr *rs = pool_rs(p, s->rs_start + k);
+    for (;;) {
+      int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
+      if (st == MIZU_RS_OK || st == MIZU_RS_ERR ||
+          st == MIZU_RS_DIED || st == MIZU_RS_LOST) {
+        int32_t wk = atomic_load_explicit(&rs->worker_slot,
+                                          memory_order_acquire);
+        int32_t e2 = st;
+        if (!atomic_compare_exchange_strong_explicit(&rs->status, &e2,
+                                                     MIZU_RS_FREE,
+                                                     memory_order_seq_cst,
+                                                     memory_order_relaxed))
+          continue;
+        pool_unpark_keeper_drop(p, wk);
+      }
+      break;
+    }
+  }
+  int32_t expected = MIZU_SUB_LIVE;
+  atomic_compare_exchange_strong_explicit(&s->status, &expected,
+                                          MIZU_SUB_FREE,
+                                          memory_order_seq_cst,
+                                          memory_order_relaxed);
+}
 
 /* Full teardown of a handle's process-local state, idempotent. Never
    unlinks: the region name and liveness files are removed only by the
@@ -321,6 +374,10 @@ static void pool_release(mizu_pool *p) {
         p->wk_watch[i] = NULL;
       }
   }
+  /* the submitter slot outlives its handle no longer than it has to:
+       with nothing PENDING, FREE lets the next attach claim it outright
+       (parkers still attached for the keeper-drop wakes) */
+  pool_release_sub(p);
   if (p->pk_ok) {
     uint32_t n = p->hdr.max_workers + p->hdr.max_submitters;
     for (uint32_t i = 0; i < n; i++) mizu_parker_detach(&p->pks[i]);
@@ -356,6 +413,8 @@ static void pool_release(mizu_pool *p) {
     free(p->live_all);
     p->live_all = NULL;
   }
+  free(p->reap_owner);
+  p->reap_owner = NULL;
 }
 
 /* The controller half of teardown, shared by mizu_pool_stop, the create
@@ -563,7 +622,8 @@ mizu_status mizu_pool_create(mizu_pool **out, const mizu_pool_opts *opts,
 
   p->keepers = calloc((size_t) (rslots / maxs), sizeof(mizu_keeper));
   p->live_all = calloc(maxw + maxs, sizeof(intptr_t));
-  if (p->keepers == NULL || p->live_all == NULL) {
+  p->reap_owner = calloc(maxw, sizeof(*p->reap_owner));
+  if (p->keepers == NULL || p->live_all == NULL || p->reap_owner == NULL) {
     mizu_err_record(&p->h, MIZU_ERRCAT_NOMEMORY, "allocation failure");
     pool_failed(p, 1);
     return MIZU_ERR;
@@ -865,26 +925,54 @@ static mizu_status pool_claim_sub_slot(mizu_pool *p, intptr_t *lock_out) {
   char path[1024];
   uint32_t per = p->hdr.result_slots / p->hdr.max_submitters;
   for (uint32_t j = 0; j < p->hdr.max_submitters; j++) {
-    if (atomic_load_explicit(&p->sub[j].status, memory_order_acquire) !=
-        MIZU_SUB_FREE)
-      continue;
     if (pool_live_path(p, path, sizeof(path), "sub", j) != 0) {
       mizu_err_record(&p->h, MIZU_ERRCAT_OTHER, "liveness file path too long");
       return MIZU_ERR;
     }
     intptr_t h;
-    if (mizu_live_open(path, &h) != 0) continue;
-    if (mizu_live_try(h) != MIZU_LIVE_ACQUIRED) {
-      mizu_live_close(h);
-      continue;                    /* another claimant beat us */
-    }
-    int32_t expected = MIZU_SUB_FREE;
-    if (!atomic_compare_exchange_strong_explicit(&p->sub[j].status,
-                                                 &expected, MIZU_SUB_LIVE,
-                                                 memory_order_seq_cst,
-                                                 memory_order_relaxed)) {
-      mizu_live_close(h);           /* stale FREE reading */
-      continue;
+    if (atomic_load_explicit(&p->sub[j].status, memory_order_acquire) !=
+        MIZU_SUB_FREE) {
+      /* a stale LIVE/REAPING slot (a killed submitter, or a destroyed
+         handle that left PENDING work): probe the recorded holder's
+         lock — an acquire means it is gone. Identity-check the file:
+         ENOENT or a mismatch is indeterminate, never a verdict. */
+      mizu_sub_slot *s = &p->sub[j];
+      if (mizu_live_open_existing(path, &h) != 0) continue;
+      uint64_t dev, ino;
+      if (mizu_live_ident(h, &dev, &ino) != 0 ||
+          dev != s->live_dev || ino != s->live_ino ||
+          mizu_live_try(h) != MIZU_LIVE_ACQUIRED) {
+        mizu_live_close(h);
+        continue;
+      }
+      pool_reap_submitter(p, j);
+      /* the zc death backstop, as in pool_probe_submitter: this handle's
+         lent regions consumed by the dead submitter force-reclaim (on a
+         worker's nested claim the ledger can hold them) */
+      mizu_ledger_force(&p->h.fl, MIZU_LED_SUB, (int32_t) j);
+      int32_t expected = MIZU_SUB_FREE;
+      if (!atomic_compare_exchange_strong_explicit(&s->status, &expected,
+                                                   MIZU_SUB_LIVE,
+                                                   memory_order_seq_cst,
+                                                   memory_order_relaxed)) {
+        mizu_live_unlock(h);        /* another claimant beat us */
+        mizu_live_close(h);
+        continue;
+      }
+    } else {
+      if (mizu_live_open(path, &h) != 0) continue;
+      if (mizu_live_try(h) != MIZU_LIVE_ACQUIRED) {
+        mizu_live_close(h);
+        continue;                  /* another claimant beat us */
+      }
+      int32_t expected = MIZU_SUB_FREE;
+      if (!atomic_compare_exchange_strong_explicit(&p->sub[j].status,
+                                                   &expected, MIZU_SUB_LIVE,
+                                                   memory_order_seq_cst,
+                                                   memory_order_relaxed)) {
+        mizu_live_close(h);         /* stale FREE reading */
+        continue;
+      }
     }
     *lock_out = h;
     p->sub_slot = (int) j;
@@ -1011,22 +1099,18 @@ mizu_status mizu_pool_worker_join(mizu_pool **out, const char *token,
 
   if (pool_parkers_attach(p, 0) != 0) {
     mizu_err_record(&p->h, MIZU_ERRCAT_OTHER, "cannot attach pool parkers");
-    pool_failed(p, 0);
-    return MIZU_ERR;
+    goto join_failed;
   }
   p->scratch = malloc(p->hdr.slot);
   if (p->scratch == NULL) {
     mizu_err_record(&p->h, MIZU_ERRCAT_NOMEMORY, "allocation failure");
-    pool_failed(p, 0);
-    return MIZU_ERR;
+    goto join_failed;
   }
   p->rng = ((uint64_t) p->self_pid * 0x9E3779B97F4A7C15ull) ^
     ((uint64_t) (mizu_now() * 1e9)) ^ ((uint64_t) slot << 32);
   if (p->rng == 0) p->rng = 1;
-  if (pool_watch_owner(p, pool_wk_pk(p, slot)) != 0) {
-    pool_failed(p, 0);
-    return MIZU_ERR;
-  }
+  if (pool_watch_owner(p, pool_wk_pk(p, slot)) != 0)
+    goto join_failed;
 
   expected = MIZU_WK_CLAIMING;
   atomic_compare_exchange_strong_explicit(&me->status, &expected,
@@ -1037,13 +1121,25 @@ mizu_status mizu_pool_worker_join(mizu_pool **out, const char *token,
 
   *out = p;
   return MIZU_OK;
+
+join_failed:
+  /* the slot CAS already won: hand it back while the lock is still held,
+     or it reads CLAIMING (unusable) until the stop sweep */
+  expected = MIZU_WK_CLAIMING;
+  atomic_compare_exchange_strong_explicit(&me->status, &expected,
+                                          MIZU_WK_FREE,
+                                          memory_order_seq_cst,
+                                          memory_order_relaxed);
+  pool_failed(p, 0);
+  return MIZU_ERR;
 }
 
-/* Clean worker exit. An announced in-flight claim fails as DIED first:
-   the task can never complete once this worker is gone (the reach here is
-   an exec_fn escape — an infrastructure failure ends run without a
-   publish), and an orderly leave runs no death reaper to deliver the
-   verdict. A nonempty deque is never drained anywhere: it
+/* Clean worker exit. The announced in-flight claim and every slot still
+   stamped with this worker fail as DIED first: those tasks can never
+   complete once this worker is gone (the reach here is an exec_fn
+   escape — an infrastructure failure ends run without a publish), and
+   an orderly leave runs no death reaper to deliver the verdict. A
+   nonempty deque is never drained anywhere: it
    becomes an ordinary steal target while the slot reads REAPING, and the
    observer of the drained deque returns the slot to FREE. Kept results are
    abandoned only when the handle releases here — the retiree's lame-duck
@@ -1057,6 +1153,10 @@ mizu_status mizu_pool_leave(mizu_pool *p) {
   }
   mizu_wk_slot *me = &p->wk[p->wk_slot];
   pool_fail_in_flight(p, me);
+  /* ... and anything it was executing at a deeper nesting level: the
+     announce holds only the latest claim, and an orderly leave runs no
+     death reaper to deliver those verdicts either */
+  pool_fail_executing(p, (uint32_t) p->wk_slot);
   pool_stats_publish(p);   /* final, exact mirror for the departed slot */
   atomic_fetch_and_explicit(p->parked_workers, ~(1ull << p->wk_slot),
                             memory_order_seq_cst);
@@ -1343,10 +1443,12 @@ static mizu_status pool_alloc_rs(mizu_pool *p, mizu_keeper *keepers,
       /* the slot's previous consumer is the zc entry's ledger key (the
          worker-death backstop); -1 when it was never claimed */
       mizu_keeper *old = &keepers[cand];
-      if (old->kind == MIZU_KEEP_ZC)
-        old->key =
+      if (old->kind == MIZU_KEEP_ZC) {
+        int32_t w =
           atomic_load_explicit(&pool_rs(p, me->rs_start + cand)->worker_slot,
                                memory_order_acquire);
+        old->key = w >= 0 ? MIZU_LED_KEY(MIZU_LED_WK, w) : -1;
+      }
       mizu_keeper_release(&p->h, keepers, cand);
       *out = cand;
       return MIZU_OK;
@@ -1378,9 +1480,14 @@ static void pool_commit_rs(mizu_pool *p, mizu_keeper *keepers, uint32_t local,
   atomic_store_explicit(&rs->status, MIZU_RS_PENDING, memory_order_release);
 }
 
+/* Fill runs after pool_commit_rs, so the slot's sequence is already the
+   new incarnation's: stamping it binds the entry to that incarnation
+   (the zombie guard at pool_execute). */
 static void pool_fill_entry(mizu_pool *p, mizu_entry_hdr *eh,
                             uint32_t rs_index, uint16_t flags) {
   eh->task_id = ((uint64_t) p->sub_slot << 48) | ++p->task_counter;
+  eh->rs_seq = atomic_load_explicit(&pool_rs(p, rs_index)->sequence,
+                                    memory_order_relaxed);
   eh->rs_index = rs_index;
   eh->submitter_slot = (uint16_t) p->sub_slot;
   eh->flags = flags;   /* assign, never OR: ring and deque slots are reused */
@@ -1713,16 +1820,18 @@ static void pool_rk_add(mizu_pool *p, uint32_t idx, uint64_t seq) {
    recording the task would otherwise vanish it. Recorded from the entry
    copied into scratch, before any claim (ring-head CAS, deque-bottom
    commit, or steal CAS) is attempted; plain stores suffice — the only
-   reader is a post-mortem reaper serialized by the liveness lock. */
+   reader is a post-mortem reaper serialized by the liveness lock. The
+   sequence is the entry's own incarnation stamp, not the slot's current
+   one: the reaper then fails the slot only while the announced
+   incarnation is still current, and a never-claimed entry left queued by
+   a death in the announce window is a zombie the execute guard drops
+   rather than a false DIED of the slot's next incarnation. */
 static void pool_announce(mizu_pool *p) {
   mizu_entry_hdr *eh = (mizu_entry_hdr *) p->scratch;
   mizu_wk_slot *me = &p->wk[p->wk_slot];
   atomic_store_explicit(&me->in_flight_rs, (int32_t) eh->rs_index,
                         memory_order_relaxed);
-  atomic_store_explicit(&me->in_flight_seq,
-                        atomic_load_explicit(&pool_rs(p, eh->rs_index)->
-                                             sequence,
-                                             memory_order_relaxed),
+  atomic_store_explicit(&me->in_flight_seq, eh->rs_seq,
                         memory_order_relaxed);
 }
 
@@ -1832,7 +1941,11 @@ static int pool_claim_rings(mizu_pool *p, int use_mask) {
                                                   memory_order_relaxed)) {
         p->scan_start = s + 1;
         p->st_inj++;
-        /* backpressure wake: ring and waiter correspond one-to-one */
+        /* backpressure wake: ring and waiter correspond one-to-one. The
+           fence pairs the pusher's announce-store/re-check-load (as at
+           pool_unpark_worker_from): a relaxed load after the head CAS
+           has no Dekker guarantee on ARMv8 */
+        atomic_thread_fence(memory_order_seq_cst);
         uint64_t bit = 1ull << s;
         if (atomic_load_explicit(p->full_waiters, memory_order_relaxed) &
             bit) {
@@ -2113,19 +2226,14 @@ static void pool_fail_in_flight(mizu_pool *p, mizu_wk_slot *w) {
   }
 }
 
-/* Fail the dead worker's tasks — the announced claim, then a worker_slot
-   sweep for whatever it was executing — unpark every waiter its orphaned
-   deque names (their help scans then steal from it), and either wake a
-   drainer or free the emptied slot. Read-only walk; resumable. */
-static void pool_orphan_and_finalize(mizu_pool *p, mizu_wk_slot *w,
-                                     uint32_t slot) {
-  pool_fail_in_flight(p, w);
-  /* The announce covers claimed-but-not-yet-executing (worker_slot still
-     -1); a nested claim overwrites it and its publish clears it, so tasks
-     the worker was executing — at any nesting depth — are found by their
-     worker_slot stamp instead. No sequence check needed: pool_commit_rs
-     resets the stamp before its PENDING release store, so a slot freed
-     and recommitted can never read as the dead worker's. */
+/* Fail every slot stamped with this worker: tasks it was executing (at
+   any nesting depth) whose announce a nested claim overwrote and whose
+   publish clears it. No sequence check needed: pool_commit_rs resets
+   the stamp before its PENDING release store, so a slot freed and
+   recommitted can never read as this worker's. Shared by the death
+   reaper and a clean leave — from leave only this worker could publish
+   those slots, so the sweep is race-free. */
+static void pool_fail_executing(mizu_pool *p, uint32_t slot) {
   for (uint32_t i = 0; i < p->hdr.result_slots; i++) {
     mizu_rs_hdr *rs = pool_rs(p, i);
     int32_t st = atomic_load_explicit(&rs->status, memory_order_acquire);
@@ -2147,6 +2255,18 @@ static void pool_orphan_and_finalize(mizu_pool *p, mizu_wk_slot *w,
                                               memory_order_relaxed);
     }
   }
+}
+
+/* Fail the dead worker's tasks — the announced claim, then a worker_slot
+   sweep for whatever it was executing — unpark every waiter its orphaned
+   deque names (their help scans then steal from it), and either wake a
+   drainer or free the emptied slot. Read-only walk; resumable. */
+static void pool_orphan_and_finalize(mizu_pool *p, mizu_wk_slot *w,
+                                     uint32_t slot) {
+  pool_fail_in_flight(p, w);
+  /* The announce covers claimed-but-not-yet-executing (worker_slot still
+     -1); the stamp sweep finds whatever it was executing. */
+  pool_fail_executing(p, slot);
   int64_t b = atomic_load_explicit(&w->deque_bottom, memory_order_acquire);
   for (int64_t i = atomic_load_explicit(&w->deque_top, memory_order_acquire);
        i < b; i++) {
@@ -2209,9 +2329,31 @@ static int pool_probe_worker(mizu_pool *p, uint32_t slot) {
     return 0;
   int dead = 0;
   if (p->live_all != NULL) {
-    if (mizu_live_try(p->live_all[slot]) != MIZU_LIVE_ACQUIRED) return 0;
+    /* The death callback reaps this slot off-thread on this same kept
+       fd; flock locks are not counted, so a same-OFD re-acquire would
+       admit both reapers and the first finisher's unlock would drop the
+       grant under the other. Serialize in userspace instead: the first
+       to CAS owns the reap, the loser waits (a reap is bounded) and
+       re-tries — platform-neutral, no reliance on LockFileEx
+       same-handle semantics. */
+    for (;;) {
+      int expected = 0;
+      if (atomic_compare_exchange_weak_explicit(&p->reap_owner[slot],
+                                                &expected, 1,
+                                                memory_order_acq_rel,
+                                                memory_order_relaxed))
+        break;
+      if (atomic_load_explicit(&w->status, memory_order_acquire) ==
+          MIZU_WK_FREE)
+        return 0;    /* the callback's reap freed the slot */
+    }
+    if (mizu_live_try(p->live_all[slot]) != MIZU_LIVE_ACQUIRED) {
+      atomic_store_explicit(&p->reap_owner[slot], 0, memory_order_release);
+      return 0;
+    }
     pool_reap_worker(p, slot);
     mizu_live_unlock(p->live_all[slot]);
+    atomic_store_explicit(&p->reap_owner[slot], 0, memory_order_release);
     dead = 1;
   } else {
     char path[1024];
@@ -2229,7 +2371,7 @@ static int pool_probe_worker(mizu_pool *p, uint32_t slot) {
      dead worker (task-arg payloads, keyed at the release point)
      force-reclaim. Runs on the handle-owning thread only — every probe
      caller is one — never in the controller's off-thread death callback */
-  if (dead) mizu_ledger_force(&p->h.fl, (int32_t) slot);
+  if (dead) mizu_ledger_force(&p->h.fl, MIZU_LED_WK, (int32_t) slot);
   return dead;
 }
 
@@ -2260,7 +2402,8 @@ static void pool_reap_submitter(mizu_pool *p, uint32_t j) {
                                                      memory_order_relaxed))
           continue;
         pool_unpark_result_waiter(p, rs);
-      } else if (st == MIZU_RS_OK || st == MIZU_RS_ERR || st == MIZU_RS_DIED) {
+      } else if (st == MIZU_RS_OK || st == MIZU_RS_ERR ||
+                 st == MIZU_RS_DIED || st == MIZU_RS_LOST) {
         int32_t wk = atomic_load_explicit(&rs->worker_slot,
                                           memory_order_acquire);
         int32_t e2 = st;
@@ -2308,7 +2451,7 @@ static void pool_probe_submitter(mizu_pool *p, uint32_t j) {
      regions consumed by the dead submitter force-reclaim (REFHELD ones
      leak + unlink). Only ever runs on the handle-owning thread (the probe
      callers), never in the controller's off-thread death callback */
-  if (reaped) mizu_ledger_force(&p->h.fl, (int32_t) j);
+  if (reaped) mizu_ledger_force(&p->h.fl, MIZU_LED_SUB, (int32_t) j);
 }
 
 // Death watches ------------------------------------------------------------------
@@ -2321,10 +2464,20 @@ static void pool_probe_submitter(mizu_pool *p, uint32_t j) {
 static void pool_wk_death_cb(void *arg) {
   struct mizu_reap_ctx_s *c = arg;
   mizu_pool *p = c->pool;
+  /* one reaper per slot (the owner word at pool_probe_worker): a probe
+     already holding it runs the identical verdict and reap, so a lost
+     race skips rather than double-enters through the same OFD */
+  int expected = 0;
+  if (!atomic_compare_exchange_strong_explicit(&p->reap_owner[c->slot],
+                                               &expected, 1,
+                                               memory_order_acq_rel,
+                                               memory_order_relaxed))
+    return;
   if (mizu_live_try(p->live_all[c->slot]) == MIZU_LIVE_ACQUIRED) {
     pool_reap_worker(p, c->slot);
     mizu_live_unlock(p->live_all[c->slot]);
   }
+  atomic_store_explicit(&p->reap_owner[c->slot], 0, memory_order_release);
 }
 
 /* The controller points its death listener at every LIVE target slot's
@@ -2472,7 +2625,8 @@ static int pool_publish_tail(mizu_result_sink *sink, int ok) {
     /* a spilled result region's consumer is the task's submitter — key
        the zc entry so the submitter-death backstop can force-reclaim it */
     if (p->keepers[sink->rs_index].kind == MIZU_KEEP_ZC)
-      p->keepers[sink->rs_index].key = (int32_t) sink->sub_slot;
+      p->keepers[sink->rs_index].key =
+        MIZU_LED_KEY(MIZU_LED_SUB, sink->sub_slot);
     /* a keeperless result (the self-contained kinds) pins nothing: no
        record */
     if (kind != MIZU_KEEP_FREE)
@@ -2552,15 +2706,17 @@ int mizu_result_publish_err(mizu_result_sink *sink, void *flattened,
 
 /* The status-only terminal for a task whose out-of-line payload vanished
    with its dead enqueuer (Win32 mappings cannot outlive their creator):
-   the task can never run anywhere — it fails as DIED exactly like a
-   claimed task whose worker died, and the drain continues in this
-   thief. */
-void mizu_result_publish_died(mizu_result_sink *sink) {
+   the task can never run anywhere. It fails as LOST, not DIED — the
+   claiming thief is alive (it is publishing), so the verdict carries no
+   worker death: the claim performs no force-reclaim of this worker's
+   lent regions and builds no claimant record. The drain continues in
+   this thief. */
+void mizu_result_publish_lost(mizu_result_sink *sink) {
   mizu_pool *p = sink->p;
   mizu_rs_hdr *rs = sink->rs;
   int32_t expected = MIZU_RS_PENDING;
   if (atomic_compare_exchange_strong_explicit(&rs->status, &expected,
-                                              MIZU_RS_DIED,
+                                              MIZU_RS_LOST,
                                               memory_order_seq_cst,
                                               memory_order_relaxed)) {
     pool_unpark_result_waiter(p, rs);
@@ -2598,8 +2754,23 @@ static int pool_execute(mizu_pool *p, int catching) {
   uint16_t sub_slot = eh->submitter_slot;
   uint64_t task_id = eh->task_id;
   mizu_rs_hdr *rs = pool_rs(p, rs_index);
-  uint64_t seq = atomic_load_explicit(&me->in_flight_seq,
-                                      memory_order_relaxed);
+  uint64_t seq = eh->rs_seq;
+
+  /* Zombie guard: the entry is bound to the slot incarnation stamped at
+     submit. A stamp mismatch means that incarnation already terminated
+     (a reaper's DIED — possibly from a claimant that died before its
+     claim CAS — or a cancel consume) and the slot moved on; a terminal
+     status on a matching stamp means the reap paths won the race to this
+     live claim. Either way the claim is dead work: consume nothing and
+     touch nothing — not even worker_slot, which belongs to the slot's
+     current incarnation. CANCEL falls through to its consume skip. */
+  int32_t st0 = atomic_load_explicit(&rs->status, memory_order_acquire);
+  if (seq != atomic_load_explicit(&rs->sequence, memory_order_acquire) ||
+      (st0 != MIZU_RS_PENDING && st0 != MIZU_RS_CANCEL)) {
+    atomic_store_explicit(&me->in_flight_rs, -1, memory_order_relaxed);
+    pool_trace_emit(p, MIZU_TRACE_DROP, task_id);
+    return 0;
+  }
   atomic_store_explicit(&rs->worker_slot, p->wk_slot, memory_order_relaxed);
   if (!catching) {
     p->cur_rs_index = rs_index;
@@ -2861,7 +3032,8 @@ static void pool_task_keeper_drop(mizu_pool *p, uint32_t idx, int32_t key) {
   mizu_keeper *keepers =
     p->role == MIZU_ROLE_WORKER ? p->sub_keepers : p->keepers;
   uint32_t local = idx - me->rs_start;
-  if (keepers[local].kind == MIZU_KEEP_ZC) keepers[local].key = key;
+  if (keepers[local].kind == MIZU_KEEP_ZC)
+    keepers[local].key = key >= 0 ? MIZU_LED_KEY(MIZU_LED_WK, key) : -1;
   mizu_keeper_release(&p->h, keepers, local);
 }
 
@@ -2902,6 +3074,7 @@ static void *pool_read_outcome(mizu_pool *p, mizu_rs_hdr *rs, int32_t st,
       st == MIZU_RS_OK ? "payload read failed" :
       st == MIZU_RS_ERR ? "task failed" :
       st == MIZU_RS_DIED ? "worker died while executing this task" :
+      st == MIZU_RS_LOST ? "task lost: payload region vanished" :
       "task cancelled or pool stopped";
     mizu_err_record(&p->h, MIZU_ERRCAT_OTHER, "%s", what);
   }
@@ -2914,9 +3087,11 @@ static void *pool_read_outcome(mizu_pool *p, mizu_rs_hdr *rs, int32_t st,
    — then drop the task keeper, FREE the slot, and wake the producer's
    keeper sweep (skipped for the keeperless kinds, whose FREE is invisible
    to the reap). DIED is status-word only: the claimant is confirmed dead
-   (DIED implies the reap ran under the liveness lock), its lent task-arg
-   regions force-reclaim here, the slot frees, and the claimant record
-   rides the read. CANCEL reads without consuming — the task keeper
+   (DIED implies the reap ran under the liveness lock — a live thief
+   publishes LOST instead), its lent task-arg regions force-reclaim here,
+   the slot frees, and the claimant record rides the read. LOST frees the
+   slot the same way minus the force and the record. CANCEL reads without
+   consuming — the task keeper
    releases at slot reuse, not here (the worker may not have materialized
    yet). Returns the read_fn product, NULL with the handle's error slot
    filled (an OK/ERR read failure consumes nothing — retryable — unless
@@ -2953,7 +3128,7 @@ static void *pool_rs_claim(mizu_pool *p, mizu_rs_hdr *rs, uint32_t idx,
     int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
     pool_task_keeper_drop(p, idx, w);
     if (w >= 0 && (uint32_t) w < p->hdr.max_workers)
-      mizu_ledger_force(&p->h.fl, w);
+      mizu_ledger_force(&p->h.fl, MIZU_LED_WK, w);
     int64_t wpid =
       (w >= 0 && (uint32_t) w < p->hdr.max_workers) ? p->wk[w].pid : 0;
     int32_t expected = MIZU_RS_DIED;
@@ -2966,6 +3141,24 @@ static void *pool_rs_claim(mizu_pool *p, mizu_rs_hdr *rs, uint32_t idx,
       return NULL;
     }
     return pool_read_outcome(p, rs, st, w, wpid, &rflags);
+  }
+  case MIZU_RS_LOST: {
+    /* no death verdict: the claimant published LOST itself (its read of
+       the payload failed), so its lent regions stay GC-gated — the
+       ledger force above belongs to the lock-verified reap only */
+    uint32_t rflags = 0;
+    int32_t w = atomic_load_explicit(&rs->worker_slot, memory_order_acquire);
+    pool_task_keeper_drop(p, idx, w);
+    int32_t expected = MIZU_RS_LOST;
+    if (!atomic_compare_exchange_strong_explicit(&rs->status, &expected,
+                                                 MIZU_RS_FREE,
+                                                 memory_order_seq_cst,
+                                                 memory_order_relaxed)) {
+      mizu_err_record(&p->h, MIZU_ERRCAT_OTHER,
+                     "task handle already collected");
+      return NULL;
+    }
+    return pool_read_outcome(p, rs, st, -1, 0, &rflags);
   }
   case MIZU_RS_CANCEL: {
     uint32_t rflags = 0;
@@ -3326,8 +3519,10 @@ mizu_status mizu_pool_collect_any(mizu_pool *p, const mizu_task *tasks,
 static mizu_status pool_collect_all_impl(mizu_pool *p, const mizu_task *tasks,
                                         size_t n, mizu_obj_sink sink,
                                         void *ctx, size_t *err_index_out,
+                                        size_t *consumed_out,
                                         double timeout_ms) {
   if (pool_get(p) == NULL) return MIZU_ERR;
+  if (consumed_out != NULL) *consumed_out = 0;
   mizu_rs_hdr **rss;
   if (pool_collect_resolve(p, tasks, n, &rss) != MIZU_OK) return MIZU_ERR;
 
@@ -3472,6 +3667,9 @@ static mizu_status pool_collect_all_impl(mizu_pool *p, const mizu_task *tasks,
       }
       if (sink != NULL) sink(ctx, i, v);   /* anchored by the binding
                                               before the next claim reads */
+      if (consumed_out != NULL)
+        *consumed_out = i + 1;   /* the consumed prefix, on a later
+                                    failure the binding's to hand back */
     }
   }
   free(rss);
@@ -3486,19 +3684,21 @@ static void pool_array_sink(void *ctx, size_t i, void *obj) {
 mizu_status mizu_pool_collect_all_fn(mizu_pool *p, const mizu_task *tasks,
                                    size_t n, mizu_obj_sink sink, void *ctx,
                                    size_t *err_index_out,
-                                   double timeout_ms) {
+                                   size_t *consumed_out, double timeout_ms) {
   return pool_collect_all_impl(p, tasks, n, sink, ctx, err_index_out,
-                               timeout_ms);
+                               consumed_out, timeout_ms);
 }
 
 mizu_status mizu_pool_collect_all(mizu_pool *p, const mizu_task *tasks,
                                 size_t n, void **values_out,
-                                size_t *err_index_out, double timeout_ms) {
+                                size_t *err_index_out, size_t *consumed_out,
+                                double timeout_ms) {
   if (values_out != NULL)
     for (size_t i = 0; i < n; i++) values_out[i] = NULL;
   return pool_collect_all_impl(p, tasks, n,
                                values_out != NULL ? pool_array_sink : NULL,
-                               values_out, err_index_out, timeout_ms);
+                               values_out, err_index_out, consumed_out,
+                               timeout_ms);
 }
 
 /* Advisory and discard-only, never preemptive: a task already executing
@@ -3548,7 +3748,8 @@ int mizu_pool_task_release(mizu_pool *p, const mizu_task *t) {
         pool_unpark_result_waiter(p, rs);
         return 1;
       }
-    } else if (st == MIZU_RS_OK || st == MIZU_RS_ERR || st == MIZU_RS_DIED) {
+    } else if (st == MIZU_RS_OK || st == MIZU_RS_ERR ||
+               st == MIZU_RS_DIED || st == MIZU_RS_LOST) {
       int32_t w = atomic_load_explicit(&rs->worker_slot,
                                        memory_order_acquire);
       int32_t expected = st;
@@ -3854,7 +4055,7 @@ static void pool_status_fill(const mizu_pool *p, mizu_pool_status *out) {
   for (uint32_t r = 0; r < p->hdr.result_slots; r++) {
     int32_t st = atomic_load_explicit(&pool_rs(p, r)->status,
                                       memory_order_acquire);
-    if (st >= MIZU_RS_FREE && st <= MIZU_RS_DIED) out->tasks_by_state[st]++;
+    if (st >= MIZU_RS_FREE && st <= MIZU_RS_LOST) out->tasks_by_state[st]++;
   }
   out->shutdown =
     (int32_t) atomic_load_explicit(p->shutdown, memory_order_acquire);

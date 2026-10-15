@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="fd8e633efbda5e755c3260ae575aff0280de7160"  # libmizu: hardened Arrow record bounds; self-contained DESIGN.md
+PIN="de5948cf0de5bd7b19ad6f155fd91a22ff8e112a"  # libmizu: pool + channel correctness fixes, Arrow writer hardening
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

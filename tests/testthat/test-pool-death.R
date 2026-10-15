@@ -263,13 +263,17 @@ test_that("a worker's failed publish reaps the dead submitter", {
   # and the kernel releases its submitter lock — both implied by its death
   expect_true(wait_until(!pid_alive(pid), timeout = 20))
   # only now release the worker's eval: the publish CAS fails on the
-  # CANCEL, probes the owning submitter, and reaps in-line
+  # CANCEL and consumes it, returning the slot; the submitter slot frees
+  # by the child's orderly release or the publish's in-line reap
   file.create(k)
   expect_true(wait_until(
     all(mizu_pool_status(p)[["submitters"]][-1L] == "free"),
     timeout = 20
   ))
-  expect_identical(unname(mizu_pool_status(p)[["tasks"]]), rep(0L, 5L))
+  expect_true(wait_until(
+    all(unname(mizu_pool_status(p)[["tasks"]]) == 0L),
+    timeout = 20
+  ))
   expect_true(mizu_pool_stop(p, timeout = 10))
 })
 
