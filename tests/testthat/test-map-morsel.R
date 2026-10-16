@@ -258,3 +258,25 @@ test_that("mizu_map_next consumes pool signals: help flag, skip rule, shutdown",
   expect_null(.Call(mizu:::mizu_map_next, h, 0L, 0, sig, NULL, 1.1))
   .Call(mizu:::mizu_pool_leave, p[["wk"]])
 })
+
+test_that("mizu_map_next validates the pool-signal handle", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  h <- stage_h(1e4, 1)
+  expect_error(
+    .Call(mizu:::mizu_map_next, h, 0L, 0, p[["wk"]], NULL, 0),
+    "pool-signal"
+  )
+})
+
+test_that("mizu_map_lost validates the history shapes", {
+  h <- stage_h(10, 1)
+  expect_error(
+    .Call(mizu:::mizu_map_lost, h, 42),
+    "invalid map batch history"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_lost, h, list(list(c(0, 100), c(1, 1)))),
+    "invalid map batch history"
+  )
+})

@@ -139,3 +139,52 @@ test_that("an oversized task error flattens to the budget, dropping fields", {
   expect_null(err2[["f1"]])
   pool_end(p)
 })
+
+test_that("collect_all re-stamps a condition that already carries an index", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(
+    p$ctrl,
+    stop(errorCondition("boom", index = 7L, mizu_map_index = 7L))
+  )
+  pool_step(p)
+  err <- tryCatch(mizu_collect_all(list(t)), error = function(e) e)
+  expect_identical(err[["index"]], 1L)
+  expect_identical(err[["mizu_map_index"]], 7L)
+})
+
+test_that("a task error with a non-string message flattens to the fallback", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(
+    p$ctrl,
+    stop(errorCondition(c("boom", "boom"), extra = 1L))
+  )
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, 5), error = function(e) e)
+  expect_identical(
+    conditionMessage(err),
+    "mizu: task error (untransportable condition)"
+  )
+  expect_identical(err[["extra"]], 1L)
+})
+
+test_that("a condition the assembly cannot carry keeps its dropped names", {
+  p <- pool_pair(slot_size = 8192L)
+  on.exit(pool_end(p))
+  # the field probes within the depth cap alone, but the assembly's own
+  # level pushes it past: the verification pass takes the terminal fallback
+  deep <- 1L
+  for (i in seq_len(500L)) {
+    deep <- list(deep)
+  }
+  cond <- errorCondition("boom", deep = deep, big = strrep("x", 9000))
+  t <- mizu_submit(p$ctrl, stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, 5), error = function(e) e)
+  expect_identical(
+    conditionMessage(err),
+    "mizu: task error (untransportable condition)"
+  )
+  expect_identical(err[["dropped_fields"]], "big")
+})

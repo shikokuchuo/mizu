@@ -106,3 +106,9 @@ test_that("clean child exit runs the session-exit finalizers", {
     timeout = 30 # the child's R shutdown on a loaded CI runner
   ))
 })
+
+test_that("a finalized region handle errors as closed", {
+  xp <- .Call(mizu:::mizu_region_create, 4096)
+  tomb <- unserialize(serialize(xp, NULL))
+  expect_error(.Call(mizu:::mizu_region_name, tomb), "region handle is closed")
+})

@@ -1019,3 +1019,219 @@ test_that("map_stream_fail_spec classifies on mizu_map_index only (R-18)", {
   expect_null(err[["index"]])
   pool_end(p)
 })
+
+test_that("a spec .f streams a bare atomic x through the pre-built descriptor", {
+  p <- pool_pair(workers = 2L)
+  x <- runif(20)
+  st <- mizu:::map_stage_stream(p[["ctrl"]], x, mizu_call("base::abs"), list())
+  expect_identical(run_stream(p, st), as.list(abs(x)))
+  pool_end(p)
+})
+
+test_that("a failing streaming spec map reports the element index", {
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:8,
+    mizu_call(.source = 'if (x == 3L) stop("boom") else x'),
+    list(),
+    chunks = 4
+  )
+  mizu:::map_stream_prime(p[["ctrl"]], st, Inf)
+  expect_identical(pool_step(p), 1L) # chunk 1
+  mizu:::map_stream_turn(p[["ctrl"]], st, Inf) # collects 1, refills 3
+  expect_identical(pool_step(p), 1L) # chunk 2 errors at 3
+  e <- tryCatch(
+    {
+      mizu:::map_stream_turn(p[["ctrl"]], st, Inf)
+      NULL
+    },
+    error = function(e) e
+  )
+  expect_identical(conditionMessage(e), "boom")
+  expect_identical(e[["mizu_map_index"]], 3)
+  pool_end(p)
+})
+
+test_that("a worker death in a streaming spec map fails with its range", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  on.exit(mizu_pool_stop(p))
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  st <- mizu:::map_stage_stream(
+    p,
+    1:8,
+    mizu_call(.source = "if (x %in% 3:4) Sys.sleep(30) else x"),
+    list(),
+    chunks = 4
+  )
+  mizu:::map_stream_prime(p, st, Inf)
+  victim <- -1
+  expect_true(wait_until(
+    {
+      d <- mizu_pool_dump(p)
+      pend <- d[["tasks"]][
+        d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L,
+      ]
+      hit <- any(d[["tasks"]][["status"]] == "ok") && nrow(pend) >= 1L
+      if (hit) {
+        victim <- d[["workers"]][["pid"]][pend[["worker"]][[1L]] + 1L]
+      }
+      hit
+    },
+    timeout = 10
+  ))
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  }
+  kill_hard(victim)
+  e <- tryCatch(
+    {
+      for (i in 1:4) {
+        mizu:::map_stream_turn(p, st, mizu:::mono_time() + 30)
+      }
+      NULL
+    },
+    error = function(e) e
+  )
+  expect_s3_class(e, "mizu_error_worker_died")
+})
+
+test_that("a death drained beside an error takes the death verdict", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  on.exit(mizu_pool_stop(p))
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  st <- mizu:::map_stage_stream(
+    p,
+    1:8,
+    mizu_call(
+      .source = 'if (x == 1L) stop("boom") else if (x %in% 3:4) Sys.sleep(30) else x'
+    ),
+    list(),
+    chunks = 4
+  )
+  mizu:::map_stream_prime(p, st, Inf)
+  victim <- -1
+  expect_true(wait_until(
+    {
+      d <- mizu_pool_dump(p)
+      pend <- d[["tasks"]][
+        d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L,
+      ]
+      hit <- any(d[["tasks"]][["status"]] == "err") && nrow(pend) >= 1L
+      if (hit) {
+        victim <- d[["workers"]][["pid"]][pend[["worker"]][[1L]] + 1L]
+      }
+      hit
+    },
+    timeout = 10
+  ))
+  if (!(victim > 0)) {
+    stop("no victim pid")
+  }
+  kill_hard(victim)
+  # the turn's drain is non-blocking: the death verdict must have landed
+  expect_true(wait_until(
+    "died" %in% mizu_pool_dump(p)[["tasks"]][["status"]],
+    timeout = 10
+  ))
+  e <- tryCatch(
+    mizu:::map_stream_turn(p, st, mizu:::mono_time() + 30),
+    error = function(e) e
+  )
+  expect_s3_class(e, "mizu_error_worker_died")
+})
+
+test_that("the map descriptor reader validates the 'I' shape", {
+  u64 <- function(x) {
+    lo <- x %% 2^32
+    hi <- (x - lo) / 2^32
+    c(
+      writeBin(as.integer(lo), raw(4L), endian = "little"),
+      writeBin(as.integer(hi), raw(4L), endian = "little")
+    )
+  }
+  magic <- as.raw(c(0x49, 0x01))
+  desc_stage <- function(bytes) {
+    .Call(mizu:::mizu_map_stage, bytes, NULL, NULL, 10, NULL, 1)[[2L]]
+  }
+  # not a two-element list
+  h <- desc_stage(c(magic, as.raw(0x0c), u64(1), as.raw(0)))
+  expect_error(.Call(mizu:::mizu_map_desc, h), "two-element list")
+  # no task tag in the first slot
+  h2 <- desc_stage(c(magic, as.raw(0x0c), u64(2), as.raw(0), as.raw(0)))
+  expect_error(.Call(mizu:::mizu_map_desc, h2), "no task tag")
+  # a kind-2 (runner) task is not a call spec
+  runner <- .Call(mizu:::mizu_interop_runner_call, "nm", 1, NULL, 2L, 1)
+  h3 <- desc_stage(c(magic, as.raw(0x0c), u64(2), runner[-c(1, 2)], as.raw(0)))
+  expect_error(.Call(mizu:::mizu_map_desc, h3), "not a call spec")
+  # trailing bytes after a valid descriptor
+  spec <- mizu_call("base::abs")
+  good <- .Call(mizu:::mizu_interop_map_desc_call, spec, NULL, 2L)
+  h4 <- desc_stage(c(good, as.raw(0)))
+  expect_error(.Call(mizu:::mizu_map_desc, h4), "mizu")
+})
+
+test_that("a streaming spec map re-classes an integer64 template gather", {
+  skip_if_not_installed("bit64")
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:8,
+    mizu_call(.source = "bit64::as.integer64(x)"),
+    list(),
+    template = bit64::as.integer64(1)
+  )
+  out <- run_stream(p, st)
+  expect_true(bit64::is.integer64(out))
+  expect_identical(out, bit64::as.integer64(1:8))
+  pool_end(p)
+})
+
+test_that("an infrastructure error on a drained spec sibling stays fatal", {
+  p <- pool_pair()
+  st <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:4,
+    mizu_call(.source = 'if (x == 1L) stop("boom") else x'),
+    list(),
+    chunks = 2
+  )
+  mizu:::map_stream_prime(p[["ctrl"]], st, Inf)
+  # a sibling whose chunk names a region that does not resolve: the
+  # worker's ctx attach fails outside f — not f's error, not a death, and
+  # it must re-raise rather than drain silently
+  h <- .Call(
+    mizu:::mizu_pool_submit_try,
+    p[["ctrl"]],
+    list(
+      quote(mizu:::map_stream_chunk("mizu-nonexistent", c(1, 2), 1:2)),
+      list()
+    ),
+    Inf,
+    0L
+  )
+  st[["handles"]][[3L]] <- h
+  st[["oi"]] <- c(st[["oi"]], 3L)
+  # drive the window: chunk 1 errors, chunk 2 ok, the bogus chunk's
+  # attach fails — claim order does not matter to the drain
+  for (i in seq_len(6L)) {
+    if (pool_step(p) != 1L) {
+      break
+    }
+  }
+  e <- tryCatch(
+    {
+      mizu:::map_stream_turn(p[["ctrl"]], st, Inf)
+      NULL
+    },
+    error = function(e) e
+  )
+  expect_s3_class(e, "mizu_error")
+  expect_false(inherits(e, "mizu_error_worker_died"))
+  expect_null(e[["mizu_map_index"]])
+  pool_end(p)
+})

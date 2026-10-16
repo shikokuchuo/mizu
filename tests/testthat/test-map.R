@@ -1638,3 +1638,133 @@ test_that("a spec map declines a non-portable constant at stage time", {
   )
   pool_end(p)
 })
+
+test_that("a dim-attributed x coerces to the element list", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- matrix(1:12, 3, 4)
+  expect_identical(run_map(p, x, identity), as.list(x))
+})
+
+test_that("a wrong-typed template value errors naming the type", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  expect_error(
+    run_map(p, 1:3, function(x) 1.5, template = logical(1)),
+    "type 'logical'"
+  )
+  expect_error(
+    run_map(p, 1:3, function(x) 1.5, template = raw(1)),
+    "type 'raw'"
+  )
+})
+
+test_that("the map srcref strip walks expression constants", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  e <- structure(expression(1, 2), srcref = "s", srcfile = "f")
+  f <- function(x) length(e)
+  body(f) <- substitute(length(e), list(e = e))
+  expect_identical(run_map(p, 1:3, f), list(2L, 2L, 2L))
+})
+
+test_that("mizu_map_stage validates its inputs", {
+  expect_error(
+    .Call(mizu:::mizu_map_stage, list(), NULL, 0, 1, NULL, 1),
+    "invalid map descriptor size"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_stage, list(1), "x", NULL, 1, NULL, 1),
+    "not eligible for the map raw section"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_stage, list(1), 1:10, NULL, 5, NULL, 1),
+    "not eligible for the map raw section"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_stage, list(1), NULL, NULL, 2^49, NULL, 1),
+    "map region too large"
+  )
+})
+
+test_that("mizu_map_splice validates and assembles batch results", {
+  out <- vector("list", 4)
+  expect_error(
+    .Call(mizu:::mizu_map_splice, 1:3, list(), 1),
+    "invalid map splice"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_splice, out, list(), 0),
+    "invalid morsel size"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_splice, out, list(42), 1),
+    "invalid map runner result"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_splice, out, list(list(5, 1, list(list("x")))), 1),
+    "invalid map batch range"
+  )
+  res <- list(list(c(0, 1), c(1, 1), list(list("a"), list("b"))))
+  .Call(mizu:::mizu_map_splice, out, res, 1)
+  expect_identical(out[1:2], list("a", "b"))
+  bad <- list(list(c(0), c(2), list(list("a"))))
+  expect_error(
+    .Call(mizu:::mizu_map_splice, out, bad, 1),
+    "length mismatch"
+  )
+})
+
+test_that("mizu_map_splice_ix validates and assembles foreign results", {
+  out <- vector("list", 4)
+  runs <- list(
+    list(list(c(0, 2)), list(list("a", "b"))),
+    list(list(list(2, 4)), list(list("c", "d")))
+  )
+  .Call(mizu:::mizu_map_splice_ix, out, runs, 0)
+  expect_identical(out, list("a", "b", "c", "d"))
+  .Call(mizu:::mizu_map_splice_ix, out, list(list(NULL, NULL)), 0)
+  runs2 <- list(list(list(c(0L, 1L)), list(list("z"))))
+  .Call(mizu:::mizu_map_splice_ix, out, runs2, 0)
+  expect_identical(out[[1L]], "z")
+  expect_error(
+    .Call(mizu:::mizu_map_splice_ix, out, "x", 0),
+    "invalid map splice"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_splice_ix, out, list("x"), 0),
+    "invalid map runner result"
+  )
+  expect_error(
+    .Call(
+      mizu:::mizu_map_splice_ix,
+      out,
+      list(list(list(c(3, 9)), list(list("x")))),
+      0
+    ),
+    "invalid map batch range"
+  )
+  expect_error(
+    .Call(
+      mizu:::mizu_map_splice_ix,
+      out,
+      list(list(list(c(0, 2)), list(list("x")))),
+      0
+    ),
+    "length mismatch"
+  )
+})
+
+test_that("mizu_map_asplice validates and writes in place", {
+  out <- double(6)
+  .Call(mizu:::mizu_map_asplice, out, 3, c(1, 2))
+  expect_identical(out, c(0, 0, 1, 2, 0, 0))
+  expect_error(
+    .Call(mizu:::mizu_map_asplice, out, 1, "x"),
+    "invalid map splice"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_asplice, out, 6, c(1, 2)),
+    "invalid map splice range"
+  )
+})

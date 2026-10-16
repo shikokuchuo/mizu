@@ -1416,3 +1416,251 @@ test_that("a re-sent map view degrades to a materializing copy", {
   channel_end(ch)
   pool_end(p)
 })
+
+test_that("vec views serve element, region, and serialize reads off the mapping", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  l <- rep(c(TRUE, FALSE, NA), length.out = 70000)
+  mizu_send(p$host, l)
+  lv <- mizu_recv(p$peer, 5)
+  expect_identical(lv[[1]], TRUE)
+  expect_identical(lv[[3]], NA)
+  expect_true(any(lv, na.rm = TRUE))
+  expect_identical(sum(lv[1:6], na.rm = TRUE), 2L)
+  z <- complex(70000, 1, 2)
+  mizu_send(p$host, z)
+  cv <- mizu_recv(p$peer, 5)
+  expect_identical(cv[[1]], 1 + 2i)
+  expect_identical(sum(Re(cv[1:3])), 3)
+  expect_identical(mean(cv), 1 + 2i)
+  expect_true(all(Im(cv) == 2))
+  r <- as.raw(seq_len(70000) %% 256L)
+  mizu_send(p$host, r)
+  rv <- mizu_recv(p$peer, 5)
+  expect_identical(rv[[1]], as.raw(1))
+  expect_identical(rv[1:4], r[1:4])
+  i <- seq_len(70000) + 0L
+  mizu_send(p$host, i)
+  iv <- mizu_recv(p$peer, 5)
+  expect_identical(iv[[7]], 7L)
+  expect_identical(mean(iv), mean(i))
+  expect_identical(unserialize(serialize(cv, NULL)), z)
+  expect_identical(unserialize(serialize(rv, NULL)), r)
+})
+
+test_that("a verbatim uint64 frame column serves view reads", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair(ident = c(2L, 71L)) # MIZS + ATTRS + MIZL + U64V
+  on.exit(channel_end(p))
+  u <- arrow::Array$create(
+    rep(c(42, 2^53, 7, 2^40), length.out = 9000)
+  )$cast(arrow::uint64())
+  df <- arrow::arrow_table(x = runif(9000), u = u)
+  mizu_send(p$host, df)
+  out <- mizu_recv(p$peer, 5)
+  col <- out[["u"]]
+  expect_true(is_view(col))
+  expect_identical(length(col), 9000L)
+  expect_identical(col[[1]], 42)
+  expect_identical(col[[2]], 2^53)
+  expect_identical(col[3:4], c(7, 2^40))
+  expect_identical(col[1:4], c(42, 2^53, 7, 2^40))
+  col[1] <- 99 # COW: the converted values move into data2
+  expect_identical(col[[1]], 99)
+  expect_identical(col[1:4], c(99, 2^53, 7, 2^40))
+})
+
+test_that("string views serve element, length, and serialize reads", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta", NA, "héllo ✓"), length.out = 70000)
+  mizu_send(p$host, s)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  expect_identical(v[[1]], "alpha")
+  expect_identical(v[[3]], NA_character_)
+  expect_identical(length(v), 70000L)
+  expect_identical(v[1:4], s[1:4])
+  expect_identical(unserialize(serialize(v, NULL)), s)
+})
+
+test_that("list views serve element and serialize reads", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- list(runif(30000), c("a", "b"), as.list(letters))
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  expect_identical(length(v), 3L)
+  expect_identical(v[[2]], c("a", "b"))
+  expect_identical(v[[3]], as.list(letters))
+  expect_identical(unserialize(serialize(v, NULL)), x)
+})
+
+test_that("a compact sequence leaf writes off the region accessors", {
+  p <- foreign_pair(caps = 4L) # MIZL: the foreign gate admits the ALTREP leaf
+  on.exit(channel_end(p))
+  x <- list(1:100000, runif(70000))
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  expect_identical(v[[1]], 1:100000)
+  expect_identical(v[[2]], x[[2]])
+})
+
+test_that("the layout NA scan covers complex and integer64", {
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  z <- complex(70000, 1, 2)
+  z[3] <- NA_complex_
+  mizu_send(p$host, z)
+  expect_identical(mizu_recv(p$peer, 5), z)
+  i <- bit64::as.integer64(seq_len(70000))
+  i[4] <- bit64::NA_integer64_
+  mizu_send(p$host, i)
+  expect_identical(mizu_recv(p$peer, 5), i)
+})
+
+test_that("an S4 pairlist keeps the serialize tiers", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- asS4(pairlist(1, "two"))
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("the foreign zc gates decline to the 'I' copy per capability", {
+  p <- foreign_pair() # caps 0
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta"), length.out = 70000)
+  mizu_send(p$host, s)
+  expect_identical(mizu_recv(p$peer, 5), s)
+  x <- as.list(runif(70000))
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("a foreign string vector stages as MIZS with the bit", {
+  p <- foreign_pair(caps = 1L)
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta", "héllo ✓"), length.out = 70000)
+  mizu_send(p$host, s)
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is_view(out))
+  expect_identical(out[], s)
+})
+
+test_that("a foreign frame with a view column declines without MIZL_REF", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, runif(70000))
+  v <- mizu_recv(p$peer, 5)
+  df <- data.frame(x = runif(70000))
+  df$v <- v
+  p2 <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL, no MIZL_REF
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2$host, df)
+  expect_identical(mizu_recv(p2$peer, 5), df)
+})
+
+test_that("the foreign tree walk verdicts per leaf shape and caps", {
+  p <- foreign_pair(caps = 4L) # MIZL without ATTRS: a factor leaf rejects
+  on.exit(channel_end(p))
+  x <- list(factor(c("a", "b")), runif(70000))
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+  p2 <- foreign_pair(caps = 6L) # MIZL + ATTRS
+  on.exit(channel_end(p2), add = TRUE)
+  z <- list(rep("x", 100), runif(70000)) # a string leaf short of MIZS
+  mizu_send(p2$host, z)
+  expect_identical(mizu_recv(p2$peer, 5), z)
+  # a named atomic leaf rejects the walk, and the 'I' writer names it
+  y <- list(stats::setNames(1:10, letters[1:10]), runif(70000))
+  expect_error(mizu_send(p2$host, y), class = "mizu_error_not_portable")
+  sa <- structure(rep("x", 100), foo = 1L) # an attributed string leaf
+  w <- list(sa, runif(70000))
+  expect_error(mizu_send(p2$host, w), class = "mizu_error_not_portable")
+})
+
+test_that("a view nested in a foreign tree keeps the tree on the copy tiers", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, runif(70000))
+  v <- mizu_recv(p$peer, 5)
+  p2 <- foreign_pair(caps = 6L)
+  on.exit(channel_end(p2), add = TRUE)
+  x <- list(v, runif(70000))
+  mizu_send(p2$host, x)
+  out <- mizu_recv(p2$peer, 5)
+  expect_identical(out[[1]][], x[[1]][])
+  expect_identical(out[[2]], x[[2]])
+})
+
+test_that("views re-sent foreign take the copy path short of capabilities", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta"), length.out = 70000)
+  mizu_send(p$host, s)
+  v <- mizu_recv(p$peer, 5)
+  p2 <- foreign_pair(caps = 0L) # no MIZS: the string view copies
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2$host, v)
+  expect_identical(mizu_recv(p2$peer, 5), s)
+  xa <- runif(70000)
+  names(xa) <- paste0("n", seq_along(xa))
+  mizu_send(p$host, xa)
+  va <- mizu_recv(p$peer, 5)
+  expect_true(is_view(va))
+  # the REF filter declines short of ATTRS, the 'I' writer naming the node
+  p3 <- foreign_pair(caps = 0L)
+  on.exit(channel_end(p3), add = TRUE)
+  expect_error(mizu_send(p3$host, va), class = "mizu_error_not_portable")
+})
+
+test_that("a view's serialized state rejects a mangled identifier", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, runif(70000))
+  v <- mizu_recv(p$peer, 5)
+  nm <- .Call(mizu:::mizu_zc_view_name, v)
+  ser <- serialize(v, NULL)
+  at <- grepRaw(charToRaw(nm), ser, fixed = TRUE)
+  expect_true(at > 0)
+  ser[at:(at + nchar(nm) - 1L)] <- charToRaw(strrep("z", nchar(nm)))
+  expect_error(unserialize(ser), "invalid serialized state")
+  s <- rep(c("alpha", "beta"), length.out = 70000)
+  mizu_send(p$host, s)
+  sv <- mizu_recv(p$peer, 5)
+  snm <- .Call(mizu:::mizu_zc_view_name, sv)
+  sser <- serialize(sv, NULL)
+  sat <- grepRaw(charToRaw(snm), sser, fixed = TRUE)
+  expect_true(sat > 0)
+  sser[sat:(sat + nchar(snm) - 1L)] <- charToRaw(strrep("z", nchar(snm)))
+  expect_error(unserialize(sser), "invalid serialized state")
+})
+
+test_that("a nested view in an arena-tier payload pins its region", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(70000)
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  mizu_send(p$peer, list(v, strrep("x", 1000)))
+  out <- mizu_recv(p$host, 5)
+  expect_identical(out[[1L]], x)
+  expect_identical(out[[2L]], strrep("x", 1000))
+})
+
+test_that("the pin chain splices its tombstoned cells", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(70000)
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  for (i in seq_len(80L)) {
+    mizu_send(p$peer, list(v, strrep("x", 64)))
+    expect_identical(mizu_recv(p$host, 5)[[1L]], x)
+  }
+})

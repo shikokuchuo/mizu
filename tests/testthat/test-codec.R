@@ -277,3 +277,66 @@ test_that("the reader rejects malformed streams", {
   bad[2] <- as.raw(0x81)
   expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
 })
+
+test_that("the reader validates stream bounds and shapes", {
+  u32 <- function(x) writeBin(as.integer(x), raw(4L), endian = "little")
+  u64 <- function(x) {
+    stopifnot(x >= 0 && x < 2^53)
+    lo <- x %% 2^32
+    hi <- (x - lo) / 2^32
+    if (lo >= 2^31) {
+      lo <- lo - 2^32 # writeBin takes the signed interpretation
+    }
+    c(
+      writeBin(as.integer(lo), raw(4L), endian = "little"),
+      writeBin(as.integer(hi), raw(4L), endian = "little")
+    )
+  }
+  magic <- as.raw(0x52)
+  # a string element's length past INT32_MAX
+  bad <- c(magic, as.raw(0x07), u64(1), u32(0), u32(4))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # an attribute count past the stream's remaining bytes
+  bad <- c(magic, as.raw(0x13), u64(1), u32(0x7fffffff))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # an NA attribute name
+  bad <- c(magic, as.raw(0x13), u64(1), u32(1), u32(-1))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # an atomic vector's length past the stream's remaining bytes
+  bad <- c(magic, as.raw(0x04), u64(2^40))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # a string vector's length past the stream's remaining bytes
+  bad <- c(magic, as.raw(0x07), u64(2^40))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # a list's length past the stream's remaining bytes
+  bad <- c(magic, as.raw(0x08), u64(2^40))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # a primitive name resolving to a non-primitive base object
+  bad <- c(magic, as.raw(0x81), u32(8), u32(0), charToRaw(".Machine"))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # a namespace environment reference with an NA name
+  bad <- c(magic, as.raw(0x0e), as.raw(0x03), u32(-1))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # a frame leaf with a zero-length region name
+  expect_error(
+    .Call(mizu:::mizu_codec_read_call, c(magic, as.raw(0x28), as.raw(0))),
+    "corrupt"
+  )
+  # a frame leaf whose name overruns the stream
+  bad <- c(magic, as.raw(0x28), as.raw(10), as.raw(1:3))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # the depth cap
+  deep <- c(magic, rep(c(as.raw(0x08), u64(1)), 501), as.raw(0))
+  expect_error(.Call(mizu:::mizu_codec_read_call, deep), "corrupt")
+})
+
+test_that("row.names that are not the 1:n sequence decline the codec", {
+  df <- data.frame(x = c(1L, 2L, 3L))
+  row.names(df) <- 2:4
+  expect_null(.Call(mizu:::mizu_codec_write_call, df))
+  # through a channel the same frame falls back to R_Serialize intact
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, df)
+  expect_identical(mizu_recv(p$peer, 5), df)
+})

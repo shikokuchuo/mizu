@@ -693,3 +693,31 @@ ch.send(t2)                        # i and l cross as remote leaves
   rm(st, tab, back)
   expect_true(mizu_close(ch, timeout = 10))
 })
+
+
+test_that("numpy ns temporals land as POSIXct and difftime", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import numpy as np
+import pymizu
+ch.send(np.arange('2024-01-01', '2024-02-01', dtype='datetime64[D]').astype('datetime64[ns]'))
+ch.send(np.arange(70000).astype('timedelta64[ns]'))
+while True:
+    x = ch.recv(30)
+    if pymizu.is_sentinel(x):
+        break
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  pt <- mizu_recv(ch, 30)
+  expect_s3_class(pt, "POSIXct")
+  expect_identical(
+    pt,
+    as.POSIXct("2024-01-01", tz = "UTC") + (0:30) * 86400
+  )
+  td <- mizu_recv(ch, 30)
+  expect_s3_class(td, "difftime")
+  expect_identical(td, as.difftime(0:69999 * 1e-9, units = "secs"))
+  expect_true(mizu_close(ch, timeout = 10))
+})

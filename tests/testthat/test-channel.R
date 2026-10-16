@@ -237,3 +237,13 @@ test_that("an overlong liveness directory is rejected before create", {
     "liveness directory path too long"
   )
 })
+
+test_that("the test identity override validates its shape", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  suffix <- .Call(mizu:::mizu_channel_suffix, p$host)
+  expect_error(
+    .Call(mizu:::mizu_channel_attach, suffix, 42L),
+    "identity pair"
+  )
+})

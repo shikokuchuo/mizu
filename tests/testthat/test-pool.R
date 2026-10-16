@@ -974,3 +974,65 @@ test_that("collect_any reports completion order across real workers", {
   expect_identical(mizu_collect(slow, timeout = 30), "slow")
   expect_true(mizu_pool_stop(p, timeout = 10))
 })
+
+test_that("submit validates the task argument list", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  expect_error(
+    .Call(mizu:::mizu_pool_submit_expr, p$ctrl, quote(1), "x", 0, 0L),
+    "list of task arguments"
+  )
+})
+
+test_that("submit_call validates the spec shape", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  bad <- structure(list("x", "notint", list(), list()), class = "mizu_call")
+  expect_error(mizu_submit_call(p$ctrl, bad), "mizu_call")
+})
+
+test_that("a map runner submit needs a joined worker", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+  on.exit(.Call(mizu:::mizu_pool_destroy, ctrl))
+  expect_error(
+    .Call(mizu:::mizu_pool_submit_map_runner, ctrl, list(), Inf),
+    "no worker has joined"
+  )
+})
+
+test_that("pool_run refuses a worker handle with no evaluator", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+  on.exit(.Call(mizu:::mizu_pool_destroy, ctrl))
+  suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)
+  wk <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
+  on.exit(.Call(mizu:::mizu_pool_leave, wk), add = TRUE)
+  expect_error(.Call(mizu:::mizu_pool_run, wk, 0), "no evaluator registered")
+})
+
+test_that("a collected task probes as collected", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p$ctrl, 1 + 1)
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 2)
+  expect_identical(.Call(mizu:::mizu_pool_task_state, t), "collected")
+})
+
+test_that("a map runner submit validates the spec shape", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  expect_error(
+    .Call(mizu:::mizu_pool_submit_map_runner, p$ctrl, list("x", "g", NULL), Inf),
+    "malformed map runner spec"
+  )
+})
+
+test_that("a spec task past the inline budget spills its stream", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- runif(13000) # past the zc floor: a recorded candidate
+  s <- strrep("x", 1000) # the remainder fits no inline write
+  t <- mizu_submit_call(p$ctrl, mizu_call("base::list", x, s))
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), list(x, s))
+})

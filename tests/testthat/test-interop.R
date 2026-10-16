@@ -915,3 +915,461 @@ test_that("the stream read dispatches, declines and fails informatively", {
   expect_s3_class(r, "mizu_error_python_payload")
   expect_error(.Call(mizu:::mizu_stream_read_call, raw(0)), "mizu:")
 })
+
+test_that("the foreign string gate declines latin1 and bytes marks", {
+  p <- foreign_pair(caps = 1L) # MIZS
+  on.exit(channel_end(p))
+  lx <- iconv(
+    rep(c("héllo", "wörld"), length.out = 70000),
+    from = "UTF-8",
+    to = "latin1"
+  )
+  # a latin1 vector takes the 'I' copy, translated
+  mizu_send(p$host, lx)
+  expect_identical(mizu_recv(p$peer, 5), lx)
+  bx <- rep("ok", 70000)
+  bx[1] <- "héllo"
+  Encoding(bx[1]) <- "bytes"
+  expect_error(mizu_send(p$host, bx), class = "mizu_error_not_portable")
+  # a native-marked string whose bytes are not valid UTF-8
+  expect_error(
+    mizu_send(p$host, rep(rawToChar(as.raw(c(0x41, 0x80))), 70000)),
+    class = "mizu_error_not_portable"
+  )
+  bv <- "héllo"
+  Encoding(bv) <- "bytes"
+  expect_error(
+    mizu_send(p$host, list(bv, 1L)),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, c("ok", bv)),
+    class = "mizu_error_not_portable"
+  )
+})
+
+test_that("temporal qualification declines unknown or missing units", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  expect_error(
+    mizu_send(p$host, structure(1, class = "difftime", units = NA_character_)),
+    class = "mizu_error_not_portable"
+  )
+})
+
+test_that("frame row.names qualify per shape", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  # the compact form
+  old <- structure(
+    list(x = 1:3),
+    class = "data.frame",
+    row.names = c(NA_integer_, -3L)
+  )
+  mizu_send(p$host, old)
+  expect_identical(mizu_recv(p$peer, 5), old)
+  # explicit integer row.names, sequence and not
+  seqdf <- structure(list(x = 1:3), class = "data.frame", row.names = 1:3)
+  mizu_send(p$host, seqdf)
+  expect_identical(mizu_recv(p$peer, 5), seqdf)
+  shuf <- structure(
+    list(x = 1:3),
+    class = "data.frame",
+    row.names = c(3L, 1L, 2L)
+  )
+  mizu_send(p$host, shuf)
+  expect_identical(mizu_recv(p$peer, 5), shuf)
+  # a short row.names vector declines
+  bad <- structure(list(x = 1:3), class = "data.frame", row.names = 1:2)
+  expect_error(mizu_send(p$host, bad), class = "mizu_error_not_portable")
+  # character row.names with an NA decline
+  nadf <- structure(
+    list(x = 1:3),
+    class = "data.frame",
+    row.names = c("a", NA, "c")
+  )
+  expect_error(mizu_send(p$host, nadf), class = "mizu_error_not_portable")
+})
+
+test_that("the row.names sequence scan runs past the flat threshold", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  big <- structure(
+    list(x = runif(9000)),
+    class = "data.frame",
+    row.names = c(9000:1)
+  )
+  mizu_send(p$host, big)
+  expect_identical(mizu_recv(p$peer, 5), big)
+  # a materialized 1:n scans as the sequence at both scan sizes
+  small <- structure(
+    list(x = 1:3),
+    class = "data.frame",
+    row.names = 1:3 + 0L
+  )
+  mizu_send(p$host, small)
+  expect_identical(mizu_recv(p$peer, 5), small)
+  seqbig <- structure(
+    list(x = runif(9000)),
+    class = "data.frame",
+    row.names = seq_len(9000) + 0L
+  )
+  mizu_send(p$host, seqbig)
+  expect_identical(mizu_recv(p$peer, 5), seqbig)
+})
+
+test_that("a COW-materialized view crosses foreign by value", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  z <- complex(70000, 1, 2)
+  mizu_send(p$host, z)
+  cv <- mizu_recv(p$peer, 5)
+  cv[1] <- 0 + 0i
+  r <- as.raw(seq_len(70000) %% 256L)
+  mizu_send(p$host, r)
+  rv <- mizu_recv(p$peer, 5)
+  rv[1] <- as.raw(0)
+  p2 <- foreign_pair(caps = 0L)
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2$host, cv)
+  expect_identical(mizu_recv(p2$peer, 5), cv)
+  mizu_send(p2$host, rv)
+  expect_identical(mizu_recv(p2$peer, 5), rv)
+})
+
+test_that("nested length-1 ALTREP scalars write off the region accessors", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  x <- list(1:1, seq(1, 1, by = 1), 1L)
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("nested S4-bit objects decline", {
+  methods::setClass("track", representation(x = "numeric"))
+  on.exit(methods::removeClass("track"), add = TRUE)
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  expect_error(
+    mizu_send(p$host, list(methods::new("track", x = 1), 1L)),
+    class = "mizu_error_not_portable"
+  )
+  # the bit on an ordinary vector, no formal class needed
+  expect_error(
+    mizu_send(p$host, list(asS4(list(1L)), 1L)),
+    class = "mizu_error_not_portable"
+  )
+  expect_error(
+    mizu_send(p$host, list(asS4("x"), 1L)),
+    class = "mizu_error_not_portable"
+  )
+})
+
+test_that("the map descriptor writer validates its arguments", {
+  spec <- mizu_call("stats::median", 1:3)
+  expect_error(
+    .Call(mizu:::mizu_interop_map_desc_call, "notaspec", NULL, 2L),
+    "malformed mizu_call spec"
+  )
+  expect_error(
+    .Call(mizu:::mizu_interop_map_desc_call, spec, 42, 2L),
+    "malformed map descriptor x"
+  )
+})
+
+test_that("the err writer frames call text and falls back on odd classes", {
+  cond <- errorCondition("boom", call = quote(worker_fn(1:3)))
+  s <- .Call(mizu:::mizu_interop_write_err_call, cond, 240L)
+  expect_true(grepRaw("worker_fn", s, fixed = TRUE) > 0)
+  odd <- structure(list(message = "odd"), class = NA_character_)
+  s2 <- .Call(mizu:::mizu_interop_write_err_call, odd, 240L)
+  expect_true(length(s2) > 0)
+})
+
+test_that("a zero-row frame's blob row.names normalize", {
+  p <- foreign_pair(caps = 6L) # ATTRS + MIZL
+  on.exit(channel_end(p))
+  z <- structure(
+    list(x = numeric(0)),
+    class = "data.frame",
+    row.names = integer(0)
+  )
+  mizu_send(p$host, z)
+  expect_identical(mizu_recv(p$peer, 5), z)
+})
+
+test_that("the task writer's size pass counts a zero-copy candidate", {
+  spec <- list(
+    code = "f",
+    kind = 0L,
+    positional = list(runif(40000)),
+    named = list(),
+    target = 2L,
+    ident = 1
+  )
+  s <- ix_write_task(spec)
+  expect_true(nchar(s) > 0)
+})
+
+test_that("the attr shape builder rejects malformed attribute sets", {
+  u64 <- function(x) {
+    stopifnot(x >= 0 && x < 2^53)
+    lo <- x %% 2^32
+    hi <- (x - lo) / 2^32
+    if (lo >= 2^31) {
+      lo <- lo - 2^32
+    }
+    c(
+      writeBin(as.integer(lo), raw(4L), endian = "little"),
+      writeBin(as.integer(hi), raw(4L), endian = "little")
+    )
+  }
+  u32 <- function(x) writeBin(as.integer(x), raw(4L), endian = "little")
+  i64 <- function(x) {
+    neg <- x < 0
+    x <- abs(x)
+    lo <- x %% 2^32
+    hi <- (x - lo) / 2^32
+    if (neg) {
+      lo <- 2^32 - lo
+      hi <- 2^32 - 1 - hi
+    }
+    c(
+      writeBin(as.integer(if (lo >= 2^31) lo - 2^32 else lo), raw(4L), endian = "little"),
+      writeBin(as.integer(if (hi >= 2^31) hi - 2^32 else hi), raw(4L), endian = "little")
+    )
+  }
+  s_str <- function(s) c(u32(nchar(s, "bytes")), charToRaw(s))
+  intv <- function(v) {
+    if (!length(v)) {
+      return(c(as.raw(0x07), u64(0)))
+    }
+    c(as.raw(0x07), u64(length(v)), do.call(c, lapply(v, u32)))
+  }
+  realv <- function(v) c(as.raw(0x08), u64(length(v)), writeBin(v, raw(0), size = 8L))
+  strv <- function(v) {
+    c(as.raw(0x0b), u64(length(v)), do.call(c, lapply(v, function(s) {
+      if (is.na(s)) u32(-1L) else s_str(s)
+    })))
+  }
+  i_list <- function(...) {
+    xs <- list(...)
+    c(as.raw(0x0c), u64(length(xs)), do.call(c, xs))
+  }
+  i_dict <- function(...) {
+    xs <- list(...)
+    items <- do.call(c, lapply(names(xs), function(k) c(s_str(k), xs[[k]])))
+    c(as.raw(0x0d), u64(length(xs)), items)
+  }
+  attr_of <- function(item, dict) c(as.raw(0x0f), item, dict)
+  magic <- as.raw(c(0x49, 0x01))
+  df_shape <- function(cols, names, rn) {
+    attr_of(
+      do.call(i_list, cols),
+      i_dict(names = strv(names), class = strv("data.frame"), row.names = rn)
+    )
+  }
+  rd <- function(bytes) .Call(mizu:::mizu_interop_read_call, c(magic, bytes))
+  # duplicated column names
+  expect_error(
+    rd(df_shape(list(intv(1:2)), c("x", "x"), intv(c(NA, -2)))),
+    "no portable home"
+  )
+  # a list column
+  expect_error(
+    rd(df_shape(list(i_list(intv(1L))), "x", intv(c(NA, -1)))),
+    "no portable home"
+  )
+  # a column carrying an out-of-shape attribute
+  expect_error(
+    rd(df_shape(
+      list(attr_of(intv(1:2), i_dict(foo = c(as.raw(0x02), i64(1))))),
+      "x",
+      intv(c(NA, -2))
+    )),
+    "no portable home"
+  )
+  # column lengths disagreeing
+  expect_error(
+    rd(df_shape(list(intv(1:2), intv(1L)), c("a", "b"), intv(c(NA, -2)))),
+    "no portable home"
+  )
+  # a compact row.names naming the wrong count
+  expect_error(
+    rd(df_shape(list(intv(1:2)), "x", intv(c(NA, -5)))),
+    "no portable home"
+  )
+  # an NA in character row.names
+  expect_error(
+    rd(df_shape(list(intv(1:2)), "x", strv(c("a", NA)))),
+    "no portable home"
+  )
+  # a dim product disagreeing with the length
+  expect_error(
+    rd(attr_of(
+      intv(1:3),
+      i_dict(dim = intv(c(2L, 2L)))
+    )),
+    "no portable home"
+  )
+  # an NA dim entry
+  expect_error(
+    rd(attr_of(
+      intv(1:2),
+      i_dict(dim = intv(c(2L, NA)))
+    )),
+    "no portable home"
+  )
+  # a tzone that is not length-1
+  expect_error(
+    rd(attr_of(
+      realv(1),
+      i_dict(
+        class = strv(c("POSIXct", "POSIXt")),
+        tzone = strv(c("a", "b"))
+      )
+    )),
+    "no portable home"
+  )
+  # a factor's non-integer value
+  expect_error(
+    rd(attr_of(
+      realv(1),
+      i_dict(levels = strv("a"), class = strv("factor"))
+    )),
+    "no portable home"
+  )
+  # a dim-attributed column: homes itself, out of the frame's whitelist
+  expect_error(
+    rd(df_shape(
+      list(attr_of(intv(c(1L, 2L)), i_dict(dim = intv(2L)))),
+      "x",
+      intv(c(NA, -2))
+    )),
+    "no portable home"
+  )
+  # row.names of an unexpected type
+  expect_error(
+    rd(df_shape(list(intv(1:2)), "x", realv(c(1, 2)))),
+    "no portable home"
+  )
+  # short character row.names
+  expect_error(
+    rd(df_shape(list(intv(1:2)), "x", strv("a"))),
+    "no portable home"
+  )
+  # a dim array over a character value
+  expect_error(
+    rd(attr_of(strv(c("a", "b")), i_dict(dim = intv(2L)))),
+    "no portable home"
+  )
+})
+
+test_that("a foreign-identity task publishes the foreign result formats", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  spec <- list("base::stop", 0L, list("boom"), list())
+  t <- .Call(mizu:::mizu_pool_submit_spec, p$ctrl, spec, Inf, c(3L, 8L))
+  pool_step(p)
+  e <- tryCatch(mizu_collect(t, 5), error = function(e) e)
+  expect_s3_class(e, "mizu_error_remote")
+  ok <- .Call(
+    mizu:::mizu_pool_submit_spec,
+    p$ctrl,
+    list("base::paste", 0L, list("a", "b"), list(sep = "-")),
+    Inf,
+    c(3L, 8L)
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(ok, 5), "a-b")
+  bad <- .Call(
+    mizu:::mizu_pool_submit_spec,
+    p$ctrl,
+    list("if (", 1L, list(), list()),
+    Inf,
+    c(3L, 8L)
+  )
+  pool_step(p)
+  e2 <- tryCatch(mizu_collect(bad, 5), error = function(e) e)
+  expect_s3_class(e2, "mizu_error_remote")
+})
+
+test_that("a compact sequence crosses foreign by value", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, 1:100000)
+  expect_identical(mizu_recv(p$peer, 5), 1:100000)
+})
+
+test_that("a spec task stages a fitting candidate as a by-reference region", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- runif(40000)
+  t <- mizu_submit_call(p$ctrl, mizu_call("base::sum", x))
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), sum(x))
+})
+
+test_that("a spec task argument re-sends a view by reference", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ch <- channel_pair()
+  on.exit(channel_end(ch), add = TRUE)
+  x <- runif(70000)
+  mizu_send(ch$host, x)
+  v <- mizu_recv(ch$peer, 5)
+  t <- mizu_submit_call(p$ctrl, mizu_call("base::sum", v))
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), sum(x))
+})
+
+test_that("a spec task falls back to a value write short of ref caps", {
+  ch <- channel_pair()
+  on.exit(channel_end(ch))
+  s <- rep(c("alpha", "beta"), length.out = 70000)
+  mizu_send(ch$host, s)
+  v <- mizu_recv(ch$peer, 5)
+  p <- pool_pair(ident = c(2L, 0L)) # an R pool advertising no capabilities
+  on.exit(pool_end(p), add = TRUE)
+  t <- mizu_submit_call(p$ctrl, mizu_call("base::paste0", v, collapse = "|"))
+  pool_step(p)
+  expect_identical(
+    mizu_collect(t, 5),
+    paste(rep(c("alpha", "beta"), length.out = 70000), collapse = "|")
+  )
+})
+
+test_that("a dim-attributed view crosses foreign through the region accessors", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  z <- matrix(complex(70000, 1, 2), nrow = 100)
+  mizu_send(p$host, z)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  p2 <- foreign_pair(caps = 0L) # no ATTRS: the dim blob rides the value writer
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2$host, v)
+  expect_identical(mizu_recv(p2$peer, 5), z)
+  r <- matrix(as.raw(seq_len(70000) %% 256L), nrow = 100)
+  mizu_send(p$host, r)
+  rv <- mizu_recv(p$peer, 5)
+  expect_true(is_view(rv))
+  mizu_send(p2$host, rv)
+  expect_identical(mizu_recv(p2$peer, 5), r)
+})
+
+test_that("an ALTREP header at the inline boundary flips to the count pass", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  x <- list(strrep("x", 220), 1:100)
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("the err writer falls back when a class string is not UTF-8", {
+  k <- "héllo"
+  Encoding(k) <- "bytes"
+  cond <- structure(list(message = "odd"), class = k)
+  s <- .Call(mizu:::mizu_interop_write_err_call, cond, 240L)
+  expect_true(grepRaw("error", s, fixed = TRUE) > 0)
+})

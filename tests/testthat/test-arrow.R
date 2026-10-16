@@ -1017,3 +1017,196 @@ test_that("conversion counts fire at a pool publish after the write half", {
   expect_true(is_view(out))
   expect_identical(out$i[1:3], c(1L, NA_integer_, NA_integer_))
 })
+
+test_that("a nested table at or under the gate converts by value", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(a = 1:3, b = bit64::as.integer64(c(4, 5, NA)))
+  mizu_send(p$host, list(arrow::arrow_table(df), "x"))
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(out, list(df, "x"))
+  expect_false(is_view(out[[1L]]))
+})
+
+test_that("a table occurring twice dedupes to one frame leaf", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  m <- arrow_matrix()
+  mizu_send(p$host, list(m$tab, m$tab))
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(out[[1L]], m$want)
+  expect_identical(out[[2L]], m$want)
+})
+
+test_that("an ALTREP sibling of a table falls back to R_Serialize", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  m <- arrow_matrix()
+  mizu_send(p$host, list(m$tab, 1:5))
+  out <- mizu_recv(p$peer, 5)
+  expect_true(inherits(out[[1L]], "ArrowTabular"))
+  expect_identical(out[[2L]], 1:5)
+})
+
+test_that("a frame declined at the stage converts and crosses by value", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities
+  on.exit(channel_end(p))
+  df <- data.frame(
+    x = runif(6000),
+    s = rep(c("alpha", "beta", NA), length.out = 6000)
+  )
+  mizu_send(p$host, nanoarrow::as_nanoarrow_array_stream(df))
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(out[], df)
+})
+
+test_that("a released stream raises the pull failure", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  st <- nanoarrow::as_nanoarrow_array_stream(data.frame(x = 1:3))
+  st$release()
+  expect_error(mizu_send(p$host, st), "the Arrow stream failed")
+})
+
+test_that("the export call validates its arguments", {
+  skip_if_not_installed("nanoarrow")
+  arr <- nanoarrow::nanoarrow_allocate_array()
+  expect_error(
+    .Call(mizu:::mizu_arrow_export, 1:3, list(arr)),
+    "corrupt arrow export call"
+  )
+  expect_error(
+    .Call(mizu:::mizu_arrow_export, data.frame(a = 1), list(arr, arr)),
+    "corrupt arrow export call"
+  )
+})
+
+test_that("a cleared array extptr fails the export pre-fill", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, runif(40000))
+  v <- mizu_recv(p$peer, 5)
+  dud <- unserialize(serialize(nanoarrow::nanoarrow_allocate_array(), NULL))
+  expect_error(
+    .Call(mizu:::mizu_arrow_export, data.frame(x = v), list(dud)),
+    "corrupt arrow export call"
+  )
+})
+
+test_that("the export borrows fixed-width views across the NA forms", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # sentinel-derived bitmap: the NAs scanned off the data
+  x <- c(runif(39999), NA_real_)
+  mizu_send(p$host, x)
+  vx <- mizu_recv(p$peer, 5)
+  ex <- arrow_export(data.frame(x = vx))
+  expect_true(ex$kinds[[1L]] != 0L)
+  expect_identical(array_value(ex$arrays[[1L]], nanoarrow::na_double()), x)
+  # no NAs: the built bitmap scans all-valid and frees
+  y <- runif(40000)
+  mizu_send(p$host, y)
+  vy <- mizu_recv(p$peer, 5)
+  ey <- arrow_export(data.frame(y = vy))
+  expect_true(ey$kinds[[1L]] != 0L)
+  expect_identical(array_value(ey$arrays[[1L]], nanoarrow::na_double()), y)
+  # the tail bitmap verbatim: a frame column's own validity
+  df <- data.frame(x = runif(6000))
+  df$x[[13]] <- NA
+  mizu_send(p$host, nanoarrow::as_nanoarrow_array_stream(df))
+  vf <- mizu_recv(p$peer, 5)
+  ef <- arrow_export(vf)
+  expect_true(ef$kinds[[1L]] != 0L)
+  expect_identical(array_value(ef$arrays[[1L]], nanoarrow::na_double()), df$x)
+})
+
+test_that("the string borrow gates on the wire encodings", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # latin1 marks cross same-language but decline the Arrow borrow
+  s <- iconv(
+    rep(c("héllo", "wörld"), length.out = 70000),
+    from = "UTF-8",
+    to = "latin1"
+  )
+  mizu_send(p$host, s)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  expect_identical(arrow_export(data.frame(s = v))$kinds[[1L]], 0L)
+  # a native mark failing UTF-8 validation declines likewise
+  mizu_send(p$host, rep(rawToChar(as.raw(c(0x41, 0x80))), 70000))
+  v2 <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v2))
+  expect_identical(arrow_export(data.frame(s = v2))$kinds[[1L]], 0L)
+})
+
+test_that("a list-view column takes the copy path", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, list(runif(30000), runif(30000), runif(30000)))
+  lv <- mizu_recv(p$peer, 5)
+  expect_true(is_view(lv))
+  df <- data.frame(a = 1:3)
+  df$b <- lv
+  expect_identical(arrow_export(df)$kinds[[2L]], 0L)
+})
+
+test_that("a dead producer degrades only its own columns to the copy path", {
+  skip_if_not_installed("nanoarrow")
+  skip_if_no_child_mizu()
+  ch <- mizu_channel(quote({
+    set.seed(42)
+    mizu_send(ch, runif(40000))
+    set.seed(43)
+    mizu_send(ch, runif(40000))
+  }))
+  on.exit(mizu_close(ch))
+  v1 <- mizu_recv(ch, 30)
+  v2 <- mizu_recv(ch, 30)
+  expect_true(is_view(v1))
+  # the peer quits after its sends; its region names unlink at exit
+  expect_true(wait_until(
+    inherits(
+      tryCatch(
+        .Call(
+          mizu:::mizu_region_open,
+          .Call(mizu:::mizu_zc_view_name, v1),
+          FALSE
+        ),
+        error = function(e) e
+      ),
+      "error"
+    )
+  ))
+  df <- data.frame(a = v1, b = v2)
+  ex <- arrow_export(df)
+  expect_identical(ex$kinds, c(0L, 0L))
+  # the values still read off the surviving consumer mappings
+  set.seed(42)
+  expect_identical(df$a[], runif(40000))
+  set.seed(43)
+  expect_identical(df$b[], runif(40000))
+})
+
+test_that("arrow_ptype keeps dictionary and int64 column forms", {
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  sch <- nanoarrow::infer_nanoarrow_schema(
+    data.frame(f = factor("a"), i = bit64::as.integer64(1))
+  )
+  expect_identical(mizu:::arrow_ptype(sch, TRUE)[[1L]], factor())
+  expect_identical(
+    mizu:::arrow_ptype(sch, FALSE)[[2L]],
+    bit64::integer64()
+  )
+})
