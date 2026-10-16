@@ -1118,7 +1118,13 @@ test_that("the export borrows fixed-width views across the NA forms", {
   ey <- arrow_export(data.frame(y = vy))
   expect_true(ey$kinds[[1L]] != 0L)
   expect_identical(array_value(ey$arrays[[1L]], nanoarrow::na_double()), y)
-  # the tail bitmap verbatim: a frame column's own validity
+})
+
+test_that("a frame column's export borrows its tail bitmap verbatim", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # standalone: sending past other live views trips the Linux churn fallback
   df <- data.frame(x = runif(6000))
   df$x[[13]] <- NA
   mizu_send(p$host, nanoarrow::as_nanoarrow_array_stream(df))
@@ -1162,6 +1168,7 @@ test_that("a list-view column takes the copy path", {
 })
 
 test_that("a dead producer degrades only its own columns to the copy path", {
+  skip_on_os("windows") # kernel objects have no unlink step to observe
   skip_if_not_installed("nanoarrow")
   skip_if_no_child_mizu()
   ch <- mizu_channel(quote({
