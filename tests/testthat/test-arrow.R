@@ -1176,11 +1176,15 @@ test_that("a dead producer degrades only its own columns to the copy path", {
     mizu_send(ch, runif(40000))
     set.seed(43)
     mizu_send(ch, runif(40000))
+    # hold until the host has both views — exiting earlier unlinks the
+    # regions ahead of a slow host's recv (valgrind CI gate)
+    mizu_recv(ch, 30)
   }))
   on.exit(mizu_close(ch))
   v1 <- mizu_recv(ch, 30)
   v2 <- mizu_recv(ch, 30)
   expect_true(is_view(v1))
+  mizu_send(ch, NULL)
   # the peer quits after its sends; its region names unlink at exit
   expect_true(wait_until(
     inherits(

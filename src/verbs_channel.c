@@ -251,12 +251,14 @@ SEXP mizu_channel_destroy_call(SEXP xp) {
 
 SEXP mizu_channel_attach_call(SEXP suffix_sexp, SEXP ident_sexp) {
   const char *suffix = mizu_r_suffix_arg(suffix_sexp);
+  /* a bad override raises — resolve it ahead of the ctx allocation */
+  const uint64_t ident = mizu_r_ident_override(ident_sexp, MIZU_R_IDENT);
 
   mizu_r_handle *h = calloc(1, sizeof(*h));
   if (h == NULL) Rf_error("mizu: allocation failure");
   mizu_binding b;
   chan_binding(h, &b);
-  b.ident = mizu_r_ident_override(ident_sexp, b.ident);
+  b.ident = ident;
   mizu_channel *c;
   if (mizu_channel_attach(&c, suffix, &b) != MIZU_OK) {
     free(h);

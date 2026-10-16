@@ -141,6 +141,16 @@ test_that("worker join is lock-before-CAS and rejects a held or taken slot", {
   pool_end(p)
 })
 
+test_that("the test identity override validates its shape", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  suffix <- .Call(mizu:::mizu_pool_suffix, p$ctrl)
+  expect_error(
+    .Call(mizu:::mizu_pool_worker_join, suffix, 0L, 42L),
+    "identity pair"
+  )
+})
+
 test_that("submitters claim distinct slots and subranges", {
   p <- pool_pair(max_submitters = 4L, result_slots = 32L)
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
@@ -1022,7 +1032,12 @@ test_that("a map runner submit validates the spec shape", {
   p <- pool_pair()
   on.exit(pool_end(p))
   expect_error(
-    .Call(mizu:::mizu_pool_submit_map_runner, p$ctrl, list("x", "g", NULL), Inf),
+    .Call(
+      mizu:::mizu_pool_submit_map_runner,
+      p$ctrl,
+      list("x", "g", NULL),
+      Inf
+    ),
     "malformed map runner spec"
   )
 })

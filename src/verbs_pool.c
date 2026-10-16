@@ -306,12 +306,14 @@ SEXP mizu_pool_worker_join_call(SEXP suffix_sexp, SEXP slot_sexp,
                                 SEXP ident_sexp) {
   const char *suffix = mizu_r_suffix_arg(suffix_sexp);
   uint32_t slot = (uint32_t) Rf_asInteger(slot_sexp);
+  /* a bad override raises — resolve it ahead of the ctx allocation */
+  const uint64_t ident = mizu_r_ident_override(ident_sexp, MIZU_R_IDENT);
 
   mizu_r_handle *h = calloc(1, sizeof(*h));
   if (h == NULL) Rf_error("mizu: allocation failure");
   mizu_binding b;
   pool_binding(h, &b, 1);
-  b.ident = mizu_r_ident_override(ident_sexp, b.ident);
+  b.ident = ident;
   mizu_pool *p;
   if (mizu_pool_worker_join(&p, suffix, slot, &b) != MIZU_OK) {
     free(h);
