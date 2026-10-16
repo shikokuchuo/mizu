@@ -77,7 +77,7 @@
 <span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>\  <span class="sc">/</span>   水  <span class="sc">/</span></span>
 <span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a> \<span class="sc">/</span>_______<span class="sc">/</span></span></code></pre></div>
 <p>mizu makes communication between R processes fast enough to parallelize work at thread granularity.</p>
-<p>mizu uses shared memory as the fastest IPC transport. Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets. mizu handles the synchronization, waiting, and peer crashes to make this correct and robust. This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see <a href="#benchmarks">Benchmarks</a>).</p>
+<p>mizu uses shared memory as the fastest IPC transport. Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets. This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see <a href="#benchmarks">Benchmarks</a>).</p>
 <p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows). The hot path stays in user space. Data moves through single-producer single-consumer rings with batched publication. Waiting is spin-then-park, and peer death arrives as an OS event.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <ul>
@@ -160,7 +160,8 @@
 <div class="section level2">
 <h2 id="parallel-map">Parallel map<a class="anchor" aria-label="anchor" href="#parallel-map"></a>
 </h2>
-<p><code><a href="reference/mizu_map.html">mizu_map()</a></code> maps a function over a vector or list on the pool and returns the results in order. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor. A map also nests — the mapped function can map over its own pool with <code>mizu_map(mizu_current_pool(), ...)</code>, deadlock-free.</p>
+<p><code><a href="reference/mizu_map.html">mizu_map()</a></code> maps a function over a vector or list on the pool and returns the results in order. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor.</p>
+<p>A map also nests — the mapped function can map over its own pool with <code>mizu_map(mizu_current_pool(), ...)</code>, deadlock-free.</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span><span class="op">)</span></span>
 <span></span>

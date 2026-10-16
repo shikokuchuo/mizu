@@ -13,11 +13,9 @@ work at thread granularity.
 
 mizu uses shared memory as the fastest IPC transport. Processes read and
 write into shared memory directly, with no kernel involvement and no
-data copies through system sockets. mizu handles the synchronization,
-waiting, and peer crashes to make this correct and robust. This means
-task round trips drop from around 100 µs over sockets to under a
-microsecond — two orders of magnitude improvement (see
-[Benchmarks](#benchmarks)).
+data copies through system sockets. This means task round trips drop
+from around 100 µs over sockets to under a microsecond — two orders of
+magnitude improvement (see [Benchmarks](#benchmarks)).
 
 Channels and work-stealing task pools run over POSIX shared memory
 (Linux, macOS) or Win32 file mappings (Windows). The hot path stays in
@@ -91,8 +89,10 @@ which shared memory cannot reach.
 a function over a vector or list on the pool and returns the results in
 order. The function and data cross into shared memory once. Workers
 divide the elements among themselves, claiming ranges from a shared
-cursor. A map also nests — the mapped function can map over its own pool
-with `mizu_map(mizu_current_pool(), ...)`, deadlock-free.
+cursor.
+
+A map also nests — the mapped function can map over its own pool with
+`mizu_map(mizu_current_pool(), ...)`, deadlock-free.
 
 ``` r
 
