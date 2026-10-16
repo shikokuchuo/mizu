@@ -590,10 +590,11 @@ path shares `ixt_call` with kind 0/1, source kind a closure whose `...`
 carries the positional args so `..N` resolves, the element its formal
 `x`), and the runner result publishes under the §4.2 foreign policy
 (`pool_result_gate`). A foreign collect normalizes the worker language’s
-runner shape: pymizu’s (element-range, values) pairs via `map_splice_ix`
-/ `map_hist_ix` (`st[["pymap"]]`), a remote error’s element index read
-off `mizu_error_remote`’s `index` field (`map_err_index`); the err
-writer’s local mode stamps a runner’s `mizu_map_index` as the err index.
+runner shape: pymizu’s (element-range, values) pairs via the C
+`mizu_map_splice_ix` / `map_hist_ix` (`st[["pymap"]]`), a remote error’s
+element index read off `mizu_error_remote`’s `index` field
+(`map_err_index`); the err writer’s local mode stamps a runner’s
+`mizu_map_index` as the err index.
 
 ### Testing
 
