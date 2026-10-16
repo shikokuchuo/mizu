@@ -1449,7 +1449,7 @@ map_stream_turn <- function(pool, st, deadline) {
   v <- if (remaining > 0) {
     tryCatch(
       .Call(mizu_pool_collect_any, st[["handles"]][oi], remaining),
-      error = function(e) e
+      error = identity
     )
   } else {
     .Call(mizu_map_timeout_call)

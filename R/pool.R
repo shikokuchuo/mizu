@@ -92,14 +92,12 @@ mizu_pool <- function(
     result_slots,
     slot_size
   )
-  tryCatch(
-    launch_workers(p, seq_len(n_workers) - 1L, launcher, startup_timeout),
-    # a pool that never came up is destroyed, not left to its finalizer
-    mizu_error_startup = function(e) {
-      .Call(mizu_pool_destroy, p)
-      stop(e)
-    }
-  )
+  # a pool that never came up is destroyed, not left to its finalizer —
+  # on any error exit (launcher failure, interrupt), not just a timeout
+  ok <- FALSE
+  on.exit(if (!ok) .Call(mizu_pool_destroy, p))
+  launch_workers(p, seq_len(n_workers) - 1L, launcher, startup_timeout)
+  ok <- TRUE
   p
 }
 
@@ -894,7 +892,7 @@ worker_main <- function(token, slot) {
   status <- 0L
   rc <- -1L
   repeat {
-    e <- tryCatch(.Call(mizu_pool_run, h, 3600), error = function(e) e)
+    e <- tryCatch(.Call(mizu_pool_run, h, 3600), error = identity)
     rc <- .Call(mizu_pool_run_outcome, h, e)
     if (rc < 0L) {
       break

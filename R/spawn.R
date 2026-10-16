@@ -153,16 +153,20 @@ pymizu_prober <- local({
     if (exists(key, envir = cache)) {
       return(TRUE)
     }
+    # errors only, so an interrupt propagates rather than reading as a
+    # failed probe; the non-zero-status warning is muffled
     ok <- tryCatch(
-      system2(
-        python,
-        c("-c", shQuote(sprintf("import pymizu.%s", module))),
-        stdout = FALSE,
-        stderr = FALSE,
-        timeout = 60
-      ) ==
-        0L,
-      condition = function(c) FALSE
+      suppressWarnings(
+        system2(
+          python,
+          c("-c", shQuote(sprintf("import pymizu.%s", module))),
+          stdout = FALSE,
+          stderr = FALSE,
+          timeout = 60
+        ) ==
+          0L
+      ),
+      error = function(e) FALSE
     )
     if (ok) {
       cache[[key]] <- TRUE

@@ -285,6 +285,10 @@ peer_main <- function(token) {
   att <- .Call(mizu_channel_attach, token, NULL)
   ch <- att[[1L]]
   expr <- att[[2L]]
+  # quit() runs no exit actions: the normal path signals close explicitly
+  # below — this fires only on an abnormal unwinding (e.g. the err send in
+  # the error handler itself failing), so the host still reads CLOSED
+  on.exit(.Call(mizu_channel_close_signal, ch))
   .Call(mizu_channel_ready_set, ch)
   env <- new.env(parent = globalenv())
   env[["ch"]] <- ch
