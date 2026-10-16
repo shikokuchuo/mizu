@@ -17,19 +17,16 @@
     \  /   水  /
      \/_______/
 
-mizu makes communication between R processes cheap enough to divide work at a granularity usually reserved for threads.
+mizu makes communication between R processes fast enough to parallelize work at thread granularity.
 
-Shared memory is the fastest IPC transport.
-A socket round trip costs four system calls and four copies of the data.
-In shared memory, one process reads the bytes that the other wrote, and the kernel never touches the data.
-mizu handles the synchronization, waiting, and peer crashes for you.
-A task round trip drops from around 100 µs over sockets to under a microsecond — two orders of magnitude (see [Benchmarks](#benchmarks)).
+mizu uses shared memory as the fastest IPC transport.
+Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets.
+This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see [Benchmarks](#benchmarks)).
 
 Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
-A channel is a two-way message link between an R session and a helper process that it spawns.
-A pool is a set of worker processes that divide submitted tasks among themselves.
-
-The hot path stays in user space: single-producer single-consumer rings with batched publication, spin-then-park waiting, and event-driven peer-death detection.
+The hot path stays in user space.
+Data moves through single-producer single-consumer rings with batched publication.
+Waiting is spin-then-park, and peer death arrives as an OS event.
 
 mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 [pymizu](https://github.com/shikokuchuo/pymizu) binds the same core for Python, so R and Python can talk to each other.
@@ -38,8 +35,6 @@ mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library 
 - Zero-copy Arrow interchange — `arrow` tables and record batches travel as one frame, and `mizu_as_arrow()` converts a received frame back to Arrow without copying
 - Reproducible parallel randomness (`.seed`), invariant for any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
-- Sentinels, not errors, on hot paths — and worker crashes detected by the OS, not by polling
-- R 4.3+ on Linux, macOS, and Windows
 
 > **Pre-release.** The API is not stable and can change at any time before a release.
 
@@ -59,9 +54,11 @@ Requires R 4.3 or later on a 64-bit platform (Linux: kernel 5.3 or later).
 library(mizu)
 
 p <- mizu_pool(n_workers = 4L)
+
 t <- mizu_submit(p, sum(x) + y, x = 1:10, y = 100)
 mizu_collect(t)
 #> [1] 155
+
 mizu_pool_stop(p)
 ```
 
@@ -76,63 +73,28 @@ Communication overhead against mirai on one machine (M4 Pro, from `dev/bench/miz
 | 8 MB vector round trip | 400 µs | 18.4 ms | 46x |
 | Parallel map of 2,000 ~10 µs tasks, 4 workers | 5.0 ms | 218 ms | 44x |
 
-These rows measure communication overhead, the cost mizu is built to remove.
-mirai also covers workers on remote machines and HPC clusters, which shared memory cannot reach.
-
-## Channels
-
-The essential function is `mizu_channel()`.
-It creates a two-way shared-memory channel — one lock-free ring per direction — and spawns a child R process connected to the other end.
-The child evaluates a quoted expression with `ch` bound to its side of the channel.
-All data crosses the rings, not the process boundary.
-
-``` r
-library(mizu)
-
-ch <- mizu_channel(quote(
-  repeat {
-    x <- mizu_recv(ch, timeout = 30)
-    if (inherits(x, "mizu_sentinel")) break
-    mizu_send(ch, x * 2)
-  }
-))
-
-mizu_send(ch, 21)
-mizu_recv(ch, timeout = 5)
-#> [1] 42
-mizu_close(ch)
-```
-
-## Task pools
-
-`mizu_pool()` spawns a pool of worker processes with work-stealing deques and no dispatcher in the loop.
-`mizu_submit()` captures an expression together with the values it needs and returns a task handle immediately.
-`mizu_collect()` waits for the result of that task:
-
-``` r
-p <- mizu_pool(n_workers = 4L)
-
-t <- mizu_submit(p, sum(x) + y, x = 1:10, y = 100)
-mizu_collect(t)
-#> [1] 155
-
-mizu_pool_stop(p)
-```
-
-A task error re-raises on collect as a classed condition with its message, call, and fields intact.
-A dead worker’s claimed tasks fail the same way — the OS reports the crash, so detection needs no heartbeats or polling.
+Note: mirai also serves workers on remote machines and HPC clusters, which shared memory cannot reach.
 
 ## Parallel map
 
-`mizu_map()` maps a function over a vector or list on the pool and returns the results in input order.
+`mizu_map()` maps a function over a vector or list on the pool and returns the results in order.
 The function and data cross into shared memory once.
-A handful of chunk tasks divide the elements, and each worker self-schedules element ranges off a shared cursor.
+Workers divide the elements among themselves, claiming ranges from a shared cursor.
+
+A map also nests — the mapped function can map over its own pool with `mizu_map(mizu_current_pool(), ...)`, deadlock-free.
 
 ``` r
 p <- mizu_pool(n_workers = 4L)
 
 mizu_map(p, 1:5, \(i) i * 2L, .template = integer(1))
 #> [1]  2  4  6  8 10
+
+parts <- split(as.numeric(1:100000), rep(1:4, each = 25000))
+mizu_map(p, parts, \(part) {
+  sum(unlist(mizu_map(mizu_current_pool(), part, sqrt)))
+}, .template = numeric(1))
+#>       1       2       3       4 
+#> 2635310 4818361 6239529 7388808
 
 mizu_pool_stop(p)
 ```
@@ -143,7 +105,7 @@ Pool workers can be Python processes that run [pymizu](https://github.com/shikok
 `mizu_py_pool_launcher()` spawns them and `mizu_call()` describes the task — here R’s built-in `mtcars` summarized by polars:
 
 ``` r
-p <- mizu_pool(4L, launcher = mizu_py_pool_launcher())
+p <- mizu_pool(n_workers = 4L, launcher = mizu_py_pool_launcher())
 
 t <- mizu_submit_call(
   p,
@@ -162,18 +124,15 @@ mizu_collect(t)
 mizu_pool_stop(p)
 ```
 
-A numeric vector arrives in Python as a NumPy array, and a data frame as a `pymizu.Frame`.
-A NumPy array, or a polars, pyarrow, or pandas frame, arrives back as a vector or data.frame.
-Arrow data (`arrow` tables and record batches, or any struct-typed `nanoarrow_array_stream`) crosses the same way, and `mizu_as_arrow()` converts a received frame back to Arrow without copying.
-For a channel peer, pass the peer program as a source string (instead of a quoted expression) and set the launcher to `mizu_py_launcher()`.
-The launchers need a `python3` with pymizu installed.
-A launcher is one function that takes the join token and spawns the peer process.
-For a different spawn method, write your own.
+- A numeric vector arrives in Python as a NumPy array, and a data frame as a `pymizu.Frame`
+- A NumPy array, or a polars, pyarrow, or pandas frame, arrives back as a vector or data frame
+- Arrow data (`arrow` tables and record batches, or any struct-typed `nanoarrow_array_stream`) crosses the same way
+
 The pymizu README shows the reverse direction: a Python host that drives R workers with `pymizu.r_pool_launcher()`.
 
 ## Vignettes
 
-`vignette("mizu", package = "mizu")` is the overview hub.
+`vignette("mizu", package = "mizu")` is the main overview.
 Topic vignettes cover benchmarks against mirai, channels, task pools, the parallel map, Python interop, and operations (sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics).
 The [pkgdown site](https://shikokuchuo.net/mizu/) has the function reference and the rendered vignettes.
 
