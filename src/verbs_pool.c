@@ -96,11 +96,16 @@ static void mizu_pool_finalizer(SEXP xp) {
   if (h == NULL) return;
   /* the fork guard the verbs carry: a forked child that finalizes a handle
      (a quit() runs exit finalizers) must not destroy the parent's pool —
-     the destroy would broadcast shutdown and unlink its regions */
-  if (h->core != NULL && h->self_pid == mizu_self_pid()) {
-    /* a controller destroy broadcasts shutdown (no wait); a participant
-       releases its slot */
-    mizu_pool_destroy((mizu_pool *) h->core);
+     the destroy would broadcast shutdown and unlink its regions; abandon
+     releases only the child's own copies (mapping, heap) instead */
+  if (h->core != NULL) {
+    if (h->self_pid == mizu_self_pid()) {
+      /* a controller destroy broadcasts shutdown (no wait); a participant
+         releases its slot */
+      mizu_pool_destroy((mizu_pool *) h->core);
+    } else {
+      mizu_pool_abandon((mizu_pool *) h->core);
+    }
   }
   h->core = NULL;
   if (mizu_curpool_xp == xp) mizu_curpool_xp = R_NilValue;

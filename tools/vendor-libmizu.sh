@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="730f8d134410aeab6abebe724abbacf817f93c3d"  # libmizu: mizu_stage_rollback joins the ext tier
+PIN="8a1450e8f0a2b497e22f0228e0fa537d8bd493db"  # libmizu: mizu_channel_abandon / mizu_pool_abandon (the forked-child teardown)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

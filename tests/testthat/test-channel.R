@@ -184,7 +184,6 @@ test_that("verbs reject an NA timeout instead of waiting forever (R-08)", {
 
 test_that("a forked child's GC does not destroy the parent's channel (R-14)", {
   skip_on_os("windows") # no fork
-  skip_on_os("linux") # the forked child's valgrind exit report trips the R-hub gate
   skip_if_no_fork() # Positron/RStudio sessions block mcfork
   p <- channel_pair()
   mizu_send(p[["host"]], "before")
@@ -193,7 +192,7 @@ test_that("a forked child's GC does not destroy the parent's channel (R-14)", {
   res <- parallel::mcparallel(
     {
       rm(list = ls(env), envir = env) # the child drops its inherited handles
-      invisible(gc()) # their finalizers run here — guarded by the pid check
+      invisible(gc()) # their finalizers run here — abandon, not destroy
       TRUE
     },
     silent = TRUE

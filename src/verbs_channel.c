@@ -100,11 +100,16 @@ static void mizu_chan_finalizer(SEXP xp) {
   if (h == NULL) return;
   /* the fork guard the verbs carry: a forked child that finalizes a handle
      (a quit() runs exit finalizers) must not destroy the parent's channel —
-     the destroy would set its close bit and unlink its regions */
-  if (h->core != NULL && h->self_pid == mizu_self_pid()) {
-    /* destroy signals close and runs the non-blocking rendezvous check —
-       unlink only on the peer's bit or its confirmed death */
-    mizu_channel_destroy((mizu_channel *) h->core);
+     the destroy would set its close bit and unlink its regions; abandon
+     releases only the child's own copies (mapping, heap) instead */
+  if (h->core != NULL) {
+    if (h->self_pid == mizu_self_pid()) {
+      /* destroy signals close and runs the non-blocking rendezvous check —
+         unlink only on the peer's bit or its confirmed death */
+      mizu_channel_destroy((mizu_channel *) h->core);
+    } else {
+      mizu_channel_abandon((mizu_channel *) h->core);
+    }
   }
   h->core = NULL;
   free(h);
