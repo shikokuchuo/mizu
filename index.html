@@ -78,8 +78,7 @@
 <span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a> \<span class="sc">/</span>_______<span class="sc">/</span></span></code></pre></div>
 <p>mizu makes communication between R processes fast enough to parallelize work at thread granularity.</p>
 <p>mizu uses shared memory as the fastest IPC transport. Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets. mizu handles the synchronization, waiting, and peer crashes to make this correct and robust. This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see <a href="#benchmarks">Benchmarks</a>).</p>
-<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows). A channel is a two-way message link between an R session and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves.</p>
-<p>The hot path stays in user space. Data moves through single-producer single-consumer rings with batched publication. Waiting is spin-then-park, and peer death arrives as an OS event.</p>
+<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows). The hot path stays in user space. Data moves through single-producer single-consumer rings with batched publication. Waiting is spin-then-park, and peer death arrives as an OS event.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <ul>
 <li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages</li>
@@ -105,9 +104,11 @@
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://shikokuchuo.net/mizu/">mizu</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span><span class="op">)</span></span>
+<span></span>
 <span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fu"><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum</a></span><span class="op">(</span><span class="va">x</span><span class="op">)</span> <span class="op">+</span> <span class="va">y</span>, x <span class="op">=</span> <span class="fl">1</span><span class="op">:</span><span class="fl">10</span>, y <span class="op">=</span> <span class="fl">100</span><span class="op">)</span></span>
 <span><span class="fu"><a href="reference/mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="va">t</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1] 155</span></span>
+<span></span>
 <span><span class="fu"><a href="reference/mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
@@ -157,38 +158,21 @@
 <p>Note: mirai also serves workers on remote machines and HPC clusters, which shared memory cannot reach.</p>
 </div>
 <div class="section level2">
-<h2 id="channels">Channels<a class="anchor" aria-label="anchor" href="#channels"></a>
-</h2>
-<p><code><a href="reference/mizu_channel.html">mizu_channel()</a></code> creates a two-way shared-memory channel — one lock-free ring per direction — and spawns a child R process connected to the other end. The child evaluates a quoted expression with <code>ch</code> bound to its side of the channel.</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">ch</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_channel.html">mizu_channel</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/substitute.html" class="external-link">quote</a></span><span class="op">(</span></span>
-<span>  <span class="kw">repeat</span> <span class="op">{</span></span>
-<span>    <span class="va">x</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_send.html">mizu_recv</a></span><span class="op">(</span><span class="va">ch</span>, timeout <span class="op">=</span> <span class="fl">30</span><span class="op">)</span></span>
-<span>    <span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/class.html" class="external-link">inherits</a></span><span class="op">(</span><span class="va">x</span>, <span class="st">"mizu_sentinel"</span><span class="op">)</span><span class="op">)</span> <span class="kw">break</span></span>
-<span>    <span class="fu"><a href="reference/mizu_send.html">mizu_send</a></span><span class="op">(</span><span class="va">ch</span>, <span class="va">x</span> <span class="op">*</span> <span class="fl">2</span><span class="op">)</span></span>
-<span>  <span class="op">}</span></span>
-<span><span class="op">)</span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu"><a href="reference/mizu_send.html">mizu_send</a></span><span class="op">(</span><span class="va">ch</span>, <span class="fl">21</span><span class="op">)</span></span>
-<span><span class="fu"><a href="reference/mizu_send.html">mizu_recv</a></span><span class="op">(</span><span class="va">ch</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
-<span><span class="co">#&gt; [1] 42</span></span>
-<span><span class="fu"><a href="reference/mizu_close.html">mizu_close</a></span><span class="op">(</span><span class="va">ch</span><span class="op">)</span></span></code></pre></div>
-</div>
-<div class="section level2">
-<h2 id="task-pools">Task pools<a class="anchor" aria-label="anchor" href="#task-pools"></a>
-</h2>
-<p><code><a href="reference/mizu_pool.html">mizu_pool()</a></code> spawns a pool of worker processes with work-stealing deques. <code><a href="reference/mizu_submit.html">mizu_submit()</a></code> captures an expression together with the values it needs and returns a task handle immediately. <code><a href="reference/mizu_submit.html">mizu_collect()</a></code> waits for the result of that task.</p>
-<p>A task error re-raises on collect as a classed condition with its message, call, and fields intact. A crashed worker’s tasks fail the same way — with OS-level detection that needs no heartbeats or polling.</p>
-</div>
-<div class="section level2">
 <h2 id="parallel-map">Parallel map<a class="anchor" aria-label="anchor" href="#parallel-map"></a>
 </h2>
-<p><code><a href="reference/mizu_map.html">mizu_map()</a></code> maps a function over a vector or list on the pool and returns the results in order. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor.</p>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<p><code><a href="reference/mizu_map.html">mizu_map()</a></code> maps a function over a vector or list on the pool and returns the results in order. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor. A map also nests — the mapped function can map over its own pool with <code>mizu_map(mizu_current_pool(), ...)</code>, deadlock-free.</p>
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu"><a href="reference/mizu_map.html">mizu_map</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span><span class="op">:</span><span class="fl">5</span>, \<span class="op">(</span><span class="va">i</span><span class="op">)</span> <span class="va">i</span> <span class="op">*</span> <span class="fl">2L</span>, .template <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/integer.html" class="external-link">integer</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="co">#&gt; [1]  2  4  6  8 10</span></span>
+<span></span>
+<span><span class="va">parts</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/split.html" class="external-link">split</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">100000</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/rep.html" class="external-link">rep</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">4</span>, each <span class="op">=</span> <span class="fl">25000</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="fu"><a href="reference/mizu_map.html">mizu_map</a></span><span class="op">(</span><span class="va">p</span>, <span class="va">parts</span>, \<span class="op">(</span><span class="va">part</span><span class="op">)</span> <span class="op">{</span></span>
+<span>  <span class="fu"><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/unlist.html" class="external-link">unlist</a></span><span class="op">(</span><span class="fu"><a href="reference/mizu_map.html">mizu_map</a></span><span class="op">(</span><span class="fu"><a href="reference/mizu_current_pool.html">mizu_current_pool</a></span><span class="op">(</span><span class="op">)</span>, <span class="va">part</span>, <span class="va">sqrt</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="op">}</span>, .template <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">numeric</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="co">#&gt;       1       2       3       4 </span></span>
+<span><span class="co">#&gt; 2635310 4818361 6239529 7388808</span></span>
 <span></span>
 <span><span class="fu"><a href="reference/mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></code></pre></div>
 </div>
@@ -196,7 +180,7 @@
 <h2 id="python-interop">Python interop<a class="anchor" aria-label="anchor" href="#python-interop"></a>
 </h2>
 <p>Pool workers can be Python processes that run <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a>, the Python binding of the same core. <code><a href="reference/mizu_py_pool_launcher.html">mizu_py_pool_launcher()</a></code> spawns them and <code><a href="reference/mizu_call.html">mizu_call()</a></code> describes the task — here R’s built-in <code>mtcars</code> summarized by polars:</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span>, launcher <span class="op">=</span> <span class="fu"><a href="reference/mizu_py_pool_launcher.html">mizu_py_pool_launcher</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_call.html">mizu_submit_call</a></span><span class="op">(</span></span>
@@ -218,7 +202,7 @@
 <li>A numeric vector arrives in Python as a NumPy array, and a data frame as a <code>pymizu.Frame</code>
 </li>
 <li>A NumPy array, or a polars, pyarrow, or pandas frame, arrives back as a vector or data frame</li>
-<li>Arrow data (<code>arrow</code> tables and record batches, or any struct-typed <code>nanoarrow_array_stream</code>) crosses the same way, and <code><a href="reference/mizu_as_arrow.html">mizu_as_arrow()</a></code> converts a received frame back to Arrow without copying</li>
+<li>Arrow data (<code>arrow</code> tables and record batches, or any struct-typed <code>nanoarrow_array_stream</code>) crosses the same way</li>
 </ul>
 <p>The pymizu README shows the reverse direction: a Python host that drives R workers with <code>pymizu.r_pool_launcher()</code>.</p>
 </div>

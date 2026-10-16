@@ -20,14 +20,10 @@ microsecond — two orders of magnitude improvement (see
 [Benchmarks](#benchmarks)).
 
 Channels and work-stealing task pools run over POSIX shared memory
-(Linux, macOS) or Win32 file mappings (Windows). A channel is a two-way
-message link between an R session and a helper process that it spawns. A
-pool is a set of worker processes that divide submitted tasks among
-themselves.
-
-The hot path stays in user space. Data moves through single-producer
-single-consumer rings with batched publication. Waiting is
-spin-then-park, and peer death arrives as an OS event.
+(Linux, macOS) or Win32 file mappings (Windows). The hot path stays in
+user space. Data moves through single-producer single-consumer rings
+with batched publication. Waiting is spin-then-park, and peer death
+arrives as an OS event.
 
 mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C
 library for lock-free shared-memory IPC.
@@ -66,9 +62,11 @@ later).
 library(mizu)
 
 p <- mizu_pool(n_workers = 4L)
+
 t <- mizu_submit(p, sum(x) + y, x = 1:10, y = 100)
 mizu_collect(t)
 #> [1] 155
+
 mizu_pool_stop(p)
 ```
 
@@ -87,51 +85,14 @@ Communication overhead against mirai on one machine (M4 Pro, from
 Note: mirai also serves workers on remote machines and HPC clusters,
 which shared memory cannot reach.
 
-## Channels
-
-[`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md)
-creates a two-way shared-memory channel — one lock-free ring per
-direction — and spawns a child R process connected to the other end. The
-child evaluates a quoted expression with `ch` bound to its side of the
-channel.
-
-``` r
-
-ch <- mizu_channel(quote(
-  repeat {
-    x <- mizu_recv(ch, timeout = 30)
-    if (inherits(x, "mizu_sentinel")) break
-    mizu_send(ch, x * 2)
-  }
-))
-
-mizu_send(ch, 21)
-mizu_recv(ch, timeout = 5)
-#> [1] 42
-mizu_close(ch)
-```
-
-## Task pools
-
-[`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
-spawns a pool of worker processes with work-stealing deques.
-[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-captures an expression together with the values it needs and returns a
-task handle immediately.
-[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-waits for the result of that task.
-
-A task error re-raises on collect as a classed condition with its
-message, call, and fields intact. A crashed worker’s tasks fail the same
-way — with OS-level detection that needs no heartbeats or polling.
-
 ## Parallel map
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) maps
 a function over a vector or list on the pool and returns the results in
 order. The function and data cross into shared memory once. Workers
 divide the elements among themselves, claiming ranges from a shared
-cursor.
+cursor. A map also nests — the mapped function can map over its own pool
+with `mizu_map(mizu_current_pool(), ...)`, deadlock-free.
 
 ``` r
 
@@ -139,6 +100,13 @@ p <- mizu_pool(n_workers = 4L)
 
 mizu_map(p, 1:5, \(i) i * 2L, .template = integer(1))
 #> [1]  2  4  6  8 10
+
+parts <- split(as.numeric(1:100000), rep(1:4, each = 25000))
+mizu_map(p, parts, \(part) {
+  sum(unlist(mizu_map(mizu_current_pool(), part, sqrt)))
+}, .template = numeric(1))
+#>       1       2       3       4 
+#> 2635310 4818361 6239529 7388808
 
 mizu_pool_stop(p)
 ```
@@ -179,9 +147,7 @@ mizu_pool_stop(p)
 - A NumPy array, or a polars, pyarrow, or pandas frame, arrives back as
   a vector or data frame
 - Arrow data (`arrow` tables and record batches, or any struct-typed
-  `nanoarrow_array_stream`) crosses the same way, and
-  [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md)
-  converts a received frame back to Arrow without copying
+  `nanoarrow_array_stream`) crosses the same way
 
 The pymizu README shows the reverse direction: a Python host that drives
 R workers with `pymizu.r_pool_launcher()`.
