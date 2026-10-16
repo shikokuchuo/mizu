@@ -1440,7 +1440,7 @@ map_stream_fail <- function(st, v, k) {
 # chunk's NULL result is drained and dropped), and refill. Errors take
 # the fail path above; deadline expiry marks the state timed out. The spec
 # turn splices by worker language (foreign element ranges through
-# map_splice_ix, R morsel pairs through mizu_map_splice chunk-locally),
+# mizu_map_splice_ix, R morsel pairs through mizu_map_splice chunk-locally),
 # gathers the template path's per-chunk output area into the flat
 # accumulator, and closes the chunk's region at its own turn.
 map_stream_turn <- function(pool, st, deadline) {
@@ -1477,11 +1477,16 @@ map_stream_turn <- function(pool, st, deadline) {
     wrap <- st[["wraps"]][[k]]
     st[["wraps"]][k] <- list(NULL)
     if (st[["direct"]]) {
-      # rows [lo, hi] of the flat n x m accumulator, one atomic splice
-      g <- .Call(mizu_map_gather, wrap)
-      st[["out"]][seq.int((lo - 1) * st[["m"]] + 1, hi * st[["m"]])] <- g
+      # rows [lo, hi] of the flat n x m accumulator, one memcpy splice —
+      # an R-level `[<-` allocates the seq.int index and dispatches per chunk
+      .Call(
+        mizu_map_asplice,
+        st[["out"]],
+        (lo - 1) * st[["m"]] + 1,
+        .Call(mizu_map_gather, wrap)
+      )
     } else if (st[["pymap"]]) {
-      st[["out"]] <- map_splice_ix(st[["out"]], list(v[["value"]]), lo - 1)
+      .Call(mizu_map_splice_ix, st[["out"]], list(v[["value"]]), lo - 1)
     } else {
       local <- vector("list", hi - lo + 1)
       .Call(mizu_map_splice, local, list(v[["value"]]), hi - lo + 1)
@@ -1588,27 +1593,10 @@ map_err_index <- function(e) {
   i
 }
 
-# The pymap-shape splice (a spec map on foreign workers): their runners
-# publish batch histories as element ranges (0-based half-open), not this
-# binding's (morsel start, morsel count) pairs — collect splices by
-# position either way. The template path publishes no values. `base`
-# offsets every range — a streaming spec map's chunk-local histories shift
-# by the chunk's 0-based base.
-map_splice_ix <- function(out, runs, base = 0) {
-  for (run in runs) {
-    vals <- run[[2L]]
-    if (is.null(vals)) {
-      next
-    }
-    hist <- run[[1L]]
-    for (j in seq_along(hist)) {
-      rg <- hist[[j]]
-      out[(as.numeric(rg[[1L]]) + 1 + base):(as.numeric(rg[[2L]]) + base)] <-
-        vals[[j]]
-    }
-  }
-  out
-}
+# The pymap-shape splice (a spec map on foreign workers) runs in C:
+# mizu_map_splice_ix handles their runners' published element ranges
+# (0-based half-open), as mizu_map_splice does this binding's (morsel
+# start, morsel count) pairs.
 
 # The death lost-set scan needs this binding's morsel-pair histories:
 # convert the foreign runners' element ranges back (a batch is whole
@@ -1789,8 +1777,9 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
     }
     if (!st[["direct"]]) {
       if (st[["pymap"]]) {
-        # generic assembly off the foreign runners' element-range shape
-        out <- map_splice_ix(out, runs)
+        # generic assembly off the foreign runners' element-range shape —
+        # the same C pass over the other history shape
+        .Call(mizu_map_splice_ix, out, runs, 0)
       } else {
         # one C pass splices every runner's batch value lists into out by
         # element position
@@ -1826,7 +1815,8 @@ map_assemble <- function(st, out, collect = "value") {
   res <- if (st[["direct"]]) {
     if (isTRUE(st[["spec"]]) && isTRUE(st[["stream"]])) {
       # a spec stream accumulated the flat vector a chunk gather at a
-      # time; subassignment dropped a classed integer64 gather's class
+      # time; the memcpy splice carries no attributes, so a classed
+      # integer64 gather's class is re-applied here
       if (
         typeof(st[["template"]]) == "double" &&
           identical(class(st[["template"]]), "integer64")

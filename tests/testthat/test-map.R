@@ -1614,13 +1614,16 @@ test_that("the pymap adapter splices element ranges and converts histories", {
     list(list(list(6L, 8L)), list(as.list(7:8)))
   )
   out <- vector("list", 8L)
-  out <- mizu:::map_splice_ix(out, runs)
+  .Call(mizu:::mizu_map_splice_ix, out, runs, 0)
   expect_identical(out, as.list(1:8))
   # template path publishes no values
-  expect_identical(
-    mizu:::map_splice_ix(vector("list", 2L), list(list(list(), NULL))),
-    vector("list", 2L)
-  )
+  out <- vector("list", 2L)
+  .Call(mizu:::mizu_map_splice_ix, out, list(list(list(), NULL)), 0)
+  expect_identical(out, vector("list", 2L))
+  # a base offsets every range (a streaming chunk's local histories)
+  out <- vector("list", 14L)
+  .Call(mizu:::mizu_map_splice_ix, out, runs[2L], 6)
+  expect_identical(out, c(vector("list", 12L), as.list(7:8)))
   # histories convert back to morsel pairs (morsel size 3, partial grant)
   hist <- mizu:::map_hist_ix(runs, 3)
   expect_identical(hist[[1L]], list(c(0, 1), c(1, 1)))

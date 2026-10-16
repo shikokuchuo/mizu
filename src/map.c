@@ -702,6 +702,82 @@ SEXP mizu_map_vsplice(SEXP out, SEXP lo_sexp, SEXP vals) {
   return R_NilValue;
 }
 
+/* Foreign-collect assembly (a spec map on pymizu workers): their runners
+   publish (hist, vals) with 0-based half-open element ranges in place of
+   this binding's (morsel start, morsel count) pairs — the same positional
+   splice as mizu_map_splice over the other history shape. base shifts
+   every range (a streaming spec map's chunk-local histories shift by the
+   chunk's 0-based base); a run publishing no values (the template path)
+   is skipped. The corruption discipline is mizu_map_splice's: a range or
+   length mismatch raises, never recycles. */
+SEXP mizu_map_splice_ix(SEXP out, SEXP runs, SEXP base_sexp) {
+  if (TYPEOF(out) != VECSXP || TYPEOF(runs) != VECSXP)
+    Rf_error("mizu: invalid map splice arguments");
+  double base = Rf_asReal(base_sexp);
+  if (!(base >= 0))
+    Rf_error("mizu: invalid map splice range");
+  const R_xlen_t n = XLENGTH(out);
+  for (R_xlen_t r = 0; r < XLENGTH(runs); r++) {
+    SEXP run = VECTOR_ELT(runs, r);
+    if (TYPEOF(run) != VECSXP || XLENGTH(run) < 2)
+      Rf_error("mizu: invalid map runner result");
+    SEXP vals = VECTOR_ELT(run, 1);
+    if (vals == R_NilValue)
+      continue;
+    SEXP hist = VECTOR_ELT(run, 0);
+    if (TYPEOF(hist) != VECSXP || TYPEOF(vals) != VECSXP ||
+        XLENGTH(hist) != XLENGTH(vals))
+      Rf_error("mizu: invalid map runner result");
+    for (R_xlen_t j = 0; j < XLENGTH(hist); j++) {
+      SEXP rg = VECTOR_ELT(hist, j);
+      double rlo, rhi;
+      if (TYPEOF(rg) == VECSXP && XLENGTH(rg) == 2) {
+        rlo = Rf_asReal(VECTOR_ELT(rg, 0));
+        rhi = Rf_asReal(VECTOR_ELT(rg, 1));
+      } else if (TYPEOF(rg) == REALSXP && XLENGTH(rg) == 2) {
+        rlo = REAL(rg)[0];
+        rhi = REAL(rg)[1];
+      } else if (TYPEOF(rg) == INTSXP && XLENGTH(rg) == 2) {
+        rlo = (double) INTEGER(rg)[0];
+        rhi = (double) INTEGER(rg)[1];
+      } else {
+        Rf_error("mizu: invalid map batch range");
+      }
+      if (!(rlo >= 0) || !(rhi > rlo) || rhi + base > (double) n)
+        Rf_error("mizu: invalid map batch range");
+      SEXP bv = VECTOR_ELT(vals, j);
+      R_xlen_t len = (R_xlen_t) (rhi - rlo);
+      if (TYPEOF(bv) != VECSXP || XLENGTH(bv) != len)
+        Rf_error("mizu: map batch result length mismatch");
+      R_xlen_t at = (R_xlen_t) (rlo + base);
+      for (R_xlen_t i = 0; i < len; i++)
+        SET_VECTOR_ELT(out, at + i, VECTOR_ELT(bv, i));
+    }
+  }
+  return R_NilValue;
+}
+
+/* Streaming spec map's template assembly: one chunk's gather memcpy'd
+   into the flat n × m accumulator at its flat offset — the atomic analog
+   of mizu_map_vsplice (an R-level `[<-` allocates the seq.int index and
+   dispatches per chunk). Types must match exactly: the gather comes off
+   an output area stamped from the same template, so no coercion applies. */
+SEXP mizu_map_asplice(SEXP out, SEXP at_sexp, SEXP src) {
+  const SEXPTYPE t = TYPEOF(out);
+  const size_t elt = mizu_view_sizeof_elt((int) t);
+  if (elt == 0 || TYPEOF(src) != t)
+    Rf_error("mizu: invalid map splice arguments");
+  double at = Rf_asReal(at_sexp);
+  if (!(at >= 1) || at + (double) XLENGTH(src) - 1 > (double) XLENGTH(out))
+    Rf_error("mizu: invalid map splice range");
+  unsigned char *dst = (unsigned char *) mizu_vec_ptr(out);
+  const unsigned char *sp = (const unsigned char *) mizu_vec_ptr(src);
+  if (dst == NULL || sp == NULL)
+    Rf_error("mizu: invalid map splice arguments");
+  memcpy(dst + (size_t) (at - 1) * elt, sp, (size_t) XLENGTH(src) * elt);
+  return R_NilValue;
+}
+
 /* Worker-death lost set: issued = [0, cursor), lost = issued minus the
    union of the collected batch histories — a batch in no history was
    issued but never completed (its claimant died, or f errored

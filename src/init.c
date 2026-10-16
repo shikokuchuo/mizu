@@ -143,6 +143,8 @@ SEXP mizu_map_gather(SEXP);
 SEXP mizu_map_gather_view(SEXP, SEXP, SEXP);
 SEXP mizu_map_splice(SEXP, SEXP, SEXP);
 SEXP mizu_map_vsplice(SEXP, SEXP, SEXP);
+SEXP mizu_map_splice_ix(SEXP, SEXP, SEXP);
+SEXP mizu_map_asplice(SEXP, SEXP, SEXP);
 SEXP mizu_map_lost(SEXP, SEXP);
 SEXP mizu_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -268,6 +270,8 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_map_gather_view",        (DL_FUNC) &mizu_map_gather_view,           3},
   {"mizu_map_splice",             (DL_FUNC) &mizu_map_splice,                3},
   {"mizu_map_vsplice",            (DL_FUNC) &mizu_map_vsplice,               3},
+  {"mizu_map_splice_ix",          (DL_FUNC) &mizu_map_splice_ix,             3},
+  {"mizu_map_asplice",            (DL_FUNC) &mizu_map_asplice,               3},
   {"mizu_map_lost",               (DL_FUNC) &mizu_map_lost,                  2},
   {"mizu_map_next",               (DL_FUNC) &mizu_map_next,                  6},
   {"mizu_map_batch",              (DL_FUNC) &mizu_map_batch,                 10},
