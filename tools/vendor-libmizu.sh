@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="8a1450e8f0a2b497e22f0228e0fa537d8bd493db"  # libmizu: mizu_channel_abandon / mizu_pool_abandon (the forked-child teardown)
+PIN="2450cf08d9f0d5791d8583d0974bd90a583b83b7"  # libmizu: the unit-tier coverage series + dead-code removal (arrow intv scalar case, pool run deadline recompute)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
