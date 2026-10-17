@@ -62,3 +62,51 @@
       Error:
       ! mizu: invalid MIZL remote leaf — corrupt or newer region
 
+# remote-leaf header NA-claim rejections are corrupt-or-newer
+
+    Code
+      fx[["yb"]][[1L]]
+    Condition
+      Error:
+      ! mizu: invalid MIZL remote leaf — corrupt or newer region
+
+---
+
+    Code
+      fx[["yb"]][[1L]]
+    Condition
+      Error:
+      ! mizu: invalid MIZL remote leaf — corrupt or newer region
+
+---
+
+    Code
+      fx[["yb"]][[1L]]
+    Condition
+      Error:
+      ! mizu: invalid MIZL remote leaf — corrupt or newer region
+
+# remote-leaf identifier parse failures are corrupt-or-newer
+
+    Code
+      fx[["yb"]][[1L]]
+    Condition
+      Error:
+      ! mizu: invalid MIZL remote leaf — corrupt or newer region
+
+---
+
+    Code
+      fx[["yb"]][[1L]]
+    Condition
+      Error:
+      ! mizu: invalid MIZL remote leaf — corrupt or newer region
+
+---
+
+    Code
+      fx[["yb"]][[1L]]
+    Condition
+      Error:
+      ! mizu: invalid MIZL remote leaf — corrupt or newer region
+

@@ -1051,3 +1051,145 @@ test_that("a spec task past the inline budget spills its stream", {
   pool_step(p)
   expect_identical(mizu_collect(t, 5), list(x, s))
 })
+
+test_that("collect_all attaches the consumed prefix to a mid-batch read failure", {
+  p <- pool_pair()
+  t1 <- mizu_submit(p[["ctrl"]], 1L)
+  t2 <- mizu_submit(p[["ctrl"]], list(1, 2))
+  pool_step(p)
+  pool_step(p)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  # result slots follow the header, worker/submitter tables, the injection
+  # rings, and the worker deques (pool_pair's default geometry)
+  off <- 64L + 128L + 8L * 64L + 128L + 8L * (128L + 64L * 512L) + 64L * 512L
+  status_at <- function(k) {
+    readBin(
+      .Call(mizu:::mizu_peek, rw, off + k * 512L, 4L),
+      "integer",
+      size = 4L,
+      endian = "little"
+    )
+  }
+  expect_identical(c(status_at(0L), status_at(1L)), c(2L, 2L)) # both OK
+  # t2's result payload reads as a language-private stream at collect
+  .Call(mizu:::mizu_poke, rw, off + 512L + 40L, charToRaw("P"))
+  cnd <- tryCatch(
+    mizu_collect_all(list(t1, t2), timeout = 5),
+    error = function(c) c
+  )
+  expect_match(conditionMessage(cnd), "cannot interpret")
+  expect_identical(cnd[["index"]], 2L)
+  expect_identical(cnd[["values"]], list(1L))
+  pool_end(p)
+})
+
+test_that("corrupt rawspill result slots reject at collect", {
+  off <- 64L + 128L + 8L * 64L + 128L + 8L * (128L + 64L * 512L) + 64L * 512L
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], as.raw(rep(1L, 10000)))
+  pool_step(p)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  .Call(mizu:::mizu_poke, rw, off + 24L + 8L, raw(8L)) # aux: a zero wire type
+  expect_error(mizu_collect(t, 5), "corrupt payload slot")
+  pool_end(p)
+
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], as.raw(rep(1L, 10000)))
+  pool_step(p)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  .Call(
+    # the byte count outruns its region
+    mizu:::mizu_poke,
+    rw,
+    off + 24L + 4L,
+    writeBin(2L^30, raw(), size = 4L, endian = "little")
+  )
+  expect_error(mizu_collect(t, 5), "corrupt payload slot")
+  pool_end(p)
+})
+
+test_that("the worker run loop reports its exit code", {
+  p <- pool_pair()
+  .Call(mizu:::mizu_pool_destroy, p[["ctrl"]])
+  expect_identical(.Call(mizu:::mizu_pool_run, p[["wk"]], 0), -1L)
+  .Call(mizu:::mizu_pool_leave, p[["wk"]])
+
+  p <- pool_pair()
+  mizu_retire_worker(p[["ctrl"]], 0L)
+  expect_identical(.Call(mizu:::mizu_pool_run, p[["wk"]], 0), -2L)
+  .Call(mizu:::mizu_pool_leave, p[["wk"]])
+  .Call(mizu:::mizu_pool_destroy, p[["ctrl"]])
+
+  p <- pool_pair()
+  expect_identical(.Call(mizu:::mizu_pool_run_outcome, p[["wk"]], -1L), -1L)
+  pool_end(p)
+})
+
+test_that("a name-kind spec accepts an unlisted worker language at submit", {
+  # the exec-side check then refuses the mismatched target
+  p <- pool_pair(ident = c(9L, 0L))
+  t <- mizu_submit_call(p[["ctrl"]], mizu_call("base::sqrt", 16))
+  pool_step(p)
+  cnd <- tryCatch(mizu_collect(t, 5), error = function(c) c)
+  expect_s3_class(cnd, "mizu_error_remote")
+  expect_match(conditionMessage(cnd), "language mismatch")
+  pool_end(p)
+})
+
+test_that("the lame-duck probe answers on live and dead handles", {
+  p <- pool_pair()
+  expect_type(.Call(mizu:::mizu_pool_lame_duck, p[["ctrl"]]), "logical")
+  pool_end(p)
+  expect_true(.Call(mizu:::mizu_pool_lame_duck, p[["ctrl"]]))
+})
+
+test_that("a malformed ref identifier in a result fails the read", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], 1L)
+  pool_step(p)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p$ctrl)[["name"]],
+    TRUE
+  )
+  off <- 64L + 128L + 8L * 64L + 128L + 8L * (128L + 64L * 512L) + 64L * 512L
+  # rewrite slot 0's payload as a 0x13 ref leaf with a malformed identifier
+  b <- ix_hex_to_raw(ix_corpus()[["err-ref-value"]])
+  .Call(mizu:::mizu_poke, rw, off + 24L, raw(4L)) # kind INLINE
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    off + 24L + 4L,
+    writeBin(length(b), raw(), size = 4L, endian = "little")
+  )
+  .Call(mizu:::mizu_poke, rw, off + 40L, b)
+  expect_error(mizu_collect(t, 5), "malformed interop ref identifier")
+  pool_end(p)
+})
+
+test_that("a task error with a non-language call flattens without detail text", {
+  p <- pool_pair()
+  t <- mizu_submit(
+    p[["ctrl"]],
+    stop(structure(
+      list(message = "boom", call = 42L),
+      class = c("simpleError", "error", "condition")
+    ))
+  )
+  pool_step(p)
+  cnd <- tryCatch(mizu_collect(t, 5), error = function(c) c)
+  expect_match(conditionMessage(cnd), "boom")
+  pool_end(p)
+})

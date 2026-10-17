@@ -301,6 +301,153 @@ test_that("an unknown layout flags word rejects as corrupt, the ring flows on (R
   channel_end(p)
 })
 
+test_that("a REF re-wrap validates the region's layout header", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(2e5))
+  v <- mizu_recv(p[["peer"]], 5)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, v),
+    TRUE
+  )
+  reflow <- function() {
+    mizu_send(p[["host"]], v) # REF: the wrap re-validates the layout header
+    expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+    mizu_send(p[["host"]], "tail") # the raise was contained: no wedge
+    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  }
+  .Call(mizu:::mizu_poke, rw, 8, i64raw(2L^30)) # the length outruns the region
+  reflow()
+  .Call(mizu:::mizu_poke, rw, 8, i64raw(200000L))
+  .Call(mizu:::mizu_poke, rw, 16, i64raw(2L^30)) # attrs outrun the region
+  reflow()
+  .Call(mizu:::mizu_poke, rw, 16, i64raw(0L))
+  .Call(mizu:::mizu_poke, rw, 48, i64raw(5L)) # an undefined header NA claim
+  reflow()
+  .Call(mizu:::mizu_poke, rw, 48, i64raw(0L))
+  .Call(mizu:::mizu_poke, rw, 40, i64raw(8L)) # an unaligned validity offset
+  reflow()
+  .Call(mizu:::mizu_poke, rw, 40, i64raw(0L))
+  .Call(mizu:::mizu_poke, rw, 0, as.raw(0L)) # unknown magic
+  reflow()
+  channel_end(p)
+})
+
+test_that("a REF re-wrap validates the string layout header", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], sprintf("value-%06d", seq_len(5000L)))
+  v <- mizu_recv(p[["peer"]], 5)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, v),
+    TRUE
+  )
+  mizu_send(p[["host"]], v)
+  .Call(mizu:::mizu_poke, rw, 16, i64raw(2L^30)) # the block outruns the region
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+})
+
+test_that("a REF slot validates its identifier at read", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(2e5))
+  v <- mizu_recv(p[["peer"]], 5)
+  nm <- .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]]
+  rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+  mizu_send(p[["host"]], v) # REF into slot 1 of the host's ring
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    512L + 256L + 16L,
+    charToRaw("x") # the literal prefix no longer matches
+  )
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(2e5))
+  v <- mizu_recv(p[["peer"]], 5)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
+    TRUE
+  )
+  mizu_send(p[["host"]], v) # REF into slot 1
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    512L + 256L + 4L,
+    writeBin(0L, raw(), size = 4L, endian = "little") # a zero identifier length
+  )
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+})
+
+test_that("a SHM_VEC slot cross-checks its header against the aux word", {
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  mizu_send(p[["host"]], x)
+  v1 <- mizu_recv(p[["peer"]], 5)
+  nm <- .Call(mizu:::mizu_zc_view_name, v1)
+  rm(v1)
+  invisible(gc())
+  mizu_send(p[["host"]], x * 2) # reuses the reclaimed region
+  rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+  # the staged extent no longer matches the slot's aux word
+  .Call(mizu:::mizu_poke, rw, 8, i64raw(99999L))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+})
+
+test_that("a SHM_VEC slot validates its region-name length", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(2e5)) # SHM_VEC into slot 0
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
+    TRUE
+  )
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    512L + 4L,
+    writeBin(0L, raw(), size = 4L, endian = "little")
+  )
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+})
+
+test_that("a REF naming a vanished region fails the read", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(100000))
+  v <- mizu_recv(p[["peer"]], 5)
+  mizu_send(p[["host"]], v) # REF into slot 1
+  nm <- .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]]
+  rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+  id <- .Call(mizu:::mizu_peek, rw, 512L + 256L + 16L, 40L)
+  hex0 <- 512L + 256L + 16L + which(id == charToRaw("_"))[1L]
+  b <- .Call(mizu:::mizu_peek, rw, hex0, 1L)
+  # a well-formed name that does not exist (one hex digit flipped)
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    hex0,
+    if (b == charToRaw("a")) charToRaw("b") else charToRaw("a")
+  )
+  expect_error(mizu_recv(p[["peer"]], 5), "payload region vanished")
+  channel_end(p)
+})
+
 test_that("a received view re-sends as REF — zero bytes move", {
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
@@ -712,6 +859,352 @@ test_that("remote-leaf declines are corrupt-or-newer shaped", {
   channel_end(fx[["p"]])
 })
 
+test_that("remote-leaf header NA-claim rejections are corrupt-or-newer", {
+  x <- runif(50000)
+
+  fx <- remote_leaf_pair(x) # a header claim outside {0, 0} / {0, -1}
+  poke_remote(fx, len = length(x))
+  .Call(mizu:::mizu_poke, fx[["rw"]], 48, i64raw(5L))
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # a bitmap offset is region-local, never remote
+  poke_remote(fx, len = length(x))
+  .Call(mizu:::mizu_poke, fx[["rw"]], 40, i64raw(8L)) # unaligned
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # a table row claiming a bitmap of its own
+  poke_remote(fx, len = length(x))
+  .Call(mizu:::mizu_poke, fx[["rw"]], 40, i64raw(192L))
+  .Call(mizu:::mizu_poke, fx[["rw"]], 192, i64raw(1L))
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+})
+
+test_that("remote-leaf identifier parse failures are corrupt-or-newer", {
+  x <- runif(50000)
+  aname <- function(fx) .Call(mizu:::mizu_zc_view_name, fx[["ya"]])
+
+  fx <- remote_leaf_pair(x) # a path index past INT32_MAX
+  poke_remote(fx, id = paste0(aname(fx), "[2147483648]"), len = length(x))
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # junk where a separator belongs
+  poke_remote(fx, id = paste0(aname(fx), "[1;2]"), len = length(x))
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # trailing junk after the path
+  poke_remote(fx, id = paste0(aname(fx), "[1]x"), len = length(x))
+  expect_snapshot(fx[["yb"]][[1L]], error = TRUE)
+  channel_end(fx[["p"]])
+})
+
+test_that("a remote leaf can reference a whole list region (bare name)", {
+  x <- as.list(runif(10000))
+  fx <- remote_leaf_pair(x, wrap = FALSE)
+  poke_remote(fx, len = length(x))
+
+  el <- fx[["yb"]][[1L]]
+  expect_true(is_view(el))
+  expect_identical(.Call(mizu:::mizu_zc_view_name, el), fx[["id"]])
+  expect_identical(el, x)
+  channel_end(fx[["p"]])
+})
+
+test_that("a remote leaf resolves a two-step path into a nested region", {
+  v <- runif(50000)
+  fx <- remote_leaf_pair(list(v)) # A = list(list(v)): element 0 nests
+  id <- paste0(.Call(mizu:::mizu_zc_view_name, fx[["ya"]]), "[1,1]")
+  poke_remote(fx, id = id, len = length(v))
+
+  el <- fx[["yb"]][[1L]]
+  expect_true(is_view(el))
+  expect_identical(.Call(mizu:::mizu_zc_view_name, el), id)
+  expect_identical(el, v)
+  channel_end(fx[["p"]])
+})
+
+test_that("remote-leaf path walk rejections name the failure", {
+  v <- runif(50000)
+
+  fx <- remote_leaf_pair(list(v)) # a path hop out of bounds
+  aname <- .Call(mizu:::mizu_zc_view_name, fx[["ya"]])
+  poke_remote(fx, id = paste0(aname, "[5,1]"), len = length(v))
+  expect_error(fx[["yb"]][[1L]], "path index out of bounds")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(v) # a path hop into an atomic leaf
+  aname <- .Call(mizu:::mizu_zc_view_name, fx[["ya"]])
+  poke_remote(fx, id = paste0(aname, "[1,1]"), len = length(v))
+  expect_error(fx[["yb"]][[1L]], "path step is not a nested list")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(list(v)) # a hop whose span falls outside the region
+  aname <- .Call(mizu:::mizu_zc_view_name, fx[["ya"]])
+  rwa <- .Call(mizu:::mizu_region_open, aname, TRUE)
+  .Call(mizu:::mizu_poke, rwa, 64, i64raw(2L^30))
+  poke_remote(fx, id = paste0(aname, "[1,1]"), len = length(v))
+  expect_error(fx[["yb"]][[1L]], "invalid nested region")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(list(v)) # the leaf step out of bounds
+  aname <- .Call(mizu:::mizu_zc_view_name, fx[["ya"]])
+  poke_remote(fx, id = paste0(aname, "[5]"), len = length(v))
+  expect_error(fx[["yb"]][[1L]], "leaf index out of bounds")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(list(v)) # a hop entry's attrs fail the claims re-read
+  aname <- .Call(mizu:::mizu_zc_view_name, fx[["ya"]])
+  rwa <- .Call(mizu:::mizu_region_open, aname, TRUE)
+  .Call(
+    mizu:::mizu_poke,
+    rwa,
+    84,
+    writeBin(4L, raw(), size = 4L, endian = "little")
+  )
+  poke_remote(fx, id = paste0(aname, "[1,1]"), len = length(v))
+  expect_error(fx[["yb"]][[1L]], "corrupt or newer")
+  channel_end(fx[["p"]])
+})
+
+test_that("a remote leaf's resolved region is re-validated on open", {
+  x <- runif(50000)
+
+  fx <- remote_leaf_pair(x, wrap = FALSE) # unknown magic
+  rwa <- .Call(mizu:::mizu_region_open, fx[["id"]], TRUE)
+  .Call(mizu:::mizu_poke, rwa, 0, as.raw(0L))
+  poke_remote(fx, len = length(x))
+  expect_error(fx[["yb"]][[1L]], "invalid or corrupted shared memory region")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x, wrap = FALSE) # the length outruns the mapping
+  rwa <- .Call(mizu:::mizu_region_open, fx[["id"]], TRUE)
+  .Call(mizu:::mizu_poke, rwa, 8, i64raw(2L^30))
+  poke_remote(fx, len = length(x))
+  expect_error(fx[["yb"]][[1L]], "invalid or corrupted shared memory region")
+  channel_end(fx[["p"]])
+})
+
+test_that("a remote leaf's resolved string region is re-validated on open", {
+  x <- sprintf("value-%06d", seq_len(5000L))
+
+  fx <- remote_leaf_pair(x, wrap = FALSE) # the string block outruns the mapping
+  rwa <- .Call(mizu:::mizu_region_open, fx[["id"]], TRUE)
+  .Call(mizu:::mizu_poke, rwa, 16, i64raw(2L^30))
+  poke_remote(fx, len = length(x))
+  expect_error(fx[["yb"]][[1L]], "invalid or corrupted shared memory region")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x, wrap = FALSE) # more strings than the offsets fit
+  rwa <- .Call(mizu:::mizu_region_open, fx[["id"]], TRUE)
+  .Call(mizu:::mizu_poke, rwa, 8, i64raw(2L^20))
+  poke_remote(fx, len = length(x))
+  expect_error(fx[["yb"]][[1L]], "invalid string data")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x, wrap = FALSE) # the sections outrun the block
+  rwa <- .Call(mizu:::mizu_region_open, fx[["id"]], TRUE)
+  .Call(mizu:::mizu_poke, rwa, 16, i64raw(8L * length(x)))
+  poke_remote(fx, len = length(x))
+  expect_error(fx[["yb"]][[1L]], "invalid string data")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x, wrap = FALSE) # the first offset is always zero
+  rwa <- .Call(mizu:::mizu_region_open, fx[["id"]], TRUE)
+  offs <- 64L + align64((length(x) + 7L) %/% 8L)
+  .Call(mizu:::mizu_poke, rwa, offs, i64raw(1L))
+  poke_remote(fx, len = length(x))
+  expect_error(fx[["yb"]][[1L]], "invalid string data")
+  channel_end(fx[["p"]])
+})
+
+test_that("a corrupt string span rejects at element access", {
+  p <- channel_pair(arena_size = 0)
+  x <- sprintf("value-%06d", seq_len(5000L))
+  mizu_send(p[["host"]], x)
+  v <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(v))
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, v),
+    TRUE
+  )
+  offs <- 64L + align64((length(x) + 7L) %/% 8L)
+  .Call(mizu:::mizu_poke, rw, offs, i64raw(100L)) # the span starts past its end
+  expect_error(v[[1L]], "invalid string data")
+  channel_end(p)
+})
+
+test_that("a nested list region is validated on lazy extraction", {
+  x <- runif(50000)
+
+  fx <- remote_leaf_pair(x) # a nested span smaller than a header
+  poke_remote(fx, len = 0L, sxp = 19L, dsz = 32L)
+  expect_error(fx[["yb"]][[1L]], "invalid nested list region")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # unknown magic at the nested base
+  poke_remote(fx, len = 0L, sxp = 19L, dsz = 128L)
+  .Call(mizu:::mizu_poke, fx[["rw"]], 128, as.raw(0L))
+  expect_error(fx[["yb"]][[1L]], "invalid nested list region")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # an element count outrunning the span
+  poke_remote(fx, len = 0L, sxp = 19L, dsz = 128L)
+  .Call(
+    mizu:::mizu_poke,
+    fx[["rw"]],
+    128,
+    .Call(mizu:::mizu_peek, fx[["rw"]], 0, 4)
+  )
+  .Call(
+    mizu:::mizu_poke,
+    fx[["rw"]],
+    132,
+    writeBin(2L^30, raw(), size = 4L, endian = "little")
+  )
+  expect_error(fx[["yb"]][[1L]], "invalid nested list region")
+  channel_end(fx[["p"]])
+})
+
+test_that("a corrupt directory entry rejects at element extraction", {
+  x <- runif(50000)
+
+  fx <- remote_leaf_pair(x) # the data span falls outside the region
+  poke_remote(fx, len = 1L, sxp = 14L, dsz = 8L, doff = 2L^30)
+  expect_error(fx[["yb"]][[1L]], "invalid element data")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # the data span is not 64-aligned
+  poke_remote(fx, len = 1L, sxp = 14L, dsz = 8L, doff = 72L)
+  expect_error(fx[["yb"]][[1L]], "invalid element data")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # a negative attrs size
+  poke_remote(fx, len = 1L, sxp = 14L, dsz = 8L, attrs = -1L)
+  expect_error(fx[["yb"]][[1L]], "invalid element data")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # attrs outrunning the data span
+  poke_remote(fx, len = 1L, sxp = 14L, dsz = 8L, attrs = 100L)
+  expect_error(fx[["yb"]][[1L]], "invalid element data")
+  channel_end(fx[["p"]])
+
+  fx <- remote_leaf_pair(x) # an element count outrunning the span
+  poke_remote(fx, len = 2L, sxp = 14L, dsz = 8L)
+  expect_error(fx[["yb"]][[1L]], "invalid element data")
+  channel_end(fx[["p"]])
+})
+
+test_that("the wrap-time remote-leaf walk rejects corrupt entries", {
+  # REF re-wrap re-runs the loan walk over the region as it is now
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  mizu_send(p[["host"]], x)
+  v <- mizu_recv(p[["peer"]], 5)
+  mizu_send(p[["peer"]], list(runif(50000), v))
+  w <- mizu_recv(p[["host"]], 5)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, w),
+    TRUE
+  )
+  reflow <- function(msg) {
+    mizu_send(p[["host"]], w) # REF: the wrap re-walks the tree
+    expect_error(mizu_recv(p[["peer"]], 5), msg)
+    mizu_send(p[["host"]], "tail") # the raise was contained: no wedge
+    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  }
+
+  .Call(mizu:::mizu_poke, rw, 104, i64raw(300L)) # the identifier span caps at 255
+  reflow("corrupt or newer")
+  .Call(mizu:::mizu_poke, rw, 104, i64raw(40L))
+  .Call(mizu:::mizu_poke, rw, 96, i64raw(2L^30)) # the span falls outside
+  reflow("invalid element data")
+  .Call(mizu:::mizu_poke, rw, 96, i64raw(72L)) # the span is not 64-aligned
+  reflow("invalid element data")
+  channel_end(p)
+})
+
+test_that("the wrap-time remote-leaf walk validates nested regions", {
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  mizu_send(p[["host"]], x)
+  v <- mizu_recv(p[["peer"]], 5)
+  mizu_send(p[["peer"]], list(list(runif(50000)), v))
+  w <- mizu_recv(p[["host"]], 5)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, w),
+    TRUE
+  )
+  nested <- i64v(.Call(mizu:::mizu_peek, rw, 64, 8)) # entry 0's data offset
+  reflow <- function(msg) {
+    mizu_send(p[["host"]], w)
+    expect_error(mizu_recv(p[["peer"]], 5), msg)
+    mizu_send(p[["host"]], "tail")
+    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  }
+
+  .Call(mizu:::mizu_poke, rw, 72, i64raw(32L)) # smaller than a header
+  reflow("invalid nested list region")
+  .Call(mizu:::mizu_poke, rw, 72, i64raw(128L))
+  .Call(mizu:::mizu_poke, rw, nested, as.raw(0L)) # unknown magic
+  reflow("invalid nested list region")
+  mg <- .Call(mizu:::mizu_peek, rw, 0, 4)
+  .Call(mizu:::mizu_poke, rw, nested, mg) # an element count outrunning the span
+  reflow("invalid nested list region")
+  channel_end(p)
+})
+
+test_that("the wrap-time remote-leaf walk grows its stack past eight frames", {
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  mizu_send(p[["host"]], x)
+  v <- mizu_recv(p[["peer"]], 5)
+  tree <- c(list(v), replicate(9L, list(runif(40000)), simplify = FALSE))
+  mizu_send(p[["peer"]], tree)
+  w <- mizu_recv(p[["host"]], 5)
+  expect_true(is_view(w))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, w[[1L]]),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
+  expect_identical(w[[2L]][], tree[[2L]])
+  rm(w)
+  invisible(gc()) # the wrap's loans release with the view
+  channel_end(p)
+})
+
+
+test_that("a map view nested in a big tree falls to the serialize tiers", {
+  p <- pool_pair()
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    runif(100),
+    identity,
+    list(),
+    template = numeric(1)
+  )
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  mv <- mizu:::map_collect(st, collect = "view")
+  expect_true(is_view(mv))
+  ch <- channel_pair(arena_size = 0)
+  # the map handle anchors the view: no shm terminus, so no identifier —
+  # the remote-leaf gate rejects the tree (never a silent copy)
+  mizu_send(ch[["host"]], list(mv, runif(50000)))
+  w <- mizu_recv(ch[["peer"]], 5)
+  expect_false(is_view(w))
+  expect_identical(as.numeric(w[[1L]]), as.numeric(mv))
+  channel_end(ch)
+  pool_end(p)
+})
 
 test_that("a materialized or attributed view keeps the serialize path", {
   p <- channel_pair(arena_size = 0)

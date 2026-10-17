@@ -379,10 +379,11 @@ poke_remote <- function(
   len,
   attrs = 0L,
   sxp = 33L,
-  dsz = nchar(id, "bytes")
+  dsz = nchar(id, "bytes"),
+  doff = 128L
 ) {
   entry <- c(
-    i64raw(128L),
+    i64raw(doff),
     i64raw(dsz),
     writeBin(as.integer(sxp), raw(), size = 4L, endian = "little"),
     writeBin(as.integer(attrs), raw(), size = 4L, endian = "little"),

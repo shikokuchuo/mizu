@@ -154,6 +154,62 @@ test_that("foreign-submitter tasks: results, err streams, the result gate", {
   pool_end(p)
 })
 
+test_that("a by-reference spec argument needs the worker's ref capability", {
+  skip_on_os("linux") # a held view trips the churn fallback there
+  ch <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  mizu_send(ch[["host"]], x)
+  v <- mizu_recv(ch[["peer"]], 5)
+  # layout bits without TASKREF: the by-reference argument fails locally
+  p <- pool_pair(ident = c(9L, 7L))
+  expect_error(
+    .Call(
+      mizu:::mizu_pool_submit_spec,
+      p$ctrl,
+      mizu_call("base::sum", v),
+      Inf,
+      NULL
+    ),
+    "by-reference task arguments"
+  )
+  pool_end(p)
+
+  p <- pool_pair()
+  t <- .Call(
+    mizu:::mizu_pool_submit_spec,
+    p$ctrl,
+    mizu_call("base::sum", v),
+    Inf,
+    NULL
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), sum(x))
+  # a ref plus a zc candidate: the candidate stages a region, the ref pins
+  y <- runif(9000)
+  t2 <- .Call(
+    mizu:::mizu_pool_submit_spec,
+    p$ctrl,
+    mizu_call("base::list", v, y),
+    Inf,
+    NULL
+  )
+  pool_step(p)
+  out <- mizu_collect(t2, 5)
+  expect_identical(out[[1L]], x)
+  expect_identical(out[[2L]], y)
+  pool_end(p)
+  channel_end(ch)
+})
+
+test_that("a spec past the inline budget spills to a region", {
+  p <- pool_pair()
+  spec <- do.call(mizu_call, c("base::list", as.list(seq_len(300L))))
+  t <- mizu_submit_call(p$ctrl, spec)
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), as.list(seq_len(300L)))
+  pool_end(p)
+})
+
 test_that("a large foreign result is a view only when caps admit", {
   p <- pool_pair()
   x <- strrep("abcdefghij", 10000)
@@ -677,4 +733,63 @@ test_that("the fold with full caps selects list trees and string vectors", {
   pool_end(p)
   expect_identical(got[[1L]], TRUE)
   expect_identical(got[[2L]], sum(nchar(sv)))
+})
+
+test_that("a duplicate dict key in a task stream fails the decode", {
+  for (spec in list(
+    mizu_call("base::list", aaa = 1, bbb = 2),
+    mizu_call(.source = "aaa + bbb", aaa = 1, bbb = 2)
+  )) {
+    p <- pool_pair()
+    b <- .Call(mizu:::mizu_interop_write_task_call, spec, 2L, 3 + 7 * 2^32, FALSE)
+    pos <- tail(
+      Filter(
+        function(i) all(b[i:(i + 2L)] == charToRaw("b")),
+        seq_len(length(b) - 2L)
+      ),
+      1L
+    )
+    b[pos:(pos + 2L)] <- charToRaw("aaa")
+    t <- .Call(mizu:::mizu_pool_submit, p$ctrl, b, Inf, 0L)
+    pool_step(p)
+    cnd <- tryCatch(mizu_collect(t, 5), mizu_error_remote = function(c) c)
+    expect_s3_class(cnd, "mizu_error_remote")
+    expect_match(conditionMessage(cnd), "duplicate dict key")
+    pool_end(p)
+  }
+})
+
+test_that("an unqualified task name fails the decode", {
+  p <- pool_pair()
+  b <- .Call(
+    mizu:::mizu_interop_write_task_call,
+    mizu_call("base::sqrt", 4),
+    2L,
+    3 + 7 * 2^32,
+    FALSE
+  )
+  pos <- which(b == charToRaw(":"))[1L]
+  b[pos] <- charToRaw("x") # "base::sqrt" -> "basex:sqrt"
+  t <- .Call(mizu:::mizu_pool_submit, p$ctrl, b, Inf, 0L)
+  pool_step(p)
+  cnd <- tryCatch(mizu_collect(t, 5), mizu_error_remote = function(c) c)
+  expect_s3_class(cnd, "mizu_error_remote")
+  expect_match(conditionMessage(cnd), "not qualified")
+  pool_end(p)
+})
+
+test_that("a task stream with trailing bytes fails the decode", {
+  p <- pool_pair()
+  b <- .Call(
+    mizu:::mizu_interop_write_task_call,
+    mizu_call("base::sqrt", 4),
+    2L,
+    3 + 7 * 2^32,
+    FALSE
+  )
+  t <- .Call(mizu:::mizu_pool_submit, p$ctrl, c(b, as.raw(0L)), Inf, 0L)
+  pool_step(p)
+  cnd <- tryCatch(mizu_collect(t, 5), mizu_error_remote = function(c) c)
+  expect_s3_class(cnd, "mizu_error_remote")
+  pool_end(p)
 })

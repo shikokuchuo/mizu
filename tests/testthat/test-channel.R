@@ -247,3 +247,30 @@ test_that("the test identity override validates its shape", {
     "identity pair"
   )
 })
+
+test_that("attach rejects a non-R drop and reads a source drop", {
+  host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 0L, FALSE)
+  suffix <- .Call(mizu:::mizu_channel_suffix, host)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_channel_stat, host)[["name"]],
+    TRUE
+  )
+  doff <- i64v(.Call(mizu:::mizu_peek, rw, 32, 8))
+  dsz <- i64v(.Call(mizu:::mizu_peek, rw, 40, 8))
+  .Call(mizu:::mizu_poke, rw, doff, charToRaw("X"))
+  expect_error(
+    .Call(mizu:::mizu_channel_attach, suffix, NULL),
+    "foreign channel drop"
+  )
+  invisible(gc()) # the failed attach's peer side tears down
+  src <- charToRaw("x + 1")
+  .Call(mizu:::mizu_poke, rw, doff, charToRaw("S"))
+  .Call(mizu:::mizu_poke, rw, doff + 1L, src)
+  .Call(mizu:::mizu_poke, rw, 40, i64raw(1L + length(src)))
+  out <- .Call(mizu:::mizu_channel_attach, suffix, NULL)
+  expect_identical(out[[2L]], "x + 1")
+  .Call(mizu:::mizu_channel_close_signal, out[[1L]])
+  .Call(mizu:::mizu_channel_close, host, 5)
+  .Call(mizu:::mizu_channel_close, out[[1L]], 5)
+})

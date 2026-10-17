@@ -1373,3 +1373,45 @@ test_that("the err writer falls back when a class string is not UTF-8", {
   s <- .Call(mizu:::mizu_interop_write_err_call, cond, 240L)
   expect_true(grepRaw("error", s, fixed = TRUE) > 0)
 })
+
+test_that("a remote error's index past int32 crosses as a double", {
+  fx <- ix_hex_to_raw(ix_corpus()[["err-index"]])
+  pos <- which(fx == as.raw(0x29))[1L]
+  fx[pos:(pos + 7L)] <- c(as.raw(c(0L, 0L, 0L, 128L)), raw(4L))
+  cnd <- .Call(mizu:::mizu_interop_read_call, fx)
+  expect_identical(cnd[["index"]], 2^31 + 1)
+})
+
+test_that("a large named list round-trips through the dict key set", {
+  x <- setNames(as.list(seq_len(200L)), paste0("k", seq_len(200L)))
+  expect_identical(.Call(mizu:::mizu_interop_read_call, .Call(mizu:::mizu_interop_write_call, x)), x)
+})
+
+test_that("a task stream read as a value is not a value", {
+  b <- .Call(
+    mizu:::mizu_interop_write_task_call,
+    mizu_call("base::sqrt", 4),
+    2L,
+    0,
+    FALSE
+  )
+  expect_error(
+    .Call(mizu:::mizu_interop_read_call, b),
+    "an interop task is not a value"
+  )
+})
+
+test_that("a materialized 1:n row names vector writes compactly (foreign)", {
+  df <- data.frame(x = c(1, 2, 3))
+  attr(df, "row.names") <- 1:3 + 0L
+  expect_identical(
+    .Call(mizu:::mizu_interop_read_call, .Call(mizu:::mizu_interop_write_call, df)),
+    df
+  )
+  big <- data.frame(x = runif(9000)) # past the 8192-element region chunk
+  attr(big, "row.names") <- seq_len(9000) + 0L
+  expect_identical(
+    .Call(mizu:::mizu_interop_read_call, .Call(mizu:::mizu_interop_write_call, big)),
+    big
+  )
+})

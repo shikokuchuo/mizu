@@ -364,3 +364,78 @@ test_that("the reader rejects an NA attribute name", {
   bad[(at - 8L):(at - 5L)] <- as.raw(rep(0xff, 4L))
   expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
 })
+
+test_that("a data frame's expanded 1:n row names write compactly", {
+  df <- data.frame(x = c(1, 2, 3))
+  expect_identical(codec_rt(df), df)
+  big <- data.frame(x = runif(9000)) # past the 8192-element region chunk
+  expect_identical(codec_rt(big), big)
+})
+
+test_that("the reader rejects flag combinations the writer never produces", {
+  w <- function(x) .Call(mizu:::mizu_codec_write_call, x)
+  r <- function(b) .Call(mizu:::mizu_codec_read_call, b)
+
+  b <- w(1L) # SC_HASTAG is only written on chain nodes
+  b[2L] <- b[2L] | as.raw(0x20)
+  expect_error(r(b), "corrupt payload stream")
+
+  b <- w(NULL) # SC_HASS4 is never written on NIL
+  b[2L] <- b[2L] | as.raw(0x40)
+  expect_error(r(b), "corrupt payload stream")
+
+  b <- w(1L) # SC_PRIM is only written on symbols
+  b[2L] <- b[2L] | as.raw(0x80)
+  expect_error(r(b), "corrupt payload stream")
+
+  b <- w(NULL) # attributes are never written on NIL
+  b[2L] <- b[2L] | as.raw(0x10)
+  expect_error(r(b), "corrupt payload stream")
+
+  b <- w(quote(zzz_not_a_base_binding)) # a primitive that is not
+  b[2L] <- b[2L] | as.raw(0x80)
+  expect_error(r(b), "corrupt payload stream")
+
+  b <- w(quote(ls)) # a base binding that is not a primitive
+  b[2L] <- b[2L] | as.raw(0x80)
+  expect_error(r(b), "corrupt payload stream")
+
+  b <- w(function(x) x) # an unknown environment kind byte
+  b[3L] <- as.raw(99L)
+  expect_error(r(b), "corrupt payload stream")
+})
+
+test_that("a namespace closure whose name is unreadable rejects", {
+  f <- eval(quote(function(x) x), asNamespace("utils"))
+  b <- .Call(mizu:::mizu_codec_write_call, f)
+  expect_false(is.null(b))
+  b[4L:7L] <- as.raw(255L) # the namespace name's length field
+  expect_error(.Call(mizu:::mizu_codec_read_call, b), "corrupt payload stream")
+})
+
+test_that("a frame leaf resolving to a non-list view rejects", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], runif(100000))
+  v <- mizu_recv(p[["peer"]], 5)
+  aname <- .Call(mizu:::mizu_zc_view_name, v)
+  mizu_send(p[["host"]], list(arrow::arrow_table(data.frame(x = runif(6000))), 1))
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
+    TRUE
+  )
+  pl <- .Call(mizu:::mizu_peek, rw, 512L + 256L + 16L, 240L)
+  slash <- which(pl == charToRaw("/"))[1L]
+  # point the frame leaf's name span at the vector's region instead
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    512L + 256L + 16L + slash - 2L,
+    c(as.raw(nchar(aname, "bytes")), charToRaw(aname))
+  )
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload stream")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+})

@@ -1398,7 +1398,28 @@ test_that("a template type mismatch names the template's type", {
     run_map(p, 1:4, function(i) "x", template = numeric(1)),
     "must be type 'double'"
   )
+  expect_error(
+    run_map(p, 1:4, function(i) "x", template = complex(1)),
+    "must be type 'complex'"
+  )
   pool_end(p)
+})
+
+test_that("the splice helpers reject malformed runner results", {
+  out <- vector("list", 4L)
+  sp <- function(res, ms = 1) .Call(mizu:::mizu_map_splice, out, res, ms)
+  expect_error(sp(list(list(0, "x", list()))), "invalid map runner result")
+  expect_error(sp(list(list(0, 0, list(list())))), "invalid map batch range")
+
+  spx <- function(runs, base = 0) {
+    .Call(mizu:::mizu_map_splice_ix, out, runs, base)
+  }
+  expect_error(spx(list(), -1), "invalid map splice range")
+  expect_error(spx(list(list("x", list(1)))), "invalid map runner result")
+  expect_error(
+    spx(list(list(list("x"), list(list(1))))),
+    "invalid map batch range"
+  )
 })
 
 test_that("a name-kind spec map takes the region path and returns in order", {

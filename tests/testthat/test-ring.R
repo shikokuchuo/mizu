@@ -365,3 +365,70 @@ test_that("mori-shared payloads ride the hooks and map zero-copy", {
   expect_true(mori::is_shared(z[["wrapped"]]))
   expect_identical(as.numeric(z[["wrapped"]]), as.numeric(l[["a"]]))
 })
+
+test_that("corrupt slot headers reject at read, the ring flows on", {
+  poke_hdr <- function(p, off, bytes) {
+    nm <- .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]]
+    rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+    .Call(mizu:::mizu_poke, rw, 512L + off, bytes)
+  }
+  i32 <- function(x) {
+    writeBin(as.integer(x), raw(), size = 4L, endian = "little")
+  }
+  reflow <- function(p) {
+    mizu_send(p[["host"]], "tail") # the raise was contained: no wedge
+    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+    channel_end(p)
+  }
+
+  # the trivial tiers read unguarded (wire corruption there is only ever
+  # in-process sabotage): their raises stay in place, no reflow
+  p <- channel_pair()
+  mizu_send(p[["host"]], "abcd") # STR1: the aux word is the cetype
+  poke_hdr(p, 8L, c(i32(99L), raw(4L)))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  channel_end(p)
+
+  p <- channel_pair()
+  mizu_send(p[["host"]], list(1)) # INLINE: a zero length is nonsense
+  poke_hdr(p, 4L, i32(0L))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  reflow(p)
+
+  p <- channel_pair()
+  mizu_send(p[["host"]], as.raw(1:8)) # RAWVEC: the aux word is the wire type
+  poke_hdr(p, 8L, c(i32(0L), raw(4L)))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  channel_end(p)
+
+  p <- channel_pair()
+  mizu_send(p[["host"]], 42L) # an unknown kind
+  poke_hdr(p, 0L, i32(99L))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  reflow(p)
+
+  p <- channel_pair(arena_size = 0)
+  e <- new.env()
+  e$x <- runif(100)
+  mizu_send(p[["host"]], e) # SHM_RAW: a zero region-name length
+  poke_hdr(p, 4L, i32(0L))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  reflow(p)
+
+  p <- channel_pair(arena_size = 262144L) # RAWSPILL: a zero wire type
+  mizu_send(p[["host"]], as.raw(rep(1L, 100000)))
+  poke_hdr(p, 8L, c(i32(0L), raw(4L)))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  channel_end(p)
+})
+
+test_that("a batch receive surfaces a mid-batch decline", {
+  p <- channel_pair()
+  mizu_send(p[["host"]], list(1))
+  mizu_send(p[["host"]], list(2))
+  nm <- .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]]
+  rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+  .Call(mizu:::mizu_poke, rw, 512L + 16L, charToRaw("P")) # a private stream byte
+  expect_error(mizu_recv_batch(p[["peer"]], 3L), "cannot interpret")
+  channel_end(p)
+})

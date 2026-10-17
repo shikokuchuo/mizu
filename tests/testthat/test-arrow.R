@@ -915,6 +915,30 @@ test_that("a nested table arg crosses as a frame leaf; a second converts", {
   expect_identical(out[[4L]], small)
 })
 
+test_that("a converting table's lazy list-column elements cross by value", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  big <- data.frame(v = runif(6000))
+  # the frame takes a; b converts: the conversion's lazy string column
+  # materializes at the bail, the list column's elements cross by value
+  t <- mizu_submit(
+    p$ctrl,
+    list(a, b),
+    a = arrow::arrow_table(big),
+    b = arrow::arrow_table(
+      s = c("x", "y", NA),
+      x = arrow::Array$create(list(1:2, 3L, 4:6))
+    )
+  )
+  pool_step(p)
+  out <- mizu_collect(t, 5)
+  expect_true(is_view(out[[1L]]))
+  expect_identical(out[[2L]][["s"]], c("x", "y", NA))
+  expect_identical(as.list(out[[2L]][["x"]]), list(1:2, 3L, 4:6))
+})
+
 test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
