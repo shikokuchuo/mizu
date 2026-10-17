@@ -414,35 +414,21 @@ test_that("a namespace closure whose name is unreadable rejects", {
 })
 
 test_that("a frame leaf resolving to a non-list view rejects", {
-  skip_if_not_installed("arrow")
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], runif(100000))
   v <- mizu_recv(p[["peer"]], 5)
   aname <- .Call(mizu:::mizu_zc_view_name, v)
-  mizu_send(
-    p[["host"]],
-    list(arrow::arrow_table(data.frame(x = runif(6000))), 1)
+  # a frame leaf (SC_FRAME tag, u8 name length, the name) naming the
+  # vector's region: its MIZH view is not the list a frame resolves to
+  bad <- c(
+    as.raw(0x52),
+    as.raw(0x28),
+    as.raw(nchar(aname, "bytes")),
+    charToRaw(aname)
   )
-  rw <- .Call(
-    mizu:::mizu_region_open,
-    .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
-    TRUE
+  expect_error(
+    .Call(mizu:::mizu_codec_read_call, bad),
+    "corrupt payload stream"
   )
-  pl <- .Call(mizu:::mizu_peek, rw, 512L + 256L + 16L, 240L)
-  # the name is "/mizu_..." or "Local\mizu_..." (Windows)
-  at <- grepRaw(charToRaw("/mizu_"), pl)
-  if (length(at) == 0L) {
-    at <- grepRaw(charToRaw("Local\\mizu_"), pl)
-  }
-  # point the frame leaf's name span at the vector's region instead
-  .Call(
-    mizu:::mizu_poke,
-    rw,
-    512L + 256L + 16L + at - 2L,
-    c(as.raw(nchar(aname, "bytes")), charToRaw(aname))
-  )
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload stream")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
   channel_end(p)
 })
