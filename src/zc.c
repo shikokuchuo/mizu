@@ -1034,10 +1034,32 @@ static void mizu_zc_mizl_loan(const char *id, int len, void *ctx) {
   memcpy(c->names[c->n++], name, sizeof(name));
 }
 
+struct mizl_walk_call {
+  unsigned char *base;
+  int64_t region_size;
+  struct mizl_loan_ctx *c;
+};
+
+static SEXP mizu_zc_mizl_walk_run(void *data) {
+  struct mizl_walk_call *w = (struct mizl_walk_call *) data;
+  mizu_view_mizl_remote_walk(w->base, w->region_size, mizu_zc_mizl_loan, w->c);
+  return R_NilValue;
+}
+
+static void mizu_zc_mizl_walk_cleanup(void *data, Rboolean jump) {
+  if (jump) free(((struct mizl_walk_call *) data)->c->names);
+}
+
+/* The walk validates as it goes and raises on a corrupt or newer region:
+   the dedup buffer rides an unwind cleanup so the jump cannot leak it. */
 static void mizu_zc_mizl_loans(unsigned char *base, int64_t region_size,
                                mizu_zc_rel *rel) {
   struct mizl_loan_ctx c = { rel, NULL, 0, 0 };
-  mizu_view_mizl_remote_walk(base, region_size, mizu_zc_mizl_loan, &c);
+  struct mizl_walk_call w = { base, region_size, &c };
+  SEXP cont = PROTECT(R_MakeUnwindCont());
+  R_UnwindProtect(mizu_zc_mizl_walk_run, &w, mizu_zc_mizl_walk_cleanup, &w,
+                  cont);
+  UNPROTECT(1);
   free(c.names);
 }
 
