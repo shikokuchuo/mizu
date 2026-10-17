@@ -419,19 +419,26 @@ test_that("a frame leaf resolving to a non-list view rejects", {
   mizu_send(p[["host"]], runif(100000))
   v <- mizu_recv(p[["peer"]], 5)
   aname <- .Call(mizu:::mizu_zc_view_name, v)
-  mizu_send(p[["host"]], list(arrow::arrow_table(data.frame(x = runif(6000))), 1))
+  mizu_send(
+    p[["host"]],
+    list(arrow::arrow_table(data.frame(x = runif(6000))), 1)
+  )
   rw <- .Call(
     mizu:::mizu_region_open,
     .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
     TRUE
   )
   pl <- .Call(mizu:::mizu_peek, rw, 512L + 256L + 16L, 240L)
-  slash <- which(pl == charToRaw("/"))[1L]
+  # the name is "/mizu_..." or "Local\mizu_..." (Windows)
+  at <- grepRaw(charToRaw("/mizu_"), pl)
+  if (length(at) == 0L) {
+    at <- grepRaw(charToRaw("Local\\mizu_"), pl)
+  }
   # point the frame leaf's name span at the vector's region instead
   .Call(
     mizu:::mizu_poke,
     rw,
-    512L + 256L + 16L + slash - 2L,
+    512L + 256L + 16L + at - 2L,
     c(as.raw(nchar(aname, "bytes")), charToRaw(aname))
   )
   expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload stream")
