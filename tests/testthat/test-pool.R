@@ -1150,6 +1150,8 @@ test_that("a name-kind spec accepts an unlisted worker language at submit", {
 
 test_that("the lame-duck probe answers on live and dead handles", {
   p <- pool_pair()
+  # a non-worker probe answers done without releasing the handle — only the
+  # controller's destroy unlinks the region and liveness files
   expect_type(.Call(mizu:::mizu_pool_lame_duck, p[["ctrl"]]), "logical")
   pool_end(p)
   expect_true(.Call(mizu:::mizu_pool_lame_duck, p[["ctrl"]]))

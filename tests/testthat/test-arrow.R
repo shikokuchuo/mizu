@@ -805,7 +805,22 @@ test_that("an orphaned referenced region still borrows", {
   col <- ya[[1L]]
   expect_true(is_view(col))
   expected <- as.numeric(col)
+  nm <- .Call(mizu:::mizu_zc_view_name, col)
   kill_hard(.Call(mizu:::mizu_channel_stat, ch)[["peer_pid"]])
+  # the killed peer staged the region: reap it once its PID frees, so the
+  # orphan (and the macOS registry log) does not outlive the test run
+  if (.Platform[["OS.type"]] != "windows" && reaper_ok()) {
+    on.exit(
+      {
+        reaped <- character()
+        wait_until({
+          reaped <- c(reaped, .Call(mizu:::mizu_prune_call))
+          nm %in% reaped
+        })
+      },
+      add = TRUE
+    )
+  }
   expect_s3_class(mizu_recv(ch, 30), "mizu_peer_gone")
   ex <- arrow_export(list(col)) # the name survives a hard kill: the borrow
   expect_identical(ex$kinds, 1L)
