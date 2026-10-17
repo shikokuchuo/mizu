@@ -721,3 +721,33 @@ while True:
   expect_identical(td, as.difftime(0:69999 * 1e-9, units = "secs"))
   expect_true(mizu_close(ch, timeout = 10))
 })
+
+test_that("a remote leaf of a Python known-NA-free region claims -1", {
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import numpy as np
+ch.send(np.arange(40000, dtype=np.float64) + 0.5)
+ch.recv(30)  # wait for the ack: the region must outlive the receive
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  v <- mizu_recv(ch, 30)
+  expect_true(.Call(mizu:::mizu_zc_view_check, v))
+  p <- foreign_pair(caps = 22L) # ATTRS + MIZL + MIZL_REF
+  on.exit(channel_end(p))
+  df <- data.frame(a = runif(40000))
+  df$v <- v
+  mizu_send(p$host, df)
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is_view(out[["v"]]))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, out[["v"]]),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
+  expect_identical(out[["v"]][], seq_len(40000) - 1 + 0.5)
+  expect_identical(out[["a"]], df[["a"]])
+  mizu_send(ch, 0)
+  expect_true(mizu_close(ch, timeout = 10))
+})

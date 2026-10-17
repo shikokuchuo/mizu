@@ -340,3 +340,27 @@ test_that("row.names that are not the 1:n sequence decline the codec", {
   mizu_send(p$host, df)
   expect_identical(mizu_recv(p$peer, 5), df)
 })
+
+test_that("the reader rejects flag bits a type never carries", {
+  # SC_HASTAG on an atomic vector node
+  bad <- .Call(mizu:::mizu_codec_write_call, 1.5)
+  bad[2] <- as.raw(0x24)
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # SC_HASS4 on NIL, a type outside the S4 whitelist
+  bad <- .Call(mizu:::mizu_codec_write_call, NULL)
+  bad[2] <- as.raw(0x40)
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  # SC_HASATTR on a symbol, a type that never carries attributes
+  bad <- .Call(mizu:::mizu_codec_write_call, quote(x))
+  bad[2] <- as.raw(0x11)
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+})
+
+test_that("the reader rejects an NA attribute name", {
+  bad <- .Call(mizu:::mizu_codec_write_call, structure(1, foo = 2))
+  at <- grepRaw("foo", bad, fixed = TRUE)
+  expect_true(at > 0)
+  # the name's u32 length precedes its cetype word: 0xFFFFFFFF marks NA
+  bad[(at - 8L):(at - 5L)] <- as.raw(rep(0xff, 4L))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+})

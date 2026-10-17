@@ -1664,3 +1664,319 @@ test_that("the pin chain splices its tombstoned cells", {
     expect_identical(mizu_recv(p$host, 5)[[1L]], x)
   }
 })
+
+test_that("a uint64 frame column serves summary, serialize, and COW reads", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair(ident = c(2L, 71L)) # MIZS + ATTRS + MIZL + U64V
+  on.exit(channel_end(p))
+  uv <- rep(c(42, 2^53, 7, 2^40), length.out = 9000)
+  u <- arrow::Array$create(uv)$cast(arrow::uint64())
+  mizu_send(p$host, arrow::arrow_table(u = u))
+  col <- mizu_recv(p$peer, 5)[["u"]]
+  expect_true(is_view(col))
+  # summary ops read whole regions off the mapping through Get_region
+  expect_identical(sum(col), sum(uv))
+  expect_identical(mean(col), mean(uv))
+  expect_false(anyNA(col))
+  expect_identical(col + 0, uv)
+  # the serialized state is the identifier; unserialize re-resolves a view
+  col2 <- unserialize(serialize(col, NULL))
+  expect_true(is_view(col2))
+  expect_identical(sum(col2), sum(uv))
+  # COW moves the converted values into data2; reads serve the copy
+  col[1] <- 99
+  expect_identical(length(col), 9000L)
+  expect_identical(col[[1]], 99)
+  expect_identical(sum(col), 99 - 42 + sum(uv))
+  expect_identical(unserialize(serialize(col, NULL)), c(99, uv[-1]))
+})
+
+test_that("a string view materializes on a radix sort, reads after", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta", "gamma", NA), length.out = 70000)
+  mizu_send(p$host, s)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  # radix sort and order read the vector through DATAPTR: materialization
+  # is the view's one COW — the release fires, values are untouched
+  expect_identical(sort(v, method = "radix"), sort(s))
+  expect_identical(length(v), 70000L)
+  expect_identical(v[[3]], "gamma")
+  expect_identical(v[1:4], s[1:4])
+  # a COW'd string view serializes as the plain value (VECSXP state form)
+  expect_identical(unserialize(serialize(v, NULL)), s)
+  mizu_send(p$host, s)
+  v2 <- mizu_recv(p$peer, 5)
+  expect_identical(order(v2), order(s))
+  expect_identical(v2, s)
+})
+
+test_that("ns temporal blobs land as POSIXct and difftime on R peers", {
+  p <- foreign_pair(caps = 2L) # ATTRS: the blob rides the MIZH region
+  on.exit(channel_end(p))
+  t <- .POSIXct(seq(1.7e9, by = 0.5, length.out = 70000), tz = "UTC")
+  t[3] <- NA_real_
+  mizu_send(p$host, t)
+  expect_identical(mizu_recv(p$peer, 5), t)
+  d <- as.difftime(seq(1, by = 1.5, length.out = 70000), units = "secs")
+  d[5] <- NA
+  mizu_send(p$host, d)
+  expect_identical(mizu_recv(p$peer, 5), d)
+  # a Date's blob is not the tsn form: attrs apply as-is
+  dt <- as.Date("2024-01-01") + seq_len(70000)
+  mizu_send(p$host, dt)
+  expect_identical(mizu_recv(p$peer, 5), dt)
+})
+
+test_that("the foreign layout NA scan covers integer64 with and without NA", {
+  skip_if_not_installed("bit64")
+  p <- foreign_pair(caps = 6L) # ATTRS + MIZL: the frame carries the leaf
+  on.exit(channel_end(p))
+  df <- data.frame(i = bit64::as.integer64(seq_len(70000)))
+  mizu_send(p$host, df)
+  expect_identical(mizu_recv(p$peer, 5), df)
+  df$i[4] <- bit64::NA_integer64_
+  mizu_send(p$host, df)
+  expect_identical(mizu_recv(p$peer, 5), df)
+})
+
+test_that("a foreign real sequence leaf writes off the region accessors", {
+  p <- foreign_pair(caps = 4L) # MIZL
+  on.exit(channel_end(p))
+  x <- list(as.double(1:100000), runif(70000)) # a compact realseq leaf
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  expect_identical(v[[1]], x[[1]])
+  expect_identical(v[[2]], x[[2]])
+})
+
+test_that("a remote leaf records its claim in the frame's validity table", {
+  p <- foreign_pair(caps = 0L)
+  on.exit(channel_end(p))
+  mizu_send(p$host, runif(40000)) # a flat MIZH region: the claim is unknown
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  p2 <- foreign_pair(caps = 23L) # MIZS + ATTRS + MIZL + MIZL_REF
+  on.exit(channel_end(p2), add = TRUE)
+  n <- 40000L
+  df <- data.frame(
+    a = seq_len(n) + 0,
+    s = rep(c("alpha", "beta"), length.out = n),
+    r = as.raw(seq_len(n) %% 256L)
+  )
+  df$v <- v
+  mizu_send(p2$host, df)
+  out <- mizu_recv(p2$peer, 5)
+  expect_true(is_view(out[["v"]]))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, out[["v"]]),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
+  expect_identical(out[["v"]][], v[])
+  expect_identical(out[["a"]], df[["a"]])
+  expect_identical(out[["s"]], df[["s"]])
+  expect_identical(out[["r"]], df[["r"]])
+})
+
+test_that("a view name is NULL for a non-view and a foreign-class view", {
+  skip_if_not_installed("mori")
+  expect_null(.Call(mizu:::mizu_zc_view_name, 1:10)) # a compact sequence
+  expect_null(.Call(mizu:::mizu_zc_view_name, mori::share(runif(100))))
+})
+
+test_that("attributed string and list views re-send foreign as REF", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta"), length.out = 70000)
+  names(s) <- paste0("n", seq_along(s))
+  mizu_send(p$host, s)
+  sv <- mizu_recv(p$peer, 5)
+  expect_true(is_view(sv))
+  x <- list(runif(30000), rep("s", 1000))
+  mizu_send(p$host, x)
+  xv <- mizu_recv(p$peer, 5)
+  expect_true(is_view(xv))
+  p2 <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2$host, sv)
+  expect_identical(mizu_recv(p2$peer, 5), s)
+  mizu_send(p2$host, xv)
+  expect_identical(mizu_recv(p2$peer, 5), x)
+})
+
+test_that("a tree view with a remote leaf re-sends by reference (REF loan walk)", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(70000)
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  mizu_send(p$peer, list(v, runif(70000)))
+  tree <- mizu_recv(p$host, 5)
+  expect_true(is_view(tree))
+  expect_true(is_view(tree[[1]]))
+  # the whole tree re-stages as REF: the remote leaf's region joins the loan
+  mizu_send(p$host, tree)
+  back <- mizu_recv(p$peer, 5)
+  expect_true(is_view(back))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, back[[1]]),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
+  expect_identical(back[[1]][], x)
+  expect_identical(back[[2]][], tree[[2]][])
+})
+
+test_that("an over-deep view chain declines the identifier, values cross", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  base <- runif(30000)
+  deep <- base
+  for (i in seq_len(66L)) {
+    deep <- list(deep)
+  }
+  mizu_send(p$host, deep)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  el <- v
+  for (i in seq_len(66L)) {
+    el <- el[[1L]]
+  }
+  # the element's identifier would exceed the path cap: no remote form
+  expect_true(is_view(el))
+  expect_null(.Call(mizu:::mizu_zc_view_name, el))
+  tail <- runif(70000)
+  mizu_send(p$peer, list(el, tail))
+  out <- mizu_recv(p$host, 5)
+  expect_identical(out[[1]], base)
+  expect_identical(out[[2]], tail)
+})
+
+test_that("verbatim ns temporal columns land as POSIXct and difftime", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
+  p <- foreign_pair(caps = 127L) # the full set incl. MIZL_TSN
+  on.exit(channel_end(p))
+  t0 <- as.POSIXct("2024-01-01 00:00:00.5", tz = "UTC") + 0:9999
+  d0 <- as.difftime(0:9999 * 1.5, units = "secs")
+  tab <- arrow::arrow_table(
+    t = arrow::Array$create(t0, type = arrow::timestamp("ns", "UTC")),
+    d = arrow::Array$create(d0, type = arrow::duration("ns"))
+  )
+  mizu_send(p$host, tab)
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(class(out$t), c("POSIXct", "POSIXt"))
+  expect_identical(attr(out$t, "tzone"), "UTC")
+  expect_identical(out$t, as.data.frame(tab)$t)
+  expect_identical(class(out$d), "difftime")
+  expect_identical(attr(out$d, "units"), "secs")
+  # the landing is int64 ns * 1e-9, byte-identical to the fallback form
+  expect_identical(
+    out$d,
+    as.difftime(as.double(as.numeric(d0) * 1e9) * 1e-9, units = "secs")
+  )
+})
+
+test_that("a lazy ALTREP atomic takes the foreign copy path", {
+  p <- foreign_pair(caps = 0L)
+  on.exit(channel_end(p))
+  x <- as.double(1:400000) # a compact realseq: not directly readable
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("a named tree declines the foreign layout short of ATTRS", {
+  p <- foreign_pair(caps = 4L) # MIZL without ATTRS
+  on.exit(channel_end(p))
+  x <- list(a = runif(70000), b = runif(70000))
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("a foreign-class string view takes the foreign copy path", {
+  skip_if_not_installed("mori")
+  p <- foreign_pair(caps = 1L) # MIZS
+  on.exit(channel_end(p))
+  x <- rep(c("alpha", "beta", "héllo ✓"), length.out = 70000)
+  mizu_send(p$host, mori::share(x))
+  expect_identical(mizu_recv(p$peer, 5), x)
+})
+
+test_that("an attributed string vector stages foreign by exact size", {
+  p <- foreign_pair(caps = 3L) # MIZS + ATTRS
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta", "héllo ✓"), length.out = 70000)
+  names(s) <- paste0("n", seq_along(s))
+  mizu_send(p$host, s)
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is_view(out))
+  expect_identical(out[], s)
+})
+
+test_that("the foreign size gate uses the inline budget past the floor", {
+  p <- foreign_pair(caps = 1L, slot_size = 131072L)
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", "beta"), length.out = 70000)
+  mizu_send(p$host, s)
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is_view(out))
+  expect_identical(out[], s)
+  p2 <- foreign_pair(caps = 6L, slot_size = 131072L)
+  on.exit(channel_end(p2), add = TRUE)
+  df <- data.frame(x = runif(70000), i = seq_len(70000) + 0L)
+  mizu_send(p2$host, df)
+  expect_identical(mizu_recv(p2$peer, 5), df)
+  p3 <- foreign_pair(caps = 4L, slot_size = 131072L)
+  on.exit(channel_end(p3), add = TRUE)
+  x <- list(runif(70000), runif(70000))
+  mizu_send(p3$host, x)
+  expect_identical(mizu_recv(p3$peer, 5), x)
+})
+
+test_that("a frame that is itself a view declines the foreign gate", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(x = runif(70000), i = seq_len(70000) + 0L)
+  mizu_send(p$host, df)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  p2 <- foreign_pair(caps = 6L) # ATTRS + MIZL
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2$host, v)
+  expect_identical(mizu_recv(p2$peer, 5), df)
+})
+
+test_that("a lazy ALTREP column rides the foreign frame by value", {
+  p <- foreign_pair(caps = 6L) # ATTRS + MIZL
+  on.exit(channel_end(p))
+  df <- data.frame(i = seq_len(70000), x = runif(70000))
+  mizu_send(p$host, df)
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(out, df)
+})
+
+test_that("an inner list view with a remote leaf re-sends as path-form REF", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(70000)
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  mizu_send(p$peer, list(list(v, runif(70000)), runif(70000)))
+  tree <- mizu_recv(p$host, 5)
+  expect_true(is_view(tree))
+  inner <- tree[[1L]]
+  expect_true(is_view(inner))
+  # the inner view re-stages as a path-form REF: the read loans the remote
+  # leaf's region with the tree's own record
+  mizu_send(p$host, inner)
+  back <- mizu_recv(p$peer, 5)
+  expect_true(is_view(back))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, back[[1L]]),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
+  expect_identical(back[[1L]][], x)
+  expect_identical(back[[2L]][], inner[[2L]][])
+})
