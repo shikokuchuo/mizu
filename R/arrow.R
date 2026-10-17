@@ -40,7 +40,7 @@ arrow_ptype <- function(schema, factors) {
   if (factors && dict_str(schema)) {
     return(factor())
   }
-  if (int64 && identical(schema$format, "l")) {
+  if (int64 && is.null(schema$dictionary) && identical(schema$format, "l")) {
     return(bit64::integer64())
   }
   if (identical(schema$format, "+s")) {
@@ -48,7 +48,9 @@ arrow_ptype <- function(schema, factors) {
     for (i in seq_along(ch)) {
       if (factors && dict_str(ch[[i]])) {
         to[[i]] <- factor()
-      } else if (int64 && identical(ch[[i]]$format, "l")) {
+      } else if (
+        int64 && is.null(ch[[i]]$dictionary) && identical(ch[[i]]$format, "l")
+      ) {
         to[[i]] <- bit64::integer64()
       }
     }

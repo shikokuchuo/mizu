@@ -67,3 +67,11 @@ test_that("death-watch entries reject foreign handles", {
   )
   channel_end(p)
 })
+
+test_that("watching pid 0 fails informatively", {
+  skip_on_os("windows") # pid 0 is the System Idle Process there: watchable
+  expect_error(
+    .Call(mizu:::mizu_death_watch_call, 0, NULL, 0L, FALSE),
+    "cannot watch pid 0"
+  )
+})

@@ -1245,3 +1245,256 @@ test_that("arrow_ptype keeps dictionary and int64 column forms", {
     bit64::integer64()
   )
 })
+
+test_that("a uint64 column crosses verbatim past the gate", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("bit64")
+  uv <- bit64::as.integer64(rep(1, 9000))
+  uv[2] <- bit64::as.integer64("9223372036854775807")
+  orig <- arrow::Array$create(uv, type = arrow::uint64())
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, arrow::arrow_table(u = orig))
+  df <- mizu_recv(p$peer, 5)
+  expect_true(is_view(df$u))
+  s <- mizu_as_arrow(df)
+  expect_identical(s$get_schema()$children$u$format, "L")
+  back <- arrow::as_arrow_table(s)$u
+  expect_identical(
+    back$cast(arrow::utf8())$as_vector(),
+    orig$cast(arrow::utf8())$as_vector()
+  )
+})
+
+test_that("a clean large_string column crosses past the gate", {
+  skip_if_not_installed("arrow")
+  x <- paste0("s", seq_len(6000))
+  tab <- arrow::arrow_table(
+    l = arrow::Array$create(x)$cast(arrow::large_utf8())
+  )
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, tab)
+  expect_identical(mizu_recv(p$peer, 5), data.frame(l = x))
+})
+
+test_that("a clean bool column crosses past the gate", {
+  skip_if_not_installed("arrow")
+  x <- rep(c(TRUE, FALSE), 2500)
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, arrow::arrow_table(b = x))
+  expect_identical(mizu_recv(p$peer, 5), data.frame(b = x))
+})
+
+test_that("a column with a run of 64+ nulls crosses", {
+  skip_if_not_installed("arrow")
+  x <- rep(c(2.5, rep(NA_real_, 65)), 80)
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, arrow::arrow_table(x = x))
+  expect_identical(mizu_recv(p$peer, 5), data.frame(x = x))
+})
+
+test_that("a sliced table crosses with its column offsets", {
+  skip_if_not_installed("arrow")
+  df <- data.frame(
+    x = c(1.5, rep(c(2.5, NA), 4000)),
+    s = c("skip", rep(c("a", "b", NA), length.out = 8000))
+  )
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, arrow::arrow_table(df)$Slice(1))
+  expect_identical(
+    mizu_recv(p$peer, 5),
+    data.frame(x = df$x[-1L], s = df$s[-1L])
+  )
+})
+
+test_that("a factor with a single level crosses", {
+  skip_if_not_installed("arrow")
+  f <- factor(rep("a", 8000), levels = "a")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, arrow::arrow_table(f = f))
+  expect_identical(mizu_recv(p$peer, 5), data.frame(f = f))
+})
+
+test_that("dictionary index widths round-trip", {
+  skip_if_not_installed("arrow")
+  f <- factor(rep(c("a", "b", NA), 3000), levels = c("a", "b"))
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  for (ty in list(
+    arrow::int8(),
+    arrow::uint8(),
+    arrow::int16(),
+    arrow::uint16(),
+    arrow::uint32(),
+    arrow::int64(),
+    arrow::uint64()
+  )) {
+    da <- arrow::Array$create(f)$cast(
+      arrow::dictionary(index_type = ty, value_type = arrow::utf8())
+    )
+    mizu_send(p$host, arrow::arrow_table(v = da))
+    expect_identical(mizu_recv(p$peer, 5), data.frame(v = f))
+  }
+})
+
+test_that("dictionary declines name the reason", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  iv <- arrow::arrow_table(
+    v = arrow::DictionaryArray$create(rep(c(0L, 1L), 4000), c(10L, 20L))
+  )
+  expect_snapshot(mizu_send(p$host, iv), error = TRUE)
+  nl <- arrow::arrow_table(
+    v = arrow::DictionaryArray$create(rep(c(0L, 1L), 4000), c("a", NA))
+  )
+  expect_snapshot(mizu_send(p$host, nl), error = TRUE)
+  rb1 <- arrow::record_batch(
+    data.frame(f = factor(rep(c("a", "b"), 2500), levels = c("a", "b")))
+  )
+  rb2 <- arrow::record_batch(
+    data.frame(f = factor(rep(c("c", "d"), 2500), levels = c("c", "d")))
+  )
+  expect_snapshot(
+    mizu_send(p$host, arrow::RecordBatchReader$create(rb1, rb2)),
+    error = TRUE
+  )
+  mizu_send(p$host, 1:5)
+  expect_identical(mizu_recv(p$peer, 5), 1:5)
+})
+
+test_that("a binary column declines", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
+  sch <- nanoarrow::na_struct(list(v = nanoarrow::na_binary()))
+  parent <- nanoarrow::nanoarrow_array_init(sch)
+  parent <- nanoarrow::nanoarrow_array_modify(
+    parent,
+    list(
+      children = list(nanoarrow::as_nanoarrow_array(
+        rep(list(as.raw(1:9)), 3000),
+        nanoarrow::na_binary()
+      )),
+      length = 3000
+    ),
+    validate = FALSE
+  )
+  nanoarrow::nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+  s <- nanoarrow::basic_array_stream(
+    list(parent),
+    schema = sch,
+    validate = FALSE
+  )
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  expect_snapshot(mizu_send(p$host, s), error = TRUE)
+  mizu_send(p$host, 1:5)
+  expect_identical(mizu_recv(p$peer, 5), 1:5)
+})
+
+test_that("a zero-column table declines", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
+  mk <- function() {
+    sch <- nanoarrow::na_struct(list())
+    parent <- nanoarrow::nanoarrow_array_init(sch)
+    parent <- nanoarrow::nanoarrow_array_modify(
+      parent,
+      list(length = 5),
+      validate = FALSE
+    )
+    nanoarrow::nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+    nanoarrow::basic_array_stream(list(parent), schema = sch, validate = FALSE)
+  }
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  expect_error(mizu_send(p$host, mk()), class = "mizu_error_not_portable")
+  expect_snapshot(mizu_send(p$host, mk()), error = TRUE)
+  mizu_send(p$host, 1:5)
+  expect_identical(mizu_recv(p$peer, 5), 1:5)
+})
+
+test_that("the export degrades a column whose root header changed", {
+  skip_if_not_installed("nanoarrow")
+  x <- runif(50000)
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  rw <- .Call(mizu:::mizu_region_open, .Call(mizu:::mizu_zc_view_name, v), TRUE)
+  .Call(
+    # the wire type word no longer matches
+    mizu:::mizu_poke,
+    rw,
+    4L,
+    writeBin(13L, raw(), size = 4L, endian = "little")
+  )
+  df <- data.frame(a = v)
+  ex <- arrow_export(df)
+  expect_identical(ex$kinds, 0L)
+  rm(df, ex)
+  channel_end(p)
+  p <- channel_pair()
+  on.exit(channel_end(p), add = TRUE)
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  rw <- .Call(mizu:::mizu_region_open, .Call(mizu:::mizu_zc_view_name, v), TRUE)
+  .Call(mizu:::mizu_poke, rw, 0L, as.raw(0L)) # unknown magic
+  df <- data.frame(a = v)
+  ex <- arrow_export(df)
+  expect_identical(ex$kinds, 0L)
+  expect_identical(df$a[], x) # the values still read off the consumer mapping
+})
+
+test_that("the export degrades a remote column whose path has no entry", {
+  skip_if_not_installed("nanoarrow")
+  x <- runif(50000)
+  fx <- remote_leaf_pair(x)
+  on.exit(channel_end(fx[["p"]]))
+  poke_remote(fx, len = length(x))
+  col <- fx[["yb"]][[1L]]
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_zc_view_name, fx[["ya"]]),
+    TRUE
+  )
+  # the referenced region's directory no longer reaches the column's leaf
+  .Call(mizu:::mizu_poke, rw, 4L, raw(4L))
+  ex <- arrow_export(list(col))
+  expect_identical(ex$kinds, 0L)
+  expect_identical(col[], x) # the extraction's own mapping still reads
+})
+
+test_that("the bail converts int64- and uint64-index dictionary tables", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  f <- factor(rep(c("a", "b", NA), 3000), levels = c("a", "b"))
+  tab_of <- function(ty) {
+    da <- arrow::Array$create(f)$cast(
+      arrow::dictionary(index_type = ty, value_type = arrow::utf8())
+    )
+    arrow::arrow_table(v = da, w = bit64::as.integer64(1:9000))
+  }
+  # a dictionary child never takes the index's int64 ptype
+  st <- nanoarrow::as_nanoarrow_array_stream(tab_of(arrow::int64()))
+  sch <- st$get_schema()
+  expect_identical(class(mizu:::arrow_ptype(sch, FALSE)[[1L]]), "character")
+  expect_identical(
+    mizu:::arrow_ptype(sch, FALSE)[[2L]],
+    bit64::integer64()
+  )
+  for (ty in list(arrow::int64(), arrow::uint64())) {
+    st <- nanoarrow::as_nanoarrow_array_stream(tab_of(ty))
+    out <- mizu:::arrow_batches_to_value(
+      st$get_schema(),
+      nanoarrow::collect_array_stream(st)
+    )
+    expect_identical(out, data.frame(v = f, w = bit64::as.integer64(1:9000)))
+  }
+})

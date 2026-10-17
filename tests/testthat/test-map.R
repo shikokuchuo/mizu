@@ -1789,3 +1789,104 @@ test_that("mizu_map_asplice validates and writes in place", {
     "invalid map splice range"
   )
 })
+
+test_that("malformed runner streams fail the runner with the decode error", {
+  poke_runner <- function(field, bytes) {
+    p <- pool_pair()
+    on.exit(pool_end(p))
+    st <- mizu:::map_stage(p[["ctrl"]], 1:10, mizu_call("base::sqrt"), list())
+    mizu:::map_submit(p[["ctrl"]], st)
+    rw <- .Call(
+      mizu:::mizu_region_open,
+      mizu_pool_status(p[["ctrl"]])[["name"]],
+      TRUE
+    )
+    # ring 0 entry 0 (pool_pair geometry): payload header at +24, payload +40
+    base <- 64L + 128L + 8L * 64L + 128L + 128L
+    nlen <- readBin(
+      .Call(mizu:::mizu_peek, rw, base + 40L + 16L, 4L),
+      "integer",
+      size = 4L,
+      endian = "little"
+    )
+    off <- switch(
+      field,
+      name = 15L, # the region-name tag
+      gen = 15L + 5L + nlen, # the generation tag
+      seed = 15L + 5L + nlen + 9L # the seed tag
+    )
+    .Call(mizu:::mizu_poke, rw, base + 40L + off, bytes)
+    if (field == "seed") {
+      # the nil seed becomes an INT item: eight more stream bytes (zeros)
+      len_at <- base + 24L + 4L
+      len0 <- readBin(
+        .Call(mizu:::mizu_peek, rw, len_at, 4L),
+        "integer",
+        size = 4L,
+        endian = "little"
+      )
+      .Call(
+        mizu:::mizu_poke,
+        rw,
+        len_at,
+        writeBin(len0 + 8L, raw(), size = 4L, endian = "little")
+      )
+    }
+    pool_step(p)
+    collect30(p[["ctrl"]], st)
+  }
+  expect_error(
+    poke_runner("name", as.raw(2L)), # name rides the INT tag
+    "region name is not a string"
+  )
+  p <- pool_pair()
+  st <- mizu:::map_stage(p[["ctrl"]], 1:10, mizu_call("base::sqrt"), list())
+  mizu:::map_submit(p[["ctrl"]], st)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  nlen <- readBin(
+    .Call(mizu:::mizu_peek, rw, base + 40L + 16L, 4L),
+    "integer",
+    size = 4L,
+    endian = "little"
+  )
+  gen_off <- 15L + 1L + 4L + nlen # the generation tag
+  .Call(mizu:::mizu_poke, rw, base + 40L + gen_off, as.raw(4L))
+  pool_step(p)
+  expect_error(collect30(p[["ctrl"]], st), "generation is not an integer")
+  pool_end(p)
+  expect_error(
+    poke_runner("seed", as.raw(3L)), # seed rides the REAL tag
+    "seed is not nil or an i64 pair"
+  )
+  p <- pool_pair()
+  st <- mizu:::map_stage(p[["ctrl"]], 1:10, mizu_call("base::sqrt"), list())
+  mizu:::map_submit(p[["ctrl"]], st)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  len_at <- base + 24L + 4L
+  len0 <- readBin(
+    .Call(mizu:::mizu_peek, rw, len_at, 4L),
+    "integer",
+    size = 4L,
+    endian = "little"
+  )
+  .Call(
+    # a trailing byte past the fields
+    mizu:::mizu_poke,
+    rw,
+    len_at,
+    writeBin(len0 + 1L, raw(), size = 4L, endian = "little")
+  )
+  pool_step(p)
+  expect_error(collect30(p[["ctrl"]], st), "bytes past the one value")
+  pool_end(p)
+})

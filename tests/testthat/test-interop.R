@@ -1135,8 +1135,16 @@ test_that("the attr shape builder rejects malformed attribute sets", {
       hi <- 2^32 - 1 - hi
     }
     c(
-      writeBin(as.integer(if (lo >= 2^31) lo - 2^32 else lo), raw(4L), endian = "little"),
-      writeBin(as.integer(if (hi >= 2^31) hi - 2^32 else hi), raw(4L), endian = "little")
+      writeBin(
+        as.integer(if (lo >= 2^31) lo - 2^32 else lo),
+        raw(4L),
+        endian = "little"
+      ),
+      writeBin(
+        as.integer(if (hi >= 2^31) hi - 2^32 else hi),
+        raw(4L),
+        endian = "little"
+      )
     )
   }
   s_str <- function(s) c(u32(nchar(s, "bytes")), charToRaw(s))
@@ -1146,11 +1154,20 @@ test_that("the attr shape builder rejects malformed attribute sets", {
     }
     c(as.raw(0x07), u64(length(v)), do.call(c, lapply(v, u32)))
   }
-  realv <- function(v) c(as.raw(0x08), u64(length(v)), writeBin(v, raw(0), size = 8L))
+  realv <- function(v) {
+    c(as.raw(0x08), u64(length(v)), writeBin(v, raw(0), size = 8L))
+  }
   strv <- function(v) {
-    c(as.raw(0x0b), u64(length(v)), do.call(c, lapply(v, function(s) {
-      if (is.na(s)) u32(-1L) else s_str(s)
-    })))
+    c(
+      as.raw(0x0b),
+      u64(length(v)),
+      do.call(
+        c,
+        lapply(v, function(s) {
+          if (is.na(s)) u32(-1L) else s_str(s)
+        })
+      )
+    )
   }
   i_list <- function(...) {
     xs <- list(...)
@@ -1384,7 +1401,13 @@ test_that("a remote error's index past int32 crosses as a double", {
 
 test_that("a large named list round-trips through the dict key set", {
   x <- setNames(as.list(seq_len(200L)), paste0("k", seq_len(200L)))
-  expect_identical(.Call(mizu:::mizu_interop_read_call, .Call(mizu:::mizu_interop_write_call, x)), x)
+  expect_identical(
+    .Call(
+      mizu:::mizu_interop_read_call,
+      .Call(mizu:::mizu_interop_write_call, x)
+    ),
+    x
+  )
 })
 
 test_that("a task stream read as a value is not a value", {
@@ -1405,13 +1428,135 @@ test_that("a materialized 1:n row names vector writes compactly (foreign)", {
   df <- data.frame(x = c(1, 2, 3))
   attr(df, "row.names") <- 1:3 + 0L
   expect_identical(
-    .Call(mizu:::mizu_interop_read_call, .Call(mizu:::mizu_interop_write_call, df)),
+    .Call(
+      mizu:::mizu_interop_read_call,
+      .Call(mizu:::mizu_interop_write_call, df)
+    ),
     df
   )
   big <- data.frame(x = runif(9000)) # past the 8192-element region chunk
   attr(big, "row.names") <- seq_len(9000) + 0L
   expect_identical(
-    .Call(mizu:::mizu_interop_read_call, .Call(mizu:::mizu_interop_write_call, big)),
+    .Call(
+      mizu:::mizu_interop_read_call,
+      .Call(mizu:::mizu_interop_write_call, big)
+    ),
     big
   )
+})
+
+test_that("the cursor rejects malformed streams", {
+  rd <- function(...) {
+    .Call(mizu:::mizu_interop_read_call, as.raw(c(0x49, 0x01, ...)))
+  }
+  u32 <- function(x) {
+    writeBin(as.integer(x), raw(0), size = 4L, endian = "little")
+  }
+  u64 <- function(x) c(u32(x), as.raw(rep(0L, 4L)))
+  expect_error(
+    .Call(mizu:::mizu_interop_read_call, as.raw(c(0x4a, 0x01))),
+    "bad magic"
+  )
+  expect_error(
+    .Call(mizu:::mizu_interop_read_call, as.raw(c(0x49, 0x02))),
+    "newer format"
+  )
+  expect_error(rd(), "truncated")
+  expect_error(rd(0x00, 0x00), "bytes past the one value")
+  expect_error(rd(0x01), "truncated") # lgl1, no value
+  expect_error(rd(0x01, 0x03), "lgl1 value past 2")
+  expect_error(rd(0x02, 0x01), "truncated") # int, no i64
+  expect_error(rd(0x03, 0x01), "truncated") # real, no double
+  expect_error(rd(0x10, 0x01, 0x02), "truncated") # cplx, half a pair
+  expect_error(rd(0x04), "truncated") # str, no length
+  expect_error(rd(0x04, u32(-2L)), "string length below -1")
+  expect_error(rd(0x04, u32(100L), 0x61), "truncated") # str, short body
+  expect_error(rd(0x04, u32(1L), 0xff), "invalid UTF-8")
+  expect_error(rd(0x05, 0x01), "truncated") # bytes, no count
+  expect_error(rd(0x05, u64(100), 0x01), "truncated") # bytes, short body
+  expect_error(rd(0x07, 0x01), "truncated") # intv, no count
+  expect_error(rd(0x0c, 0x01), "truncated") # list, no count
+  expect_error(rd(0x0b, u64(1), 0x01), "truncated") # strv elt, no length
+  expect_error(rd(0x0b, u64(1), u32(-2L)), "string length below -1")
+  expect_error(rd(0x0b, u64(1), u32(1L), 0xff), "invalid UTF-8")
+  expect_error(rd(0x11, 0x01), "truncated") # err, no flags
+  expect_error(rd(0x11, 0x01, 0x00, 0x01), "truncated") # err index, short
+  expect_error(rd(0x11, 0x00, 0x00, 0x01), "truncated") # err string, no length
+  expect_error(rd(0x11, 0x00, 0x00, u32(-1L)), "err string is NA")
+  expect_error(rd(0x11, 0x00, 0x00, u32(100L), 0x61), "truncated")
+  expect_error(rd(0x11, 0x00, 0x00, u32(1L), 0xff), "invalid UTF-8")
+  expect_error(rd(0x12, 0x02, 0x00), "truncated") # task, short header
+  expect_error(rd(0x13), "truncated") # ref, no length
+  expect_error(rd(0x99), "unsupported interop tag")
+})
+
+test_that("the err framer homes a non-language call as empty detail", {
+  cond <- structure(
+    list(message = "x", call = 42L),
+    class = c("error", "condition")
+  )
+  b <- .Call(mizu:::mizu_interop_write_err_call, cond, 240L)
+  expect_identical(.Call(mizu:::mizu_interop_read_call, b)[["detail"]], "")
+})
+
+test_that("an integer64 matrix crosses a foreign channel with its dim", {
+  skip_if_not_installed("bit64")
+  m <- bit64::as.integer64(seq_len(8500))
+  dim(m) <- c(50L, 170L)
+  p <- foreign_pair(caps = 2L)
+  on.exit(channel_end(p))
+  mizu_send(p$host, m)
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is_view(out))
+  expect_identical(out, m)
+})
+
+test_that("a raw vector crosses a foreign channel as a MIZH leaf", {
+  p <- foreign_pair(caps = 2L)
+  on.exit(channel_end(p))
+  r <- as.raw(seq_len(300000) %% 256L)
+  mizu_send(p$host, r)
+  out <- mizu_recv(p$peer, 5)
+  expect_true(is_view(out))
+  expect_identical(out, r)
+})
+
+test_that("an int64 leaf with a non-marker blob builds its attrs", {
+  skip_if_not_installed("bit64")
+  x <- bit64::as.integer64(seq_len(8500))
+  p <- foreign_pair(caps = 2L)
+  on.exit(channel_end(p))
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  rw <- .Call(mizu:::mizu_region_open, .Call(mizu:::mizu_zc_view_name, v), TRUE)
+  blob <- c(
+    as.raw(c(0x49, 0x01, 0x0d)), i64raw(1L), i64raw(3L)[1:4], charToRaw("dim"),
+    as.raw(0x07), i64raw(2L), i64raw(50L)[1:4], i64raw(170L)[1:4]
+  )
+  .Call(mizu:::mizu_poke, rw, 16L, i64raw(length(blob)))
+  .Call(mizu:::mizu_poke, rw, 64L + 8500L * 8L, blob)
+  mizu_send(p$peer, v)   # REF: the re-wrap reads the injected blob
+  out <- mizu_recv(p$host, 5)
+  m <- x
+  dim(m) <- c(50L, 170L)
+  expect_identical(out, m)
+})
+
+test_that("a foreign frame with many string columns sizes off the plain pass", {
+  df <- as.data.frame(lapply(
+    paste0("col", 1:130),
+    function(nm) rep(paste0(nm, "_", 1:60), 1)
+  ))
+  p <- foreign_pair(caps = 7L)
+  on.exit(channel_end(p))
+  mizu_send(p$host, df)
+  expect_identical(mizu_recv(p$peer, 5), df)
+})
+
+test_that("a lazy ALTREP leaf in a foreign tree copies through", {
+  x <- list(runif(10000), as.double(1:10000))
+  p <- foreign_pair(caps = 7L)
+  on.exit(channel_end(p))
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5)[], x)
 })

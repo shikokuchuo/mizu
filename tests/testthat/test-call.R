@@ -741,7 +741,13 @@ test_that("a duplicate dict key in a task stream fails the decode", {
     mizu_call(.source = "aaa + bbb", aaa = 1, bbb = 2)
   )) {
     p <- pool_pair()
-    b <- .Call(mizu:::mizu_interop_write_task_call, spec, 2L, 3 + 7 * 2^32, FALSE)
+    b <- .Call(
+      mizu:::mizu_interop_write_task_call,
+      spec,
+      2L,
+      3 + 7 * 2^32,
+      FALSE
+    )
     pos <- tail(
       Filter(
         function(i) all(b[i:(i + 2L)] == charToRaw("b")),
@@ -792,4 +798,28 @@ test_that("a task stream with trailing bytes fails the decode", {
   cnd <- tryCatch(mizu_collect(t, 5), mizu_error_remote = function(c) c)
   expect_s3_class(cnd, "mizu_error_remote")
   pool_end(p)
+})
+
+test_that("a spec carrying a reference pins it across the tiers", {
+  pc <- channel_pair()
+  mizu_send(pc[["host"]], runif(100000))
+  v <- mizu_recv(pc[["peer"]], 5)
+  x <- runif(10000)
+  p <- pool_pair()
+  t1 <- mizu_submit_call(
+    p[["ctrl"]],
+    mizu_call("base::list", v, strrep("x", 2000))
+  )
+  t2 <- mizu_submit_call(p[["ctrl"]], mizu_call("base::sum", x))
+  t3 <- mizu_submit_call(p[["ctrl"]], mizu_call("base::sum", v))
+  t4 <- mizu_submit_call(p[["ctrl"]], mizu_call("base::list", x, v))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(t1, 5)[[2L]], strrep("x", 2000))
+  expect_equal(mizu_collect(t2, 5), sum(x))
+  expect_equal(mizu_collect(t3, 5), sum(v))
+  expect_equal(mizu_collect(t4, 5)[[1L]], x)
+  pool_end(p)
+  channel_end(pc)
 })

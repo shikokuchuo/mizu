@@ -2503,3 +2503,43 @@ test_that("an inner list view with a remote leaf re-sends as path-form REF", {
   expect_identical(back[[1L]][], x)
   expect_identical(back[[2L]][], inner[[2L]][])
 })
+
+test_that("an unparseable remote-leaf identifier is skipped at the wrap loan walk", {
+  x <- runif(50000)
+  fx <- remote_leaf_pair(x)
+  poke_remote(fx, id = "zzz", len = length(x))
+  mizu_send(fx[["p"]][["peer"]], fx[["yb"]]) # REF: the re-wrap walks loans
+  v <- mizu_recv(fx[["p"]][["host"]], 5)
+  expect_true(is_view(v))
+  channel_end(fx[["p"]])
+})
+
+test_that("an SHM_RAW payload naming a vanished region fails the read", {
+  mk <- function() {
+    p <- channel_pair(arena_size = 0)
+    mizu_send(p[["host"]], setNames(as.list(1:50), paste0("k", 1:50)))
+    rw <- .Call(
+      mizu:::mizu_region_open,
+      .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
+      TRUE
+    )
+    list(p = p, rw = rw)
+  }
+  f <- mk() # a well-formed name that does not exist (one hex digit flipped)
+  id <- .Call(mizu:::mizu_peek, f[["rw"]], 512L + 16L, 19L)
+  hex0 <- 512L + 16L + which(id == charToRaw("_"))[1L]
+  b <- .Call(mizu:::mizu_peek, f[["rw"]], hex0, 1L)
+  .Call(
+    mizu:::mizu_poke,
+    f[["rw"]],
+    hex0,
+    if (b == charToRaw("a")) charToRaw("b") else charToRaw("a")
+  )
+  expect_error(mizu_recv(f[["p"]][["peer"]], 5), "payload region vanished")
+  channel_end(f[["p"]])
+
+  f <- mk() # a name outside the region-name grammar
+  .Call(mizu:::mizu_poke, f[["rw"]], 512L + 16L + 1L, charToRaw("x"))
+  expect_error(mizu_recv(f[["p"]][["peer"]], 5), "payload region vanished")
+  channel_end(f[["p"]])
+})

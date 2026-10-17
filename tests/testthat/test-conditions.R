@@ -188,3 +188,16 @@ test_that("a condition the assembly cannot carry keeps its dropped names", {
   )
   expect_identical(err[["dropped_fields"]], "big")
 })
+
+test_that("a task error with no message field flattens to the fallback", {
+  p <- pool_pair()
+  t <- mizu_submit(p$ctrl, stop(errorCondition(NULL)))
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, 5), error = function(e) e)
+  expect_s3_class(err, "error")
+  expect_identical(
+    conditionMessage(err),
+    "mizu: task error (untransportable condition)"
+  )
+  pool_end(p)
+})
