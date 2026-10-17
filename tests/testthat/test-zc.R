@@ -407,6 +407,36 @@ test_that("a SHM_VEC slot cross-checks its header against the aux word", {
   channel_end(p)
 })
 
+test_that("SHM_VEC string and list slots cross-check the aux word too", {
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], sprintf("value-%06d", seq_len(5000L))) # MIZS
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
+    TRUE
+  )
+  # the exact used bytes no longer match the string block's header
+  .Call(mizu:::mizu_poke, rw, 512L + 8L + 4L, as.raw(255L))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], list(runif(50000))) # MIZL
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]],
+    TRUE
+  )
+  # the staged type is a list; the aux byte now says a vector
+  .Call(mizu:::mizu_poke, rw, 512L + 8L, as.raw(14L))
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  channel_end(p)
+})
+
 test_that("a SHM_VEC slot validates its region-name length", {
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], runif(2e5)) # SHM_VEC into slot 0
