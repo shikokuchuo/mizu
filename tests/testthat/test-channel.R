@@ -115,6 +115,9 @@ test_that("attach rejects a preamble with a missing liveness dir", {
 })
 
 test_that("attach fails when the host pid cannot be watched", {
+  # POSIX-only arm: on Windows an unopenable pid is ERROR_INVALID_PARAMETER,
+  # which the core treats as already-gone (fires the watch, attach succeeds).
+  skip_on_os("windows")
   host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 4096, FALSE)
   on.exit(.Call(mizu:::mizu_channel_destroy, host))
   nm <- .Call(mizu:::mizu_channel_stat, host)[["name"]]

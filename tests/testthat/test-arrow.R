@@ -16,11 +16,39 @@ test_that("a frame stages as one region past the gate, views at receive", {
 })
 
 test_that("the Arrow send path errors plainly without nanoarrow", {
-  saved <- mizu:::nano$ns
-  on.exit(assign("ns", saved, envir = mizu:::nano))
-  assign("ns", NULL, envir = mizu:::nano)
-  local_mocked_bindings(require_namespace = function(...) FALSE)
-  expect_error(mizu:::arrow_ns(), "the 'nanoarrow' package is required")
+  skip_if_no_child_mizu()
+  # Real absence, not a mock: the child prunes every library carrying
+  # nanoarrow off its path, site libraries included (include.site = FALSE —
+  # .libPaths() would otherwise re-add them). .Library always stays, so a
+  # nanoarrow there can't go.
+  skip_if(
+    file.exists(file.path(.Library, "nanoarrow", "DESCRIPTION")),
+    "nanoarrow in the system library"
+  )
+  libs <- .libPaths()
+  site <- if (length(.Library.site)) normalizePath(.Library.site)
+  drop <- file.exists(file.path(libs, "nanoarrow", "DESCRIPTION")) |
+    normalizePath(libs) %in% site
+  skip_if_not(
+    any(file.exists(file.path(libs[!drop], "mizu", "DESCRIPTION"))),
+    "mizu only in nanoarrow's or a site library"
+  )
+  f <- tfile()
+  on.exit(unlink(f))
+  expr <- paste0(
+    ".libPaths(Filter(function(l) ",
+    "!file.exists(file.path(l, 'nanoarrow', 'DESCRIPTION')), .libPaths()), ",
+    "include.site = FALSE);",
+    "msg <- tryCatch({mizu:::arrow_ns(); 'OK'}, error = conditionMessage);",
+    sprintf("writeLines(msg, %s)", deparse(f))
+  )
+  mizu:::mizu_spawn(expr)
+  expect_true(wait_for_file(f))
+  expect_match(
+    readLines(f),
+    "the 'nanoarrow' package is required to send Arrow data",
+    fixed = TRUE
+  )
 })
 
 test_that("the mapped families round-trip with NAs", {

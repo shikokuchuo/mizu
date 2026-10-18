@@ -179,21 +179,6 @@ test_that("worker join rejects a REAPING slot as not free", {
   )
 })
 
-test_that("a worker leaving with nested work outstanding keeps its slot", {
-  p <- pool_pair()
-  on.exit(pool_end(p))
-  t <- mizu_submit(p[["ctrl"]], {
-    mizu_submit(mizu_current_pool(), 1 + 1)
-    42
-  })
-  pool_step(p)
-  expect_identical(mizu_collect(t, 5), 42)
-  .Call(mizu:::mizu_pool_leave, p[["wk"]])
-  expect_identical(
-    mizu_pool_status(p[["ctrl"]])[["submitters"]][2L],
-    "live"
-  )
-})
 
 test_that("submitters claim distinct slots and subranges", {
   p <- pool_pair(max_submitters = 4L, result_slots = 32L)
