@@ -98,13 +98,15 @@ upstream and land here by re-running the script (default: the pinned
 ref):
 
 - `src/vendor/libmizu/` — the whole core (mizu.h + mizu_ext.h +
-  internal.h + all TUs except `bytes.c`: upstream’s C reference binding,
-  which this binding replaces — nothing references its symbols), zero
-  substitutions (`tools/vendor-libmizu.sh`; the namespaces coincide by
-  design). The package’s own TUs compile against `mizu_ext.h` — never
-  `internal.h`, which only the vendored core TUs and the view layer
-  include (the view layer manages embedder-owned regions through the
-  heap-form region API).
+  internal.h + all TUs except `bytes.c` — upstream’s C reference
+  binding, which this binding replaces — and `ext.c`: the exported FFI
+  half of mizu_ext.h, whose dual-form inlines every TU here carries —
+  nothing references either’s symbols), zero substitutions
+  (`tools/vendor-libmizu.sh`; the namespaces coincide by design). The
+  package’s own TUs compile against `mizu_ext.h` — never `internal.h`,
+  which only the vendored core TUs and the view layer include (the view
+  layer manages embedder-owned regions through the heap-form region
+  API).
 
 The flow reverses for the view layer: `src/view.h`, `src/view.c`,
 `src/serialize.c` (the ALTREP consumer classes, the MIZH/MIZS/MIZL
