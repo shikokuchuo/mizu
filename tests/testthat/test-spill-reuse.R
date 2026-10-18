@@ -169,6 +169,31 @@ test_that("surrender past the free list's byte cap evicts the oldest", {
   pool_end(p)
 })
 
+test_that("a surrender past the free list's slot cap is destroyed in place", {
+  p <- pool_pair()
+  # fill all 16 slots: two regions per 4 KB..512 KB pow2 class (the per-class
+  # cap), ascending so no later submit pops an earlier surrender; the two of
+  # a class must be outstanding together to slip past the cap
+  for (c in 2^(12:19)) {
+    v <- big_obj(as.integer(c * 0.7 / 8)) # ~70% of the class
+    ta <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+    tb <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+    pool_step(p)
+    pool_step(p)
+    mizu_collect(ta, 5)
+    mizu_collect(tb, 5)
+  }
+  expect_identical(mizu_pool_dump(p[["ctrl"]])[["local"]][["fl_entries"]], 16L)
+  # a 1 MB-class surrender then fits nowhere: no class-mate, no empty slot,
+  # the byte cap nowhere near — destroyed in place, the count unmoved
+  v <- big_obj(as.integer(2^20 * 0.7 / 8))
+  t <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+  pool_step(p)
+  mizu_collect(t, 5)
+  expect_identical(mizu_pool_dump(p[["ctrl"]])[["local"]][["fl_entries"]], 16L)
+  pool_end(p)
+})
+
 test_that("a seventeenth distinct region evicts from the mapping cache", {
   p <- pool_pair(result_slots = 256L) # 32 per submitter: all outstanding
   v <- runif(100)

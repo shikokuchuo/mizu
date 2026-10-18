@@ -459,6 +459,21 @@ test_that("a codec-ineligible call is dropped and named", {
   pool_end(p)
 })
 
+test_that("a field ahead of the message in the condition keeps both", {
+  p <- pool_pair()
+  cond <- structure(
+    list(extra = 1L, message = "typed", call = NULL),
+    class = c("mizu_test_error", "error", "condition")
+  )
+  t <- mizu_submit(p[["ctrl"]], stop(cond), cond = cond)
+  pool_step(p)
+  err <- tryCatch(mizu_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "mizu_test_error")
+  expect_identical(conditionMessage(err), "typed")
+  expect_identical(err[["extra"]], 1L)
+  pool_end(p)
+})
+
 test_that("an NA message falls back; unnamed elements drop silently", {
   p <- pool_pair()
   cond <- structure(

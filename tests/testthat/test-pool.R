@@ -387,6 +387,34 @@ test_that("a vanished task payload publishes LOST to the collector", {
   expect_error(mizu_collect(t, 5), "payload region vanished")
 })
 
+test_that("a rawspill-framed task whose region vanished reads as lost", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1L)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  # ring 0 entry 0 reframed as RAWSPILL: the claim's byte resolve skips the
+  # kind (vector data, not a stream), so the gone verdict lands past the
+  # claim, in the exec's generic read
+  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  u32 <- function(v) writeBin(v, raw(), size = 4L, endian = "little")
+  nm <- charToRaw("/mizu_deadbeef_1234") # well-formed, does not exist
+  .Call(mizu:::mizu_poke, rw, base + 24L, as.raw(8L)) # kind RAWSPILL
+  .Call(mizu:::mizu_poke, rw, base + 28L, u32(8L)) # one double
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    base + 32L,
+    c(u32(as.integer(length(nm) * 256L + 14L)), raw(4L)) # aux: name len, REALSXP
+  )
+  .Call(mizu:::mizu_poke, rw, base + 40L, nm)
+  pool_step(p)
+  expect_error(mizu_collect(t, 5), "task lost")
+})
+
 test_that("a task on a worker without an evaluator is refused up front", {
   ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
   suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)

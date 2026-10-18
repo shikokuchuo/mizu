@@ -1140,6 +1140,20 @@ test_that("a frame declined at the stage converts and crosses by value", {
   expect_identical(out[], df)
 })
 
+test_that("a declined frame's lazy columns materialize plain", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities
+  on.exit(channel_end(p))
+  df <- data.frame(
+    s = rep(c("alpha", "beta", NA), length.out = 6000),
+    x = runif(6000)
+  )
+  # a libarrow-produced string column converts lazy (nanoarrow altrep_chr),
+  # exercising the conversion bail's materializing copy
+  mizu_send(p$host, arrow::arrow_table(df))
+  expect_identical(mizu_recv(p$peer, 5)[], df)
+})
+
 test_that("a released stream raises the pull failure", {
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()

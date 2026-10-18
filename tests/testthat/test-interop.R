@@ -1505,6 +1505,7 @@ test_that("the cursor rejects malformed streams", {
   expect_error(rd(0x04, u32(-2L)), "string length below -1")
   expect_error(rd(0x04, u32(100L), 0x61), "truncated") # str, short body
   expect_error(rd(0x04, u32(1L), 0xff), "invalid UTF-8")
+  expect_error(rd(0xfe), "newer format") # an unlisted value tag
   expect_error(rd(0x05, 0x01), "truncated") # bytes, no count
   expect_error(rd(0x05, u64(100), 0x01), "truncated") # bytes, short body
   expect_error(rd(0x07, 0x01), "truncated") # intv, no count
