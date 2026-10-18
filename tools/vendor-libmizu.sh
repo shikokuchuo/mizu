@@ -58,9 +58,12 @@ cp "$src_root/include/mizu.h" "$DEST/mizu.h"
 cp "$src_root/include/mizu_ext.h" "$DEST/mizu_ext.h"
 cp "$src_root/src/internal.h" "$DEST/internal.h"
 for f in "$src_root"/src/*.c; do
-  # bytes.c is not vendored: it is upstream's C reference binding, which
-  # this binding replaces outright — nothing references its symbols.
+  # bytes.c and ext.c stay upstream: bytes.c is the C reference binding
+  # this binding replaces outright, and ext.c the exported FFI half of
+  # mizu_ext.h — TUs inline their own copies from the header (the upstream
+  # amalgamation excludes ext.c likewise); nothing references their symbols.
   [ "$f" = "$src_root/src/bytes.c" ] && continue
+  [ "$f" = "$src_root/src/ext.c" ] && continue
   cp "$f" "$DEST/"
 done
 

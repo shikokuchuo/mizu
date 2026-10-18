@@ -9,7 +9,7 @@ OBJECTS = arrow.o bounded.o codec.o condition.o entity.o init.o interop.o livene
           vendor/libmizu/channel.o \
           vendor/libmizu/interop.o \
           vendor/libmizu/morsel.o vendor/libmizu/stage_raw.o \
-          vendor/libmizu/err.o vendor/libmizu/err_tls.o vendor/libmizu/ext.o \
+          vendor/libmizu/err.o vendor/libmizu/err_tls.o \
           vendor/libmizu/liveness.o \
           vendor/libmizu/parker.o vendor/libmizu/pool.o vendor/libmizu/preamble.o \
           vendor/libmizu/rng_jump.o vendor/libmizu/shm.o vendor/libmizu/shm_rw.o \
