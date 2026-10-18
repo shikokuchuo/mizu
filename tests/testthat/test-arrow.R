@@ -1680,6 +1680,11 @@ test_that("unknown null counts and string-view columns cross", {
   a <- nanoarrow::as_nanoarrow_array(s, schema = nanoarrow::na_string_view())
   mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_string_view(), a))
   expect_identical(mizu_recv(p$peer, 5)[[1L]], s)
+  # out-of-line views: a nanoarrow nested export carries no sizes array
+  s <- rep(c("alpha alpha alpha alpha", NA, "beta beta beta beta beta"), 2000)
+  a <- nanoarrow::as_nanoarrow_array(s, schema = nanoarrow::na_string_view())
+  mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_string_view(), a))
+  expect_identical(mizu_recv(p$peer, 5)[[1L]], s)
 })
 
 test_that("float16 specials cross exactly", {
