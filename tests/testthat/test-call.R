@@ -50,6 +50,19 @@ test_that("spec name resolution: unloaded package, ::: internal, missing fn", {
   expect_error(mizu_collect(e), "could not find function")
 })
 
+test_that("a spec arg that is a large re-sendable view rewrites inline", {
+  ch <- channel_pair()
+  on.exit(channel_end(ch))
+  x <- runif(20000)
+  mizu_send(ch[["host"]], x)
+  v <- mizu_recv(ch[["peer"]], 5)
+  p <- pool_pair()
+  on.exit(pool_end(p), add = TRUE)
+  t <- mizu_submit_call(p[["ctrl"]], mizu_call("base::identity", v))
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), x)
+})
+
 test_that("a pool no worker has joined: spec and map error, plain submit queues", {
   ctrl <- .Call(
     mizu:::mizu_pool_create,

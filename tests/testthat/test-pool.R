@@ -151,6 +151,50 @@ test_that("the test identity override validates its shape", {
   )
 })
 
+test_that("worker join rejects a mismatched language word", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 2L, 8L, 64L, 64L, 64L, 512L)
+  suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)
+  wk <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
+  expect_error(
+    .Call(mizu:::mizu_pool_worker_join, suffix, 1L, c(3L, 0L)),
+    "cannot join"
+  )
+  wk2 <- .Call(mizu:::mizu_pool_worker_join, suffix, 1L, NULL)
+  .Call(mizu:::mizu_pool_leave, wk)
+  .Call(mizu:::mizu_pool_leave, wk2)
+  .Call(mizu:::mizu_pool_destroy, ctrl)
+})
+
+test_that("worker join rejects a REAPING slot as not free", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
+  mizu_submit(p[["ctrl"]], 1 + 1)
+  mizu_submit(p[["ctrl"]], 2 + 2)
+  expect_identical(pool_pull(p, 2L), 2L)
+  .Call(mizu:::mizu_pool_leave, p[["wk"]])
+  expect_error(
+    .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL),
+    "not free"
+  )
+})
+
+test_that("a worker leaving with nested work outstanding keeps its slot", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], {
+    mizu_submit(mizu_current_pool(), 1 + 1)
+    42
+  })
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 42)
+  .Call(mizu:::mizu_pool_leave, p[["wk"]])
+  expect_identical(
+    mizu_pool_status(p[["ctrl"]])[["submitters"]][2L],
+    "live"
+  )
+})
+
 test_that("submitters claim distinct slots and subranges", {
   p <- pool_pair(max_submitters = 4L, result_slots = 32L)
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
@@ -237,6 +281,95 @@ test_that("batch submit returns a short list when the ring fills", {
   }
   expect_identical(mizu_collect_all(ts, timeout = 5), as.list(rep(1L, 4L)))
   pool_end(p)
+})
+
+test_that("batch submit on a stopped pool raises stopped", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
+  sub <- .Call(mizu:::mizu_pool_attach_call, suffix)
+  expect_warning(mizu_pool_stop(p[["ctrl"]], timeout = 0.1), "timed out")
+  expect_error(mizu_submit_batch(sub, list(quote(1 + 1))), "pool stopped")
+})
+
+test_that("batch submit fails mid-batch when result slots exhaust", {
+  p <- pool_pair(result_slots = 8L)
+  on.exit(pool_end(p))
+  expect_error(
+    mizu_submit_batch(p[["ctrl"]], list(quote(1 + 1), quote(2 + 2))),
+    "result slots exhausted"
+  )
+  expect_identical(pool_step(p), 1L)
+})
+
+test_that("a reused result slot releases a kept zero-copy task payload", {
+  p <- pool_pair(result_slots = 8L)
+  on.exit(pool_end(p))
+  x <- runif(20000) # 160 KB: past the zc floor, stages SHM_VEC
+  t <- mizu_submit(p[["ctrl"]], x, x = x)
+  pool_step(p)
+  rm(t)
+  gc()
+  t2 <- mizu_submit(p[["ctrl"]], 1L)
+  pool_step(p)
+  expect_identical(mizu_collect(t2, 5), 1L)
+})
+
+test_that("a corrupt ring entry is skipped without a claim", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  mizu_submit(p[["ctrl"]], 1 + 1)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  # ring 0 entry 0 (pool_pair geometry): the rs_index word
+  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    base + 16L,
+    writeBin(9999L, raw(), size = 4L, endian = "little")
+  )
+  expect_identical(pool_step(p), 0L)
+})
+
+test_that("a vanished task payload publishes LOST to the collector", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- paste(rep("x", 3000), collapse = "")
+  t <- mizu_submit(p[["ctrl"]], x, x = x)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  # ring 0 entry 0 (pool_pair geometry): the SHM_RAW payload is the name
+  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  id <- .Call(mizu:::mizu_peek, rw, base + 40L, 40L)
+  hex0 <- base + 40L + which(id == charToRaw("_"))[1L] + 1L
+  b <- .Call(mizu:::mizu_peek, rw, hex0, 1L)
+  # a well-formed name that does not exist (one hex digit flipped)
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    hex0,
+    if (b == charToRaw("a")) charToRaw("b") else charToRaw("a")
+  )
+  pool_step(p)
+  expect_error(mizu_collect(t, 5), "payload region vanished")
+})
+
+test_that("a task on a worker without an evaluator is refused up front", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+  suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)
+  wk <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
+  p <- list(ctrl = ctrl, wk = wk, wks = list(wk))
+  mizu_submit(ctrl, identity(1))
+  expect_error(pool_step(p), "no evaluator registered")
+  .Call(mizu:::mizu_pool_leave, wk)
+  .Call(mizu:::mizu_pool_destroy, ctrl)
 })
 
 test_that("the submitter registry reports full", {

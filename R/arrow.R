@@ -10,10 +10,14 @@
 # The requireNamespace gate + the cached namespace lookup.
 nano <- new.env(parent = emptyenv())
 
+# The mockable indirection for the availability probe (the test namespace
+# cannot rebind a base function).
+require_namespace <- requireNamespace
+
 arrow_ns <- function() {
   ns <- nano$ns
   if (is.null(ns)) {
-    if (!requireNamespace("nanoarrow", quietly = TRUE)) {
+    if (!require_namespace("nanoarrow", quietly = TRUE)) {
       stop(
         "the 'nanoarrow' package is required to send Arrow data",
         call. = FALSE

@@ -20,6 +20,13 @@ run_map <- function(p, x, f, dots = list(), ..., steps = 256L) {
   collect30(p[["ctrl"]], st)
 }
 
+test_that("an oddly-attributed x declines the x section and maps as a list", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- structure(1:8, foo = "bar")
+  expect_identical(run_map(p, x, function(el) el + 1L), as.list(1:8 + 1L))
+})
+
 test_that("strip_srcref strips source references, original and attrs intact", {
   f <- eval(parse(
     text = "function(x, d = {\n  1\n}) {\n  if (x > 0) {\n    log(x)\n  } else {\n    0\n  }\n}",
@@ -426,6 +433,31 @@ test_that(".collect = \"view\" gathers a matrix view for m > 1", {
   expect_identical(dim(res), c(2L, 6L))
   expect_identical(dimnames(res), list(c("a", "b"), letters[1:6]))
   expect_identical(res[], vapply(x, f, c(a = 0, b = 0)))
+  pool_end(p)
+})
+
+test_that("a re-sent map out view degrades to a materializing copy", {
+  p <- pool_pair()
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:100,
+    function(i) i * 2.5,
+    list(),
+    template = numeric(1)
+  )
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  res <- mizu:::map_collect(st, mizu:::mono_time() + 30, "view")
+  expect_true(.Call(mizu:::mizu_zc_view_check, res))
+  expect_identical(rc_of(res), integer(0)) # no shm hop in its retain chain
+  ch <- channel_pair()
+  mizu_send(ch[["host"]], res)
+  z <- mizu_recv(ch[["peer"]], 5)
+  expect_false(.Call(mizu:::mizu_zc_view_check, z))
+  expect_identical(as.numeric(z), (1:100) * 2.5)
+  channel_end(ch)
   pool_end(p)
 })
 

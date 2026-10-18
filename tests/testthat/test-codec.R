@@ -432,3 +432,20 @@ test_that("a frame leaf resolving to a non-list view rejects", {
   )
   channel_end(p)
 })
+
+test_that("a call with a nested call tail round-trips", {
+  x <- quote(f(g(x), h(1)))
+  expect_identical(
+    .Call(mizu:::mizu_codec_read_call, .Call(mizu:::mizu_codec_write_call, x)),
+    x
+  )
+})
+
+test_that("a primitive resolving to a non-base name is rejected", {
+  b <- .Call(mizu:::mizu_codec_write_call, .Primitive("+"))
+  b[length(b)] <- charToRaw("z")
+  expect_error(
+    .Call(mizu:::mizu_codec_read_call, b),
+    "corrupt payload stream"
+  )
+})

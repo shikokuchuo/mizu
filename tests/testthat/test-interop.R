@@ -1530,12 +1530,18 @@ test_that("an int64 leaf with a non-marker blob builds its attrs", {
   v <- mizu_recv(p$peer, 5)
   rw <- .Call(mizu:::mizu_region_open, .Call(mizu:::mizu_zc_view_name, v), TRUE)
   blob <- c(
-    as.raw(c(0x49, 0x01, 0x0d)), i64raw(1L), i64raw(3L)[1:4], charToRaw("dim"),
-    as.raw(0x07), i64raw(2L), i64raw(50L)[1:4], i64raw(170L)[1:4]
+    as.raw(c(0x49, 0x01, 0x0d)),
+    i64raw(1L),
+    i64raw(3L)[1:4],
+    charToRaw("dim"),
+    as.raw(0x07),
+    i64raw(2L),
+    i64raw(50L)[1:4],
+    i64raw(170L)[1:4]
   )
   .Call(mizu:::mizu_poke, rw, 16L, i64raw(length(blob)))
   .Call(mizu:::mizu_poke, rw, 64L + 8500L * 8L, blob)
-  mizu_send(p$peer, v)   # REF: the re-wrap reads the injected blob
+  mizu_send(p$peer, v) # REF: the re-wrap reads the injected blob
   out <- mizu_recv(p$host, 5)
   m <- x
   dim(m) <- c(50L, 170L)

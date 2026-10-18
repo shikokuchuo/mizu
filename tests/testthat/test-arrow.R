@@ -15,6 +15,14 @@ test_that("a frame stages as one region past the gate, views at receive", {
   expect_identical(out, df)
 })
 
+test_that("the Arrow send path errors plainly without nanoarrow", {
+  saved <- mizu:::nano$ns
+  on.exit(assign("ns", saved, envir = mizu:::nano))
+  assign("ns", NULL, envir = mizu:::nano)
+  local_mocked_bindings(require_namespace = function(...) FALSE)
+  expect_error(mizu:::arrow_ns(), "the 'nanoarrow' package is required")
+})
+
 test_that("the mapped families round-trip with NAs", {
   skip_if_not_installed("arrow")
   p <- channel_pair()
@@ -1410,6 +1418,15 @@ test_that("a binary column declines", {
   expect_snapshot(mizu_send(p$host, s), error = TRUE)
   mizu_send(p$host, 1:5)
   expect_identical(mizu_recv(p$peer, 5), 1:5)
+})
+
+test_that("a nested table below the gate converts, its lazies served", {
+  skip_if_not_installed("nanoarrow")
+  df <- data.frame(s = rep(c("alpha", "beta"), 50), n = runif(100))
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p[["host"]], list(nanoarrow::as_nanoarrow_array_stream(df), 42L))
+  expect_identical(mizu_recv(p[["peer"]], 5), list(df, 42L))
 })
 
 test_that("a zero-column table declines", {

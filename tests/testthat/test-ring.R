@@ -422,6 +422,31 @@ test_that("corrupt slot headers reject at read, the ring flows on", {
   channel_end(p)
 })
 
+test_that("the arena-tier kinds bounds-check against a missing arena", {
+  poke_kind <- function(p, kind) {
+    nm <- .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]]
+    rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+    .Call(
+      mizu:::mizu_poke,
+      rw,
+      512L,
+      writeBin(as.integer(kind), raw(), size = 4L, endian = "little")
+    )
+  }
+
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], 42L)
+  poke_kind(p, 1L) # ARENA
+  expect_error(mizu_recv_batch(p[["peer"]], 1L), "corrupt payload slot")
+  channel_end(p)
+
+  p <- channel_pair(arena_size = 0)
+  mizu_send(p[["host"]], 42L)
+  poke_kind(p, 8L) # RAWSPILL
+  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
+  channel_end(p)
+})
+
 test_that("a batch receive surfaces a mid-batch decline", {
   p <- channel_pair()
   mizu_send(p[["host"]], list(1))

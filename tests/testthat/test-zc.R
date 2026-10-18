@@ -490,6 +490,18 @@ test_that("a received view re-sends as REF — zero bytes move", {
   channel_end(p)
 })
 
+test_that("a data.frame that is itself a view declines the foreign frame gate", {
+  df <- data.frame(x = runif(20000))
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p[["host"]], df)
+  v <- mizu_recv(p[["peer"]], 5)
+  f <- foreign_pair(caps = 22L) # ATTRS | MIZL | MIZL_REF
+  on.exit(channel_end(f), add = TRUE)
+  mizu_send(f[["host"]], v)
+  expect_identical(mizu_recv(f[["peer"]], 5), df)
+})
+
 test_that("a REF slot with len past inline_max is rejected before reading", {
   p <- channel_pair(slot_size = 64L, arena_size = 0) # inline_max = 48
   x <- runif(10000)

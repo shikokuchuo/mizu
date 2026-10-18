@@ -85,6 +85,51 @@ test_that("attach validates the region: absent, malformed, or not a channel", {
   )
 })
 
+test_that("a second attach finds the peer liveness lock held", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  expect_error(
+    .Call(
+      mizu:::mizu_channel_attach,
+      .Call(mizu:::mizu_channel_suffix, p[["host"]]),
+      NULL
+    ),
+    "cannot lock peer liveness file"
+  )
+})
+
+test_that("attach rejects a preamble with a missing liveness dir", {
+  host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 4096, FALSE)
+  on.exit(.Call(mizu:::mizu_channel_destroy, host))
+  nm <- .Call(mizu:::mizu_channel_stat, host)[["name"]]
+  rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+  .Call(mizu:::mizu_poke, rw, 56L, raw(8L)) # livedir_size = 0
+  expect_error(
+    .Call(
+      mizu:::mizu_channel_attach,
+      .Call(mizu:::mizu_channel_suffix, host),
+      NULL
+    ),
+    "liveness directory path"
+  )
+})
+
+test_that("attach fails when the host pid cannot be watched", {
+  host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 4096, FALSE)
+  on.exit(.Call(mizu:::mizu_channel_destroy, host))
+  nm <- .Call(mizu:::mizu_channel_stat, host)[["name"]]
+  rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
+  .Call(mizu:::mizu_poke, rw, 16L, raw(8L)) # host_pid = 0
+  expect_error(
+    .Call(
+      mizu:::mizu_channel_attach,
+      .Call(mizu:::mizu_channel_suffix, host),
+      NULL
+    ),
+    "cannot watch host process"
+  )
+})
+
 test_that("the close protocol rendezvouses and releases both ends", {
   p <- channel_pair()
   # the peer signals close (the epilogue primitive: flush + bit + wake)
