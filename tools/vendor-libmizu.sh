@@ -58,6 +58,9 @@ cp "$src_root/include/mizu.h" "$DEST/mizu.h"
 cp "$src_root/include/mizu_ext.h" "$DEST/mizu_ext.h"
 cp "$src_root/src/internal.h" "$DEST/internal.h"
 for f in "$src_root"/src/*.c; do
+  # bytes.c is not vendored: it is upstream's C reference binding, which
+  # this binding replaces outright — nothing references its symbols.
+  [ "$f" = "$src_root/src/bytes.c" ] && continue
   cp "$f" "$DEST/"
 done
 

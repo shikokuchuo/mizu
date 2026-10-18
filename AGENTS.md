@@ -44,7 +44,7 @@ The design authority is upstream: `libmizu/include/mizu.h` (the stable public AP
 
 One vendor layer, generated — **never edit by hand**; changes go upstream and land here by re-running the script (default: the pinned ref):
 
-- `src/vendor/libmizu/` — the whole core (mizu.h + mizu_ext.h + internal.h + all TUs), zero substitutions (`tools/vendor-libmizu.sh`; the namespaces coincide by design). The package's own TUs compile against `mizu_ext.h` — never `internal.h`, which only the vendored core TUs and the view layer include (the view layer manages embedder-owned regions through the heap-form region API).
+- `src/vendor/libmizu/` — the whole core (mizu.h + mizu_ext.h + internal.h + all TUs except `bytes.c`: upstream's C reference binding, which this binding replaces — nothing references its symbols), zero substitutions (`tools/vendor-libmizu.sh`; the namespaces coincide by design). The package's own TUs compile against `mizu_ext.h` — never `internal.h`, which only the vendored core TUs and the view layer include (the view layer manages embedder-owned regions through the heap-form region API).
 
 The flow reverses for the view layer: `src/view.h`, `src/view.c`, `src/serialize.c` (the ALTREP consumer classes, the MIZH/MIZS/MIZL layout oracle/writer, the exact-size serialize streams) are first-class sources — mizu is their upstream, and mori vendors them from this repo (`tools/vendor-mizu.sh` there), applying the reverse substitution set (`mizu_view_` → `mori_`, the libmizu region names → mori's vendored names, and the class names / extptr tags / error prefix onto mori's namespace).
 
