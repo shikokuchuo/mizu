@@ -629,8 +629,11 @@ importable), `skip_if_no_pyarrow()` (the Arrow exchange additionally
 needs pyarrow), and `py_echo` (the Python echo peer); the cross-language
 tests spawn real Python peers through the exported
 `mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)`. The probes key
-on `Sys.which("python3")` — prepend `../pymizu/.venv/bin` to `PATH` to
-run them locally against the pymizu dev build.
+on `Sys.which("python3")` — prepend the pymizu venv to `PATH` to run
+them locally against the dev build. Use the absolute form
+`PATH="$HOME/r/pymizu/.venv/bin:$PATH"`: testthat’s cwd during the suite
+makes the relative `../pymizu/.venv/bin` fall through to the system
+python3 (no pymizu), silently skipping all cross-language tests.
 
 `test-benchmark.R` is report-only: it prints timings for eyeballing in
 CI logs against the baselines and outcome records in
