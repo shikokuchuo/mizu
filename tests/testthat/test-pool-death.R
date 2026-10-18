@@ -489,3 +489,184 @@ test_that("a collect waiting on owner death ends cancelled", {
   )
   mizu_prune()
 })
+
+test_that("an attached submitter's batch observes owner death first", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+    writeLines(c(as.character(Sys.getpid()),
+                 .Call(mizu:::mizu_pool_suffix, ctrl)), %s)
+    Sys.sleep(60)
+  ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  expect_true(wait_until(length(readLines(f)) == 2L))
+  lines <- readLines(f)
+  s <- mizu_pool_attach(lines[2L])
+  kill_hard(as.integer(lines[1L]))
+  err <- NULL
+  expect_true(wait_until(
+    {
+      e <- tryCatch(
+        mizu_submit_batch(s, list(quote(1 + 1))),
+        error = function(x) x
+      )
+      if (inherits(e, "error")) {
+        err <- e
+      }
+      inherits(e, "error")
+    },
+    timeout = 15
+  ))
+  # the batch is the first local observer: the verdict, not the shutdown
+  expect_match(conditionMessage(err), "pool stopped or owner dead")
+  mizu_prune()
+  pool_live_remove(lines[2L])
+})
+
+test_that("a submitter parked on a full ring wakes to owner death", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 2L, 64L, 64L, 512L)
+    writeLines(c(as.character(Sys.getpid()),
+                 .Call(mizu:::mizu_pool_suffix, ctrl)), %s)
+    Sys.sleep(60)
+  ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  expect_true(wait_until(length(readLines(f)) == 2L))
+  lines <- readLines(f)
+  s <- mizu_pool_attach(lines[2L])
+  mizu_submit(s, 1 + 1)
+  mizu_submit(s, 2 + 2)
+  # the ring is full (no workers): the third submit parks; the owner dies
+  # mid-wait, so the wait — not the submit's entry gate — sees it
+  mizu:::mizu_spawn(sprintf("Sys.sleep(1); tools::pskill(%s)", lines[1L]))
+  expect_error(
+    mizu_submit(s, 3 + 3, .timeout = 30),
+    "pool stopped or owner dead"
+  )
+  mizu_prune()
+  pool_live_remove(lines[2L])
+})
+
+test_that("a batch parked on a full ring wakes to owner death", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 2L, 64L, 64L, 512L)
+    writeLines(c(as.character(Sys.getpid()),
+                 .Call(mizu:::mizu_pool_suffix, ctrl)), %s)
+    Sys.sleep(60)
+  ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  expect_true(wait_until(length(readLines(f)) == 2L))
+  lines <- readLines(f)
+  s <- mizu_pool_attach(lines[2L])
+  mizu_submit(s, 1 + 1)
+  mizu_submit(s, 2 + 2)
+  # the ring is full (no workers): the batch's first element parks; the
+  # owner dies mid-wait, so the wait — not the batch's entry gate — sees it
+  mizu:::mizu_spawn(sprintf("Sys.sleep(1); tools::pskill(%s)", lines[1L]))
+  expect_error(
+    mizu_submit_batch(s, list(quote(3 + 3), quote(4 + 4)), .timeout = 30),
+    "pool stopped or owner dead"
+  )
+  mizu_prune()
+  pool_live_remove(lines[2L])
+})
+
+test_that("a claim wakes a submitter parked on a full ring", {
+  skip_if_no_child_mizu()
+  p <- pool_pair(injection_cap = 2L)
+  on.exit(pool_end(p))
+  suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    s <- mizu_pool_attach("%s")
+    writeLines(as.character(Sys.getpid()), %s)
+    mizu_submit(s, 1)
+    mizu_submit(s, 2)
+    mizu_submit(s, 3, .timeout = 30)
+    writeLines("unblocked", %s)
+  ',
+    suffix,
+    deparse(f),
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  pid <- as.integer(readLines(f)[1L])
+  on.exit(kill_hard(pid), add = TRUE)
+  expect_true(wait_until(
+    any(mizu_pool_dump(p[["ctrl"]])[["submitters"]][["full_waiter"]] == 1L),
+    timeout = 15
+  ))
+  expect_identical(pool_pull(p, 1L), 1L)
+  # the child's second writeLines truncates the file: one line, "unblocked"
+  expect_true(wait_until(readLines(f)[1L] == "unblocked", timeout = 15))
+  # the child exits on its own — a kill here could catch it mid-exit
+  expect_true(wait_until(!pid_alive(pid), timeout = 15))
+})
+
+test_that("attach probes past a dead submitter's missing and recreated lock", {
+  skip_if_no_child_mizu()
+  skip_on_os("windows") # the controller holds the lock files open there
+  # the lock directory varies by platform otherwise (/dev/shm on Linux)
+  old <- Sys.getenv("MIZU_LIVENESS_DIR", unset = NA)
+  on.exit(
+    if (is.na(old)) {
+      Sys.unsetenv("MIZU_LIVENESS_DIR")
+    } else {
+      Sys.setenv(MIZU_LIVENESS_DIR = old)
+    },
+    add = TRUE
+  )
+  livedir <- file.path(tempdir(), "live")
+  dir.create(livedir, showWarnings = FALSE)
+  Sys.setenv(MIZU_LIVENESS_DIR = livedir)
+  on.exit(unlink(livedir, recursive = TRUE), add = TRUE)
+  p <- pool_pair()
+  on.exit(pool_end(p), add = TRUE)
+  suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    s <- mizu::mizu_pool_attach("%s")
+    writeLines(as.character(Sys.getpid()), %s)
+    Sys.sleep(60)
+  ',
+    suffix,
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  pid <- as.integer(readLines(f))
+  on.exit(kill_hard(pid), add = TRUE)
+  # a live holder's lock probes HELD: the claimant moves to the next slot
+  s2 <- mizu_pool_attach(suffix)
+  kill_hard(pid)
+  expect_true(wait_until(!pid_alive(pid), timeout = 15))
+  lock <- file.path(livedir, sprintf("mizu_%s.sub.1", suffix))
+  expect_true(file.remove(lock))
+  s3 <- mizu_pool_attach(suffix) # the missing file reads indeterminate
+  writeLines("squat", lock) # a fresh inode reads as an identity mismatch
+  s4 <- mizu_pool_attach(suffix)
+  t <- mizu_submit(s4, "probed")
+  expect_identical(pool_step(p), 1L)
+  expect_identical(mizu_collect(t, 5), "probed")
+  rm(s2, s3, s4)
+  gc()
+})

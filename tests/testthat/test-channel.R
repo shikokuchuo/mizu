@@ -352,3 +352,62 @@ test_that("attach rejects a non-R drop and reads a source drop", {
   .Call(mizu:::mizu_channel_close, host, 5)
   .Call(mizu:::mizu_channel_close, out[[1L]], 5)
 })
+
+test_that("create fails when the liveness directory is unusable", {
+  old <- Sys.getenv("MIZU_LIVENESS_DIR", unset = NA)
+  on.exit(
+    if (is.na(old)) {
+      Sys.unsetenv("MIZU_LIVENESS_DIR")
+    } else {
+      Sys.setenv(MIZU_LIVENESS_DIR = old)
+    },
+    add = TRUE
+  )
+  Sys.setenv(MIZU_LIVENESS_DIR = paste(rep("a", 950L), collapse = ""))
+  expect_error(
+    .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 4096, FALSE),
+    "liveness directory path too long"
+  )
+  Sys.setenv(MIZU_LIVENESS_DIR = file.path(tempdir(), "no-such-dir"))
+  expect_error(
+    .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 4096, FALSE),
+    "cannot lock host liveness file"
+  )
+})
+
+test_that("a pre-ready host probes alive and destroys cleanly", {
+  host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 4096, FALSE)
+  expect_true(.Call(mizu:::mizu_channel_alive, host))
+  .Call(mizu:::mizu_channel_destroy, host)
+  expect_false(.Call(mizu:::mizu_channel_alive, host))
+})
+
+test_that("destroying the host first releases the region name", {
+  p <- channel_pair()
+  .Call(mizu:::mizu_channel_destroy, p[["host"]])
+  expect_false(.Call(mizu:::mizu_channel_alive, p[["host"]]))
+  .Call(mizu:::mizu_channel_destroy, p[["peer"]])
+})
+
+test_that("a second peer attach fails on the held liveness lock", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  expect_error(
+    .Call(
+      mizu:::mizu_channel_attach,
+      .Call(mizu:::mizu_channel_suffix, p[["host"]]),
+      NULL
+    ),
+    "cannot lock peer liveness file"
+  )
+})
+
+test_that("create resolves the default temp dir without TMPDIR", {
+  old <- Sys.getenv("TMPDIR", unset = NA)
+  skip_if(is.na(old))
+  Sys.unsetenv("TMPDIR")
+  on.exit(Sys.setenv(TMPDIR = old))
+  host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 4096, FALSE)
+  expect_true(.Call(mizu:::mizu_channel_alive, host))
+  .Call(mizu:::mizu_channel_destroy, host)
+})

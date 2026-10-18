@@ -178,7 +178,25 @@ fork_ok <- function() {
   isTRUE(ok[[1L]])
 }
 
+# A forked child inherits the parent's live-thread TLS blocks (cli's ticker
+# thread, the death-listener thread), which valgrind reports as possibly
+# lost: in-process forks are unsound under instrumentation. The maps probe
+# (not VALGRIND_OPTS, which container images set globally) tells whether
+# this process itself is traced.
+on_valgrind <- function() {
+  file.exists("/proc/self/maps") &&
+    any(grepl(
+      "vgpreload",
+      readLines("/proc/self/maps", warn = FALSE),
+      fixed = TRUE
+    ))
+}
+
 skip_if_no_fork <- function() {
+  testthat::skip_if(
+    on_valgrind(),
+    "forked children report inherited thread TLS as lost under valgrind"
+  )
   testthat::skip_if_not(fork_ok(), "fork is unavailable in this session")
 }
 

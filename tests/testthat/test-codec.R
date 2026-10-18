@@ -467,3 +467,20 @@ test_that("a primitive resolving to a non-base name is rejected", {
     "corrupt payload stream"
   )
 })
+
+test_that("a data.frame's ALTREP row.names write the compact form", {
+  skip_if(getRversion() < "4.6.0")
+  x <- data.frame(a = c(2L, 1L, 5L, 3L, 4L), b = letters[1:5])
+  attr(x, "row.names") <- 1:5
+  b <- .Call(mizu:::mizu_codec_write_call, x)
+  expect_false(is.null(b))
+  expect_identical(.Call(mizu:::mizu_codec_read_call, b), x)
+})
+
+test_that("an unbound-value node reads back", {
+  # the single element's tag byte re-pointed at SC_UNBOUND (13)
+  b <- c(.Call(mizu:::mizu_codec_write_call, list(1L))[1:10], as.raw(13L))
+  x <- .Call(mizu:::mizu_codec_read_call, b)
+  expect_identical(length(x), 1L)
+  expect_error(v <- x[[1L]], "Unbound")
+})

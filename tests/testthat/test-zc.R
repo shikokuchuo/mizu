@@ -2555,3 +2555,15 @@ test_that("an SHM_RAW payload naming a vanished region fails the read", {
   expect_error(mizu_recv(f[["p"]][["peer"]], 5), "payload region vanished")
   channel_end(f[["p"]])
 })
+
+test_that("an S4 data-part wrapper stages as a zero-copy view", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  methods::setClass("zcS4Num", contains = "numeric")
+  on.exit(methods::removeClass("zcS4Num"), add = TRUE)
+  x <- methods::new("zcS4Num", runif(400000))
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_s4_class(y, "zcS4Num")
+  expect_identical(as.numeric(y), as.numeric(x))
+})

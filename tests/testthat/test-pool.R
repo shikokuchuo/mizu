@@ -1401,3 +1401,192 @@ test_that("a task error with a non-language call flattens without detail text", 
   expect_match(conditionMessage(cnd), "boom")
   pool_end(p)
 })
+
+test_that("create rejects an oversized geometry and a bad liveness directory", {
+  expect_error(
+    .Call(
+      mizu:::mizu_pool_create,
+      1L,
+      64L,
+      16777216L,
+      16777216L,
+      16777216L,
+      1048576L
+    ),
+    "pool region too large"
+  )
+  old <- Sys.getenv("MIZU_LIVENESS_DIR", unset = NA)
+  on.exit(
+    if (is.na(old)) {
+      Sys.unsetenv("MIZU_LIVENESS_DIR")
+    } else {
+      Sys.setenv(MIZU_LIVENESS_DIR = old)
+    },
+    add = TRUE
+  )
+  Sys.setenv(MIZU_LIVENESS_DIR = paste(rep("a", 950L), collapse = ""))
+  expect_error(
+    .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L),
+    "liveness directory path too long"
+  )
+  Sys.setenv(MIZU_LIVENESS_DIR = file.path(tempdir(), "no-such-dir"))
+  expect_error(
+    .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L),
+    "cannot create liveness file"
+  )
+})
+
+test_that("attach rejects a corrupt pool header", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  poke_u32 <- function(off, v) {
+    old <- .Call(mizu:::mizu_peek, rw, off, 4L)
+    .Call(
+      mizu:::mizu_poke,
+      rw,
+      off,
+      writeBin(v, raw(), size = 4L, endian = "little")
+    )
+    expect_error(mizu_pool_attach(suffix), pat)
+    .Call(mizu:::mizu_poke, rw, off, old)
+  }
+  pat <- "bad magic"
+  poke_u32(0L, 0L)
+  pat <- "ABI version mismatch"
+  poke_u32(4L, 999L)
+  pat <- "registry capacities out of range"
+  poke_u32(8L, 0L)
+  pat <- "queue capacities or slot size are not valid powers of two"
+  poke_u32(16L, 3L)
+  pat <- "result slots are not a multiple"
+  poke_u32(24L, 3L)
+  pat <- "pool sections exceed the mapped region"
+  poke_u32(8L, 64L)
+  # livedir_size (u64 at 48): an implausible span outside the region
+  old <- .Call(mizu:::mizu_peek, rw, 48L, 8L)
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    48L,
+    writeBin(c(-1L, -1L), raw(), size = 4L, endian = "little")
+  )
+  expect_error(mizu_pool_attach(suffix), "liveness-dir string")
+  .Call(mizu:::mizu_poke, rw, 48L, old)
+})
+
+test_that("retire and ready_wait validate their worker slot", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 2L, 8L, 64L, 64L, 64L, 512L)
+  on.exit(.Call(mizu:::mizu_pool_destroy, ctrl))
+  expect_error(
+    .Call(mizu:::mizu_pool_retire, ctrl, 2L),
+    "worker slot index out of range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_pool_retire, ctrl, 0L),
+    "worker slot 0 is not live"
+  )
+  expect_error(
+    .Call(mizu:::mizu_pool_ready_wait, ctrl, 2L, 0),
+    "worker slot index out of range"
+  )
+})
+
+test_that("a second join of a held worker slot fails", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  expect_error(
+    .Call(
+      mizu:::mizu_pool_worker_join,
+      .Call(mizu:::mizu_pool_suffix, p[["ctrl"]]),
+      0L,
+      NULL
+    ),
+    "already held"
+  )
+})
+
+test_that("claim copies tolerate torn entry kind bytes", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  kinds <- raw(4L)
+  for (i in 0:3) {
+    mizu_submit(p[["ctrl"]], i)
+    kinds[i + 1L] <- .Call(mizu:::mizu_peek, rw, base + i * 512L + 24L, 1L)
+  }
+  # NIL: the copy is the header only
+  .Call(mizu:::mizu_poke, rw, base + 24L, as.raw(6L))
+  # RAWSPILL: the framed name length rides aux >> 8
+  .Call(mizu:::mizu_poke, rw, base + 512L + 24L, as.raw(8L))
+  .Call(mizu:::mizu_poke, rw, base + 512L + 33L, as.raw(16L))
+  # an over-long RAWSPILL name and an unknown kind take the full slot
+  .Call(mizu:::mizu_poke, rw, base + 2L * 512L + 24L, as.raw(8L))
+  .Call(mizu:::mizu_poke, rw, base + 2L * 512L + 34L, as.raw(64L))
+  .Call(mizu:::mizu_poke, rw, base + 3L * 512L + 24L, as.raw(238L))
+  expect_identical(pool_pull(p, 4L), 4L)
+  for (i in 0:3) {
+    .Call(mizu:::mizu_poke, rw, base + i * 512L + 24L, kinds[i + 1L])
+  }
+})
+
+test_that("a reaping worker's deque stays visible until drained", {
+  p <- pool_pair(workers = 2L)
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1 + 1)
+  pool_pull(p, 1L, wk = p[["wks"]][[1L]])
+  .Call(mizu:::mizu_pool_leave, p[["wks"]][[1L]])
+  # the orphaned deque is help-unreachable: the survivor's work hints keep
+  # it spinning until the fairness tick claims the entry
+  expect_identical(pool_step(p, timeout = 10, wk = p[["wks"]][[2L]]), 1L)
+  expect_identical(mizu_collect(t, 5), 2)
+})
+
+test_that("a lost task reports its state before collect", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- paste(rep("x", 3000), collapse = "")
+  t <- mizu_submit(p[["ctrl"]], x, x = x)
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  id <- .Call(mizu:::mizu_peek, rw, base + 40L, 40L)
+  hex0 <- base + 40L + which(id == charToRaw("_"))[1L] + 1L
+  b <- .Call(mizu:::mizu_peek, rw, hex0, 1L)
+  # a well-formed name that does not exist (one hex digit flipped)
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    hex0,
+    if (b == charToRaw("a")) charToRaw("b") else charToRaw("a")
+  )
+  pool_step(p)
+  expect_identical(.Call(mizu:::mizu_pool_task_state, t), "lost")
+  expect_error(mizu_collect(t, 5), "payload region vanished")
+})
+
+test_that("the task finalizer leaves a cancelled slot alone", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1 + 1)
+  expect_true(mizu_cancel(t))
+  rm(t)
+  gc()
+  expect_identical(
+    mizu_pool_status(p[["ctrl"]])[["tasks"]][["cancel"]],
+    1L
+  )
+})
