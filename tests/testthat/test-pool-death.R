@@ -370,3 +370,122 @@ test_that("a retiree with only inline results exits without lingering", {
   expect_identical(mizu_collect(t, timeout = 10), as.integer(pid))
   expect_true(mizu_pool_stop(p, timeout = 10))
 })
+
+test_that("attach and join fail fast on a dead pool owner", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+    writeLines(c(as.character(Sys.getpid()),
+                 .Call(mizu:::mizu_pool_suffix, ctrl)), %s)
+    Sys.sleep(60)
+  ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  expect_true(wait_until(length(readLines(f)) == 2L))
+  lines <- readLines(f)
+  kill_hard(as.integer(lines[1L])) # a workerless owner: nothing tears down
+  expect_true(wait_until(!pid_alive(as.integer(lines[1L])), timeout = 15))
+  tok <- lines[2L]
+  # Windows destroys the region with the owner's handle table, so the
+  # attach fails earlier, at the region open
+  pat <- if (.Platform[["OS.type"]] == "windows") {
+    "cannot open pool region"
+  } else {
+    "pool stopped or owner dead"
+  }
+  expect_error(mizu_pool_attach(tok), pat)
+  expect_error(.Call(mizu:::mizu_pool_worker_join, tok, 0L, NULL), pat)
+  mizu_prune()
+  pool_live_remove(tok)
+})
+
+test_that("an attached submitter observes owner death at submit", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+    writeLines(c(as.character(Sys.getpid()),
+                 .Call(mizu:::mizu_pool_suffix, ctrl)), %s)
+    Sys.sleep(60)
+  ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  expect_true(wait_until(length(readLines(f)) == 2L))
+  lines <- readLines(f)
+  s <- mizu_pool_attach(lines[2L]) # attach while the owner lives
+  kill_hard(as.integer(lines[1L]))
+  # the submitter's owner watch fires; the verdict sticks
+  expect_true(wait_until(
+    inherits(tryCatch(mizu_submit(s, 1), error = function(e) e), "error"),
+    timeout = 15
+  ))
+  expect_error(mizu_submit(s, 1), "pool stopped")
+  expect_error(mizu_submit_batch(s, list(quote(1 + 1))), "pool stopped")
+  mizu_prune()
+})
+
+test_that("an attach reaps a killed submitter's slot before claiming", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 1L)
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    q <- mizu::mizu_pool_attach("%s")
+    writeLines(as.character(Sys.getpid()), %s)
+    Sys.sleep(60)
+  ',
+    .Call(mizu:::mizu_pool_suffix, p),
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  pid <- as.integer(readLines(f))
+  kill_hard(pid)
+  expect_true(wait_until(!pid_alive(pid), timeout = 15))
+  s <- mizu_pool_attach(.Call(mizu:::mizu_pool_suffix, p))
+  t <- mizu_submit(s, "reclaimed")
+  expect_identical(mizu_collect(t, timeout = 10), "reclaimed")
+  expect_true(mizu_pool_stop(p, timeout = 10))
+})
+
+test_that("a collect waiting on owner death ends cancelled", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 512L)
+    writeLines(c(as.character(Sys.getpid()),
+                 .Call(mizu:::mizu_pool_suffix, ctrl)), %s)
+    Sys.sleep(60)
+  ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  expect_true(wait_until(length(readLines(f)) == 2L))
+  lines <- readLines(f)
+  s <- mizu_pool_attach(lines[2L])
+  t1 <- mizu_submit(s, 1 + 1)
+  t2 <- mizu_submit(s, 2 + 2)
+  kill_hard(as.integer(lines[1L]))
+  # the submitter's owner watch fires; the cancel sweep ends the wait
+  expect_true(wait_until(
+    inherits(tryCatch(mizu_submit(s, 1), error = function(e) e), "error"),
+    timeout = 15
+  ))
+  expect_error(
+    mizu_collect_any(list(t1, t2), timeout = 5),
+    class = "mizu_error_cancelled"
+  )
+  expect_error(
+    mizu_collect_all(list(t1, t2), timeout = 5),
+    class = "mizu_error_cancelled"
+  )
+  mizu_prune()
+})

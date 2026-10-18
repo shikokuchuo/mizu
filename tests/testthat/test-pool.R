@@ -320,6 +320,47 @@ test_that("a corrupt ring entry is skipped without a claim", {
   expect_identical(pool_step(p), 0L)
 })
 
+test_that("a corrupt deque entry is skipped without a claim", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  mizu_submit(p[["ctrl"]], 1 + 1)
+  pool_pull(p, 1L) # the injection entry rides the worker's own deque now
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  # wk[0]'s deque_buf_off is its slot word at 88; entry 0's rs_index word
+  doff <- i64v(.Call(mizu:::mizu_peek, rw, 88, 8))
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    doff + 16L,
+    writeBin(9999L, raw(), size = 4L, endian = "little")
+  )
+  expect_identical(pool_step(p), 0L)
+})
+
+test_that("a corrupt stolen entry aborts the steal", {
+  p <- pool_pair(workers = 2L)
+  on.exit(pool_end(p))
+  mizu_submit(p[["ctrl"]], 1 + 1)
+  pool_pull(p, 1L, wk = p[["wks"]][[1L]])
+  rw <- .Call(
+    mizu:::mizu_region_open,
+    mizu_pool_status(p[["ctrl"]])[["name"]],
+    TRUE
+  )
+  doff <- i64v(.Call(mizu:::mizu_peek, rw, 88, 8))
+  .Call(
+    mizu:::mizu_poke,
+    rw,
+    doff + 16L,
+    writeBin(9999L, raw(), size = 4L, endian = "little")
+  )
+  expect_identical(pool_step(p, wk = p[["wks"]][[2L]]), 0L)
+})
+
 test_that("a vanished task payload publishes LOST to the collector", {
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -773,6 +814,19 @@ test_that("collect_any and collect_all preserve a foreign map error's index", {
   pool_end(p)
 })
 
+test_that("collect_any and collect_all time out without parking at timeout 0", {
+  p <- pool_pair()
+  t1 <- mizu_submit(p[["ctrl"]], 1 + 1)
+  t2 <- mizu_submit(p[["ctrl"]], 2 + 2)
+  expect_s3_class(mizu_collect_any(list(t1, t2), timeout = 0), "mizu_timeout")
+  expect_s3_class(mizu_collect_all(list(t1, t2), timeout = 0), "mizu_timeout")
+  pool_step(p)
+  pool_step(p)
+  expect_identical(mizu_collect(t1, timeout = 5), 2)
+  expect_identical(mizu_collect(t2, timeout = 5), 4)
+  pool_end(p)
+})
+
 test_that("collect_any parks until any result publishes", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], "done")
@@ -783,6 +837,40 @@ test_that("collect_any parks until any result publishes", {
     list(index = 1L, value = "done")
   )
   pool_end(p)
+})
+
+test_that("collect_any wakes off the park when a result publishes", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 1L)
+  t1 <- mizu_submit(p, {
+    Sys.sleep(1)
+    "slow"
+  })
+  t2 <- mizu_submit(p, {
+    Sys.sleep(2)
+    "slower"
+  })
+  expect_identical(
+    mizu_collect_any(list(t1, t2), timeout = 10),
+    list(index = 1L, value = "slow")
+  )
+  expect_identical(mizu_collect(t2, timeout = 10), "slower")
+  expect_true(mizu_pool_stop(p, timeout = 10))
+})
+
+test_that("collect_all wakes off the park as results publish", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 1L)
+  t1 <- mizu_submit(p, {
+    Sys.sleep(0.5)
+    1L
+  })
+  t2 <- mizu_submit(p, {
+    Sys.sleep(1)
+    2L
+  })
+  expect_identical(mizu_collect_all(list(t1, t2), timeout = 10), list(1L, 2L))
+  expect_true(mizu_pool_stop(p, timeout = 10))
 })
 
 test_that("collect_any re-signals a task error with its index", {

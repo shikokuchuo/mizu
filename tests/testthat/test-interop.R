@@ -335,6 +335,39 @@ test_that("an attribute set outside the whitelist and a mismatched frame decline
   expect_snapshot(ix_read(bad), error = TRUE)
 })
 
+test_that("corrupt dim and row.names shapes decline at the writer", {
+  # a zero-length vector's dim product overflows its length mid-walk
+  expect_snapshot(
+    ix_write(structure(integer(0), dim = c(2L, 0L))),
+    error = TRUE
+  )
+  # a compact row.names whose count is not the frame's
+  df <- data.frame(x = 1:3)
+  attr(df, "row.names") <- c(NA_integer_, 7L)
+  expect_error(ix_write(df), "not portable")
+  # row.names that is neither an integer nor a character vector: poked in
+  # the serialized node's flags word — R's own assignment validates it
+  rn <- c(1357911L, 2468013L, 11235813L)
+  attr(df, "row.names") <- rn
+  buf <- serialize(df, NULL)
+  h <- grepRaw(
+    writeBin(rn, raw(), size = 4L, endian = "big"),
+    buf,
+    fixed = TRUE
+  )
+  buf[h - 5L] <- as.raw(10L) # INTSXP -> LGLSXP
+  df <- unserialize(buf)
+  expect_error(ix_write(df), "not portable")
+})
+
+test_that("a non-ALTREP compact row.names qualifies with the 1:n verdict", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(x = 1:3)
+  attr(df, "row.names") <- c(NA_integer_, 3L)
+  expect_identical(ix_rt(p, df), data.frame(x = 1:3))
+})
+
 test_that("an unmarked native non-ASCII UTF-8 string round-trips", {
   p <- foreign_pair()
   on.exit(channel_end(p))

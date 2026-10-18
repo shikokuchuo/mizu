@@ -54,3 +54,11 @@
       Error in `ix_read()`:
       ! mizu: no portable home for an attributed value (attributes: "foo", "class"; class: "bar")
 
+# corrupt dim and row.names shapes decline at the writer
+
+    Code
+      ix_write(structure(integer(0), dim = c(2L, 0L)))
+    Condition
+      Error in `sprintf()`:
+      ! mizu: not portable at x (an attribute set outside the portable whitelist)
+

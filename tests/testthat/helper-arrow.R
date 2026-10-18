@@ -86,6 +86,20 @@ arrow_matrix <- function(n = 6000L) {
   list(tab = tab, want = want)
 }
 
+# A one-column frame stream assembled by hand (validate = FALSE throughout):
+# the schema/batch decline arms need frames no real producer emits.
+arrow_one_col_stream <- function(schema, array, name = "v") {
+  sch <- nanoarrow::na_struct(setNames(list(schema), name))
+  parent <- nanoarrow::nanoarrow_array_init(sch)
+  parent <- nanoarrow::nanoarrow_array_modify(
+    parent,
+    list(children = list(array), length = array$length),
+    validate = FALSE
+  )
+  nanoarrow::nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+  nanoarrow::basic_array_stream(list(parent), schema = sch, validate = FALSE)
+}
+
 grab_warnings <- function(expr) {
   ws <- character()
   withCallingHandlers(

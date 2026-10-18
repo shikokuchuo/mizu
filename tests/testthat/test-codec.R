@@ -441,6 +441,24 @@ test_that("a call with a nested call tail round-trips", {
   )
 })
 
+test_that("a mixed LANGSXP/LISTSXP chain round-trips its cell types", {
+  # R builds no mixed chains at the language level: the first argument
+  # cell's type word is poked LISTSXP -> LANGSXP in the serialized form
+  x <- quote(f(a, b))
+  buf <- serialize(x, NULL)
+  h <- grepRaw(
+    writeBin(2L, raw(), size = 4L, endian = "big"),
+    buf,
+    fixed = TRUE
+  )
+  buf[h + 3L] <- as.raw(6L)
+  x <- unserialize(buf)
+  expect_identical(
+    .Call(mizu:::mizu_codec_read_call, .Call(mizu:::mizu_codec_write_call, x)),
+    x
+  )
+})
+
 test_that("a primitive resolving to a non-base name is rejected", {
   b <- .Call(mizu:::mizu_codec_write_call, .Primitive("+"))
   b[length(b)] <- charToRaw("z")

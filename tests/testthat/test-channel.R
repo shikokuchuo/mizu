@@ -133,6 +133,36 @@ test_that("attach fails when the host pid cannot be watched", {
   )
 })
 
+test_that("attach after the host died fails and unlinks the channel", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 0L, FALSE)
+    writeLines(c(as.character(Sys.getpid()),
+                 .Call(mizu:::mizu_channel_suffix, host)), %s)
+    Sys.sleep(60)
+  ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, timeout = 30))
+  expect_true(wait_until(length(readLines(f)) == 2L))
+  lines <- readLines(f)
+  kill_hard(as.integer(lines[1L]))
+  expect_true(wait_until(!pid_alive(as.integer(lines[1L])), timeout = 15))
+  # Windows destroys the region with the host's handle table, so the
+  # attach fails earlier, at the region open
+  expect_error(
+    .Call(mizu:::mizu_channel_attach, lines[2L], NULL),
+    if (.Platform[["OS.type"]] == "windows") {
+      "cannot open channel region"
+    } else {
+      "host died before the channel was established"
+    }
+  )
+})
+
 test_that("the close protocol rendezvouses and releases both ends", {
   p <- channel_pair()
   # the peer signals close (the epilogue primitive: flush + bit + wake)

@@ -1479,6 +1479,241 @@ test_that("a zero-column table declines", {
   expect_identical(mizu_recv(p$peer, 5), 1:5)
 })
 
+test_that("frame schema declines name the reason", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # a timezone name past the frame's budget
+  sch <- nanoarrow::na_timestamp("us", timezone = strrep("Z", 100))
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      arrow_one_col_stream(sch, nanoarrow::nanoarrow_array_init(sch))
+    ),
+    error = TRUE
+  )
+  # a dictionary with a non-integer index
+  sch <- nanoarrow::na_dictionary(
+    nanoarrow::na_string(),
+    nanoarrow::na_date32()
+  )
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      arrow_one_col_stream(sch, nanoarrow::nanoarrow_array_init(sch))
+    ),
+    error = TRUE
+  )
+  # duplicate column names
+  sch <- nanoarrow::na_struct(list(
+    v = nanoarrow::na_int32(),
+    v = nanoarrow::na_int32()
+  ))
+  a <- nanoarrow::as_nanoarrow_array(1:3, schema = nanoarrow::na_int32())
+  parent <- nanoarrow::nanoarrow_array_init(sch)
+  parent <- nanoarrow::nanoarrow_array_modify(
+    parent,
+    list(children = list(a, a), length = 3),
+    validate = FALSE
+  )
+  nanoarrow::nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      nanoarrow::basic_array_stream(
+        list(parent),
+        schema = sch,
+        validate = FALSE
+      )
+    ),
+    error = TRUE
+  )
+  mizu_send(p$host, 1:5)
+  expect_identical(mizu_recv(p$peer, 5), 1:5)
+})
+
+test_that("frame batch declines name the reason", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # a struct batch with an offset
+  sch <- nanoarrow::na_struct(list(v = nanoarrow::na_int32()))
+  parent <- nanoarrow::nanoarrow_array_init(sch)
+  parent <- nanoarrow::nanoarrow_array_modify(
+    parent,
+    list(
+      children = list(nanoarrow::as_nanoarrow_array(
+        1:5,
+        schema = nanoarrow::na_int32()
+      )),
+      length = 4,
+      offset = 1
+    ),
+    validate = FALSE
+  )
+  nanoarrow::nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      nanoarrow::basic_array_stream(
+        list(parent),
+        schema = sch,
+        validate = FALSE
+      )
+    ),
+    error = TRUE
+  )
+  # columns differing in length
+  sch <- nanoarrow::na_struct(list(
+    a = nanoarrow::na_int32(),
+    b = nanoarrow::na_int32()
+  ))
+  parent <- nanoarrow::nanoarrow_array_init(sch)
+  parent <- nanoarrow::nanoarrow_array_modify(
+    parent,
+    list(
+      children = list(
+        nanoarrow::as_nanoarrow_array(1:5, schema = nanoarrow::na_int32()),
+        nanoarrow::as_nanoarrow_array(1:3, schema = nanoarrow::na_int32())
+      ),
+      length = 5
+    ),
+    validate = FALSE
+  )
+  nanoarrow::nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      nanoarrow::basic_array_stream(
+        list(parent),
+        schema = sch,
+        validate = FALSE
+      )
+    ),
+    error = TRUE
+  )
+  # a null count past the length
+  a <- nanoarrow::nanoarrow_array_modify(
+    nanoarrow::as_nanoarrow_array(1:5, schema = nanoarrow::na_int32()),
+    list(null_count = 10),
+    validate = FALSE
+  )
+  expect_error(
+    mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_int32(), a)),
+    class = "mizu_error_not_portable"
+  )
+  # a string column with no data buffer
+  s <- nanoarrow::as_nanoarrow_array(
+    c("aa", "bb"),
+    schema = nanoarrow::na_string()
+  )
+  s <- nanoarrow::nanoarrow_array_modify(
+    s,
+    list(buffers = list(NULL, s$buffers[[2L]], NULL)),
+    validate = FALSE
+  )
+  expect_error(
+    mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_string(), s)),
+    class = "mizu_error_not_portable"
+  )
+  # a dictionary column with no dictionary
+  sch <- nanoarrow::na_dictionary(nanoarrow::na_string(), nanoarrow::na_int32())
+  a <- nanoarrow::nanoarrow_array_modify(
+    nanoarrow::nanoarrow_array_init(sch),
+    list(dictionary = NULL),
+    validate = FALSE
+  )
+  expect_error(
+    mizu_send(p$host, arrow_one_col_stream(sch, a)),
+    class = "mizu_error_not_portable"
+  )
+  # malformed string offsets
+  s <- nanoarrow::nanoarrow_array_modify(
+    nanoarrow::nanoarrow_array_init(nanoarrow::na_string()),
+    list(
+      buffers = list(
+        NULL,
+        writeBin(c(0L, 5L, 2L), raw(), size = 4L),
+        charToRaw("alpha")
+      ),
+      length = 2
+    ),
+    validate = FALSE
+  )
+  expect_snapshot(
+    mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_string(), s)),
+    error = TRUE
+  )
+  # a dictionary index outside the levels
+  sch <- nanoarrow::na_dictionary(nanoarrow::na_string(), nanoarrow::na_int32())
+  a <- nanoarrow::nanoarrow_array_modify(
+    nanoarrow::nanoarrow_array_init(sch),
+    list(
+      buffers = list(NULL, writeBin(c(0L, 5L), raw(), size = 4L)),
+      dictionary = nanoarrow::as_nanoarrow_array(c("a", "b")),
+      length = 2
+    ),
+    validate = FALSE
+  )
+  expect_snapshot(
+    mizu_send(p$host, arrow_one_col_stream(sch, a)),
+    error = TRUE
+  )
+  mizu_send(p$host, 1:5)
+  expect_identical(mizu_recv(p$peer, 5), 1:5)
+})
+
+test_that("unknown null counts and string-view columns cross", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # an Arrow "not computed" null count: the nulls are walked off the bitmap
+  x <- rep(c(1L, NA, 3L), 2000)
+  a <- nanoarrow::nanoarrow_array_modify(
+    nanoarrow::as_nanoarrow_array(x, schema = nanoarrow::na_int32()),
+    list(null_count = -1),
+    validate = FALSE
+  )
+  mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_int32(), a))
+  expect_identical(mizu_recv(p$peer, 5)[[1L]], x)
+  s <- rep(c("alpha", NA, "héllo ✓"), 3000)
+  a <- nanoarrow::as_nanoarrow_array(s, schema = nanoarrow::na_string_view())
+  mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_string_view(), a))
+  expect_identical(mizu_recv(p$peer, 5)[[1L]], s)
+})
+
+test_that("float16 specials cross exactly", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # signed zero, a subnormal, the minimum normal, infinites, NaN
+  x <- c(0, -0.0, 1e-7, 6.104e-5, 1.5, -2.5, Inf, -Inf, NaN)
+  arr <- arrow::Array$create(x)$cast(arrow::float16())
+  mizu_send(p$host, arrow::arrow_table(v = arr))
+  expect_identical(
+    mizu_recv(p$peer, 5)$v,
+    arr$cast(arrow::float64())$as_vector()
+  )
+})
+
+test_that("matching dictionaries across batches cross", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  rb <- function() {
+    arrow::record_batch(
+      data.frame(
+        f = factor(rep(c("a", "b"), 2500), levels = c("a", "b", "zzz"))
+      )
+    )
+  }
+  mizu_send(p$host, arrow::RecordBatchReader$create(rb(), rb()))
+  expect_identical(
+    mizu_recv(p$peer, 5),
+    data.frame(f = factor(rep(c("a", "b"), 5000), levels = c("a", "b", "zzz")))
+  )
+})
+
 test_that("the export degrades a column whose root header changed", {
   skip_if_not_installed("nanoarrow")
   x <- runif(50000)

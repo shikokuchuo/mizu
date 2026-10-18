@@ -62,3 +62,62 @@
       Error:
       ! mizu: value is not portable to the peer (a zero-column Arrow frame has no portable home at the Arrow frame)
 
+# frame schema declines name the reason
+
+    Code
+      mizu_send(p$host, arrow_one_col_stream(sch, nanoarrow::nanoarrow_array_init(sch)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (column 'v': a timezone name past 63 bytes has no portable home at the Arrow frame)
+
+---
+
+    Code
+      mizu_send(p$host, arrow_one_col_stream(sch, nanoarrow::nanoarrow_array_init(sch)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (column 'v': a dictionary column with a non-integer index has no portable home at the Arrow frame)
+
+---
+
+    Code
+      mizu_send(p$host, nanoarrow::basic_array_stream(list(parent), schema = sch,
+      validate = FALSE))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an Arrow frame with duplicate column names at the Arrow frame)
+
+# frame batch declines name the reason
+
+    Code
+      mizu_send(p$host, nanoarrow::basic_array_stream(list(parent), schema = sch,
+      validate = FALSE))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an Arrow batch with null struct rows or a struct offset has no portable home at the Arrow frame)
+
+---
+
+    Code
+      mizu_send(p$host, nanoarrow::basic_array_stream(list(parent), schema = sch,
+      validate = FALSE))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an Arrow batch whose columns differ in length at the Arrow frame)
+
+---
+
+    Code
+      mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_string(), s))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (column 'v': an invalid Arrow string export (a malformed offset or view record) at the Arrow frame)
+
+---
+
+    Code
+      mizu_send(p$host, arrow_one_col_stream(sch, a))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (column 'v': a dictionary index outside the levels at the Arrow frame)
+

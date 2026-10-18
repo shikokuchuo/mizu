@@ -43,7 +43,24 @@ pid_alive <- function(pid) {
     ))
     return(any(grepl(sprintf('","%d","', pid), out, fixed = TRUE)))
   }
-  isTRUE(tools::pskill(pid, 0L)) && !pid_zombie(pid)
+  if (!isTRUE(tools::pskill(pid, 0L))) {
+    return(FALSE)
+  }
+  if (pid_zombie(pid)) {
+    # Linux reports the thread-group leader's zombie state: the leader can
+    # be a zombie while siblings still exit, and the process's flocks die
+    # only with the last thread's fd-table teardown — still alive until
+    # the whole group is gone
+    return(pid_group_lingers(pid))
+  }
+  TRUE
+}
+
+# Linux: any threads of `pid`'s group still exiting past the zombie leader
+# (/proc/<pid>/task lists each not-fully-exited thread next to the leader)
+pid_group_lingers <- function(pid) {
+  task <- sprintf("/proc/%d/task", pid)
+  dir.exists(task) && length(list.files(task)) > 1L
 }
 
 pid_zombie <- function(pid) {
@@ -80,6 +97,18 @@ wait_until <- function(expr, timeout = 10) {
     }
     Sys.sleep(0.05)
   }
+}
+
+# Remove a pool's liveness lock files: an owner killed before any
+# participant joined has no teardown (the failed-join probe refuses, the
+# reaper skips non-region names), so the test cleans up itself
+pool_live_remove <- function(suffix) {
+  dir <- .Call(mizu:::mizu_live_dir_call)
+  file.remove(list.files(
+    dir,
+    sprintf("^mizu_%s[.]", suffix),
+    full.names = TRUE
+  ))
 }
 
 # Cross-process tests spawn fresh Rscript children that library(mizu):
