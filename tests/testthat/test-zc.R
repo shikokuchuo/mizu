@@ -204,6 +204,36 @@ test_that("integer, logical, raw and complex views are copy-on-write too", {
   channel_end(p)
 })
 
+test_that("view summaries read off the region without materializing", {
+  p <- channel_pair(arena_size = 0)
+  x <- runif(100000)
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  rc <- rc_of(y)
+  expect_equal(sum(y), sum(x))
+  expect_equal(min(y), min(x))
+  expect_equal(max(y), max(x))
+  expect_identical(rc_of(y), rc) # region reads keep the loan
+
+  xi <- as.integer(runif(100000) * 100)
+  mizu_send(p[["host"]], xi)
+  yi <- mizu_recv(p[["peer"]], 5)
+  expect_equal(sum(yi), sum(xi))
+  expect_equal(min(yi), min(xi))
+
+  xl <- runif(100000) > 0.5
+  mizu_send(p[["host"]], xl)
+  yl <- mizu_recv(p[["peer"]], 5)
+  expect_equal(sum(yl), sum(xl))
+  expect_equal(max(yl), max(xl))
+
+  xc <- complex(real = runif(100000), imaginary = runif(100000))
+  mizu_send(p[["host"]], xc)
+  yc <- mizu_recv(p[["peer"]], 5)
+  expect_equal(sum(yc), sum(xc))
+  channel_end(p)
+})
+
 test_that("element and range reads keep the view's loan (R-07)", {
   p <- channel_pair(arena_size = 0)
   set.seed(1)
@@ -1260,6 +1290,22 @@ test_that("a materialized or attributed view keeps the serialize path", {
   expect_false(is_view(y)) # the serialize tiers, not MIZL
   expect_identical(y[["b"]][1], -1)
   expect_identical(y[["b"]][2], x[2])
+  channel_end(p)
+})
+
+test_that("an attributed string view nested in a payload resolves as a view", {
+  p <- channel_pair(arena_size = 0)
+  x <- paste0("s", 1:50000)
+  names(x) <- paste0("n", 1:50000)
+  mizu_send(p[["host"]], x)
+  v <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(v))
+  fill <- runif(100000)
+  mizu_send(p[["peer"]], list(v, fill)) # an attributed view rejects the tree
+  y <- mizu_recv(p[["host"]], 5)
+  expect_true(is_view(y[[1]])) # resolved against the region, attrs restored
+  expect_identical(y[[1]], x)
+  expect_identical(y[[2]], fill)
   channel_end(p)
 })
 

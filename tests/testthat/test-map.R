@@ -360,6 +360,40 @@ test_that("a view x rides the descriptor by reference and reads off the shared p
   pool_end(p)
 })
 
+test_that("a map over a string view x reads elements off the shared pages", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], paste0("s", 1:50000))
+  pool_step(p)
+  v <- mizu_collect(t, 5)
+  pool_step(p)
+  expect_true(.Call(mizu:::mizu_zc_view_check, v))
+
+  f <- function(s) nchar(s)
+  environment(f) <- globalenv()
+  expect_identical(run_map(p, v, f), as.list(nchar(paste0("s", 1:50000))))
+})
+
+test_that("a map over a list view x reads elements off the shared pages", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(
+    p[["ctrl"]],
+    list(seq_len(100000) + 0.5, seq_len(50000) + 0.25)
+  )
+  pool_step(p)
+  v <- mizu_collect(t, 5)
+  pool_step(p)
+  expect_true(.Call(mizu:::mizu_zc_view_check, v))
+
+  f <- function(el) sum(el)
+  environment(f) <- globalenv()
+  expect_identical(
+    run_map(p, v, f),
+    list(sum(seq_len(100000) + 0.5), sum(seq_len(50000) + 0.25))
+  )
+})
+
 test_that("a small map over a view stays inline and reads off the pages", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], seq_len(10000) + 0)
