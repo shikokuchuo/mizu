@@ -739,6 +739,7 @@ map_rearm <- function(pool, st, seed) {
     }
     st[["gen"]] <- .Call(mizu_map_reset, st[["wrap"]])
     st[["R"]] <- map_runner_count(caps, st[["nm"]])
+    st[["live0"]] <- caps[[1L]]
     st[["handles"]] <- vector("list", st[["R"]])
   } else {
     st[["handles"]] <- vector("list", st[["C"]])
@@ -1042,6 +1043,7 @@ map_stage <- function(
     st[["name"]] <- sr[[1L]]
     st[["wrap"]] <- sr[[2L]]
     st[["R"]] <- map_runner_count(caps, st[["nm"]])
+    st[["live0"]] <- caps[[1L]]
     st[["handles"]] <- vector("list", st[["R"]])
   }
   st[["timed_out"]] <- FALSE
@@ -1525,6 +1527,7 @@ map_run_stream <- function(pool, st, deadline, collect = "value") {
 map_submit <- function(pool, st, deadline = Inf) {
   blob <- !is.null(st[["blob"]])
   spec <- isTRUE(st[["spec"]])
+  st[["pool"]] <- pool
   # armed across the loop: a timed-out return or a fatal submit error
   # (stopped, slots exhausted) longjmping through cancels the tasks
   # already in; disarmed once every task is submitted
@@ -1621,6 +1624,16 @@ map_hist_ix <- function(runs, ms) {
   })
 }
 
+# The pending loop's registry-read death verdict: the workers live at
+# submit are all gone from the registry and no shutdown was broadcast (a
+# clean stop surfaces through the handles themselves). "claiming" counts
+# as live — a joining worker is about to claim; "leaving" and "reaping"
+# do not, as neither takes new work.
+map_workers_gone <- function(pool) {
+  pst <- mizu_pool_status(pool)
+  !pst[["shutdown"]] && !any(pst[["workers"]] %in% c("live", "claiming"))
+}
+
 # Collect the map's tasks, then assemble: value lists spliced into place
 # by element position with names(x) reapplied, or one gather from the
 # region's output area on the template path. Splicing by position and
@@ -1669,6 +1682,12 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
     errs <- list()
     died <- NULL
     runs <- list()
+    # the death exit's state: a verdict that never surfaces on a handle
+    # (the workers all died with the pending runners unclaimed — a queued
+    # runner's slot has no reaper) is read off the registry instead,
+    # polled at most once a second while the loop makes no progress
+    doomed <- FALSE
+    last_live_scan <- -Inf
     # consume one runner handle: FALSE when the park slice (or the map
     # deadline) expired with the slot still pending
     consume <- function(k, deadline) {
@@ -1751,12 +1770,28 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
           map_cancel(st)
           return(.Call(mizu_map_timeout_call))
         }
+        # with the workers live at submit all gone (and no shutdown
+        # broadcast, which surfaces through the handles), nothing will
+        # ever claim the pending runners: arm the trim so they abandon,
+        # and let the drain raise the documented worker_died below. A map
+        # submitted with no live worker keeps waiting — one may join
+        if (
+          st[["live0"]] > 0L &&
+            now - last_live_scan >= 1 &&
+            {
+              last_live_scan <- now
+              map_workers_gone(st[["pool"]])
+            }
+        ) {
+          .Call(mizu_map_cancel_set, st[["wrap"]])
+          doomed <- TRUE
+        }
         if (consume(pending[[1L]], min(deadline, now + 0.05))) {
           pending <- pending[-1L]
         }
       }
     }
-    if (!is.null(died)) {
+    if (!is.null(died) || doomed) {
       map_cancel(st)
       # the lost set is arithmetic over the collected histories, in C:
       # issued = [0, cursor), lost = issued minus their union
@@ -1765,7 +1800,13 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
         st[["wrap"]],
         if (st[["pymap"]]) map_hist_ix(runs, st[["ms"]]) else runs
       )
-      stop_worker_died(died[["slot"]], died[["pid"]], elts)
+      # the registry-read verdict carries no claimant record: NA slot/pid,
+      # as the field documentation allows
+      stop_worker_died(
+        if (!is.null(died)) died[["slot"]] else NA_integer_,
+        if (!is.null(died)) died[["pid"]] else NA,
+        elts
+      )
     }
     if (length(errs)) {
       map_cancel(st)

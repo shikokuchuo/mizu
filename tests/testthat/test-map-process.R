@@ -313,6 +313,43 @@ test_that("a lone worker's death reports the whole issued range as lost", {
   expect_true(mizu_pool_stop(p, timeout = 10))
 })
 
+test_that("a map queued behind a doomed worker fails as died, not a hang", {
+  skip_if_no_child_mizu()
+  # the lone worker is inside the blocker, so the map's runners only ever
+  # queue: the kill strands them with no claimant and no announce, so no
+  # result slot ever carries the death verdict — before the registry read
+  # in the pending loop this map parked to its deadline
+  p <- mizu_pool(n_workers = 1L)
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
+  blocker <- mizu_submit(p, {
+    Sys.sleep(30)
+    1
+  })
+  expect_true(wait_until(
+    mizu_pool_dump(p)[["workers"]][["in_flight"]][1L] != -1L
+  ))
+  x <- seq_len(40) + 0 # non-ALTREP doubles: the region path
+  st <- mizu:::map_stage(
+    p,
+    x,
+    function(i) {
+      Sys.sleep(0.1)
+      i
+    },
+    list()
+  )
+  mizu:::map_submit(p, st)
+  pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
+  kill_hard(pid)
+  e <- tryCatch(
+    mizu:::map_collect(st, deadline = mizu:::mono_time() + 15),
+    error = identity
+  )
+  expect_s3_class(e, "mizu_error_worker_died")
+  expect_match(conditionMessage(e), "worker died while executing map elements")
+  expect_true(mizu_pool_stop(p, timeout = 10))
+})
+
 test_that("a runner's announce lost to a help beat still fails as died", {
   skip_if_no_child_mizu()
   # a help beat's nested claim overwrites the runner's announce and its
