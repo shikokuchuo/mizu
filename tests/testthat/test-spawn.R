@@ -68,6 +68,39 @@ test_that("the child runner resolves to inst/ in a source layout", {
   )
 })
 
+test_that("a cached pymizu probe revalidates against the package file", {
+  skip_on_os("windows")
+  python3 <- unname(Sys.which("python3"))
+  skip_if_not(nzchar(python3), "python3 unavailable")
+  # a private interpreter path: the probe cache keys on it, so no earlier
+  # cache entry (e.g. a venv python with real pymizu) can leak in
+  bindir <- tempfile()
+  dir.create(bindir)
+  python <- file.path(bindir, "python3")
+  file.symlink(python3, python)
+  root <- tempfile()
+  dir.create(file.path(root, "pymizu"), recursive = TRUE)
+  file.create(file.path(root, "pymizu", "__init__.py"))
+  file.create(file.path(root, "pymizu", "child.py"))
+  old <- Sys.getenv("PYTHONPATH", unset = NA)
+  Sys.setenv(PYTHONPATH = root)
+  on.exit(
+    if (is.na(old)) {
+      Sys.unsetenv("PYTHONPATH")
+    } else {
+      Sys.setenv(PYTHONPATH = old)
+    },
+    add = TRUE
+  )
+  expect_true(mizu:::pymizu_prober(python, "child")) # caches the init file
+  unlink(root, recursive = TRUE)
+  expect_false(mizu:::pymizu_prober(python, "child")) # stale entry re-probed
+  expect_error(
+    mizu_py_launcher(python = python),
+    "needs the Python package 'pymizu'"
+  )
+})
+
 test_that("mizu_py_launcher probes the interpreter for pymizu", {
   expect_snapshot(
     mizu_py_launcher(python = "/nonexistent/python3"),

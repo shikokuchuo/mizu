@@ -145,31 +145,43 @@ mizu_launcher <- function(stdout = "", stderr = "") {
 
 # Feature probe for a pymizu entry module: an importable pymizu.child (the
 # source-drop path) or pymizu.worker. Successful probes are cached per
-# interpreter and module.
+# interpreter and module, keyed by the package's init file: a hit
+# revalidates with one file.exists, so an uninstalled or replaced
+# environment re-probes (and the launcher errors early) instead of
+# failing only at spawn with a startup timeout.
 pymizu_prober <- local({
   cache <- new.env(parent = emptyenv())
   function(python, module) {
     key <- paste(python, module)
-    if (exists(key, envir = cache)) {
+    hit <- cache[[key]]
+    if (!is.null(hit) && file.exists(hit)) {
       return(TRUE)
     }
     # errors only, so an interrupt propagates rather than reading as a
     # failed probe; the non-zero-status warning is muffled
-    ok <- tryCatch(
+    res <- tryCatch(
       suppressWarnings(
         system2(
           python,
-          c("-c", shQuote(sprintf("import pymizu.%s", module))),
-          stdout = FALSE,
+          c(
+            "-c",
+            shQuote(sprintf(
+              "import pymizu.%s, pymizu; print(pymizu.__file__)",
+              module
+            ))
+          ),
+          stdout = TRUE,
           stderr = FALSE,
           timeout = 60
-        ) ==
-          0L
+        )
       ),
-      error = function(e) FALSE
+      error = function(e) character(0)
     )
+    st <- attr(res, "status")
+    file <- if (length(res) >= 1L) res[[length(res)]] else ""
+    ok <- (is.null(st) || st == 0L) && nzchar(file) && file.exists(file)
     if (ok) {
-      cache[[key]] <- TRUE
+      cache[[key]] <- file
     }
     ok
   }
