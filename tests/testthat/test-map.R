@@ -1136,6 +1136,33 @@ test_that("the jump kernel agrees with set.seed and parallel", {
   }
 })
 
+test_that("a doorbell help beat draws the worker's RNG, not the map stream", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  set.seed(42)
+  x <- runif(100000) # the region path: runners, not inline chunk tasks
+  rs <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
+  expected <- runif(1L)
+  assign(".Random.seed", rs, envir = globalenv()) # what rng_save captures
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    x,
+    function(el) el,
+    list(),
+    chunks = 8L,
+    seed = 1L
+  )
+  mizu:::map_submit(p[["ctrl"]], st)
+  t0 <- mizu_submit(p[["ctrl"]], 0L) # spends the first beat
+  t1 <- mizu_submit(p[["ctrl"]], runif(1L)) # a post-batch beat
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  collect30(p[["ctrl"]], st)
+  expect_identical(mizu_collect(t0, 5), 0L)
+  expect_identical(mizu_collect(t1, 5), expected)
+})
+
 test_that(".seed gives identical results for any chunking", {
   p <- pool_pair()
   f <- function(i) rnorm(2)

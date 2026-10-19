@@ -2049,9 +2049,18 @@ map_runner <- function(n, a, s = NULL) {
         break
       }
       # doorbell: one foreign injection task between batches hands
-      # concurrent submitters their chunk-boundary interleave back
+      # concurrent submitters their chunk-boundary interleave back. A
+      # seeded batch leaves its per-element stream installed, so the beat
+      # runs under the worker's own RNG — restored first, then re-captured
+      # (the beat's draws advance it)
       if (nx[[6L]]) {
-        .Call(mizu_pool_help_once, pool)
+        if (!is.null(s)) {
+          restore_rng()
+          .Call(mizu_pool_help_once, pool)
+          restore_rng <- rng_save()
+        } else {
+          .Call(mizu_pool_help_once, pool)
+        }
       }
       lo <- nx[[3L]]
       hi <- nx[[4L]]
