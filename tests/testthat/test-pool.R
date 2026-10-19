@@ -165,18 +165,25 @@ test_that("worker join rejects a mismatched language word", {
   .Call(mizu:::mizu_pool_destroy, ctrl)
 })
 
-test_that("worker join rejects a REAPING slot as not free", {
+test_that("the last worker's leave finalizes an orphaned deque for respawn", {
   p <- pool_pair()
   on.exit(pool_end(p))
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
-  mizu_submit(p[["ctrl"]], 1 + 1)
-  mizu_submit(p[["ctrl"]], 2 + 2)
+  t1 <- mizu_submit(p[["ctrl"]], 1 + 1)
+  t2 <- mizu_submit(p[["ctrl"]], 2 + 2)
   expect_identical(pool_pull(p, 2L), 2L)
   .Call(mizu:::mizu_pool_leave, p[["wk"]])
-  expect_error(
-    .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL),
-    "not free"
-  )
+  # no live worker can drain the deque: the leave fails the queued tasks
+  # and frees the slot instead of wedging it REAPING forever
+  expect_error(mizu_collect(t1, timeout = 5), class = "mizu_error_worker_died")
+  expect_error(mizu_collect(t2, timeout = 5), class = "mizu_error_worker_died")
+  expect_identical(mizu_pool_status(p[["ctrl"]])[["workers"]], "free")
+  wk2 <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
+  .Call(mizu:::mizu_pool_set_eval, wk2)
+  t3 <- mizu_submit(p[["ctrl"]], 3 + 3)
+  expect_identical(.Call(mizu:::mizu_pool_step, wk2, 0), 1L)
+  expect_identical(mizu_collect(t3, timeout = 5), 6)
+  .Call(mizu:::mizu_pool_leave, wk2)
 })
 
 

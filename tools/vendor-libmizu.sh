@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="85cd4fba76807302cc90fd9c05c673cd338a8df6"  # libmizu: fail oversize Linux creates fast + one-pass MADV_POPULATE_WRITE reservation
+PIN="dac8f2bedbf68375e4d2f066e4b9f958020ea69d"  # libmizu: admit all-inline string_view dictionaries
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

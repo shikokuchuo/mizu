@@ -225,6 +225,35 @@ static uint64_t bitmap_word(const uint8_t *bm, uint64_t pos, size_t lanes) {
    lanes exactly, so an INT64_MIN pattern there is a genuine value). */
 static const mizu_cvt_row CVT_ROW_I64_V;
 
+/* The genuine-sentinel count over n already-written dst lanes: the
+   identity int32/int64 rows only (they read as NA_integer_ /
+   NA_integer64_ in R — the other rows cannot produce a sentinel, and
+   the verbatim i64 row's lanes are the peer's agreed values). Per-lane
+   memcpy: the inline 'I' form's column bodies are unaligned (a vec
+   header precedes them), so no typed dst scan. The count rides a local
+   — a warn-> store per lane would alias-block vectorization. */
+static void cvt_count_min(const uint8_t *dst, size_t n,
+                          const mizu_cvt_row *row, mizu_arrow_warn *warn) {
+  if (row->wire == MIZU_TYPE_INT && row->cvt == MIZU_CVT_COPY) {
+    uint64_t cnt = 0;
+    for (size_t i = 0; i < n; i++) {
+      int32_t v;
+      memcpy(&v, dst + 4 * i, 4);
+      cnt += v == INT32_MIN;
+    }
+    warn->n_intmin += cnt;
+  } else if (row->wire == MIZU_TYPE_INT64 && row->cvt == MIZU_CVT_COPY &&
+             row != &CVT_ROW_I64_V) {
+    uint64_t cnt = 0;
+    for (size_t i = 0; i < n; i++) {
+      int64_t v;
+      memcpy(&v, dst + 8 * i, 8);
+      cnt += v == INT64_MIN;
+    }
+    warn->n_int64 += cnt;
+  }
+}
+
 /* The masked variant (Arrow nulls): word-wise over the validity bitmap —
    an all-ones word a 64-lane convert, a zero word a 64-sentinel fill,
    mixed the per-lane select. off is the element offset: a bit offset
@@ -235,54 +264,21 @@ static void convert_masked(uint8_t *dst, const uint8_t *src,
                            const uint8_t *valid, uint64_t off, size_t n,
                            const mizu_cvt_row *row, mizu_arrow_warn *warn) {
   const size_t wo = row->w_out, wi = row->w_in;
-  const int count_min = row->wire == MIZU_TYPE_INT &&
-    row->cvt == MIZU_CVT_COPY;
-  const int count_min64 = row->wire == MIZU_TYPE_INT64 &&
-    row->cvt == MIZU_CVT_COPY && row != &CVT_ROW_I64_V;
   size_t i = 0;
   while (i < n) {
     size_t lanes = n - i < 64 ? n - i : 64;
     uint64_t w = bitmap_word(valid, off + i, lanes);
     uint64_t full = lanes == 64 ? UINT64_MAX : ((uint64_t) 1 << lanes) - 1;
     if (w == full) {
-      /* copy, then count the genuine sentinels off the written lanes via
-         per-lane memcpy: the inline 'I' form's column bodies are
-         unaligned (a vec header precedes them), so no typed dst scan.
-         The count rides a local — a warn-> store per lane would
-         alias-block vectorization */
       cvt_run(dst + i * wo, src + i * wi, lanes, row, warn);
-      if (count_min) {
-        uint64_t cnt = 0;
-        for (size_t j = 0; j < lanes; j++) {
-          int32_t v;
-          memcpy(&v, dst + (i + j) * wo, 4);
-          cnt += v == INT32_MIN;
-        }
-        warn->n_intmin += cnt;
-      } else if (count_min64) {
-        uint64_t cnt = 0;
-        for (size_t j = 0; j < lanes; j++) {
-          int64_t v;
-          memcpy(&v, dst + (i + j) * wo, 8);
-          cnt += v == INT64_MIN;
-        }
-        warn->n_int64 += cnt;
-      }
+      cvt_count_min(dst + i * wo, lanes, row, warn);
     } else if (w == 0) {
       cvt_fill_na(dst + i * wo, lanes, row->wire);
     } else {
       for (size_t j = 0; j < lanes; j++) {
         if ((w >> j) & 1) {
           cvt_run(dst + (i + j) * wo, src + (i + j) * wi, 1, row, warn);
-          if (count_min) {
-            int32_t v;
-            memcpy(&v, dst + (i + j) * wo, 4);
-            warn->n_intmin += v == INT32_MIN;
-          } else if (count_min64) {
-            int64_t v;
-            memcpy(&v, dst + (i + j) * wo, 8);
-            warn->n_int64 += v == INT64_MIN;
-          }
+          cvt_count_min(dst + (i + j) * wo, 1, row, warn);
         } else {
           cvt_fill_na(dst + (i + j) * wo, 1, row->wire);
         }
@@ -356,6 +352,9 @@ void mizu_cvt_convert(uint8_t *dst, const uint8_t *src,
     convert_masked(dst, src, valid, off, n, row, warn);
   } else {
     cvt_run(dst, src, n, row, warn);
+    /* the null-free path counts too: a genuine sentinel there reads as NA
+       in R exactly like a masked one's */
+    cvt_count_min(dst, n, row, warn);
   }
 }
 
@@ -783,11 +782,18 @@ static int arrow_classify(mizu_arrow *a, int col, const ArrowSchema *sc) {
 }
 
 /* A dictionary array's buffer shape: the levels vet, applied to every
-   batch's dictionary ahead of the level match's reads. */
-static int arrow_dict_shape_ok(const ArrowArray *dict) {
-  return dict != NULL && dict->n_buffers >= 3 && dict->buffers != NULL &&
-    (dict->length <= 0 ||
-     (dict->buffers[1] != NULL && dict->buffers[2] != NULL));
+   batch's dictionary ahead of the level match's reads. A string_view
+   (form 3) dictionary with every level inline (<= 12 bytes) legally has
+   no variadic data buffer — n_buffers == 2; a level past 12 bytes then
+   fails the open's per-level resolve, so the form is vetted here and the
+   spans there. */
+static int arrow_dict_shape_ok(const ArrowArray *dict, int str_form) {
+  if (dict == NULL || dict->buffers == NULL) return 0;
+  const int64_t need = str_form == 3 ? 2 : 3;
+  if (dict->n_buffers < need) return 0;
+  if (dict->length <= 0) return 1;
+  return dict->buffers[1] != NULL &&
+    (dict->n_buffers == 2 || dict->buffers[2] != NULL);
 }
 
 /* One batch's shape checks. 0 vetted, -1 with the decline in the
@@ -805,6 +811,11 @@ static int arrow_check_batch(mizu_arrow *a, const ArrowArray *b) {
   for (int i = 0; i < a->ncols; i++) {
     const ArrowArray *c = b->children[i];
     arrow_pcol *pc = &a->cols[i];
+    if (c == NULL) {
+      mizu_err_record_tls(MIZU_ERRCAT_OTHER,
+                          "an invalid Arrow C Data Interface batch");
+      return -1;
+    }
     if (c->length != b->length) {
       mizu_err_record_tls(MIZU_ERRCAT_OTHER,
                           "an Arrow batch whose columns differ in length");
@@ -827,7 +838,8 @@ static int arrow_check_batch(mizu_arrow *a, const ArrowArray *b) {
                           "an invalid Arrow C Data Interface batch");
       return -1;
     }
-    if (pc->kind == MIZU_ARROW_DICT && !arrow_dict_shape_ok(c->dictionary)) {
+    if (pc->kind == MIZU_ARROW_DICT &&
+        !arrow_dict_shape_ok(c->dictionary, pc->str_form)) {
       mizu_err_record_tls(MIZU_ERRCAT_OTHER,
                           "an invalid Arrow C Data Interface batch");
       return -1;
@@ -891,6 +903,46 @@ static int arrow_levels_check(mizu_arrow *a, int col) {
   return 0;
 }
 
+/* One dictionary index element: per-element memcpy, the file's alignment
+   discipline (the buffer can be element-misaligned). An unsigned index
+   past int64 reads negative — the bounds check declines it. */
+static int64_t arrow_idx_at(const uint8_t *idx, int64_t i, int w,
+                            int is_signed) {
+  switch (w) {
+  case 1: {
+    if (!is_signed) return idx[i];
+    int8_t v;
+    memcpy(&v, idx + i, 1);
+    return v;
+  }
+  case 2: {
+    if (is_signed) {
+      int16_t v;
+      memcpy(&v, idx + 2 * i, 2);
+      return v;
+    }
+    uint16_t v;
+    memcpy(&v, idx + 2 * i, 2);
+    return v;
+  }
+  case 4: {
+    if (is_signed) {
+      int32_t v;
+      memcpy(&v, idx + 4 * i, 4);
+      return v;
+    }
+    uint32_t v;
+    memcpy(&v, idx + 4 * i, 4);
+    return v;
+  }
+  default: {
+    int64_t v;
+    memcpy(&v, idx + 8 * i, 8);
+    return v;
+  }
+  }
+}
+
 /* A later batch's dictionary must equal batch 0's canonical set. */
 static int arrow_levels_match(mizu_arrow *a, int col,
                               const ArrowArray *dict) {
@@ -938,24 +990,8 @@ static int arrow_validate_dicts(mizu_arrow *a) {
       const uint8_t *idx = (const uint8_t *) ba->buffers[1];
       for (int64_t k = 0; k < ba->length; k++) {
         if (!mizu_arrow_valid(ba, k)) continue;
-        int64_t j = ba->offset + k, c;
-        switch (pc->idx_w) {
-        case 1:
-          c = pc->idx_signed ? (int64_t) ((const int8_t *) idx)[j] :
-            (int64_t) idx[j];
-          break;
-        case 2:
-          c = pc->idx_signed ? (int64_t) ((const int16_t *) idx)[j] :
-            (int64_t) ((const uint16_t *) idx)[j];
-          break;
-        case 4:
-          c = pc->idx_signed ? (int64_t) ((const int32_t *) idx)[j] :
-            (int64_t) ((const uint32_t *) idx)[j];
-          break;
-        default:
-          c = ((const int64_t *) idx)[j];
-          break;
-        }
+        int64_t c = arrow_idx_at(idx, ba->offset + k, pc->idx_w,
+                                 pc->idx_signed);
         if (c < 0 || c >= pc->nlev) {
           mizu_err_record_tls(MIZU_ERRCAT_OTHER,
                               "column '%s': a dictionary index outside the "
@@ -985,25 +1021,31 @@ static int arrow_size_str(mizu_arrow *a, int col) {
          non-monotonic interior (or an i64 span past the int32 element
          bound) would size one way and gather another; walk them */
       if (pc->str_form == 1) {
-        const int32_t *offs = (const int32_t *) ba->buffers[1];
-        int32_t prev = offs[ba->offset];
+        const uint8_t *offs = (const uint8_t *) ba->buffers[1];
+        int32_t first, prev;
+        memcpy(&first, offs + 4 * ba->offset, 4);
+        prev = first;
         if (prev < 0) goto malformed;
         for (int64_t k = 0; k < ba->length; k++) {
-          const int32_t o = offs[ba->offset + k + 1];
+          int32_t o;
+          memcpy(&o, offs + 4 * (ba->offset + k + 1), 4);
           if (o < prev) goto malformed;
           prev = o;
         }
-        bytes += prev - offs[ba->offset];
+        bytes += prev - first;
       } else {
-        const int64_t *offs = (const int64_t *) ba->buffers[1];
-        int64_t prev = offs[ba->offset];
+        const uint8_t *offs = (const uint8_t *) ba->buffers[1];
+        int64_t first, prev;
+        memcpy(&first, offs + 8 * ba->offset, 8);
+        prev = first;
         if (prev < 0) goto malformed;
         for (int64_t k = 0; k < ba->length; k++) {
-          const int64_t o = offs[ba->offset + k + 1];
+          int64_t o;
+          memcpy(&o, offs + 8 * (ba->offset + k + 1), 8);
           if (o < prev || o - prev > INT32_MAX) goto malformed;
           prev = o;
         }
-        bytes += prev - offs[ba->offset];
+        bytes += prev - first;
       }
       continue;
     }
@@ -1144,20 +1186,32 @@ static void arrow_write_str(uint8_t *block, mizu_arrow *a, int col,
       const ArrowArray *ba = a->batches[b]->children[col];
       if (ba->length == 0) continue;
       if (pc->str_form == 1) {
-        const int32_t *so = (const int32_t *) ba->buffers[1];
-        int32_t base0 = so[ba->offset];
-        for (int64_t k = 0; k < ba->length; k++)
-          offs[done + k + 1] = run + (so[ba->offset + k + 1] - base0);
-        int32_t blen = so[ba->offset + ba->length] - base0;
+        const uint8_t *so = (const uint8_t *) ba->buffers[1];
+        int32_t base0;
+        memcpy(&base0, so + 4 * ba->offset, 4);
+        for (int64_t k = 0; k < ba->length; k++) {
+          int32_t o;
+          memcpy(&o, so + 4 * (ba->offset + k + 1), 4);
+          offs[done + k + 1] = run + (o - base0);
+        }
+        int32_t oend;
+        memcpy(&oend, so + 4 * (ba->offset + ba->length), 4);
+        int32_t blen = oend - base0;
         memcpy(data + run, (const uint8_t *) ba->buffers[2] + base0,
                (size_t) blen);
         run += blen;
       } else {
-        const int64_t *so = (const int64_t *) ba->buffers[1];
-        int64_t base0 = so[ba->offset];
-        for (int64_t k = 0; k < ba->length; k++)
-          offs[done + k + 1] = run + (so[ba->offset + k + 1] - base0);
-        int64_t blen = so[ba->offset + ba->length] - base0;
+        const uint8_t *so = (const uint8_t *) ba->buffers[1];
+        int64_t base0;
+        memcpy(&base0, so + 8 * ba->offset, 8);
+        for (int64_t k = 0; k < ba->length; k++) {
+          int64_t o;
+          memcpy(&o, so + 8 * (ba->offset + k + 1), 8);
+          offs[done + k + 1] = run + (o - base0);
+        }
+        int64_t oend;
+        memcpy(&oend, so + 8 * (ba->offset + ba->length), 8);
+        int64_t blen = oend - base0;
         memcpy(data + run, (const uint8_t *) ba->buffers[2] + base0,
                (size_t) blen);
         run += blen;
@@ -1201,24 +1255,8 @@ static void arrow_write_dict(uint8_t *dst, const mizu_arrow *a, int col) {
       if (!mizu_arrow_valid(ba, k)) {
         v = MIZU_NA_INT32;
       } else {
-        int64_t i = ba->offset + k, c;
-        switch (pc->idx_w) {
-        case 1:
-          c = pc->idx_signed ? (int64_t) ((const int8_t *) idx)[i] :
-            (int64_t) idx[i];
-          break;
-        case 2:
-          c = pc->idx_signed ? (int64_t) ((const int16_t *) idx)[i] :
-            (int64_t) ((const uint16_t *) idx)[i];
-          break;
-        case 4:
-          c = pc->idx_signed ? (int64_t) ((const int32_t *) idx)[i] :
-            (int64_t) ((const uint32_t *) idx)[i];
-          break;
-        default:
-          c = ((const int64_t *) idx)[i];
-          break;
-        }
+        int64_t c = arrow_idx_at(idx, ba->offset + k, pc->idx_w,
+                                 pc->idx_signed);
         v = (int32_t) (c + 1);
       }
       memcpy(dst + 4 * (done + k), &v, 4);
@@ -1232,12 +1270,14 @@ static void arrow_write_date(uint8_t *dst, const mizu_arrow *a, int col) {
   int64_t done = 0;
   for (size_t b = 0; b < a->nb; b++) {
     const ArrowArray *ba = a->batches[b]->children[col];
-    const int32_t *days = (const int32_t *) ba->buffers[1];
+    const uint8_t *days = (const uint8_t *) ba->buffers[1];
     for (int64_t k = 0; k < ba->length; k++) {
       if (!mizu_arrow_valid(ba, k)) {
         arrow_store_na_r(dst + 8 * (done + k));
       } else {
-        double v = (double) days[ba->offset + k];
+        int32_t d;
+        memcpy(&d, days + 4 * (ba->offset + k), 4);
+        double v = (double) d;
         memcpy(dst + 8 * (done + k), &v, 8);
       }
     }
@@ -1251,12 +1291,14 @@ static void arrow_write_ts(uint8_t *dst, const mizu_arrow *a, int col) {
   int64_t done = 0;
   for (size_t b = 0; b < a->nb; b++) {
     const ArrowArray *ba = a->batches[b]->children[col];
-    const int64_t *counts = (const int64_t *) ba->buffers[1];
+    const uint8_t *counts = (const uint8_t *) ba->buffers[1];
     for (int64_t k = 0; k < ba->length; k++) {
       if (!mizu_arrow_valid(ba, k)) {
         arrow_store_na_r(dst + 8 * (done + k));
       } else {
-        double v = (double) counts[ba->offset + k] * pc->ts_scale;
+        int64_t ct;
+        memcpy(&ct, counts + 8 * (ba->offset + k), 8);
+        double v = (double) ct * pc->ts_scale;
         memcpy(dst + 8 * (done + k), &v, 8);
       }
     }
@@ -1574,6 +1616,14 @@ mizu_status mizu_arrow_open(mizu_arrow **out, const ArrowSchema *schema,
     }
     if (arrow_check_batch(a, ba) < 0) goto fail;
     a->rows += ba->length;
+  }
+  /* the root dict's automatic row.names are the compact c(NA, -n) int32
+     form — past 2^31 rows the emit would wrap, and the inline 'I' form
+     has no root-blob override to escape it */
+  if (a->rows > INT32_MAX) {
+    mizu_arrow_close(a);
+    return arrow_decline("an Arrow frame past the int32 row range has no "
+                         "portable home");
   }
   if (arrow_validate_dicts(a) < 0) goto fail;
   /* the string walks: the packed byte totals, and the one malformed-
