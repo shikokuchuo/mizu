@@ -2203,7 +2203,7 @@ static int mizu_view_attrs_list_has(SEXP attrs_list, const char *key) {
 /* reg_l with the integer64 class appended (the singleton — the list
    gains no fresh value). */
 static SEXP mizu_view_attrs_add_int64_class(SEXP reg_l) {
-  SEXP onames = Rf_getAttrib(reg_l, R_NamesSymbol);
+  SEXP onames = PROTECT(Rf_getAttrib(reg_l, R_NamesSymbol));
   const R_xlen_t n = XLENGTH(reg_l);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, n + 1));
   SEXP names = PROTECT(Rf_allocVector(STRSXP, n + 1));
@@ -2214,7 +2214,7 @@ static SEXP mizu_view_attrs_add_int64_class(SEXP reg_l) {
   SET_VECTOR_ELT(out, n, mizu_view_int64_class);
   SET_STRING_ELT(names, n, Rf_mkChar("class"));
   Rf_setAttrib(out, R_NamesSymbol, names);
-  UNPROTECT(2);
+  UNPROTECT(3);
   return out;
 }
 
