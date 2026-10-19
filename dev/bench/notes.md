@@ -1338,21 +1338,24 @@ upstream and re-vendored: oversize creates fail fast on a statvfs
 availability probe ahead of the reservation (the posix_fallocate grind
 through all of tmpfs is gone), and the reservation is one
 madvise(MADV_POPULATE_WRITE) pass, fallocate + MAP_POPULATE on < 5.14.
-Ran mizu-mirai-bench.R in the Linux container (aarch64 linuxkit VM,
-kernel 7.0.12, rocker/r-ver 4.6.1) — not the Xeon W-2235 bare metal of
-the 2026-10-19 numbers, so absolutes are the VM's; the mizu rows are the
-read.
+Verified on the reference host itself (kernel 6.8 Xeon W-2235 bare
+metal): full mizu-bench.R with GLIBC_TUNABLES (mmap_threshold 32 MiB,
+trim_threshold 128 MiB), plus the R-level create spot check
+(mizu_region_create, n = 200 fresh 8 MB regions held in a list so no
+finalizer runs in the timed loop).
 
-Results (Linux container): payload 800 KB 360 us/task, 8 MB 1,967
-us/task — hold against the Xeon's 345 / 3,733 with GLIBC_TUNABLES (the
-8 MB row improves on this host's memory bandwidth, not from this
-change; mizu_tune runs at load, so no env tuning in play). Create
-spot check (libmizu probe, same container): 1.4 ms per fresh 8 MB
-region (2.0 ms on the Xeon); a 2^52 create fails in 0.023 ms with the
-NOSPACE surface unchanged. No best-known rows touched (VM records).
-Status: full suite green on macOS (4790 pass, 0 fail, 4 skips) and in
-the Linux container (4464 pass, 0 fail, 72 skips — the no-pymizu /
-no-mori set; test-conditions.R, the former grind trigger, 33 pass in
-1.5 s); libmizu make test + test-integration green in the same
-container, incl. the new oversize fail-fast and populate round-trip
-unit tests.
+Results: fresh 8 MB region create 2.01 ms — the one-pass populate holds
+against the session's 2.9 ms fallocate + MAP_POPULATE; a 2^52 create
+fails mizu_error_shm sub-millisecond with /dev/shm use unchanged.
+mizu-bench.R: sequential rt channel 2.7 us, pool 3.0 us; pipelined
+channel 428.7k rt/s, channel batch 6.34M rt/s, pool 207.2k tasks/s,
+pool batch 698.6k tasks/s; payload 8 KB 6.7 us, 800 KB 343.7 us, 8 MB
+3,750.9 us — the payload rows hold against the session's 345 / 3,733;
+10k strings 996.3 us/rt, small named char 3.9 us/rt; 100k frame factor
+column 1,214.3 us/rt, character column 10,462.6 us/rt; fan-out 92.7k
+tasks/s (in-process anchor 25.2k); streaming 12.1M msg/s; map trivial f
+0.2 us/elt (template 0.1, .seed 0.3, prepared 0.2), ~10us map 22.4 ms
+wall (serial 81.4), skewed 50.9 ms; serialize result 8.9 us, codec
+result 5.3 us; submit-plan k 0/1/4/16 73.7 / 77.1 / 97.6 / 181.5 us.
+No best-known rows touched (Linux host; the table rows are M4 Pro).
+Status: full suite green on macOS (4790 pass, 0 fail, 4 skips).
