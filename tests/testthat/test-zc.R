@@ -2388,6 +2388,56 @@ test_that("attributed string and list views re-send foreign as REF", {
   expect_identical(mizu_recv(p2$peer, 5), x)
 })
 
+test_that("a locally re-attributed view re-sends by value, its edit intact", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(70000)
+  names(x) <- paste0("n", seq_along(x))
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  # unmodified, the re-send is a REF: the receiver wraps the same region
+  mizu_send(p$peer, v)
+  back <- mizu_recv(p$host, 5)
+  expect_true(is_view(back))
+  expect_identical(rc_of(v)[1L], 2L) # v + back
+  # a local attribute edit diverges from the region's set: the re-send
+  # crosses by value with the local attributes intact (a REF resolves
+  # the region's attributes and would silently drop the edit)
+  nms <- paste0("m", seq_along(x))
+  names(v) <- nms
+  mizu_send(p$peer, v)
+  out <- mizu_recv(p$host, 5)
+  expect_identical(names(out), nms)
+  expect_identical(out[], `names<-`(x, nms))
+})
+
+test_that("a locally re-attributed view crosses a foreign channel by value", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(70000)
+  names(x) <- paste0("n", seq_along(x))
+  mizu_send(p$host, x)
+  v <- mizu_recv(p$peer, 5)
+  p2 <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL
+  on.exit(channel_end(p2), add = TRUE)
+  # unmodified: the ref leaf fires, the receiver wraps the same region
+  mizu_send(p2$host, v)
+  back <- mizu_recv(p2$peer, 5)
+  expect_true(is_view(back))
+  expect_identical(
+    .Call(mizu:::mizu_zc_view_name, back),
+    .Call(mizu:::mizu_zc_view_name, v)
+  )
+  # a local edit inside the subset: the value write, not the ref leaf
+  names(v) <- NULL
+  mizu_send(p2$host, v)
+  expect_identical(mizu_recv(p2$peer, 5), unname(x))
+  # one outside it: a loud decline, never a silent drop
+  names(v) <- paste0("m", seq_along(x))
+  expect_error(mizu_send(p2$host, v), class = "mizu_error_not_portable")
+})
+
 test_that("a tree view with a remote leaf re-sends by reference (REF loan walk)", {
   p <- channel_pair()
   on.exit(channel_end(p))

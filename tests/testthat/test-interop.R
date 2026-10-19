@@ -1604,7 +1604,7 @@ test_that("a raw vector crosses a foreign channel as a MIZH leaf", {
   expect_identical(out, r)
 })
 
-test_that("an int64 leaf with a non-marker blob builds its attrs", {
+test_that("an int64 view whose blob diverged re-sends by value", {
   skip_if_not_installed("bit64")
   x <- bit64::as.integer64(seq_len(8500))
   p <- foreign_pair(caps = 2L)
@@ -1624,11 +1624,12 @@ test_that("an int64 leaf with a non-marker blob builds its attrs", {
   )
   .Call(mizu:::mizu_poke, rw, 16L, i64raw(length(blob)))
   .Call(mizu:::mizu_poke, rw, 64L + 8500L * 8L, blob)
-  mizu_send(p$peer, v) # REF: the re-wrap reads the injected blob
+  # the injected blob diverges from the view's attributes (the wire-tag
+  # class alone): the REF gate declines, and the view's own attribute set
+  # crosses by value — the region's blob does not leak in
+  mizu_send(p$peer, v)
   out <- mizu_recv(p$host, 5)
-  m <- x
-  dim(m) <- c(50L, 170L)
-  expect_identical(out, m)
+  expect_identical(out, x)
 })
 
 test_that("a foreign frame with many string columns sizes off the plain pass", {

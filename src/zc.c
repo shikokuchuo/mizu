@@ -899,18 +899,26 @@ int mizu_zc_ref_stage(mizu_slot_hdr *hdr, unsigned char *payload,
      view's data2 is only the element cache: reads never detach it (the
      release fires at the finalizer), so list views REF at any time. */
   if (TYPEOF(x) != VECSXP && R_altrep_data2(x) != R_NilValue) return 0;
-  SEXP id = mizu_view_shm_name(x);
-  if (id == R_NilValue) return 0;
+  SEXP id = PROTECT(mizu_view_shm_name(x));
+  if (id == R_NilValue) {
+    UNPROTECT(1);
+    return 0;
+  }
   const char *s = CHAR(STRING_ELT(id, 0));
   size_t len = strlen(s);
-  if (len == 0 || len > (size_t) inline_max) return 0;
-  /* the copy precedes the mark: id is unprotected and the mark allocates
-     (the mark list's growth) — reading s after it could GC the CHARSXP */
+  /* a locally re-attributed view crosses by value: the REF resolves the
+     region's attributes and would silently drop the local edit */
+  if (len == 0 || len > (size_t) inline_max ||
+      !mizu_view_attrs_match(x, id)) {
+    UNPROTECT(1);
+    return 0;
+  }
   hdr->kind = MIZU_KIND_REF;
   hdr->len = (uint32_t) len;
   hdr->aux = 0;
   memcpy(payload, s, len);
   mizu_zc_ref_mark(x);
+  UNPROTECT(1);
   return 1;
 }
 

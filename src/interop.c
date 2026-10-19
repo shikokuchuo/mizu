@@ -1063,7 +1063,10 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
     if (mizu_view_check(x) &&
         (TYPEOF(x) == VECSXP || R_altrep_data2(x) == R_NilValue)) {
       SEXP id = PROTECT(mizu_view_shm_name(x));
-      if (id != R_NilValue &&
+      /* attrs_match: a locally re-attributed view falls through to the
+         value write — the ref leaf resolves the region's attributes and
+         would silently drop the local edit */
+      if (id != R_NilValue && mizu_view_attrs_match(x, id) &&
           (w->h == NULL || mizu_zc_ref_foreign_ok(x, w->caps))) {
         const char *s = CHAR(STRING_ELT(id, 0));
         const uint32_t len = (uint32_t) strlen(s);
@@ -2059,6 +2062,14 @@ static int ix_u64_marker(SEXP attrs) {
   return TYPEOF(u) == LGLSXP && XLENGTH(u) == 1 && LOGICAL(u)[0] == TRUE;
 }
 
+/* The blob parse hook (the REF gates' attrs compare): the attr dict
+   read as a value — no object to apply it to, so the TSN/u64 landings
+   and the apply path never run; the compare needs the verbatim dict. */
+static SEXP mizu_interop_attrs_blob_parse(const unsigned char *buf,
+                                          size_t size) {
+  return mizu_interop_read(buf, size);
+}
+
 /* The blob read hook: the cursor opens the 'I' stream (its own errors
    reject a malformed blob in the corrupt-region house style), the dict
    applies apply-as-is — no frame-shape validation on a layout read: an
@@ -2768,4 +2779,5 @@ void mizu_interop_init(void) {
   mizu_view_set_attrs_hooks(mizu_interop_attrs_blob_size,
                             mizu_interop_attrs_blob_write,
                             mizu_interop_attrs_blob_read);
+  mizu_view_set_attrs_parse_hook(mizu_interop_attrs_blob_parse);
 }

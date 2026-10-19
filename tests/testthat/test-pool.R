@@ -1492,7 +1492,7 @@ test_that("attach rejects a corrupt pool header", {
   poke_u32(8L, 0L)
   pat <- "queue capacities or slot size are not valid powers of two"
   poke_u32(16L, 3L)
-  pat <- "result slots are not a multiple"
+  pat <- "result slots are out of range"
   poke_u32(24L, 3L)
   pat <- "pool sections exceed the mapped region"
   poke_u32(8L, 64L)

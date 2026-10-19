@@ -220,6 +220,16 @@ SEXP mizu_view_u64_rewrap(SEXP x);
    or COW-materialized view keeps the serialize path's wire hooks). */
 int mizu_view_refable(SEXP x);
 SEXP mizu_view_shm_name(SEXP x);
+/* The top-level REF gates' divergence check: 1 when x's current attribute
+   set and S4 bit equal the ones its identifier's resolve would apply —
+   the region's own — so the REF round-trips them; 0 only on a CONFIRMED
+   divergence. A locally re-attributed view must cross by value: a REF
+   resolves the region's attributes and would silently drop the local
+   edit. A corrupt or rewritten region and an unparseable blob keep the
+   REF (1): the resolve re-validates and raises there, the house style
+   for a bad region with or without the gate. id is
+   mizu_view_shm_name(x)'s. */
+int mizu_view_attrs_match(SEXP x, SEXP id);
 /* The region mapping a view's keeper chain anchors at — the shm_tag
    terminus. Borrowed (the view pins it); NULL on a malformed chain or a
    finalized mapping. Callers gate on mizu_view_check: the chain and the
@@ -314,6 +324,15 @@ typedef SEXP (*mizu_view_attrs_read_fn)(SEXP result, const unsigned char *buf,
 void mizu_view_set_attrs_hooks(mizu_view_attrs_size_fn size,
                                mizu_view_attrs_write_fn write,
                                mizu_view_attrs_read_fn read);
+/* The attrs blob's parse half, consulted by mizu_view_attrs_match: decode
+   the embedder form to its attribute container (a value — no object is
+   applied to, so no landing conversion or shape validation runs). Only
+   the embedder form (first byte MIZU_INTEROP_MAGIC) needs it; an
+   embedder that leaves it unset declines those blobs to the by-value
+   paths, R-serialize blobs comparing regardless. */
+typedef SEXP (*mizu_view_attrs_parse_fn)(const unsigned char *buf,
+                                         size_t size);
+void mizu_view_set_attrs_parse_hook(mizu_view_attrs_parse_fn parse);
 
 // Alignment macro and the MIZS string block geometry -------------------------
 

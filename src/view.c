@@ -55,6 +55,14 @@ void mizu_view_set_attrs_hooks(mizu_view_attrs_size_fn size,
   mizu_view_attrs_read_hook = read;
 }
 
+/* Embedder attribute-blob parse hook (view.h): mizu_view_attrs_match's
+   decode of the embedder form to a comparable container. */
+static mizu_view_attrs_parse_fn mizu_view_attrs_parse_hook;
+
+void mizu_view_set_attrs_parse_hook(mizu_view_attrs_parse_fn parse) {
+  mizu_view_attrs_parse_hook = parse;
+}
+
 /* The attr blob's size: the embedder's encoding when the hooks are set
    and accept the set (a nonzero return), else R_Serialize. x is the
    attributed object (the hook qualifies it); attrs its serialized-form
@@ -2140,6 +2148,203 @@ int mizu_view_refable(SEXP x) {
   if (!mizu_view_check(x)) return 0;
   if (TYPEOF(x) != VECSXP && R_altrep_data2(x) != R_NilValue) return 0;
   return !ANY_ATTRIB(x);
+}
+
+/* A pairlist attribute set as a named list, for cross-form comparison
+   (a region blob written under another R version's container form, the
+   embedder form's dict): VECSXP passes through. */
+static SEXP mizu_view_attrs_as_list(SEXP attrs) {
+  if (attrs == R_NilValue || TYPEOF(attrs) == VECSXP) return attrs;
+  R_xlen_t n = 0;
+  for (SEXP a = attrs; a != R_NilValue; a = CDR(a)) n++;
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+  SEXP names = PROTECT(Rf_allocVector(STRSXP, n));
+  R_xlen_t i = 0;
+  for (SEXP a = attrs; a != R_NilValue; a = CDR(a), i++) {
+    SET_VECTOR_ELT(out, i, CAR(a));
+    SET_STRING_ELT(names, i, PRINTNAME(TAG(a)));
+  }
+  Rf_setAttrib(out, R_NamesSymbol, names);
+  UNPROTECT(2);
+  return out;
+}
+
+/* The blob decode, contained: a blob the region's own write produced
+   parses here as it did at wrap; anything else (a peer-rewritten entry,
+   a corrupt region) declines to the by-value paths rather than raise
+   out of a stage. */
+typedef struct {
+  const unsigned char *buf;
+  size_t size;
+  int jumped;
+} mizu_view_aparse;
+
+static SEXP mizu_view_aparse_do(void *data) {
+  mizu_view_aparse *a = (mizu_view_aparse *) data;
+  if (a->buf[0] == MIZU_INTEROP_MAGIC && mizu_view_attrs_parse_hook != NULL)
+    return mizu_view_attrs_parse_hook(a->buf, a->size);
+  return mizu_view_unserialize_from((unsigned char *) a->buf, a->size);
+}
+
+static void mizu_view_aparse_cleanup(void *data, Rboolean jump) {
+  if (jump) ((mizu_view_aparse *) data)->jumped = 1;
+}
+
+/* A named-list attribute set's key lookup. */
+static int mizu_view_attrs_list_has(SEXP attrs_list, const char *key) {
+  if (TYPEOF(attrs_list) != VECSXP) return 0;
+  SEXP names = Rf_getAttrib(attrs_list, R_NamesSymbol);
+  if (names == R_NilValue) return 0;
+  for (R_xlen_t i = 0; i < XLENGTH(attrs_list); i++)
+    if (strcmp(CHAR(STRING_ELT(names, i)), key) == 0) return 1;
+  return 0;
+}
+
+/* reg_l with the integer64 class appended (the singleton — the list
+   gains no fresh value). */
+static SEXP mizu_view_attrs_add_int64_class(SEXP reg_l) {
+  SEXP onames = Rf_getAttrib(reg_l, R_NamesSymbol);
+  const R_xlen_t n = XLENGTH(reg_l);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, n + 1));
+  SEXP names = PROTECT(Rf_allocVector(STRSXP, n + 1));
+  for (R_xlen_t i = 0; i < n; i++) {
+    SET_VECTOR_ELT(out, i, VECTOR_ELT(reg_l, i));
+    SET_STRING_ELT(names, i, STRING_ELT(onames, i));
+  }
+  SET_VECTOR_ELT(out, n, mizu_view_int64_class);
+  SET_STRING_ELT(names, n, Rf_mkChar("class"));
+  Rf_setAttrib(out, R_NamesSymbol, names);
+  UNPROTECT(2);
+  return out;
+}
+
+/* The parsed blob as the resolve would apply it: a class-only int64
+   root's class rides the wire tag, not the blob — the tag re-applies it
+   at the wrap unless the blob names a class of its own. */
+static SEXP mizu_view_attrs_resolve_form(SEXP reg, int int64_tag) {
+  SEXP reg_l = PROTECT(mizu_view_attrs_as_list(reg));
+  SEXP out = reg_l;
+  if (int64_tag && !mizu_view_attrs_list_has(reg_l, "class"))
+    out = mizu_view_attrs_add_int64_class(reg_l);
+  UNPROTECT(1);
+  return out;
+}
+
+/* view.h's REF-gate divergence check. The walk mirrors the resolve
+   geometry (mizu_view_open_vector/string/list, the open_elem tail):
+   root headers for a bare name, the terminal directory entry for a
+   path, a nested list's attrs inside its child MIZL. Only a CONFIRMED
+   divergence declines: a corrupt or rewritten region keeps the REF
+   (the resolve re-validates and raises there, as it did without the
+   gate), and an unparseable blob does likewise. */
+int mizu_view_attrs_match(SEXP x, SEXP id) {
+  char name[MIZU_NAME_MAX];
+  int32_t path[MIZU_VIEW_MAX_PATH];
+  int path_len = 0;
+  if (mizu_view_parse_id(CHAR(STRING_ELT(id, 0)), name, sizeof(name),
+                         path, &path_len) < 0)
+    return 1;
+  mizu_shm *shm = mizu_view_chain_shm(x);
+  if (shm == NULL) return 1;
+  const unsigned char *base = (const unsigned char *) shm->addr;
+  const int64_t region_size = (int64_t) shm->size;
+  if (region_size < MIZU_HEADER_SIZE) return 1;
+
+  const unsigned char *blob = NULL;
+  int64_t blob_size = 0;
+  int s4 = 0;
+  if (path_len == 0) {
+    uint32_t magic, flags;
+    memcpy(&magic, base, 4);
+    memcpy(&flags, base + MIZU_VIEW_FLAGS_OFF, 4);
+    s4 = (flags & MIZU_VIEW_FLAG_S4) != 0;
+    if (magic == MIZU_MAGIC_VEC) {
+      int32_t sexptype;
+      int64_t length, attrs_size;
+      memcpy(&sexptype, base + 4, 4);
+      memcpy(&length, base + 8, 8);
+      memcpy(&attrs_size, base + 16, 8);
+      const int64_t elt = (int64_t) mizu_view_sizeof_elt(sexptype);
+      if (elt == 0 || length < 0 ||
+          length > (region_size - MIZU_HEADER_SIZE) / elt)
+        return 1;
+      const int64_t off = MIZU_HEADER_SIZE + length * elt;
+      if (mizu_view_oob(off, attrs_size, region_size)) return 1;
+      blob = base + off;
+      blob_size = attrs_size;
+    } else if (magic == MIZU_MAGIC_STR) {
+      int32_t attrs32;
+      int64_t str_size;
+      memcpy(&attrs32, base + 4, 4);
+      memcpy(&str_size, base + 16, 8);
+      const int64_t off = MIZU_HEADER_SIZE + str_size;
+      if (mizu_view_oob(off, (int64_t) attrs32, region_size)) return 1;
+      blob = base + off;
+      blob_size = attrs32;
+    } else if (magic == MIZU_MAGIC_LIST) {
+      int64_t attrs_offset, attrs_size;
+      memcpy(&attrs_offset, base + 8, 8);
+      memcpy(&attrs_size, base + 16, 8);
+      if (mizu_view_oob(attrs_offset, attrs_size, region_size)) return 1;
+      blob = base + attrs_offset;
+      blob_size = attrs_size;
+    } else {
+      return 1;
+    }
+  } else {
+    const unsigned char *leaf;
+    mizu_mizl_entry ent;
+    if (mizu_view_path_entry(base, region_size, path, path_len, &leaf,
+                             &ent) != 0)
+      return 1;
+    s4 = (ent.sexptype & (int32_t) MIZU_VIEW_ELEM_S4) != 0;
+    const int32_t tag = ent.sexptype & ~(int32_t) MIZU_VIEW_ELEM_S4;
+    if (tag == MIZU_TYPE_VEC) {
+      /* a nested list's attrs live inside its child MIZL's header */
+      if (ent.data_offset < 0 || ent.data_size < MIZU_HEADER_SIZE)
+        return 1;
+      const unsigned char *child = leaf + ent.data_offset;
+      uint32_t cmagic;
+      memcpy(&cmagic, child, 4);
+      if (cmagic != MIZU_MAGIC_LIST) return 1;
+      int64_t attrs_offset, attrs_size;
+      memcpy(&attrs_offset, child + 8, 8);
+      memcpy(&attrs_size, child + 16, 8);
+      if (mizu_view_oob(attrs_offset, attrs_size, ent.data_size)) return 1;
+      blob = child + attrs_offset;
+      blob_size = attrs_size;
+    } else if (tag == 0 || tag == MIZU_VIEW_TAG_REF) {
+      return 1;   /* a serialized leaf or a remote hop: never this id */
+    } else {
+      if (ent.attrs_size < 0 || ent.attrs_size > ent.data_size) return 1;
+      blob = leaf + ent.data_offset + ent.data_size - ent.attrs_size;
+      blob_size = ent.attrs_size;
+    }
+  }
+  if ((Rf_isS4(x) != 0) != s4) return 0;
+  /* an empty blob: only an unadorned view, or a class-only int64 (its
+     class riding the wire tag), round-trips */
+  if (blob_size == 0) return mizu_view_is_int64_any(x) || !ANY_ATTRIB(x);
+  if (!ANY_ATTRIB(x)) return 0;
+
+  mizu_view_aparse a = { blob, (size_t) blob_size, 0 };
+  SEXP cont = PROTECT(R_MakeUnwindCont());
+  SEXP reg = R_UnwindProtect(mizu_view_aparse_do, &a,
+                             mizu_view_aparse_cleanup, &a, cont);
+  if (a.jumped) {
+    UNPROTECT(1);
+    return 1;
+  }
+  PROTECT(reg);
+  SEXP reg_l = PROTECT(mizu_view_attrs_resolve_form(
+    reg, mizu_view_is_int64_any(x)
+  ));
+  SEXP cur = PROTECT(mizu_view_get_attrs_for_serialize(x));
+  SEXP cur_l = PROTECT(mizu_view_attrs_as_list(cur));
+  const int eq =
+    R_compute_identical(cur_l, reg_l, IDENT_USE_CLOENV) == TRUE;
+  UNPROTECT(5);
+  return eq;
 }
 
 SEXP mizu_view_is_shared(SEXP x) {
