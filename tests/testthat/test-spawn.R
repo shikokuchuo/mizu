@@ -73,11 +73,14 @@ test_that("a cached pymizu probe revalidates against the package file", {
   python3 <- unname(Sys.which("python3"))
   skip_if_not(nzchar(python3), "python3 unavailable")
   # a private interpreter path: the probe cache keys on it, so no earlier
-  # cache entry (e.g. a venv python with real pymizu) can leak in
+  # cache entry (e.g. a venv python with real pymizu) can leak in. The
+  # wrapper's -S hides site-packages, so a real pymizu installed for
+  # python3 (CI's cross-language setup) stays invisible after the removal
   bindir <- tempfile()
   dir.create(bindir)
   python <- file.path(bindir, "python3")
-  file.symlink(python3, python)
+  writeLines(c("#!/bin/sh", sprintf('exec "%s" -S "$@"', python3)), python)
+  Sys.chmod(python, "755")
   root <- tempfile()
   dir.create(file.path(root, "pymizu"), recursive = TRUE)
   file.create(file.path(root, "pymizu", "__init__.py"))
