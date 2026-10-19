@@ -2133,6 +2133,14 @@ test_that("a foreign string vector stages as MIZS with the bit", {
   expect_identical(out[], s)
 })
 
+test_that("an S4 string vector declines loudly on the foreign path", {
+  methods::setClass("reiS4ChrF", contains = "character")
+  p <- foreign_pair(caps = 1L) # MIZS: the gate's STRSXP branch
+  on.exit(channel_end(p))
+  x <- methods::new("reiS4ChrF", paste0("s", 1:20000))
+  expect_error(mizu_send(p$host, x), class = "mizu_error_not_portable")
+})
+
 test_that("a foreign frame with a view column declines without MIZL_REF", {
   p <- channel_pair()
   on.exit(channel_end(p))

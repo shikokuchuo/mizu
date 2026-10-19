@@ -476,6 +476,11 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
     return mizu_zc_eligible(x, inline_max, out_total, 1);
   }
   if (type == STRSXP) {
+    /* S4 declines here as on every other foreign path (the interop
+       writer raises the loud decline): a staged SHM_VEC would stamp the
+       S4 flag and a foreign reader would wrap a plain string vector — a
+       silent class downgrade */
+    if (Rf_isS4(x)) return 0;
     /* MIZS, gated on the bit and every element crossing as UTF-8 (a
        latin1 vector takes the 'I' copy, which translates it; a
        bytes-marked one declines there). The fence runs ahead of any
