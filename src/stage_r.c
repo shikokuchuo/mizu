@@ -383,10 +383,13 @@ static void *mizu_r_read_channel_impl(const mizu_slot_hdr *hdr,
        read in mizu_payload_read) */
     int type = (int) hdr->aux;
     size_t elt = mizu_view_sizeof_elt(type);
-    if (elt == 0 || hdr->len % elt != 0)
+    /* one read: the slot is peer-writable, so the bound and the limit
+       must be one snapshot (chan_read's discipline) */
+    uint32_t len = hdr->len;
+    if (elt == 0 || len > limit || len % elt != 0)
       Rf_error("mizu: corrupt payload slot");
-    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
-    memcpy(mizu_vec_ptr(y), payload, hdr->len);
+    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (len / elt));
+    memcpy(mizu_vec_ptr(y), payload, len);
     return (void *) y;
   }
   return mizu_payload_read(hdr, payload, (uint32_t) limit, ctx, 1);
@@ -689,9 +692,14 @@ static const unsigned char *pool_entry_bytes(const mizu_slot_hdr *hdr,
     *out_len = hdr->len;
     return payload;
   case MIZU_KIND_RAWVEC:
-  case MIZU_KIND_STR1:
-    *out_len = hdr->len;
+  case MIZU_KIND_STR1: {
+    /* one read, bounded like INLINE: a crafted entry must not over-state
+       the span handed to the interop cursor */
+    uint32_t len = hdr->len;
+    if (len > limit) return NULL;
+    *out_len = len;
     return payload;
+  }
   case MIZU_KIND_SHM_RAW: {
     if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) return NULL;
     mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);

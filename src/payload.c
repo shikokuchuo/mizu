@@ -389,10 +389,13 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
   case MIZU_KIND_RAWVEC: {
     int type = (int) hdr->aux;
     size_t elt = mizu_view_sizeof_elt(type);
-    if (elt == 0 || hdr->len > inline_max || hdr->len % elt != 0)
+    /* one read: the slot is peer-writable, so the bound and the limit
+       must be one snapshot */
+    uint32_t len = hdr->len;
+    if (elt == 0 || len > inline_max || len % elt != 0)
       Rf_error("mizu: corrupt payload slot");
-    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
-    memcpy(mizu_vec_ptr(y), payload, hdr->len);
+    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (len / elt));
+    memcpy(mizu_vec_ptr(y), payload, len);
     return y;
   }
   case MIZU_KIND_SHM_VEC: {
@@ -431,9 +434,11 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
     mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
     /* aux is the exact stream length: a recycled region is larger than the
-       stream it carries, and the slack bytes are a previous payload's */
-    size_t len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
-      (size_t) hdr->aux : shm->size;
+       stream it carries, and the slack bytes are a previous payload's. One
+       read — the slot is peer-writable */
+    uint64_t aux = hdr->aux;
+    size_t len = aux != 0 && aux <= (uint64_t) shm->size ?
+      (size_t) aux : shm->size;
     return mizu_stream_read((unsigned char *) shm->addr, len, ctx,
                             consume_foreign);
   }
