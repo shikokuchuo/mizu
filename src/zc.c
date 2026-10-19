@@ -259,12 +259,15 @@ static size_t mizu_zc_tree_probe(SEXP x, size_t budget, int *reject) {
          identifier view keeps rejecting — the serialize path's wire
          hooks carry those, by reference or by value as before. */
       if (mizu_view_refable(x)) {
-        SEXP id = PROTECT(mizu_view_shm_name(x));
+        SEXP id = PROTECT(mizu_view_remote_id(x));
         if (id != R_NilValue) {
           const size_t span = (size_t) LENGTH(STRING_ELT(id, 0));
           UNPROTECT(1);
           return span;
         }
+        /* a broken identifier or one past the readers' span cap: the tree
+           falls back to the serialize tiers, the wire hooks carrying the
+           view by reference as before */
         UNPROTECT(1);
       }
       *reject = 1;

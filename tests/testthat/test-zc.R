@@ -2485,6 +2485,31 @@ test_that("an over-deep view chain declines the identifier, values cross", {
   expect_identical(out[[2]], tail)
 })
 
+test_that("an identifier past the readers' span cap falls back, values cross", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  base <- runif(30000)
+  deep <- base
+  for (i in seq_len(62L)) {
+    deep <- c(rep(list(0), 99L), list(deep)) # the chain sits at index 100
+  }
+  mizu_send(p$host, deep)
+  v <- mizu_recv(p$peer, 5)
+  expect_true(is_view(v))
+  el <- v
+  for (i in seq_len(62L)) {
+    el <- el[[100L]]
+  }
+  expect_true(is_view(el))
+  # the identifier formats (62 <= 64 hops) but its span exceeds 255 bytes
+  expect_gt(nchar(.Call(mizu:::mizu_zc_view_name, el)), 255L)
+  tail <- runif(70000)
+  mizu_send(p$peer, list(el, tail))
+  out <- mizu_recv(p$host, 5)
+  expect_identical(out[[1]], base)
+  expect_identical(out[[2]], tail)
+})
+
 test_that("verbatim ns temporal columns land as POSIXct and difftime", {
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")

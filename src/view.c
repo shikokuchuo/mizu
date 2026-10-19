@@ -1388,7 +1388,7 @@ static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign,
     size_t elt_size;
 
     if (mizu_view_refable(elt)) {
-      SEXP id = PROTECT(mizu_view_shm_name(elt));
+      SEXP id = PROTECT(mizu_view_remote_id(elt));
       if (id != R_NilValue) {
         /* a remote leaf (F2.5): the identifier span, no local bytes — the
            bitmap reserve is the local leaves', the table reserve any
@@ -1396,8 +1396,9 @@ static size_t mizu_view_nested_size(SEXP x, int *ok, int foreign,
         elt_size = (size_t) LENGTH(STRING_ELT(id, 0));
         any_remote = 1;
       } else {
-        /* a view whose identifier broke: not remote-capable, and the copy
-           path must not duplicate a wire identity either */
+        /* a view whose identifier broke or is past the readers' span cap:
+           not remote-capable, and the copy path must not duplicate a wire
+           identity either */
         if (ok != NULL) { *ok = 0; UNPROTECT(1); return 0; }
         elt_size = mizu_view_serialize_count(elt);
       }
@@ -1477,7 +1478,7 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
 
     int is_remote = 0, broken_ref = 0;
     if (mizu_view_refable(elt)) {
-      SEXP id = PROTECT(mizu_view_shm_name(elt));
+      SEXP id = PROTECT(mizu_view_remote_id(elt));
       int64_t rlength = 0, rattrs = 0;
       int rna_free = 0;
       if (id != R_NilValue) {
@@ -1501,10 +1502,10 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
         if (mizu_view_emit_hook != NULL) mizu_view_emit_hook(elt);
         is_remote = 1;
       } else {
-        /* a broken identifier (an over-deep chain): the embedder probe
-           rejects these, so only the host path meets them — its size pass
-           counted the serialize form, and the serialize branch below
-           writes it */
+        /* a broken identifier (an over-deep chain, or one past the
+           readers' span cap): the embedder probe rejects these, so only
+           the host path meets them — its size pass counted the serialize
+           form, and the serialize branch below writes it */
         broken_ref = 1;
       }
       UNPROTECT(1);
@@ -2395,6 +2396,14 @@ SEXP mizu_view_shm_name(SEXP x) {
   return Rf_mkString(buf);
 }
 
+SEXP mizu_view_remote_id(SEXP x) {
+  SEXP id = mizu_view_shm_name(x);
+  if (id == R_NilValue ||
+      LENGTH(STRING_ELT(id, 0)) > MIZU_VIEW_REF_SPAN_MAX)
+    return R_NilValue;
+  return id;
+}
+
 /* Reap shared memory regions orphaned by a dead creating process. Returns
    the character vector of region names actually removed, or R_NilValue if
    nothing was removed — including on platforms that cannot enumerate the SHM
@@ -2723,7 +2732,8 @@ static SEXP mizu_view_unwrap_remote(unsigned char *base, int64_t region_size,
 
   /* The core's tag-33 entry branch (mizu_ext_mizl_ent), restated: the S4
      bit clear, the identifier span 1-255 bytes, the length non-negative. */
-  if (s4 || length < 0 || data_size < 1 || data_size > 255)
+  if (s4 || length < 0 || data_size < 1 ||
+      data_size > MIZU_VIEW_REF_SPAN_MAX)
     Rf_error("mizu: invalid MIZL remote leaf — corrupt or newer region");
 
   /* The entry's own NA claim: the header pair, or its validity-table row.
@@ -2847,7 +2857,7 @@ void mizu_view_mizl_remote_walk(unsigned char *base, int64_t region_size,
           (entry.data_offset & 63) != 0)
         MIZU_WALK_FAIL("mizu: invalid element data");
       if (tag == MIZU_VIEW_TAG_REF) {
-        if (entry.data_size < 1 || entry.data_size > 255)
+        if (entry.data_size < 1 || entry.data_size > MIZU_VIEW_REF_SPAN_MAX)
           MIZU_WALK_FAIL(
             "mizu: invalid MIZL remote leaf — corrupt or newer region");
         fn((const char *) f.base + entry.data_offset,

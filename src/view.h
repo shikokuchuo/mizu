@@ -13,6 +13,9 @@
 #define MIZU_VIEW_MAX_PATH        64                /* max indices in a path */
 #define MIZU_VIEW_IDENTIFIER_MAX  1024              /* parser input length cap */
 #define MIZU_VIEW_FORMAT_BUFLEN   1024              /* formatter stack buffer */
+#define MIZU_VIEW_REF_SPAN_MAX    255               /* tag-33 span, per the
+                                                       readers and the core's
+                                                       identifier grammar */
 
 /* External-pointer tag strings (installed once at init). */
 #define MIZU_VIEW_TAG_SHM   "mizu_view_shm"
@@ -220,6 +223,12 @@ SEXP mizu_view_u64_rewrap(SEXP x);
    or COW-materialized view keeps the serialize path's wire hooks). */
 int mizu_view_refable(SEXP x);
 SEXP mizu_view_shm_name(SEXP x);
+/* The remote-leaf identifier: mizu_view_shm_name(x) bounded to the
+   readers' tag-33 span. R_NilValue when the chain has no identifier OR
+   its span exceeds MIZU_VIEW_REF_SPAN_MAX — the same verdict as a broken
+   identifier, so every stage's broken-id fallback carries it (the tree
+   probe rejects; the layout's serialize branch writes the value). */
+SEXP mizu_view_remote_id(SEXP x);
 /* The top-level REF gates' divergence check: 1 when x's current attribute
    set and S4 bit equal the ones its identifier's resolve would apply —
    the region's own — so the REF round-trips them; 0 only on a CONFIRMED
