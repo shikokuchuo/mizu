@@ -227,6 +227,35 @@ test_that("batch submit shares the ... bindings across tasks", {
   pool_end(p)
 })
 
+test_that("a batched task's view constant stays anchored until collect", {
+  ch <- channel_pair(arena_size = 0)
+  on.exit(channel_end(ch), add = TRUE)
+  x <- runif(2e5)
+  y <- runif(2e5)
+  mizu_send(ch[["host"]], x)
+  v1 <- mizu_recv(ch[["peer"]], 5)
+  mizu_send(ch[["host"]], y)
+  v2 <- mizu_recv(ch[["peer"]], 5)
+  expect_true(is_view(v1) && is_view(v2))
+  p <- pool_pair()
+  on.exit(pool_end(p), add = TRUE)
+  ts <- mizu_submit_batch(
+    p[["ctrl"]],
+    list(bquote(.(v1) + 0), bquote(.(v2) + 0))
+  )
+  rm(v1, v2)
+  invisible(gc())
+  # recycle pressure: a region freed by a dead pin is popped and rewritten
+  for (i in 1:2) {
+    mizu_send(ch[["host"]], runif(2e5))
+    invisible(mizu_recv(ch[["peer"]], 5))
+  }
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect_all(ts, timeout = 5), list(x, y))
+})
+
 test_that("task argument names never collide with the formals ahead of ...", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], e * 2L, e = 3L)

@@ -639,20 +639,27 @@ SEXP mizu_pool_submit_map_runner(SEXP xp, SEXP spec, SEXP deadline) {
 }
 
 /* mizu_submit_batch's entry: one crossing per burst. Each task's wire
-   payload is mizu_submit's list(expr, args), staged through ONE reusable
-   pair — the supply callback swaps the expr in as the core's batch loop
-   asks for element i, so a burst allocates nothing per task. Ring-full
-   past timeout returns the handles accepted so far; fatal outcomes
-   raise, the tasks already submitted staying valid and collectible. */
+   payload is mizu_submit's list(expr, args), staged through a FRESH pair
+   per task — the stage pin anchors the pair it is handed, so one reused
+   pair would anchor only the last task's expr: a swapped-out expr's
+   by-reference views could finalize and sub their regions before the
+   worker resolves them. The burst's pairs ride one PROTECTED container.
+   Ring-full past timeout returns the handles accepted so far; fatal
+   outcomes raise, the tasks already submitted staying valid and
+   collectible. */
 typedef struct mizu_batch_supply_s {
   SEXP exprs;
-  SEXP pair;
+  SEXP args;
+  SEXP pairs;
 } mizu_batch_supply;
 
 static void *mizu_batch_supply_next(void *ctx, size_t i) {
   mizu_batch_supply *s = (mizu_batch_supply *) ctx;
-  SET_VECTOR_ELT(s->pair, 0, VECTOR_ELT(s->exprs, (R_xlen_t) i));
-  return s->pair;
+  SEXP pair = Rf_allocVector(VECSXP, 2);
+  SET_VECTOR_ELT(s->pairs, (R_xlen_t) i, pair);   /* anchored before use */
+  SET_VECTOR_ELT(pair, 0, VECTOR_ELT(s->exprs, (R_xlen_t) i));
+  SET_VECTOR_ELT(pair, 1, s->args);
+  return pair;
 }
 
 SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
@@ -665,8 +672,8 @@ SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   R_xlen_t n = XLENGTH(exprs);
   mizu_batch_supply supply;
   supply.exprs = exprs;
-  supply.pair = PROTECT(Rf_allocVector(VECSXP, 2));
-  SET_VECTOR_ELT(supply.pair, 1, args);
+  supply.args = args;
+  supply.pairs = PROTECT(Rf_allocVector(VECSXP, n));
   mizu_task *ts = (mizu_task *) R_alloc(n, sizeof(mizu_task));
   size_t done = 0;
   mizu_status st = mizu_pool_submit_batch_fn(p, mizu_batch_supply_next, &supply,
