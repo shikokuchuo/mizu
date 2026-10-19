@@ -1330,3 +1330,29 @@ crosslang set plus the usual CRAN/Linux set); test-interop.R 335 pass
 C1 tests fail pre-fix with the expected diffs); rchk not run (no
 docker here — the change is a branch-local expression edit, no SEXP
 traffic).
+
+## 2026-10-19 — Linux create-path port: statvfs fail-fast + one-pass populate (libmizu 85cd4fb)
+
+The two Linux create-path fixes from the 2026-10-19 Xeon session landed
+upstream and re-vendored: oversize creates fail fast on a statvfs
+availability probe ahead of the reservation (the posix_fallocate grind
+through all of tmpfs is gone), and the reservation is one
+madvise(MADV_POPULATE_WRITE) pass, fallocate + MAP_POPULATE on < 5.14.
+Ran mizu-mirai-bench.R in the Linux container (aarch64 linuxkit VM,
+kernel 7.0.12, rocker/r-ver 4.6.1) — not the Xeon W-2235 bare metal of
+the 2026-10-19 numbers, so absolutes are the VM's; the mizu rows are the
+read.
+
+Results (Linux container): payload 800 KB 360 us/task, 8 MB 1,967
+us/task — hold against the Xeon's 345 / 3,733 with GLIBC_TUNABLES (the
+8 MB row improves on this host's memory bandwidth, not from this
+change; mizu_tune runs at load, so no env tuning in play). Create
+spot check (libmizu probe, same container): 1.4 ms per fresh 8 MB
+region (2.0 ms on the Xeon); a 2^52 create fails in 0.023 ms with the
+NOSPACE surface unchanged. No best-known rows touched (VM records).
+Status: full suite green on macOS (4790 pass, 0 fail, 4 skips) and in
+the Linux container (4464 pass, 0 fail, 72 skips — the no-pymizu /
+no-mori set; test-conditions.R, the former grind trigger, 33 pass in
+1.5 s); libmizu make test + test-integration green in the same
+container, incl. the new oversize fail-fast and populate round-trip
+unit tests.
