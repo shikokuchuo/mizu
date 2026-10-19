@@ -469,13 +469,15 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
     const size_t total =
       mizu_interop_write_task(payload, inline_max, spec, target,
                               rh->spec_ident, &rec, h, caps, inline_max,
-                              R_NilValue, 0, &plan);
+                              R_NilValue, 0, 0, &plan);
     if (total == 0)
       mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     SEXP zc_node = R_NilValue;
+    size_t zc_size = 0;
     for (int i = 0; i < plan.ncand; i++) {
       if (total - plan.size[i] + MIZU_IX_ZC_RESERVE <= (size_t) inline_max) {
         zc_node = plan.cand[i];
+        zc_size = plan.zc_size[i];
         break;
       }
     }
@@ -489,7 +491,7 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
     if (zc_node != R_NilValue) {
       n = mizu_interop_write_task(payload, inline_max, spec, target,
                                   rh->spec_ident, &rec, h, caps,
-                                  inline_max, zc_node, 0, NULL);
+                                  inline_max, zc_node, zc_size, 0, NULL);
       if (n != SIZE_MAX) {
         if (n == 0)
           mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
@@ -518,7 +520,7 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
     if (total <= (size_t) inline_max) {
       n = mizu_interop_write_task(payload, inline_max, spec, target,
                                   rh->spec_ident, &rec, h, caps,
-                                  inline_max, R_NilValue, 1, NULL);
+                                  inline_max, R_NilValue, 0, 1, NULL);
       if (n == 0)
         mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
       hdr->kind = MIZU_KIND_INLINE;

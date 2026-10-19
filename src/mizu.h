@@ -225,13 +225,16 @@ int mizu_interop_str1_foreign(mizu_slot_hdr *hdr, unsigned char *payload,
    the first 16 SHM_VEC candidates in document order, each with its
    by-value subtree size (a recorded candidate's subtree walks with
    detection suppressed — the never-nest rule), and has_ref set when a
-   ref leaf emitted (the D2 detector). The selection is arithmetic: the
-   first candidate with total - size[i] + MIZU_IX_ZC_RESERVE <=
+   ref leaf emitted (the D2 detector). zc_size is the candidate's exact
+   layout size from the candidacy probe: the write pass's region size,
+   sparing a second eligibility evaluation. The selection is arithmetic:
+   the first candidate with total - size[i] + MIZU_IX_ZC_RESERVE <=
    inline_max is the zc node — the record walk's total is the no_zc
    stream's, REF-able views emitting ref leaves in every mode. */
 typedef struct {
   SEXP cand[16];
   size_t size[16];
+  size_t zc_size[16];
   int ncand;
   int has_ref;
 } mizu_ix_plan;
@@ -245,12 +248,14 @@ typedef struct {
    SIZE_MAX, the caller re-running with no_zc = 1. inline_max is the zc
    floor gate. plan non-NULL runs the walk in record mode (zc_node
    R_NilValue): the optimistic write flips to count-only at the first
-   candidate, the plan filled for the caller's arithmetic selection. */
+   candidate, the plan filled for the caller's arithmetic selection.
+   zc_size is the plan-recorded layout size of zc_node (0 re-probes
+   eligibility). */
 size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t target, uint64_t ident,
                                mizu_ix_decline *rec, mizu_handle *h,
                                uint32_t caps, uint32_t inline_max,
-                               SEXP zc_node, int no_zc,
+                               SEXP zc_node, size_t zc_size, int no_zc,
                                mizu_ix_plan *plan);
 /* The exec-hook decode of a task stream: validates the header and the
    per-kind shape off the cursor, returns the submitter identity through

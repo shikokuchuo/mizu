@@ -595,6 +595,7 @@ typedef struct mizu_ixw_s {
   int refs;
   int no_zc;
   SEXP zc_node;
+  size_t zc_size_hint;   /* zc_node's plan-recorded layout size, 0 re-probes */
   int zc_spent;
   int abandon;
   /* the W2 plan record: non-NULL runs the walk in record mode — the
@@ -1010,8 +1011,9 @@ static void ixw_zc_leaf(mizu_ixw *w, SEXP x) {
     w->total += MIZU_IX_ZC_RESERVE;
     return;
   }
-  size_t total;
-  if (!mizu_zc_eligible_foreign(x, w->inline_max, &total, w->caps)) {
+  size_t total = w->zc_size_hint;
+  if (total == 0 &&
+      !mizu_zc_eligible_foreign(x, w->inline_max, &total, w->caps)) {
     /* the plan and the write cannot disagree (eligibility is a pure
        function and no verbs run between the passes) — treat as a caller
        bug, never a wrong stream */
@@ -1095,6 +1097,7 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
         if (w->depth >= 0) {
           w->plan->cand[w->plan->ncand] = x;
           w->plan->size[w->plan->ncand] = w->total - start;
+          w->plan->zc_size[w->plan->ncand] = zc_total;
           w->plan->ncand++;
         }
         return;
@@ -1370,7 +1373,7 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t target, uint64_t ident,
                                mizu_ix_decline *rec, mizu_handle *h,
                                uint32_t caps, uint32_t inline_max,
-                               SEXP zc_node, int no_zc,
+                               SEXP zc_node, size_t zc_size, int no_zc,
                                mizu_ix_plan *plan) {
   if (rec != NULL) {
     rec->decline = 0;
@@ -1390,7 +1393,8 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
   mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
                  .path = "args", .path_len = 4, .h = h, .caps = caps,
                  .inline_max = inline_max, .refs = 1, .no_zc = no_zc,
-                 .zc_node = zc_node, .plan = plan, .plan_nocand = nocand };
+                 .zc_node = zc_node, .zc_size_hint = zc_size,
+                 .plan = plan, .plan_nocand = nocand };
   IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
@@ -2594,12 +2598,12 @@ SEXP mizu_interop_write_task_call(SEXP spec, SEXP target, SEXP ident,
   const int nz = Rf_asLogical(no_zc) == 1;
   mizu_ix_decline rec;
   size_t n = mizu_interop_write_task(NULL, 0, spec, (uint32_t) t, id, &rec,
-                                     NULL, 0, 240, R_NilValue, nz, NULL);
+                                     NULL, 0, 240, R_NilValue, 0, nz, NULL);
   if (n == 0)
     mizu_stop_interop("not portable at %s (%s)", rec.path, rec.reason);
   SEXP bytes = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
   if (mizu_interop_write_task(RAW(bytes), n, spec, (uint32_t) t, id, NULL,
-                              NULL, 0, 240, R_NilValue, nz, NULL) != n) {
+                              NULL, 0, 240, R_NilValue, 0, nz, NULL) != n) {
     UNPROTECT(1);
     mizu_stop_interop("task write mismatch");
   }
