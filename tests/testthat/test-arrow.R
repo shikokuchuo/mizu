@@ -1812,3 +1812,33 @@ test_that("the bail converts int64- and uint64-index dictionary tables", {
     expect_identical(out, data.frame(v = f, w = bit64::as.integer64(1:9000)))
   }
 })
+
+test_that("delta dictionary batches rebuild factors on the union of levels", {
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
+  b1 <- arrow::record_batch(data.frame(v = factor(c("a", "b"))))
+  b2 <- arrow::record_batch(data.frame(v = factor(c("b", "c")))) # delta
+  st <- nanoarrow::as_nanoarrow_array_stream(
+    arrow::RecordBatchReader$create(b1, b2)
+  )
+  out <- mizu:::arrow_batches_to_value(
+    st$get_schema(),
+    nanoarrow::collect_array_stream(st)
+  )
+  expect_identical(
+    out$v,
+    factor(c("a", "b", "b", "c"), levels = c("a", "b", "c"))
+  )
+
+  # the non-struct ordered bail keys on the union too
+  ca <- arrow::ChunkedArray$create(
+    arrow::Array$create(ordered(c("a", "b"))),
+    arrow::Array$create(ordered(c("b", "c")))
+  )
+  st2 <- nanoarrow::as_nanoarrow_array_stream(ca)
+  out2 <- mizu:::arrow_to_value(st2)
+  expect_identical(
+    out2,
+    ordered(c("a", "b", "b", "c"), levels = c("a", "b", "c"))
+  )
+})

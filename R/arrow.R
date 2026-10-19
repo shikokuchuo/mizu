@@ -70,8 +70,15 @@ arrow_to_value <- function(stream) {
   }
   batches <- ns$collect_array_stream(stream)
   stream$release()
-  d <- batches[[1L]]$dictionary
-  lvls <- if (is.null(d)) character(0) else ns$convert_array(d)
+  # the union of per-batch dictionaries, first-seen order: Arrow permits
+  # dictionary deltas, and batch 0's set alone maps unseen levels to NA
+  lvls <- character(0)
+  for (b in batches) {
+    d <- b$dictionary
+    if (!is.null(d)) {
+      lvls <- union(lvls, ns$convert_array(d))
+    }
+  }
   idx <- switch(
     schema$format,
     c = ns$na_int8(),
@@ -96,9 +103,10 @@ arrow_to_value <- function(stream) {
 # The post-collect bails: the held batches stream back as a struct — a
 # data.frame. The C pull moves bare batch structs into fresh extptrs (the
 # ABI move), so each takes its schema association here. String dictionary
-# columns convert flat, then rebuild as the factor they encode off batch
-# 0's dictionary (a zero-batch export carries none — the stream then holds
-# no levels at all).
+# columns convert flat, then rebuild as the factor they encode off the
+# union of the per-batch dictionaries (Arrow permits dictionary deltas;
+# a zero-batch export carries none — the stream then holds no levels at
+# all).
 arrow_batches_to_value <- function(schema, batches) {
   ns <- arrow_ns()
   for (i in seq_along(batches)) {
@@ -111,8 +119,13 @@ arrow_batches_to_value <- function(schema, batches) {
   ch <- schema$children
   for (i in seq_along(ch)) {
     if (!is.null(ch[[i]]$dictionary)) {
-      d <- if (length(batches)) batches[[1L]]$children[[i]]$dictionary
-      lvls <- if (is.null(d)) character(0) else ns$convert_array(d)
+      lvls <- character(0)
+      for (b in batches) {
+        d <- b$children[[i]]$dictionary
+        if (!is.null(d)) {
+          lvls <- union(lvls, ns$convert_array(d))
+        }
+      }
       out[[i]] <- factor(out[[i]], levels = lvls)
     }
   }
