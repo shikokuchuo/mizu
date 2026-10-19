@@ -1736,15 +1736,18 @@ static int mizu_view_na_present(int type, const void *src, uint64_t n) {
   case REALSXP: {
     const uint64_t *v = (const uint64_t *) src;
     for (uint64_t i = 0; i < n; i++)
-      /* one shift + compare in the hot loop: a NaN or Inf exponent
-         gates the precise payload test */
-      if ((v[i] >> 52) == 0x7FF && mizu_ext_na_real_bits(v[i])) return 1;
+      /* shift + mask + compare in the hot loop, sign-masked exactly as
+         mizu_ext_na_real_bits: a NaN or Inf exponent of either sign
+         (-NA_real_ flips the sign bit) gates the precise payload test */
+      if (((v[i] >> 52) & 0x7FF) == 0x7FF && mizu_ext_na_real_bits(v[i]))
+        return 1;
     return 0;
   }
   case CPLXSXP: {
     const uint64_t *v = (const uint64_t *) src;
     for (uint64_t i = 0; i < 2 * n; i++)
-      if ((v[i] >> 52) == 0x7FF && mizu_ext_na_real_bits(v[i])) return 1;
+      if (((v[i] >> 52) & 0x7FF) == 0x7FF && mizu_ext_na_real_bits(v[i]))
+        return 1;
     return 0;
   }
   case MIZU_VIEW_TYPE_INT64: {

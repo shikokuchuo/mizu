@@ -1307,3 +1307,26 @@ Status: full suite 3738 pass, 0 fail (51 skips, the expected set);
 crosslang green with pymizu's venv on PATH (4 runs); rchk clean
 (bcheck, 1199 functions — only R's own "too many states" notes).
 
+## 2026-10-19 — C1 sign-masked NA pre-filter: A/B against 92e5717
+
+The C1 fix (src/view.c mizu_view_na_present REALSXP/CPLXSXP: the
+exponent pre-filter gains the sign mask matching mizu_ext_na_real_bits).
+The loop runs only on foreign SHM_VEC stages of attributed vectors and
+frame columns, so the instrument is crosslang-channel-bench.R (the
+frame rows exercise it full-length: NA-free columns scan every
+element), not the same-language mizu-bench.R. A/B back-to-back
+(A = 92e5717, B = the fix), full script once per build plus a
+frames-only reduced script (min_time 1.0) alternated A/B/A/B.
+
+Results: frame 100k x 3 — A 725.5 / 1226.2, B 1202.5 / 1198.4 /
+1225.2 us/rt: the 725.5 was host-load drift between batches (the
+reduced A reproduces B's ~1200 cluster on the same script); frame
+100k x 2 +td 1052/1436 vs 1013/1396/1423; frame 1k x 4 97/99 vs
+96/99/99; every other row within the same drift band. Verdict: no
+measurable regression — the extra AND per element is below noise.
+Status: full suite green (summary reporter, 63 skips — the no-venv
+crosslang set plus the usual CRAN/Linux set); test-interop.R 335 pass
+0 fail; test-crosslang.R 136 pass 0 fail with the venv on PATH (both
+C1 tests fail pre-fix with the expected diffs); rchk not run (no
+docker here — the change is a branch-local expression edit, no SEXP
+traffic).

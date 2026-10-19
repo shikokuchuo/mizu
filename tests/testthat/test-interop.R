@@ -448,6 +448,55 @@ test_that("foreign sends build the validity section; same-language writes {0, 0}
   channel_end(p)
 })
 
+test_that("sign-flipped NAs build the foreign validity section (C1)", {
+  # -x flips every NA's sign bit: the na_present gate must mask it like
+  # mizu_ext_na_real_bits, or the region is stamped known-NA-free {0, -1}
+  x <- runif(20000) # 160 KB: past the zc floor, attributed -> mizh_write
+  x[c(2L, 4L)] <- NA
+  x <- -x
+  dim(x) <- c(10000L, 2L)
+  p <- foreign_pair(caps = 2L) # MIZU_CAP_ATTRS
+  got <- ix_rt(p, x)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  peek <- view_peek(got)
+  hdr <- readBin(peek(40, 16), "integer", 4, 4, endian = "little")
+  expect_gt(hdr[1], 0L) # a bitmap section, not the {0, -1} NA-free stamp
+  expect_identical(hdr[3:4], c(2L, 0L))
+  # NAs at 0-based 1 and 3: bits 1111 0101 (LSB first)
+  expect_identical(peek(as.numeric(hdr[1]), 1), as.raw(0xf5))
+  expect_identical(got[], x)
+  channel_end(p)
+
+  # mixed sign-flipped + regular NAs: the bitmap marks both
+  y <- runif(20000)
+  y[2L] <- NA
+  y <- -y
+  y[4L] <- NA_real_
+  dim(y) <- c(10000L, 2L)
+  p <- foreign_pair(caps = 2L)
+  got <- ix_rt(p, y)
+  peek <- view_peek(got)
+  hdr <- readBin(peek(40, 16), "integer", 4, 4, endian = "little")
+  expect_identical(hdr[3:4], c(2L, 0L))
+  expect_identical(peek(as.numeric(hdr[1]), 1), as.raw(0xf5))
+  expect_identical(got[], y)
+  channel_end(p)
+
+  # complex: a sign-flipped NA in either part counts
+  z <- complex(10000, runif(10000), runif(10000))
+  z[c(2L, 4L)] <- NA_complex_
+  z <- -z
+  dim(z) <- c(5000L, 2L) # 160 KB
+  p <- foreign_pair(caps = 2L)
+  got <- ix_rt(p, z)
+  peek <- view_peek(got)
+  hdr <- readBin(peek(40, 16), "integer", 4, 4, endian = "little")
+  expect_identical(hdr[3:4], c(2L, 0L))
+  expect_identical(peek(as.numeric(hdr[1]), 1), as.raw(0xf5))
+  expect_identical(got[], z)
+  channel_end(p)
+})
+
 test_that("a seq-columned frame crosses as MIZL on a foreign handle, sender compact", {
   df <- data.frame(id = 1:200000, x = runif(200000))
   p <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL

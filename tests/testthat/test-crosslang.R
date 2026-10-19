@@ -460,6 +460,28 @@ ch.send(t)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a Python peer's Arrow import masks sign-flipped NAs (C1)", {
+  # -x flips every NA's sign bit; the MIZL column verdict must still map
+  # them, or the Arrow export reads those lanes as values (null_count 0)
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+f = ch.recv(30)
+t = pa.table(f)
+ch.send((t.column('a').null_count, t.column('b').null_count))
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  a <- runif(20000)
+  a[c(2L, 4L, 19999L)] <- NA
+  a <- -a
+  mizu_send(ch, data.frame(a = a, b = runif(20000)))
+  expect_identical(mizu_recv(ch, 30), list(3L, 0L))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("R -> Python -> R REAL relay via Arrow is exact", {
   py <- skip_if_no_pymizu()
   skip_if_no_pyarrow(py)
