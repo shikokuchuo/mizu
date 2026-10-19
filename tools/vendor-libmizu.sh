@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="db8ae7fe1457998e538427ac708f0f38cf330596"  # libmizu: accept no-sizes string_view exports in mizu_arrow_str_at
+PIN="3138cb464fe6f7097a8b222f8dd3d56f526dbb6a"  # libmizu: reset the death listener state when its thread dies (+ result_slots post-rounding cap)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
