@@ -94,12 +94,16 @@ mizu_channel <- function(
     )
   }
   ch <- .Call(mizu_channel_create, expr, capacity, slot_size, arena_size, spin)
+  # a channel that never came up is destroyed, not left to its finalizer —
+  # on any error exit (launcher failure, interrupt), not just a timeout
+  ok <- FALSE
+  on.exit(if (!ok) .Call(mizu_channel_destroy, ch))
   token <- .Call(mizu_channel_suffix, ch)
   launcher(token)
   if (!.Call(mizu_channel_ready_wait, ch, startup_timeout)) {
-    .Call(mizu_channel_destroy, ch)
     stop_startup("child", startup_timeout)
   }
+  ok <- TRUE
   ch
 }
 

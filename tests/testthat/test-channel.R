@@ -55,6 +55,21 @@ test_that("a fresh channel reports its layout and state", {
   expect_s3_class(p[["host"]], "mizu_channel")
 })
 
+test_that("a raising launcher leaves no channel region behind", {
+  suffix <- NULL
+  expect_error(
+    mizu_channel(
+      quote(1 + 1),
+      launcher = function(token) {
+        suffix <<- token
+        stop("boom")
+      }
+    ),
+    "boom"
+  )
+  expect_error(.Call(mizu:::mizu_channel_attach, suffix, NULL), "cannot open")
+})
+
 test_that("attach validates the region: absent, malformed, or not a channel", {
   expect_error(
     .Call(mizu:::mizu_channel_attach, 42, NULL),
