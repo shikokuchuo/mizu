@@ -1794,9 +1794,21 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
   SEXP units = ix_dict_get(attrs, MIZU_IX_ATTR_UNITS);
   const R_xlen_t na = XLENGTH(attrs);
 
-  /* factor: value intv; attrs exactly levels, class */
+  /* factor: value intv; attrs exactly levels, class. The writer's
+     contract the cursor does not cover — levels unique and non-NA, codes
+     1..k or NA — enforced here: a malformed factor gets the no-home
+     decline like every other out-of-whitelist shape. */
   if (TYPEOF(value) == INTSXP && na == 2 && TYPEOF(levels) == STRSXP &&
       ix_strv_is(klass, MIZU_IX_CLASS_FACTOR)) {
+    if (!mizu_interop_names_ok(levels)) ixr_stop_no_home(attrs);
+    const R_xlen_t nl = XLENGTH(levels);
+    for (R_xlen_t i = 0; i < nl; i++)
+      if (STRING_ELT(levels, i) == NA_STRING) ixr_stop_no_home(attrs);
+    const int *codes = INTEGER(value);
+    for (R_xlen_t i = 0, nv = XLENGTH(value); i < nv; i++)
+      if (codes[i] != NA_INTEGER &&
+          (codes[i] < 1 || (R_xlen_t) codes[i] > nl))
+        ixr_stop_no_home(attrs);
     ixr_attrs_apply(value, attrs);
     return value;
   }
@@ -2642,22 +2654,53 @@ SEXP mizu_interop_map_desc_call(SEXP spec, SEXP x, SEXP target) {
   return bytes;
 }
 
+/* The hook's seed: NULL stays NULL; a numeric (seed, offset) pair coerces
+   to the writer's REALSXP form, its elements validated — the writer reads
+   REAL()[0..1] and casts to int64 without checks (the production spec's
+   veneer already validated), so the test hook validates in its place.
+   Fresh UNPROTECTED. */
+static SEXP ix_runner_seed(SEXP seed) {
+  if (seed == R_NilValue) return seed;
+  if (!Rf_isNumeric(seed) || XLENGTH(seed) != 2)
+    Rf_error("mizu: expected NULL or a numeric (seed, offset) pair");
+  SEXP out = Rf_coerceVector(seed, REALSXP);
+  const double *s = REAL(out);
+  if (!R_FINITE(s[0]) || s[0] != floor(s[0]) ||
+      !R_FINITE(s[1]) || s[1] != floor(s[1]) ||
+      s[0] <= -0x1p63 || s[0] >= 0x1p63 || s[1] <= -0x1p63 || s[1] >= 0x1p63)
+    Rf_error("mizu: expected integral (seed, offset) elements within "
+             "int64 range");
+  return out;
+}
+
 /* The runner writer as a stream (the map submit path's staging and the
-   test suite's stream construction). */
+   test suite's stream construction). The hook stands in for the submit
+   veneer, so it mirrors the veneer's validation (stage_r.c's spec check):
+   the writer cannot decline. */
 SEXP mizu_interop_runner_call(SEXP name, SEXP gen_field, SEXP seed,
                               SEXP target, SEXP ident) {
   const int t = Rf_asInteger(target);
   if (t < 0 || t > 255) Rf_error("mizu: expected a language byte");
+  if (TYPEOF(name) != STRSXP || XLENGTH(name) != 1 ||
+      STRING_ELT(name, 0) == NA_STRING)
+    Rf_error("mizu: expected a length-1 non-NA region name");
+  if (!Rf_isNumeric(gen_field) || XLENGTH(gen_field) != 1)
+    Rf_error("mizu: expected a length-1 numeric generation field");
+  const double gen = Rf_asReal(gen_field);
+  if (!R_FINITE(gen) || gen != floor(gen) || gen < 0 || gen >= 0x1p63)
+    Rf_error("mizu: expected a non-negative integer generation field "
+             "below 2^63");
+  SEXP seed2 = PROTECT(ix_runner_seed(seed));
   const uint64_t id = (uint64_t) Rf_asReal(ident);
-  size_t n = mizu_interop_write_runner(NULL, 0, name, Rf_asReal(gen_field),
-                                       seed, (uint32_t) t, id);
+  size_t n = mizu_interop_write_runner(NULL, 0, name, gen, seed2,
+                                       (uint32_t) t, id);
   SEXP bytes = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
-  if (mizu_interop_write_runner(RAW(bytes), n, name, Rf_asReal(gen_field),
-                                seed, (uint32_t) t, id) != n) {
-    UNPROTECT(1);
+  if (mizu_interop_write_runner(RAW(bytes), n, name, gen, seed2,
+                                (uint32_t) t, id) != n) {
+    UNPROTECT(2);
     mizu_stop_interop("runner write mismatch");
   }
-  UNPROTECT(1);
+  UNPROTECT(2);
   return bytes;
 }
 

@@ -1,3 +1,19 @@
+# the view collect's dim gate declines an unrepresentable geometry
+
+    Code
+      dim_of(0, 2^32 + 6)
+    Condition
+      Error in `dim_of()`:
+      ! mizu: map output dimensions (4294967302 x 0) exceed what R's dim attribute represents (max 2147483647 per dimension)
+
+---
+
+    Code
+      dim_of(2^33, 2)
+    Condition
+      Error in `dim_of()`:
+      ! mizu: map output dimensions (2 x 8589934592) exceed what R's dim attribute represents (max 2147483647 per dimension)
+
 # .collect validates against the template
 
     Code

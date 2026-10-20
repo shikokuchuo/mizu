@@ -713,7 +713,9 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
     /* the frame is unstaged — the remainder over budget above, or a stage
        decline: the held batches convert and the whole payload crosses by
        value — never a partial stream, never an orphaned checkout (the
-       core rolls back an uncommitted checkout at the next verb) */
+       core rolls back an uncommitted checkout at the next verb).
+       mizu_arrow_value's closed-core-handle precondition is discharged by
+       mizu_arrow_stage_held, which closes the handle on either outcome */
     SEXP xp = VECTOR_ELT(plan.anchor, plan.ncand);
     SET_VECTOR_ELT(plan.anchor, plan.frame, mizu_arrow_value(xp));
     size_t vn = frame_walk(NULL, 0, VECTOR_ELT(plan.anchor, plan.frame),

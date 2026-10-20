@@ -310,6 +310,18 @@ test_that("the template path gathers exactly what vapply returns", {
   pool_end(p)
 })
 
+test_that("the view collect's dim gate declines an unrepresentable geometry", {
+  # the gate, not the geometry: R's dim<- coerces every entry to integer
+  # range, so a dimension past INT_MAX must decline, not fabricate a
+  # matrix from a wrapped cast (d(0, 2^32 + 6) built a 6 x 0 matrix)
+  dim_of <- function(n, m) .Call(mizu:::mizu_map_dim_call, n, m)
+  expect_identical(dim_of(5, 3), c(3L, 5L))
+  expect_identical(dim_of(0, 1e5), c(100000L, 0L))
+  expect_identical(dim_of(1e5, 1e5), c(100000L, 100000L))
+  expect_snapshot(dim_of(0, 2^32 + 6), error = TRUE)
+  expect_snapshot(dim_of(2^33, 2), error = TRUE)
+})
+
 test_that("character templates assemble through the generic path", {
   p <- pool_pair()
   st <- mizu:::map_stage(

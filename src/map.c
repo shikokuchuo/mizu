@@ -596,6 +596,31 @@ SEXP mizu_map_gather(SEXP xp) {
   return out;
 }
 
+/* The view collect's matrix dim: R's dim<- coerces every entry to integer
+   range, so a header geometry with a dimension past INT_MAX declines
+   rather than fabricating a matrix from a wrapped (int) cast. Fresh
+   UNPROTECTED. */
+static SEXP map_dim_build(uint64_t n, uint64_t m) {
+  if (n > (uint64_t) INT_MAX || m > (uint64_t) INT_MAX)
+    Rf_error("mizu: map output dimensions (%llu x %llu) exceed what R's "
+             "dim attribute represents (max %d per dimension)",
+             (unsigned long long) m, (unsigned long long) n, INT_MAX);
+  SEXP dim = Rf_allocVector(INTSXP, 2);
+  INTEGER(dim)[0] = (int) m;
+  INTEGER(dim)[1] = (int) n;
+  return dim;
+}
+
+/* The dim gate as a test hook (a geometry that trips it is impractical to
+   stage): the dim the view collect would build, or its error. */
+SEXP mizu_map_dim_call(SEXP n_sexp, SEXP m_sexp) {
+  double nd = Rf_asReal(n_sexp), md = Rf_asReal(m_sexp);
+  if (!(nd >= 0) || !(md >= 0) || nd != floor(nd) || md != floor(md) ||
+      nd >= 0x1p63 || md >= 0x1p63)
+    Rf_error("mizu: invalid map dimensions");
+  return map_dim_build((uint64_t) nd, (uint64_t) md);
+}
+
 /* `.collect = "view"`: the output area wrapped as an ALTREP view over the
    map region's own pages — no gather memcpy. Names / dim / dimnames are
    applied here, not R-side: the R setters see a shared object and
@@ -620,16 +645,7 @@ SEXP mizu_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
     UNPROTECT(1);
     return view;
   }
-  SEXP dim;
-  if (n * m > (uint64_t) INT_MAX) {   /* a long vector: double dim */
-    dim = PROTECT(Rf_allocVector(REALSXP, 2));
-    REAL(dim)[0] = (double) m;
-    REAL(dim)[1] = (double) n;
-  } else {
-    dim = PROTECT(Rf_allocVector(INTSXP, 2));
-    INTEGER(dim)[0] = (int) m;
-    INTEGER(dim)[1] = (int) n;
-  }
+  SEXP dim = PROTECT(map_dim_build(n, m));
   Rf_setAttrib(view, R_DimSymbol, dim);
   if (tn != R_NilValue || nms != R_NilValue) {
     SEXP dn = PROTECT(Rf_allocVector(VECSXP, 2));

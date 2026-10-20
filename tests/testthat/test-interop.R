@@ -985,6 +985,24 @@ test_that("the runner stream writes and rejects as a plain task", {
   expect_identical(w[[3L]], as.raw(0x12)) # the task tag
   expect_identical(w[[5L]], as.raw(0x02)) # kind 2: a map runner
   expect_error(ix_read_task(ix_raw_to_hex(w)), "mizu:")
+  # the hook mirrors the submit veneer's validation (the writer cannot
+  # decline): a short seed read out of bounds before
+  expect_snapshot(
+    .Call(mizu:::mizu_interop_runner_call, "nm", 1, 5, 2L, 1),
+    error = TRUE
+  )
+  expect_snapshot(
+    .Call(mizu:::mizu_interop_runner_call, "nm", 1, c(1, NA), 2L, 1),
+    error = TRUE
+  )
+  expect_snapshot(
+    .Call(mizu:::mizu_interop_runner_call, 42, 1, NULL, 2L, 1),
+    error = TRUE
+  )
+  expect_snapshot(
+    .Call(mizu:::mizu_interop_runner_call, "nm", NA_real_, NULL, 2L, 1),
+    error = TRUE
+  )
 })
 
 test_that("the stream read dispatches, declines and fails informatively", {
@@ -1361,6 +1379,30 @@ test_that("the attr shape builder rejects malformed attribute sets", {
   expect_error(
     rd(attr_of(strv(c("a", "b")), i_dict(dim = intv(2L)))),
     "no portable home"
+  )
+})
+
+test_that("a malformed foreign factor declines", {
+  # the writer's contract the cursor does not cover, enforced at the
+  # reader: levels unique and non-NA, codes 1..k or NA
+  ix_factor <- function(codes, levels) {
+    paste0(
+      "49010f",
+      ix_write(codes) |> substring(5),
+      "0d0200000000000000",
+      "060000006c6576656c73",
+      ix_write(levels) |> substring(5),
+      "05000000636c617373",
+      ix_write("factor") |> substring(5)
+    )
+  }
+  expect_snapshot(ix_read(ix_factor(1:2, c("a", NA))), error = TRUE)
+  expect_snapshot(ix_read(ix_factor(1:2, c("a", "a"))), error = TRUE)
+  expect_snapshot(ix_read(ix_factor(c(1L, 5L), c("a", "b"))), error = TRUE)
+  # a clean factor still homes
+  expect_identical(
+    ix_read(ix_factor(c(1L, 2L, NA), c("a", "b"))),
+    factor(c("a", "b", NA), levels = c("a", "b"))
   )
 })
 
