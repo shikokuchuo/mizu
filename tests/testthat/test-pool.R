@@ -36,6 +36,32 @@ test_that("mizu_pool_create validates its parameters", {
   )
 })
 
+test_that("mizu_pool_create rejects fractional and NA geometry", {
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_pool_create, 2.5, 8L, 64L, 64L, 64L, 256L)
+  )
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_pool_create, 1L, 8L, 64.5, 64L, 64L, 256L)
+  )
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, NA_real_, 256L)
+  )
+})
+
+test_that("the pool attach and worker join entries reject an NA suffix", {
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_pool_attach_call, NA_character_)
+  )
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_pool_worker_join, NA_character_, 0L, NULL)
+  )
+})
+
 test_that("the R-level constructor validates the worker count", {
   expect_error(mizu_pool(n_workers = 0L), "at least 1")
   expect_error(

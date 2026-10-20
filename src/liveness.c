@@ -4,6 +4,12 @@
 #include <stdlib.h>
 #include "mizu.h"
 
+static SEXP mizu_live_tag;
+
+void mizu_live_init(void) {
+  mizu_live_tag = Rf_install("mizu_liveness");
+}
+
 // .Call test surface -----------------------------------------------------------
 
 static void mizu_live_finalizer(SEXP xp) {
@@ -15,7 +21,8 @@ static void mizu_live_finalizer(SEXP xp) {
 }
 
 static intptr_t mizu_live_handle(SEXP xp) {
-  if (TYPEOF(xp) != EXTPTRSXP) Rf_error("mizu: not a liveness handle");
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mizu_live_tag)
+    Rf_error("mizu: not a liveness handle");
   void *addr = R_ExternalPtrAddr(xp);
   if (addr == NULL) Rf_error("mizu: liveness handle is closed");
   return (intptr_t) addr;
@@ -28,7 +35,7 @@ SEXP mizu_live_open_call(SEXP path) {
   if (mizu_live_open(CHAR(STRING_ELT(path, 0)), &h) != 0)
     Rf_error("mizu: cannot open liveness file '%s'", CHAR(STRING_ELT(path, 0)));
   /* fd 0 / NULL handle cannot occur (R holds stdin), so NULL marks closed */
-  SEXP xp = R_MakeExternalPtr((void *) h, R_NilValue, R_NilValue);
+  SEXP xp = R_MakeExternalPtr((void *) h, mizu_live_tag, R_NilValue);
   R_RegisterCFinalizerEx(xp, mizu_live_finalizer, TRUE);
   return xp;
 }

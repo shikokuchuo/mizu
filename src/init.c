@@ -299,9 +299,11 @@ static const R_CallMethodDef CallEntries[] = {
 void R_init_mizu(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
+  mizu_cond_init();
   mizu_wrap_init();
   mizu_payload_init();
   mizu_entity_init();
+  mizu_live_init();
   mizu_channel_init();
   mizu_pool_init();
   mizu_map_init();
@@ -319,4 +321,5 @@ void R_unload_mizu(DllInfo *dll) {
   mizu_pool_fini();
   mizu_channel_fini();
   mizu_payload_fini();
+  mizu_cond_fini();
 }

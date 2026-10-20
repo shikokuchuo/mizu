@@ -131,6 +131,27 @@ NORET void mizu_stop(const char *subclass, const char *fmt, ...) {
   UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
 }
 
+/* The box's class vector, interned at load: the collect veneer branches on
+   identity with it (mizu_caught_check), so a task value merely carrying
+   the "mizu_caught" class — its class vector rebuilt by the payload read —
+   collects verbatim instead of being mistaken for a caught outcome. */
+static SEXP mizu_caught_class;
+
+void mizu_cond_init(void) {
+  mizu_caught_class = Rf_mkString("mizu_caught");
+  R_PreserveObject(mizu_caught_class);
+}
+
+void mizu_cond_fini(void) {
+  R_ReleaseObject(mizu_caught_class);
+}
+
+/* Provenance, not class (the mizu_sentinel_check discipline): TRUE only for
+   a box this file built. */
+int mizu_caught_check(SEXP x) {
+  return Rf_getAttrib(x, R_ClassSymbol) == mizu_caught_class;
+}
+
 /* Sentinel-mode wrap: the condition boxed in a length-1 list of class
    "mizu_caught", so a collect loop branches on class instead of arming a
    tryCatch handler. Only C wraps — a task value that is itself a
@@ -139,7 +160,7 @@ SEXP mizu_caught(SEXP cond) {
   PROTECT(cond);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 1));
   SET_VECTOR_ELT(out, 0, cond);
-  Rf_setAttrib(out, R_ClassSymbol, Rf_mkString("mizu_caught"));
+  Rf_setAttrib(out, R_ClassSymbol, mizu_caught_class);
   UNPROTECT(2);
   return out;
 }

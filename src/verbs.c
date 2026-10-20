@@ -3,7 +3,25 @@
    helpers carry MIZU_COLD so their call sites stay off the hot verbs'
    code layout. */
 
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 #include "mizu.h"
+
+/* A create-failure record carries the requested region size as "(N bytes)"
+   (the core's shm/channel/pool create messages); mizu_error_shm's bytes
+   field is that number structured. Open failures and validation records
+   carry no size and stay NA. */
+static double tls_record_bytes(const char *msg) {
+  const char *p = strchr(msg, '(');
+  if (p == NULL) return NA_REAL;
+  errno = 0;
+  char *end;
+  unsigned long long v = strtoull(p + 1, &end, 10);
+  if (end == p + 1 || errno == ERANGE || strncmp(end, " bytes)", 7) != 0)
+    return NA_REAL;
+  return (double) v;
+}
 
 /* Raise a create/attach/join failure off the thread-local slot, where the
    core composes the full message (size + hint included). Space/existence
@@ -15,7 +33,7 @@ NORET void mizu_r_raise_tls(void) {
   case MIZU_ERRCAT_NOSPACE:
   case MIZU_ERRCAT_NOMEMORY:
   case MIZU_ERRCAT_EXISTS:
-    mizu_stop_shm(NA_REAL, "mizu: %s", msg);
+    mizu_stop_shm(tls_record_bytes(msg), "mizu: %s", msg);
   default:
     Rf_error("mizu: %s", msg);
   }
@@ -25,11 +43,27 @@ int mizu_r_pow2(uint64_t v) {
   return v != 0 && (v & (v - 1)) == 0;
 }
 
-/* The region-name-suffix argument of the attach/join entries. */
+/* A create-geometry argument, gated before any range check: Rf_asInteger
+   on a fractional double truncates (4.9 -> 4) and NA/Inf wrap, so
+   integrality is rejected first and the per-argument range message stays
+   the failure the caller raises next. */
+double mizu_r_size_arg(SEXP x, const char *what) {
+  const double d = Rf_asReal(x);
+  if (ISNAN(d) || d < 0 || d >= 18446744073709551616.0 /* 2^64 */ ||
+      d != (double) (uint64_t) d)
+    Rf_error("mizu: %s must be a whole number", what);
+  return d;
+}
+
+/* The region-name-suffix argument of the attach/join entries. NA is
+   rejected here: CHAR(NA_STRING) is the literal "NA", which otherwise
+   fails the core's name grammar with a misleading "malformed" error. */
 const char *mizu_r_suffix_arg(SEXP suffix_sexp) {
   if (TYPEOF(suffix_sexp) != STRSXP || XLENGTH(suffix_sexp) != 1)
     Rf_error("mizu: expected a region-name suffix");
-  return CHAR(STRING_ELT(suffix_sexp, 0));
+  SEXP s = STRING_ELT(suffix_sexp, 0);
+  if (s == NA_STRING) Rf_error("mizu: suffix must not be NA");
+  return CHAR(s);
 }
 
 /* The test-only identity override (helper.R's harnesses): an integer

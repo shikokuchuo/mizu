@@ -152,15 +152,14 @@ SEXP mizu_sentinel_check(SEXP x) {
 
 SEXP mizu_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
                          SEXP arena_sexp, SEXP spin) {
-  uint64_t cap = (uint64_t) Rf_asInteger(cap_sexp);
-  uint64_t slot = (uint64_t) Rf_asInteger(slot_sexp);
-  double arena_in = Rf_asReal(arena_sexp);
+  uint64_t cap = (uint64_t) mizu_r_size_arg(cap_sexp, "capacity");
+  uint64_t slot = (uint64_t) mizu_r_size_arg(slot_sexp, "slot_size");
+  double arena_in = mizu_r_size_arg(arena_sexp, "arena_size");
   if (!mizu_r_pow2(cap) || cap < 2 || cap > (1u << 24))
     Rf_error("mizu: capacity must be a power of two between 2 and 2^24");
   if (!mizu_r_pow2(slot) || slot < 64 || slot > (1u << 20))
     Rf_error("mizu: slot_size must be a power of two between 64 and 2^20");
-  if (!(arena_in >= 0) || arena_in > 1.1e12 ||
-      (uint64_t) arena_in % 64 != 0)
+  if (arena_in > 1.1e12 || (uint64_t) arena_in % 64 != 0)
     Rf_error("mizu: arena_size must be a non-negative multiple of 64");
 
   /* the drop: the peer's bootstrap, copied into the region at create. A

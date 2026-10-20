@@ -197,12 +197,12 @@ NORET static void pool_collect_raise(mizu_r_handle *h, mizu_pool *p) {
 
 SEXP mizu_pool_create_call(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
                       SEXP deque_sexp, SEXP rslots_sexp, SEXP slot_sexp) {
-  uint64_t maxw = (uint64_t) Rf_asInteger(maxw_sexp);
-  uint64_t maxs = (uint64_t) Rf_asInteger(maxs_sexp);
-  uint64_t inj_cap = (uint64_t) Rf_asInteger(inj_sexp);
-  uint64_t deque_cap = (uint64_t) Rf_asInteger(deque_sexp);
-  uint64_t rslots = (uint64_t) Rf_asInteger(rslots_sexp);
-  uint64_t slot = (uint64_t) Rf_asInteger(slot_sexp);
+  uint64_t maxw = (uint64_t) mizu_r_size_arg(maxw_sexp, "max_workers");
+  uint64_t maxs = (uint64_t) mizu_r_size_arg(maxs_sexp, "max_submitters");
+  uint64_t inj_cap = (uint64_t) mizu_r_size_arg(inj_sexp, "injection_cap");
+  uint64_t deque_cap = (uint64_t) mizu_r_size_arg(deque_sexp, "per_worker_cap");
+  uint64_t rslots = (uint64_t) mizu_r_size_arg(rslots_sexp, "result_slots");
+  uint64_t slot = (uint64_t) mizu_r_size_arg(slot_sexp, "slot_size");
   if (maxw < 1 || maxw > MIZU_MAX_WORKERS)
     Rf_error("mizu: max_workers must be between 1 and %d", MIZU_MAX_WORKERS);
   if (maxs < 1 || maxs > 64)
@@ -786,7 +786,7 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   if (st == MIZU_TIMEOUT) return mizu_sent_timeout;
   if (st == MIZU_ERR) pool_collect_raise(h, (mizu_pool *) h->core);
   SEXP val = (SEXP) v;
-  if (Rf_inherits(val, "mizu_caught")) {
+  if (mizu_caught_check(val)) {
     if (tryflag) return val;
     mizu_cond_signal(VECTOR_ELT(val, 0));      /* no return */
   }
@@ -842,7 +842,7 @@ SEXP mizu_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   if (st == MIZU_ERR) pool_collect_raise(h, p);
   SEXP val = PROTECT((SEXP) v);
   int index = (int) idx + 1;   /* R 1-based */
-  if (Rf_inherits(val, "mizu_caught")) {
+  if (mizu_caught_check(val)) {
     SEXP cond = VECTOR_ELT(val, 0);
     if (TYPEOF(cond) == VECSXP) {
       /* a foreign map error's element index survives the position stamp */
@@ -906,7 +906,7 @@ SEXP mizu_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   if (err_idx < (size_t) n) {
     /* the first non-OK by position: signal with the 1-based index */
     SEXP val = VECTOR_ELT(out, (R_xlen_t) err_idx);
-    if (Rf_inherits(val, "mizu_caught")) {
+    if (mizu_caught_check(val)) {
       SEXP cond = VECTOR_ELT(val, 0);
       if (TYPEOF(cond) == VECSXP) {
         mizu_cond_preserve_index(cond);

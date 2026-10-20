@@ -30,6 +30,28 @@ test_that("mizu_channel_create validates its parameters", {
   )
 })
 
+test_that("mizu_channel_create rejects fractional and NA geometry", {
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_channel_create, quote(NULL), 4.9, 256L, 0, FALSE)
+  )
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 64.5, FALSE)
+  )
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_channel_create, quote(NULL), NA_integer_, 256L, 0, FALSE)
+  )
+})
+
+test_that("the channel attach entry rejects an NA suffix", {
+  expect_snapshot(
+    error = TRUE,
+    .Call(mizu:::mizu_channel_attach, NA_character_, NULL)
+  )
+})
+
 test_that("a fresh channel reports its layout and state", {
   p <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
   st <- .Call(mizu:::mizu_channel_stat, p[["host"]])

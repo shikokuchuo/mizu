@@ -15,6 +15,14 @@ test_that("the lock excludes other open file descriptions, even in-process", {
   expect_error(.Call(mizu:::mizu_live_try_call, h1), "closed")
 })
 
+test_that("a liveness handle is tagged against other extptr types", {
+  p <- channel_pair()
+  expect_error(
+    .Call(mizu:::mizu_live_try_call, p[["host"]]),
+    "not a liveness handle"
+  )
+})
+
 test_that("lock files land in the resolved per-platform directory", {
   dir <- .Call(mizu:::mizu_live_dir_call)
   expect_true(dir.exists(dir))

@@ -78,6 +78,46 @@ test_that("region create failure raises mizu_error_shm carrying bytes", {
   expect_identical(err[["bytes"]], 2^52)
 })
 
+test_that("channel create failure raises mizu_error_shm carrying bytes", {
+  # the ~2.2 TB region a 1.1e12 arena implies: Linux's tmpfs refuses the
+  # ftruncate out of hand; macOS and Windows map lazily, so the create
+  # there may not fail at all
+  skip_on_os(c("mac", "windows"))
+  err <- tryCatch(
+    .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 1.1e12, FALSE),
+    error = function(e) e
+  )
+  expect_s3_class(err, "mizu_error_shm")
+  expect_gte(err[["bytes"]], 2 * 1.1e12)
+})
+
+test_that("a task value classed mizu_caught collects verbatim", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  value <- structure(list(simpleError("boom")), class = "mizu_caught")
+  t <- mizu_submit(
+    p$ctrl,
+    structure(list(simpleError("boom")), class = "mizu_caught")
+  )
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), value)
+  t <- mizu_submit(
+    p$ctrl,
+    structure(list(simpleError("boom")), class = "mizu_caught")
+  )
+  pool_step(p)
+  expect_identical(
+    mizu_collect_any(list(t), 5),
+    list(index = 1L, value = value)
+  )
+  t <- mizu_submit(
+    p$ctrl,
+    structure(list(simpleError("boom")), class = "mizu_caught")
+  )
+  pool_step(p)
+  expect_identical(mizu_collect_all(list(t), 5), list(value))
+})
+
 test_that("mizu_error_remote: class test, message and re-raise dispatch", {
   e <- .Call(
     mizu:::mizu_interop_read_call,

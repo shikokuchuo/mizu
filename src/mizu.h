@@ -47,7 +47,7 @@ typedef struct mizu_zc_cache_s {
    prot chain (GC-visible slots) and the zc view cache — keyed on SEXP views,
    so it cannot live in the R-free core. Channel prot: [0] zoc wraps,
    [1] pin chain, [2] decline record. Pool prot: [0] eval env, [1] trace fn,
-   [2] map cache, [3] zoc wraps, [4] pin chain. */
+   [2] map cache, [3] zoc wraps, [4] pin chain, [5] decline record. */
 typedef struct mizu_r_handle_s {
   mizu_handle *core;         /* the core handle; NULL after destroy */
   SEXP prot;                /* the extptr's prot chain */
@@ -61,8 +61,8 @@ typedef struct mizu_r_handle_s {
                                mark's armed state, for the trace thunk's
                                lift-and-restore (the core has no read API) */
   int pin_slot;             /* prot slot of the pin chain */
-  int decline_slot;         /* channel: prot slot of the decline record (a
-                               stashed condition, R_NilValue when empty) */
+  int decline_slot;         /* prot slot of the decline record (a stashed
+                               condition, R_NilValue when empty) */
   uint32_t pins_dead;       /* tombstoned pin cells awaiting splice */
   uint32_t pins_total;      /* pin chain length (live + dead) */
   uint32_t peer_lang;       /* channel: the peer's MIZU_LANG_* byte (0 unset).
@@ -454,6 +454,7 @@ void mizu_cond_preserve_index(SEXP cond);
 SEXP mizu_cond_set_field(SEXP cond, const char *field, SEXP value);
 SEXP mizu_cond_set_index(SEXP cond, int index);
 SEXP mizu_caught(SEXP cond);
+int mizu_caught_check(SEXP x);
 SEXP mizu_caught_cond(const char *subclass, const char *fmt, ...)
   R_PRINTF_FORMAT(2, 3);
 SEXP mizu_caught_died(int slot, double pid, const char *fmt, ...)
@@ -492,6 +493,7 @@ void mizu_r_sweep(void *ctx);
 /* Raise a create/attach/join failure off the core's thread-local slot. */
 NORET void mizu_r_raise_tls(void) MIZU_COLD;
 int mizu_r_pow2(uint64_t v);
+double mizu_r_size_arg(SEXP x, const char *what);
 const char *mizu_r_suffix_arg(SEXP suffix_sexp);
 uint64_t mizu_r_ident_override(SEXP ident_sexp, uint64_t dflt);
 /* The seconds argument of every verb's timeout: NA (from NA input or any
@@ -516,9 +518,11 @@ mizu_shm *mizu_shm_unwrap(SEXP x);
 
 // init / fini hooks -----------------------------------------------------------------
 
+void mizu_cond_init(void);
 void mizu_wrap_init(void);
 void mizu_payload_init(void);
 void mizu_entity_init(void);
+void mizu_live_init(void);
 void mizu_channel_init(void);
 void mizu_pool_init(void);
 void mizu_map_init(void);
@@ -527,6 +531,7 @@ void mizu_interop_init(void);
 void mizu_payload_fini(void);
 void mizu_channel_fini(void);
 void mizu_pool_fini(void);
+void mizu_cond_fini(void);
 
 /* map.c's srcref strip, shared with the codec's closure and task writes. */
 extern SEXP mizu_srcref_sym;
