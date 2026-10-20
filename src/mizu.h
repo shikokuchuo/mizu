@@ -528,6 +528,7 @@ void mizu_pool_init(void);
 void mizu_map_init(void);
 void mizu_zc_init(void);
 void mizu_interop_init(void);
+void mizu_zc_fini(void);
 void mizu_payload_fini(void);
 void mizu_channel_fini(void);
 void mizu_pool_fini(void);

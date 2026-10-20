@@ -111,6 +111,12 @@ void mizu_zc_init(void) {
   mizu_view_set_open_hook(mizu_zc_open);
 }
 
+void mizu_zc_fini(void) {
+  R_ReleaseObject(mizu_zc_marks);
+  mizu_zc_marks = R_NilValue;
+  mizu_zc_nmarks = 0;
+}
+
 // View release ------------------------------------------------------------------
 
 /* One per wrapped view: the refcount sub, armed only after the add lands

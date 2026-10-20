@@ -712,8 +712,7 @@ SEXP mizu_view_u64_rewrap(SEXP x) {
   mizu_view_vec *src = (mizu_view_vec *) R_ExternalPtrAddr(d1);
   mizu_view_u64 *v = (mizu_view_u64 *) malloc(sizeof(mizu_view_u64));
   if (v == NULL) Rf_error("mizu: allocation failure");
-  v->owned = src->owned;                /* the release record transfers */
-  src->owned.release = NULL;
+  v->owned = src->owned;
   v->data = src->data;
   v->length = src->length;
   v->index = src->index;
@@ -721,6 +720,8 @@ SEXP mizu_view_u64_rewrap(SEXP x) {
   SEXP ptr = PROTECT(R_MakeExternalPtr(v, mizu_view_owned_tag,
                                        R_ExternalPtrProtected(d1)));
   R_RegisterCFinalizerEx(ptr, mizu_view_u64_finalizer, TRUE);
+  /* the release record transfers only once v's finalizer owns it */
+  src->owned.release = NULL;
   SEXP result = R_new_altrep(mizu_view_u64_class, ptr, R_NilValue);
   UNPROTECT(1);
   return result;
