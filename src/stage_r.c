@@ -772,17 +772,18 @@ static SEXP pool_task_spec(struct mizu_task_ctx *c,
   return value;
 }
 
-/* The mizu namespace and the runner entry, cached on first use (the
-   arrow_ns pattern — a worker's namespace cannot unload, and the lookups
-   otherwise repeat per runner). */
-static SEXP runner_ns, fn_map_runner_ix;
-
+/* The mizu namespace and the runner entry, cached on first use on the
+   precious root (the arrow_ns pattern — a worker's namespace cannot
+   unload, and the lookups otherwise repeat per runner). */
 static void runner_ns_cache(void) {
-  if (runner_ns != NULL) return;
-  runner_ns = R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu")));
-  R_PreserveObject(runner_ns);
-  fn_map_runner_ix = Rf_findFun(Rf_install("map_runner_ix"), runner_ns);
-  R_PreserveObject(fn_map_runner_ix);
+  if (mizu_priv(MIZU_PRIV_RUNNER_NS) != R_NilValue) return;
+  SEXP runner_ns =
+    PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
+  SEXP fn_map_runner_ix =
+    PROTECT(Rf_findFun(Rf_install("map_runner_ix"), runner_ns));
+  mizu_priv_set(MIZU_PRIV_RUNNER_NS, runner_ns);
+  mizu_priv_set(MIZU_PRIV_FN_MAP_RUNNER, fn_map_runner_ix);
+  UNPROTECT(2);
 }
 
 /* The kind-2 (runner) path: decode the region reference and hand it to
@@ -797,9 +798,10 @@ static SEXP pool_task_runner(struct mizu_task_ctx *c,
   *c->identp = MIZU_IDENT(MIZU_LANG_BYTES, 0);
   SEXP dec = PROTECT(mizu_interop_exec_runner(bytes, blen, c->identp));
   runner_ns_cache();
-  SEXP call = PROTECT(Rf_lang4(fn_map_runner_ix, VECTOR_ELT(dec, 0),
-                               VECTOR_ELT(dec, 1), VECTOR_ELT(dec, 2)));
-  SEXP value = Rf_eval(call, runner_ns);
+  SEXP call = PROTECT(Rf_lang4(mizu_priv(MIZU_PRIV_FN_MAP_RUNNER),
+                               VECTOR_ELT(dec, 0), VECTOR_ELT(dec, 1),
+                               VECTOR_ELT(dec, 2)));
+  SEXP value = Rf_eval(call, mizu_priv(MIZU_PRIV_RUNNER_NS));
   UNPROTECT(2);
   pool_result_gate(value, c->sink, *c->identp);
   return value;

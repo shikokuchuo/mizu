@@ -300,9 +300,25 @@ static const R_CallMethodDef CallEntries[] = {
   {NULL, NULL, 0}
 };
 
+/* The private precious root (mizu.h): one preserved VECSXP whose slots hold
+   every mutable or cached package-level SEXP. Preserved first at load,
+   released last at unload. */
+SEXP mizu_precious;
+
+static void mizu_priv_init(void) {
+  mizu_precious = Rf_allocVector(VECSXP, MIZU_PRIV_MAX);
+  R_PreserveObject(mizu_precious);
+}
+
+static void mizu_priv_fini(void) {
+  R_ReleaseObject(mizu_precious);
+  mizu_precious = R_NilValue;
+}
+
 void R_init_mizu(DllInfo *dll) {
   R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
   R_useDynamicSymbols(dll, FALSE);
+  mizu_priv_init();
   mizu_cond_init();
   mizu_wrap_init();
   mizu_payload_init();
@@ -313,18 +329,25 @@ void R_init_mizu(DllInfo *dll) {
   mizu_map_init();
   mizu_zc_init();
   mizu_interop_init();
-  mizu_view_altrep_init(dll);
+  SEXP wraps = PROTECT(Rf_allocVector(VECSXP, MIZU_VIEW_CACHE_MAX));
+  mizu_priv_set(MIZU_PRIV_VIEW_WRAPS, wraps);
+  mizu_view_altrep_init(dll, wraps);
+  UNPROTECT(1);
 }
 
 /* Called by R if the DLL is ever unloaded (the package deliberately has no
    .onUnload — see R/mizu-package.R — so this is dev-tooling territory):
-   death-listener teardown, then the preserved-object releases in reverse
-   init order. The ALTREP class registrations stay — R has no unregister. */
+   death-listener teardown, then the singleton releases in reverse init
+   order, then the precious root. The ALTREP class registrations stay — R
+   has no unregister. */
 void R_unload_mizu(DllInfo *dll) {
   mizu_death_listener_teardown();
+  mizu_view_altrep_fini();
+  mizu_interop_fini();
   mizu_zc_fini();
   mizu_pool_fini();
   mizu_channel_fini();
   mizu_payload_fini();
   mizu_cond_fini();
+  mizu_priv_fini();
 }

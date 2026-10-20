@@ -388,8 +388,9 @@ void mizu_zc_init(void);
 /* The by-reference emission record: the mark list holds every view a
    by-reference emission marked REFHELD since the last reset — the stage's
    pin-and-no-keeperless signal (a payload carrying a reference must pin
-   and cannot claim MIZU_AUX_F_KEEPERLESS). Reset at a stage's entry and
-   again once a worker's outcome write has consumed it; read after it. */
+   and cannot claim MIZU_AUX_F_KEEPERLESS). The list rides the precious
+   root's MIZU_PRIV_ZC_MARKS slot. Reset at a stage's entry and again once
+   a worker's outcome write has consumed it; read after it. */
 void mizu_zc_ref_reset(void);
 int mizu_zc_ref_fired(void);
 /* The funnel every by-reference emission goes through: mark the view's
@@ -516,6 +517,39 @@ SEXP mizu_shm_wrap_consumer(mizu_shm *shm);
 SEXP mizu_shm_wrap_host(mizu_shm *shm);
 mizu_shm *mizu_shm_unwrap(SEXP x);
 
+// The private precious root ---------------------------------------------------------
+
+/* The private precious root (init.c): the package's one entry on R's
+   precious list beyond the read-only singletons and sentinels. Every
+   mutable or cached package-level SEXP rides a slot here; the root's
+   identity never changes (slot contents may — the zc mark list grows, the
+   view cache wraps rotate). Preserved first at load, released last at
+   unload. */
+enum {
+  MIZU_PRIV_ZC_MARKS,          /* zc.c: REFHELD mark list (growable) */
+  MIZU_PRIV_VIEW_WRAPS,        /* view.c: consumer-mapping cache wraps
+                                  (borrowed there) */
+  MIZU_PRIV_MIZU_NS,           /* arrow.c: the mizu namespace */
+  MIZU_PRIV_FN_ARROW_NS,
+  MIZU_PRIV_FN_ARROW_TO_VALUE,
+  MIZU_PRIV_FN_BATCHES_TO_VALUE,
+  MIZU_PRIV_NANO_NS,           /* arrow.c: the nanoarrow namespace */
+  MIZU_PRIV_FN_AS_STREAM,
+  MIZU_PRIV_FN_ALLOC_SCHEMA,
+  MIZU_PRIV_FN_ALLOC_ARRAY,
+  MIZU_PRIV_RUNNER_NS,         /* stage_r.c: the mizu namespace (runner path) */
+  MIZU_PRIV_FN_MAP_RUNNER,
+  MIZU_PRIV_MAX
+};
+
+extern SEXP mizu_precious;
+static inline SEXP mizu_priv(int slot) {
+  return VECTOR_ELT(mizu_precious, slot);
+}
+static inline void mizu_priv_set(int slot, SEXP x) {
+  SET_VECTOR_ELT(mizu_precious, slot, x);
+}
+
 // init / fini hooks -----------------------------------------------------------------
 
 void mizu_cond_init(void);
@@ -528,6 +562,7 @@ void mizu_pool_init(void);
 void mizu_map_init(void);
 void mizu_zc_init(void);
 void mizu_interop_init(void);
+void mizu_interop_fini(void);
 void mizu_zc_fini(void);
 void mizu_payload_fini(void);
 void mizu_channel_fini(void);

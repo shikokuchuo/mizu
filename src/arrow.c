@@ -67,33 +67,32 @@ int mizu_arrow_check(SEXP x) {
   return 0;
 }
 
-/* The mizu namespace and the R helpers, cached on first use (they do not
-   exist when R_init_mizu runs — the namespace's R code loads after the DLL
-   — and R_FindNamespace + the lookups otherwise repeat per send). The
-   nanoarrow namespace and its entry points sit behind the requireNamespace
-   gate (mizu:::arrow_ns), cached by nano_gate on the first pull. */
-static SEXP mizu_ns;
-static SEXP fn_arrow_ns, fn_arrow_to_value, fn_batches_to_value;
-static SEXP nano_ns;
-static SEXP fn_as_stream, fn_alloc_schema, fn_alloc_array;
-
+/* The mizu namespace and the R helpers, cached on first use on the precious
+   root (they do not exist when R_init_mizu runs — the namespace's R code
+   loads after the DLL — and R_FindNamespace + the lookups otherwise repeat
+   per send). The nanoarrow namespace and its entry points sit behind the
+   requireNamespace gate (mizu:::arrow_ns), cached by nano_gate on the first
+   pull. */
 static void arrow_ns(void) {
-  if (mizu_ns != NULL) return;
-  mizu_ns = R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu")));
-  R_PreserveObject(mizu_ns);
-  fn_arrow_ns = Rf_findFun(Rf_install("arrow_ns"), mizu_ns);
-  R_PreserveObject(fn_arrow_ns);
-  fn_arrow_to_value = Rf_findFun(Rf_install("arrow_to_value"), mizu_ns);
-  R_PreserveObject(fn_arrow_to_value);
-  fn_batches_to_value =
-    Rf_findFun(Rf_install("arrow_batches_to_value"), mizu_ns);
-  R_PreserveObject(fn_batches_to_value);
+  if (mizu_priv(MIZU_PRIV_MIZU_NS) != R_NilValue) return;
+  SEXP mizu_ns =
+    PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
+  SEXP fn_arrow_ns = PROTECT(Rf_findFun(Rf_install("arrow_ns"), mizu_ns));
+  SEXP fn_arrow_to_value =
+    PROTECT(Rf_findFun(Rf_install("arrow_to_value"), mizu_ns));
+  SEXP fn_batches_to_value =
+    PROTECT(Rf_findFun(Rf_install("arrow_batches_to_value"), mizu_ns));
+  mizu_priv_set(MIZU_PRIV_MIZU_NS, mizu_ns);
+  mizu_priv_set(MIZU_PRIV_FN_ARROW_NS, fn_arrow_ns);
+  mizu_priv_set(MIZU_PRIV_FN_ARROW_TO_VALUE, fn_arrow_to_value);
+  mizu_priv_set(MIZU_PRIV_FN_BATCHES_TO_VALUE, fn_batches_to_value);
+  UNPROTECT(4);
 }
 
 /* fn() in the mizu namespace, the fresh result returned UNPROTECTED. */
 static SEXP arrow_call0(SEXP fn) {
   SEXP call = PROTECT(Rf_lang1(fn));
-  SEXP out = Rf_eval(call, mizu_ns);
+  SEXP out = Rf_eval(call, mizu_priv(MIZU_PRIV_MIZU_NS));
   UNPROTECT(1);
   return out;
 }
@@ -101,7 +100,7 @@ static SEXP arrow_call0(SEXP fn) {
 /* fn(arg) in the mizu namespace, the fresh result returned UNPROTECTED. */
 static SEXP arrow_call1(SEXP fn, SEXP arg) {
   SEXP call = PROTECT(Rf_lang2(fn, arg));
-  SEXP out = Rf_eval(call, mizu_ns);
+  SEXP out = Rf_eval(call, mizu_priv(MIZU_PRIV_MIZU_NS));
   UNPROTECT(1);
   return out;
 }
@@ -109,28 +108,29 @@ static SEXP arrow_call1(SEXP fn, SEXP arg) {
 /* fn(arg1, arg2) in the mizu namespace, the fresh result UNPROTECTED. */
 static SEXP arrow_call2(SEXP fn, SEXP arg1, SEXP arg2) {
   SEXP call = PROTECT(Rf_lang3(fn, arg1, arg2));
-  SEXP out = Rf_eval(call, mizu_ns);
+  SEXP out = Rf_eval(call, mizu_priv(MIZU_PRIV_MIZU_NS));
   UNPROTECT(1);
   return out;
 }
 
 /* The requireNamespace gate: the first pull evals mizu:::arrow_ns() (its
-   error is the "nanoarrow required" text) and preserves the namespace and
+   error is the "nanoarrow required" text) and caches the namespace and
    entry points it returns. */
 static void nano_gate(void) {
-  if (nano_ns != NULL) return;
+  if (mizu_priv(MIZU_PRIV_NANO_NS) != R_NilValue) return;
   arrow_ns();
-  nano_ns = arrow_call0(fn_arrow_ns);
-  R_PreserveObject(nano_ns);
-  fn_as_stream =
-    Rf_findFun(Rf_install("as_nanoarrow_array_stream"), nano_ns);
-  R_PreserveObject(fn_as_stream);
-  fn_alloc_schema =
-    Rf_findFun(Rf_install("nanoarrow_allocate_schema"), nano_ns);
-  R_PreserveObject(fn_alloc_schema);
-  fn_alloc_array =
-    Rf_findFun(Rf_install("nanoarrow_allocate_array"), nano_ns);
-  R_PreserveObject(fn_alloc_array);
+  SEXP nano_ns = PROTECT(arrow_call0(mizu_priv(MIZU_PRIV_FN_ARROW_NS)));
+  SEXP fn_as_stream =
+    PROTECT(Rf_findFun(Rf_install("as_nanoarrow_array_stream"), nano_ns));
+  SEXP fn_alloc_schema =
+    PROTECT(Rf_findFun(Rf_install("nanoarrow_allocate_schema"), nano_ns));
+  SEXP fn_alloc_array =
+    PROTECT(Rf_findFun(Rf_install("nanoarrow_allocate_array"), nano_ns));
+  mizu_priv_set(MIZU_PRIV_NANO_NS, nano_ns);
+  mizu_priv_set(MIZU_PRIV_FN_AS_STREAM, fn_as_stream);
+  mizu_priv_set(MIZU_PRIV_FN_ALLOC_SCHEMA, fn_alloc_schema);
+  mizu_priv_set(MIZU_PRIV_FN_ALLOC_ARRAY, fn_alloc_array);
+  UNPROTECT(4);
 }
 
 // The held pulled state ------------------------------------------------------
@@ -201,7 +201,7 @@ NORET static void arrow_stream_raise(ArrowArrayStream *st) {
    one-region design). The fresh extptr is returned UNPROTECTED. */
 SEXP mizu_arrow_pull(SEXP x) {
   nano_gate();
-  SEXP stream = PROTECT(arrow_call1(fn_as_stream, x));
+  SEXP stream = PROTECT(arrow_call1(mizu_priv(MIZU_PRIV_FN_AS_STREAM), x));
   ArrowArrayStream *st = (ArrowArrayStream *) R_ExternalPtrAddr(stream);
   mizu_arrow_held *hd = (mizu_arrow_held *) calloc(1, sizeof *hd);
   if (hd == NULL) Rf_error("mizu: allocation failure");
@@ -325,19 +325,21 @@ SEXP mizu_arrow_value(SEXP xp) {
   nano_gate();
   mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
   if (hd->nonstruct)
-    return arrow_call1(fn_arrow_to_value, R_ExternalPtrProtected(xp));
-  SEXP schema = PROTECT(arrow_call0(fn_alloc_schema));
+    return arrow_call1(mizu_priv(MIZU_PRIV_FN_ARROW_TO_VALUE),
+                       R_ExternalPtrProtected(xp));
+  SEXP schema = PROTECT(arrow_call0(mizu_priv(MIZU_PRIV_FN_ALLOC_SCHEMA)));
   memcpy(R_ExternalPtrAddr(schema), &hd->schema, sizeof(ArrowSchema));
   hd->schema.release = NULL;
   SEXP batches = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) hd->nbatches));
   for (size_t i = 0; i < hd->nbatches; i++) {
-    SEXP arr = PROTECT(arrow_call0(fn_alloc_array));
+    SEXP arr = PROTECT(arrow_call0(mizu_priv(MIZU_PRIV_FN_ALLOC_ARRAY)));
     memcpy(R_ExternalPtrAddr(arr), &hd->batches[i], sizeof(ArrowArray));
     hd->batches[i].release = NULL;
     SET_VECTOR_ELT(batches, (R_xlen_t) i, arr);
     UNPROTECT(1);
   }
-  SEXP out = PROTECT(arrow_call2(fn_batches_to_value, schema, batches));
+  SEXP out = PROTECT(
+    arrow_call2(mizu_priv(MIZU_PRIV_FN_BATCHES_TO_VALUE), schema, batches));
   SEXP plain = arrow_materialize(out);
   UNPROTECT(3);
   return plain;

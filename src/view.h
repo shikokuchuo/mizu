@@ -144,7 +144,11 @@ static inline int mizu_view_flags_known(const unsigned char *base) {
 
 // altrep.c --------------------------------------------------------------------
 
-void mizu_view_altrep_init(DllInfo *dll);
+/* The embedder roots a fresh NIL-filled VECSXP(MIZU_VIEW_CACHE_MAX) for the
+   session and hands it over; the layer borrows it (no preserve). fini
+   completes the unload: the individually preserved singletons' release. */
+void mizu_view_altrep_init(DllInfo *dll, SEXP cache_wraps);
+void mizu_view_altrep_fini(void);
 
 /* bit64-compatible int64: the class singleton (constructed and preserved in
    mizu_view_altrep_init; its interned CHARSXP doubles as the probe's

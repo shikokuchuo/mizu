@@ -1207,7 +1207,8 @@ static SEXP mizu_view_make_result(mizu_shm *shm) {
    identifier then reads stale-but-valid pages instead of erroring "not
    found") — unreachable in-protocol, where the sender's keeper pins the
    region through the read. */
-static SEXP mizu_view_cache_wraps;  /* VECSXP(MIZU_VIEW_CACHE_MAX), preserved at init */
+static SEXP mizu_view_cache_wraps;  /* VECSXP(MIZU_VIEW_CACHE_MAX), borrowed:
+                                       rooted by the embedder for the session */
 static char mizu_view_cache_names[MIZU_VIEW_CACHE_MAX][MIZU_NAME_MAX];
 static uint8_t mizu_view_cache_len[MIZU_VIEW_CACHE_MAX];   /* 0 = empty slot */
 static uint64_t mizu_view_cache_stamp[MIZU_VIEW_CACHE_MAX];
@@ -2937,21 +2938,22 @@ static R_altrep_class_t mizu_view_register_vec_class(mizu_view_make_class_fn mak
   return cls;
 }
 
-void mizu_view_altrep_init(DllInfo *dll) {
+void mizu_view_altrep_init(DllInfo *dll, SEXP cache_wraps) {
 
   mizu_view_shm_tag = Rf_install(MIZU_VIEW_TAG_SHM);
   mizu_view_host_tag = Rf_install(MIZU_VIEW_TAG_HOST);
   mizu_view_owned_tag = Rf_install(MIZU_VIEW_TAG_OWNED);
 
   /* the integer64 class singleton: a STRSXP does not self-root like an
-     interned tag, so preserve it explicitly (the layer has no fini) */
+     interned tag, so preserve it explicitly (released at fini) */
   mizu_view_int64_class = Rf_mkString("integer64");
   R_PreserveObject(mizu_view_int64_class);
 
-  /* the consumer-mapping cache's wraps vector (fresh VECSXP is NIL-filled;
-     a name_len of 0 marks an empty slot) */
-  mizu_view_cache_wraps = Rf_allocVector(VECSXP, MIZU_VIEW_CACHE_MAX);
-  R_PreserveObject(mizu_view_cache_wraps);
+  /* the consumer-mapping cache's wraps vector, borrowed: the embedder roots
+     a fresh NIL-filled VECSXP(MIZU_VIEW_CACHE_MAX) for the session (mizu:
+     the precious root, MIZU_PRIV_VIEW_WRAPS; a name_len of 0 marks an empty
+     slot) */
+  mizu_view_cache_wraps = cache_wraps;
 
   /* ALTLIST class */
   mizu_view_list_class = R_make_altlist_class("mizu_list", "mizu", dll);
@@ -3017,4 +3019,8 @@ void mizu_view_altrep_init(DllInfo *dll) {
   R_set_altrep_Serialized_state_method(mizu_view_string_class,
                                        mizu_view_string_Serialized_state);
   R_set_altrep_Unserialize_method(mizu_view_string_class, mizu_view_string_Unserialize);
+}
+
+void mizu_view_altrep_fini(void) {
+  R_ReleaseObject(mizu_view_int64_class);
 }

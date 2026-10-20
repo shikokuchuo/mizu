@@ -62,7 +62,6 @@ static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminu
    promise bindings — keeps an unkept argument referenced past the
    eval, so nothing short of a collection can tell one from a view the
    task's R code kept. */
-static SEXP mizu_zc_marks;
 static int mizu_zc_nmarks;
 
 static void zc_list_clear(SEXP list, int *pn) {
@@ -72,26 +71,27 @@ static void zc_list_clear(SEXP list, int *pn) {
   *pn = 0;
 }
 
-void mizu_zc_ref_reset(void) { zc_list_clear(mizu_zc_marks, &mizu_zc_nmarks); }
+void mizu_zc_ref_reset(void) {
+  zc_list_clear(mizu_priv(MIZU_PRIV_ZC_MARKS), &mizu_zc_nmarks);
+}
 int mizu_zc_ref_fired(void) { return mizu_zc_nmarks > 0; }
 
-/* Append to a preserved list, doubling on growth. The pushed view is
-   always anchored elsewhere already (the staged object), so the list is
-   a record, never the last reference. */
-static SEXP zc_list_push(SEXP list, int *pn, SEXP x) {
+/* Append to the mark list on the precious root, doubling on growth. The
+   pushed view is always anchored elsewhere already (the staged object), so
+   the list is a record, never the last reference. */
+static void zc_list_push(int *pn, SEXP x) {
   const int n = *pn;
+  SEXP list = mizu_priv(MIZU_PRIV_ZC_MARKS);
   if (n >= XLENGTH(list)) {
     SEXP bigger = PROTECT(Rf_allocVector(VECSXP, n == 0 ? 8 : 2 * n));
     for (int i = 0; i < n; i++)
       SET_VECTOR_ELT(bigger, i, VECTOR_ELT(list, i));
-    R_PreserveObject(bigger);
-    R_ReleaseObject(list);
+    mizu_priv_set(MIZU_PRIV_ZC_MARKS, bigger);
     UNPROTECT(1);
     list = bigger;
   }
   SET_VECTOR_ELT(list, n, x);
   *pn = n + 1;
-  return list;
 }
 
 void mizu_zc_ref_mark(SEXP x);
@@ -103,8 +103,9 @@ static void mizu_zc_mizl_loans(unsigned char *base, int64_t region_size,
 void mizu_zc_init(void) {
   mizu_rel_tag = Rf_install("mizu_view_release");
   mizu_shm_tag_sym = Rf_install(MIZU_VIEW_TAG_SHM);
-  mizu_zc_marks = Rf_allocVector(VECSXP, 0);
-  R_PreserveObject(mizu_zc_marks);
+  SEXP marks = PROTECT(Rf_allocVector(VECSXP, 0));
+  mizu_priv_set(MIZU_PRIV_ZC_MARKS, marks);
+  UNPROTECT(1);
   mizu_view_set_wire_hooks(mizu_zc_ref_mark, mizu_zc_wire_resolve);
   /* the vendored resolve cache opens through mizu's split open, so every
      consumer mapping — cached or prep-path — has a writable page 0 */
@@ -112,8 +113,8 @@ void mizu_zc_init(void) {
 }
 
 void mizu_zc_fini(void) {
-  R_ReleaseObject(mizu_zc_marks);
-  mizu_zc_marks = R_NilValue;
+  /* no release — the precious root outlives it (the unload order) */
+  mizu_priv_set(MIZU_PRIV_ZC_MARKS, R_NilValue);
   mizu_zc_nmarks = 0;
 }
 
@@ -898,7 +899,7 @@ static SEXP mizu_view_terminus(SEXP x) {
    and the vendored cache's hook open alike — so the flag store goes
    straight through the chain terminus. */
 void mizu_zc_ref_mark(SEXP x) {
-  mizu_zc_marks = zc_list_push(mizu_zc_marks, &mizu_zc_nmarks, x);
+  zc_list_push(&mizu_zc_nmarks, x);
   SEXP terminus = mizu_view_terminus(x);
   if (terminus == R_NilValue) return;
   mizu_shm *shm = (mizu_shm *) R_ExternalPtrAddr(terminus);

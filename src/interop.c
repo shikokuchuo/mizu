@@ -2824,3 +2824,13 @@ void mizu_interop_init(void) {
                             mizu_interop_attrs_blob_read);
   mizu_view_set_attrs_parse_hook(mizu_interop_attrs_blob_parse);
 }
+
+void mizu_interop_fini(void) {
+  R_ReleaseObject(ix_ref_marker_class);
+  R_ReleaseObject(ix_ordered_class);
+  R_ReleaseObject(ix_posixct_class);
+  R_ReleaseObject(ix_frame_class);
+  R_ReleaseObject(ix_factor_class);
+  R_ReleaseObject(ix_difftime_class);
+  R_ReleaseObject(ix_date_class);
+}
