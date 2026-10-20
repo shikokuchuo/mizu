@@ -21,6 +21,11 @@ static SEXP mizu_make_sentinel(const char *value, const char *cls) {
   SET_STRING_ELT(klass, 1, Rf_mkChar("mizu_sentinel"));
   Rf_setAttrib(s, R_ClassSymbol, klass);
   R_PreserveObject(s);
+  /* handed out by identity on every terminal return: an R-level mutation
+     must duplicate, never corrupt the singleton */
+#if R_VERSION >= R_Version(4, 5, 0)
+  MARK_NOT_MUTABLE(s);
+#endif
   UNPROTECT(2);
   return s;
 }

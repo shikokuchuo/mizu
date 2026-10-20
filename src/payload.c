@@ -106,7 +106,7 @@ int mizu_str1_stage(mizu_slot_hdr *hdr, unsigned char *payload,
    serves both the submitter (mizu_submit's capture) and the worker (the
    task-frame read), so a constant task allocates no VECSXP(0) on either
    side. Read-only everywhere it appears — marked not-mutable, so a stray
-   write fails loudly instead of corrupting every task. */
+   R-level write duplicates instead of corrupting every task. */
 static SEXP empty_args;
 
 SEXP mizu_empty_args(void) {

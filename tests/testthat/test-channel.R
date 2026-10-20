@@ -254,6 +254,18 @@ test_that("sentinels are class-tagged package constants", {
   expect_identical(t1, t2)
 })
 
+test_that("sentinels deflect in-place mutation", {
+  skip_if(getRversion() < "4.5.0")
+  p <- channel_pair()
+  t <- mizu_recv(p[["host"]], 0)
+  attr(t, "note") <- "x"
+  t[1] <- "corrupt"
+  expect_identical(attr(t, "note"), "x")
+  fresh <- mizu_recv(p[["host"]], 0)
+  expect_identical(as.character(fresh), "timeout")
+  expect_null(attr(fresh, "note"))
+})
+
 test_that("mizu_is_sentinel tests provenance, not class", {
   p <- channel_pair()
   t <- mizu_recv(p[["host"]], 0)
