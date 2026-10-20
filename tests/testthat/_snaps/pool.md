@@ -38,6 +38,31 @@
       Error:
       ! mizu: suffix must not be NA
 
+# the R-level constructor validates max_workers (L35)
+
+    Code
+      mizu_pool(max_workers = NA)
+    Condition
+      Error:
+      ! mizu: max_workers must be at least 1
+
+---
+
+    Code
+      mizu_pool(max_workers = 0L)
+    Condition
+      Error:
+      ! mizu: max_workers must be at least 1
+
+# mizu_spawn_workers is controller-only, spawning nothing otherwise (L36)
+
+    Code
+      mizu_spawn_workers(sub, 1L, launcher = function(token, slot) spawned <<- TRUE,
+      startup_timeout = 0.2)
+    Condition
+      Error:
+      ! mizu: only the controller can resize a pool
+
 # the default pool validates its type
 
     Code

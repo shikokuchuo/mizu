@@ -1,3 +1,11 @@
+# a spec stream declines a seed offset escaping exact arithmetic (L33)
+
+    Code
+      mizu:::map_stage_stream(p[["ctrl"]], 1:30, f, list(), seed = c(42, 2^53 - 14))
+    Condition
+      Error:
+      ! mizu: .seed[2] + length(.x) must stay within 2^53, the exact seed offset range
+
 # view collect errors on a streaming spec map, informatively
 
     Code

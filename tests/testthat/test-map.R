@@ -1218,6 +1218,8 @@ test_that("a vector .seed is validated", {
     error = TRUE,
     run_map(p, 1:4, identity, seed = c(42, 2^53 + 2))
   )
+  # a fractional seed fails the same integer gate (L32)
+  expect_snapshot(error = TRUE, run_map(p, 1:4, identity, seed = 1.5))
   # 2^53 itself still seeks exactly
   expect_length(run_map(p, 1:2, function(i) runif(1), seed = c(42, 2^53)), 2L)
   pool_end(p)
@@ -1240,6 +1242,34 @@ test_that("seeded chunks restore the evaluating process's RNG state", {
   invisible(run_map(p, 1:4, function(i) runif(1), chunks = 2, seed = 9L))
   expect_false(exists(".Random.seed", envir = globalenv(), inherits = FALSE))
   expect_identical(RNGkind()[1L], "Mersenne-Twister")
+  pool_end(p)
+})
+
+test_that("seeded chunks restore RNG kinds a task's f switched (L34)", {
+  p <- pool_pair()
+  # the lazy-worker shape: with no .Random.seed of its own, nothing masks
+  # an f that switches normal.kind or sample.kind
+  os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
+  if (!is.null(os)) {
+    rm(".Random.seed", envir = globalenv())
+  }
+  rk <- RNGkind()
+  invisible(run_map(
+    p,
+    1:4,
+    function(i) {
+      RNGkind(normal.kind = "Box-Muller")
+      suppressWarnings(RNGkind(sample.kind = "Rounding"))
+      runif(1)
+    },
+    chunks = 2,
+    seed = 9L
+  ))
+  expect_identical(RNGkind(), rk)
+  expect_false(exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+  if (!is.null(os)) {
+    assign(".Random.seed", os, envir = globalenv())
+  }
   pool_end(p)
 })
 
@@ -1288,6 +1318,15 @@ test_that("a deadline already expired at submit stages no tasks", {
     unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
+  pool_end(p)
+})
+
+test_that("map_run rejects an NA .timeout instead of waiting forever (L31)", {
+  p <- pool_pair()
+  st <- mizu:::map_stage(p[["ctrl"]], 1:4, identity, list())
+  expect_snapshot(error = TRUE, mizu:::map_run(p[["ctrl"]], st, NA_real_))
+  expect_snapshot(error = TRUE, mizu:::map_run(p[["ctrl"]], st, NaN))
+  expect_snapshot(error = TRUE, mizu:::map_run(p[["ctrl"]], st, "30"))
   pool_end(p)
 })
 

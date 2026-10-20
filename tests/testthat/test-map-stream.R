@@ -125,6 +125,44 @@ test_that("a streaming spec map keeps seed invariance over R workers", {
   pool_end(p)
 })
 
+test_that("a spec stream declines a seed offset escaping exact arithmetic (L33)", {
+  p <- pool_pair(workers = 2L)
+  f <- mizu_call(.source = "runif(1)")
+  # the refill composes each chunk's offset in doubles — exact only to
+  # 2^53, where the native path's jump composition never rounds
+  expect_snapshot(
+    error = TRUE,
+    mizu:::map_stage_stream(
+      p[["ctrl"]],
+      1:30,
+      f,
+      list(),
+      seed = c(42, 2^53 - 14)
+    )
+  )
+  # the boundary stages and stays chunking-invariant:
+  # 2^53 - 29 + (30 - 1) == 2^53 exactly
+  st <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:30,
+    f,
+    list(),
+    chunks = 1,
+    seed = c(42, 2^53 - 29)
+  )
+  want <- run_stream(p, st)
+  st2 <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:30,
+    f,
+    list(),
+    chunks = 3,
+    seed = c(42, 2^53 - 29)
+  )
+  expect_identical(run_stream(p, st2), want)
+  pool_end(p)
+})
+
 test_that("view collect errors on a streaming spec map, informatively", {
   p <- pool_pair()
   expect_snapshot(

@@ -78,3 +78,35 @@
       Error:
       ! mizu: .seed[2] (stream offset) must be a non-negative integer no larger than 2^53
 
+---
+
+    Code
+      run_map(p, 1:4, identity, seed = 1.5)
+    Condition
+      Error:
+      ! mizu: .seed[1] must be an integer
+
+# map_run rejects an NA .timeout instead of waiting forever (L31)
+
+    Code
+      mizu:::map_run(p[["ctrl"]], st, NA_real_)
+    Condition
+      Error:
+      ! mizu: .timeout must be a number of seconds, not NA
+
+---
+
+    Code
+      mizu:::map_run(p[["ctrl"]], st, NaN)
+    Condition
+      Error:
+      ! mizu: .timeout must be a number of seconds, not NA
+
+---
+
+    Code
+      mizu:::map_run(p[["ctrl"]], st, "30")
+    Condition
+      Error:
+      ! mizu: .timeout must be a number of seconds, not NA
+

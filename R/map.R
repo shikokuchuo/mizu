@@ -349,6 +349,10 @@ mizu_map <- function(
 # task and drops the references; after a clean collect all handles are
 # consumed and the backstop is a no-op.
 map_run <- function(pool, st, timeout, collect = "value") {
+  # as mizu_r_timeout_arg: an NA/NaN would read as an indefinite wait
+  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
+    stop("mizu: .timeout must be a number of seconds, not NA", call. = FALSE)
+  }
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
   on.exit(map_cancel(st))
   if (isTRUE(st[["stream"]])) {
@@ -623,7 +627,7 @@ map_seed_pair <- function(seed) {
     )
   }
   s <- seed[1L]
-  if (!is.finite(s) || abs(s) > .Machine$integer.max) {
+  if (!is.finite(s) || s != floor(s) || abs(s) > .Machine$integer.max) {
     stop("mizu: .seed[1] must be an integer", call. = FALSE)
   }
   if (n == 1L) {
@@ -643,17 +647,21 @@ map_seed_pair <- function(seed) {
 
 # The worker-side RNG guard shared by map_chunk and map_runner: captures
 # the worker's own .Random.seed (possibly absent — workers seed lazily) and
-# the RNG kind, and returns the nullary restore the caller registers with
+# the RNG kinds, and returns the nullary restore the caller registers with
 # on.exit, so a seeded batch leaves the worker's RNG state exactly as it
-# found it. The kind rides along: f's first draw off the installed
+# found it. The kinds ride along: f's first draw off the installed
 # L'Ecuyer-CMRG state switches the process-global generator, and restoring
 # .Random.seed alone leaves the next unseeded draw randomizing under CMRG.
+# The full kind triple is captured, not just kind[1]: the .Random.seed
+# restore re-decodes normal.kind from the seed word only when a seed exists
+# — on a lazily seeded worker an f that switched normal.kind or sample.kind
+# would otherwise leak into the worker's next task.
 rng_save <- function() {
   os <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
-  ok <- RNGkind()[1L]
+  rk <- RNGkind()
   function() {
-    if (RNGkind()[1L] != ok) {
-      RNGkind(ok)
+    if (!identical(RNGkind(), rk)) {
+      RNGkind(rk[[1L]], rk[[2L]], rk[[3L]])
     }
     if (is.null(os)) {
       if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
@@ -1164,6 +1172,17 @@ map_stage_stream <- function(
       .Call(mizu_interop_map_desc_call, f, NULL, ident[[1L]])
     }
     st[["seed_pair"]] <- map_seed_pair(seed)
+    # the refill composes each chunk's offset as sp[[2]] + lo - 1 in
+    # doubles — exact only to 2^53, where the native path's jump
+    # composition never rounds; decline rather than diverge
+    sp <- st[["seed_pair"]]
+    if (!is.null(sp) && sp[[2L]] > 2^53 - (n - 1)) {
+      stop(
+        "mizu: .seed[2] + length(.x) must stay within 2^53, the exact ",
+        "seed offset range",
+        call. = FALSE
+      )
+    }
     st[["wraps"]] <- vector("list", st[["C"]])
     st[["handles"]] <- vector("list", st[["C"]])
     st[["timed_out"]] <- FALSE

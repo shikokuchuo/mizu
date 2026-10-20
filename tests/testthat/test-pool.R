@@ -70,6 +70,15 @@ test_that("the R-level constructor validates the worker count", {
   )
 })
 
+test_that("the R-level constructor validates max_workers (L35)", {
+  expect_snapshot(error = TRUE, mizu_pool(max_workers = NA))
+  expect_snapshot(error = TRUE, mizu_pool(max_workers = 0L))
+  expect_error(
+    suppressWarnings(mizu_pool(max_workers = 1e20)),
+    "max_workers must be at least 1"
+  )
+})
+
 test_that("a fresh pool reports its layout and registry state", {
   p <- pool_pair(
     max_submitters = 4L,
@@ -728,6 +737,24 @@ test_that("mizu_spawn_workers validates n and walks back a failed startup", {
   # the slot was never claimed: a later spawn can still take it
   expect_identical(mizu_pool_status(ctrl)[["workers"]], c("free", "free"))
   .Call(mizu:::mizu_pool_destroy, ctrl)
+})
+
+test_that("mizu_spawn_workers is controller-only, spawning nothing otherwise (L36)", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 2L, 8L, 64L, 64L, 64L, 256L)
+  sub <- mizu_pool_attach(mizu_pool_status(ctrl)[["name"]])
+  spawned <- FALSE
+  expect_snapshot(
+    error = TRUE,
+    mizu_spawn_workers(
+      sub,
+      1L,
+      launcher = function(token, slot) spawned <<- TRUE,
+      startup_timeout = 0.2
+    )
+  )
+  expect_false(spawned)
+  expect_identical(mizu_pool_status(ctrl)[["workers"]], c("free", "free"))
+  mizu_pool_stop(ctrl, timeout = 0)
 })
 
 test_that("worker-only entry points reject unfit handles", {

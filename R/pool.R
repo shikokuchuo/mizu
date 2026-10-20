@@ -80,7 +80,11 @@ mizu_pool <- function(
   if (is.na(n_workers) || n_workers < 1L) {
     stop("mizu: n_workers must be at least 1", call. = FALSE)
   }
-  if (n_workers > as.integer(max_workers)) {
+  max_workers <- as.integer(max_workers)
+  if (is.na(max_workers) || max_workers < 1L) {
+    stop("mizu: max_workers must be at least 1", call. = FALSE)
+  }
+  if (n_workers > max_workers) {
     stop("mizu: n_workers exceeds max_workers", call. = FALSE)
   }
   p <- .Call(
@@ -156,7 +160,13 @@ mizu_spawn_workers <- function(
   if (is.na(n) || n < 1L) {
     stop("mizu: n must be at least 1", call. = FALSE)
   }
-  free <- which(mizu_pool_status(pool)[["workers"]] == "free") - 1L
+  # gate the role before the launcher runs: a non-controller's spawn would
+  # error only at ready_wait, after real worker processes had started
+  st <- mizu_pool_status(pool)
+  if (!identical(st[["role"]], "controller")) {
+    stop("mizu: only the controller can resize a pool", call. = FALSE)
+  }
+  free <- which(st[["workers"]] == "free") - 1L
   if (length(free) < n) {
     stop(
       "mizu: not enough free worker slots (",
