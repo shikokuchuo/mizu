@@ -851,10 +851,13 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
 
 SEXP mizu_zc_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
                  int *gone, mizu_zc_cache *oc) {
-  if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX)
+  /* one read: the slot is peer-writable, so the bound and the name copy
+     (mizu_zc_prep's fixed buffer) must be one snapshot */
+  const uint32_t len = hdr->len;
+  if (len == 0 || len >= MIZU_NAME_MAX)
     Rf_error("mizu: corrupt payload slot");
   mizu_shm *shm = NULL;
-  SEXP name_xp = mizu_zc_prep((const char *) payload, hdr->len, gone, oc,
+  SEXP name_xp = mizu_zc_prep((const char *) payload, len, gone, oc,
                               &shm);
   if (name_xp == R_NilValue) return R_NilValue;
   PROTECT(name_xp);
@@ -932,11 +935,14 @@ int mizu_zc_ref_stage(mizu_slot_hdr *hdr, unsigned char *payload,
 
 SEXP mizu_zc_ref_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
                      int *gone, mizu_zc_cache *oc) {
-  if (hdr->len == 0 || hdr->len >= MIZU_VIEW_IDENTIFIER_MAX)
+  /* one read: the slot is peer-writable, so the bound and the stack
+     copy must be one snapshot */
+  const uint32_t len = hdr->len;
+  if (len == 0 || len >= MIZU_VIEW_IDENTIFIER_MAX)
     Rf_error("mizu: corrupt payload slot");
   char buf[MIZU_VIEW_IDENTIFIER_MAX];
-  memcpy(buf, payload, hdr->len);
-  buf[hdr->len] = '\0';
+  memcpy(buf, payload, len);
+  buf[len] = '\0';
   char name[MIZU_NAME_MAX];
   int32_t path[MIZU_VIEW_MAX_PATH];
   int path_len = 0;

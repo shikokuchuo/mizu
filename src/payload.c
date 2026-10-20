@@ -367,25 +367,31 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
   case MIZU_KIND_NIL:
     return R_NilValue;
   case MIZU_KIND_STR1: {
-    if (hdr->aux == MIZU_STR1_NA) {
-      if (hdr->len != 0) Rf_error("mizu: corrupt payload slot");
+    /* one read of each: the slot is peer-writable (RAWVEC's discipline) */
+    const uint64_t aux = hdr->aux;
+    const uint32_t len = hdr->len;
+    if (aux == MIZU_STR1_NA) {
+      if (len != 0) Rf_error("mizu: corrupt payload slot");
       SEXP y = Rf_allocVector(STRSXP, 1);
       SET_STRING_ELT(y, 0, NA_STRING);
       return y;
     }
-    if (hdr->len > inline_max || hdr->aux > CE_BYTES)
+    if (len > inline_max || aux > CE_BYTES)
       Rf_error("mizu: corrupt payload slot");
     SEXP y = PROTECT(Rf_allocVector(STRSXP, 1));
     SET_STRING_ELT(y, 0, Rf_mkCharLenCE((const char *) payload,
-                                        (int) hdr->len,
-                                        (cetype_t) hdr->aux));
+                                        (int) len,
+                                        (cetype_t) aux));
     UNPROTECT(1);
     return y;
   }
-  case MIZU_KIND_INLINE:
-    if (hdr->len > inline_max || hdr->len == 0)
+  case MIZU_KIND_INLINE: {
+    /* one read: the slot is peer-writable */
+    const uint32_t len = hdr->len;
+    if (len > inline_max || len == 0)
       Rf_error("mizu: corrupt payload slot");
-    return mizu_stream_read(payload, hdr->len, ctx, consume_foreign);
+    return mizu_stream_read(payload, len, ctx, consume_foreign);
+  }
   case MIZU_KIND_RAWVEC: {
     int type = (int) hdr->aux;
     size_t elt = mizu_view_sizeof_elt(type);
@@ -415,17 +421,21 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
     /* pool framing: the region name in the payload, its length and the
        SEXPTYPE packed in aux (the channel's arena framing of the same
        kind is resolved by the transport, never reaching here) */
-    int type = mizu_aux_type(hdr->aux);
-    uint32_t name_len = (uint32_t) mizu_aux_hi(hdr->aux);
+    /* one read of each: the slot is peer-writable, so the bound, the
+       alloc and the memcpy must agree (RAWVEC's discipline) */
+    const uint64_t aux = hdr->aux;
+    const uint32_t len = hdr->len;
+    int type = mizu_aux_type(aux);
+    uint32_t name_len = (uint32_t) mizu_aux_hi(aux);
     size_t elt = mizu_view_sizeof_elt(type);
-    if (elt == 0 || hdr->len % elt != 0 ||
+    if (elt == 0 || len % elt != 0 ||
         name_len == 0 || name_len >= MIZU_NAME_MAX)
       Rf_error("mizu: corrupt payload slot");
     mizu_shm *shm = mizu_read_region(ctx, payload, name_len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
-    if (hdr->len > shm->size) Rf_error("mizu: corrupt payload slot");
-    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (hdr->len / elt));
-    memcpy(mizu_vec_ptr(y), shm->addr, hdr->len);
+    if (len > shm->size) Rf_error("mizu: corrupt payload slot");
+    SEXP y = mizu_wire_alloc(type, (R_xlen_t) (len / elt));
+    memcpy(mizu_vec_ptr(y), shm->addr, len);
     return y;
   }
   case MIZU_KIND_SHM_RAW: {

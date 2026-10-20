@@ -688,24 +688,24 @@ static const unsigned char *pool_entry_bytes(const mizu_slot_hdr *hdr,
                                              size_t *out_len) {
   switch (hdr->kind) {
   case MIZU_KIND_INLINE:
-    if (hdr->len > limit) return NULL;
-    *out_len = hdr->len;
-    return payload;
   case MIZU_KIND_RAWVEC:
   case MIZU_KIND_STR1: {
-    /* one read, bounded like INLINE: a crafted entry must not over-state
+    /* one read, bounded to the slot: a crafted entry must not over-state
        the span handed to the interop cursor */
-    uint32_t len = hdr->len;
+    const uint32_t len = hdr->len;
     if (len > limit) return NULL;
     *out_len = len;
     return payload;
   }
   case MIZU_KIND_SHM_RAW: {
-    if (hdr->len == 0 || hdr->len >= MIZU_NAME_MAX) return NULL;
-    mizu_shm *shm = mizu_read_region(ctx, payload, hdr->len);
+    /* one read of each — the slot is peer-writable */
+    const uint32_t len = hdr->len;
+    if (len == 0 || len >= MIZU_NAME_MAX) return NULL;
+    mizu_shm *shm = mizu_read_region(ctx, payload, len);
     if (shm == NULL) return NULL;         /* ctx->gone set */
-    *out_len = hdr->aux != 0 && hdr->aux <= (uint64_t) shm->size ?
-      (size_t) hdr->aux : (size_t) shm->size;
+    const uint64_t aux = hdr->aux;
+    *out_len = aux != 0 && aux <= (uint64_t) shm->size ?
+      (size_t) aux : (size_t) shm->size;
     return (const unsigned char *) shm->addr;
   }
   default:
@@ -892,8 +892,10 @@ static SEXP pool_task_body(void *data) {
     }
   }
   SEXP expr = R_NilValue, args = R_NilValue;
-  if (c->hdr->kind == MIZU_KIND_INLINE && c->hdr->len <= c->limit &&
-      mizu_codec_read_task(c->payload, (size_t) c->hdr->len,
+  /* one read of the entry length — the slot header is peer-writable */
+  const uint32_t entry_len = c->hdr->len;
+  if (c->hdr->kind == MIZU_KIND_INLINE && entry_len <= c->limit &&
+      mizu_codec_read_task(c->payload, (size_t) entry_len,
                            &expr, &args)) {
     PROTECT(expr);
     PROTECT(args);
