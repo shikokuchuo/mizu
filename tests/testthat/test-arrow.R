@@ -1127,6 +1127,25 @@ test_that("an ALTREP sibling of a table falls back to R_Serialize", {
   expect_identical(out[[2L]], 1:5)
 })
 
+test_that("a table nested past the depth bound hits the serialize fallback", {
+  skip_if_not_installed("arrow")
+  rdr <- arrow::RecordBatchReader$create(arrow::record_batch(x = 1:3))
+  x <- rdr
+  for (i in seq_len(500L)) {
+    x <- list(x)
+  }
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  # sized at its occurrence depth, the converted value declines the frame
+  # tier — sizing at depth 0 was the "codec write mismatch" bug
+  mizu_send(p$host, x)
+  out <- mizu_recv(p$peer, 5)
+  for (i in seq_len(500L)) {
+    out <- out[[1L]]
+  }
+  expect_s3_class(out, "RecordBatchReader")
+})
+
 test_that("a frame declined at the stage converts and crosses by value", {
   skip_if_not_installed("nanoarrow")
   p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities

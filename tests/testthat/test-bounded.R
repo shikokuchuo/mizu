@@ -42,3 +42,17 @@ test_that("large payloads round-trip byte-exactly", {
 test_that("unserialize rejects non-raw input", {
   expect_error(.Call(mizu:::mizu_unserialize_call, "bytes"), "raw vector")
 })
+
+test_that("a truncated stream fails the read instead of misparsing", {
+  x <- list(a = 1:100, b = runif(50), c = "hello")
+  # xdr = FALSE: the 'B' binary format mizu's read path dispatches on
+  b <- serialize(x, NULL, xdr = FALSE)
+  expect_error(
+    .Call(mizu:::mizu_unserialize_call, b[seq_len(length(b) - 1L)]),
+    "corrupt payload stream"
+  )
+})
+
+test_that("a limit past SIZE_MAX clamps instead of an undefined cast", {
+  expect_error(.Call(mizu:::mizu_bounded_call, 1:10, 1e20), "cannot allocate")
+})

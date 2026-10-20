@@ -162,13 +162,18 @@ enum { SC_ENV_GLOBAL = 0, SC_ENV_BASE, SC_ENV_EMPTY, SC_ENV_NS };
    for the frame) and, in its last slot, the frame's open handle extptr.
    Duplicate occurrences of one table dedupe to one candidate (one pull —
    a RecordBatchReader is consumed by pulling) with occ counting them, so
-   the sizing arithmetic reconciles occurrence-for-occurrence. */
+   the sizing arithmetic reconciles occurrence-for-occurrence. depth is
+   the candidate's deepest occurrence: a converted value is sized at the
+   depth its deepest write runs at, so a table nested past the depth
+   bound declines to the serialize fallback instead of failing the write
+   walk mid-stream. */
 #define MIZU_FRAME_MAX_CAND 16            /* the fold's candidate cap */
 typedef struct {
   int mode;                          /* 0 record (count-only), 1 write */
   SEXP anchor;
   SEXP cand[MIZU_FRAME_MAX_CAND];
   int occ[MIZU_FRAME_MAX_CAND];
+  unsigned depth[MIZU_FRAME_MAX_CAND];
   int ncand, frame;                  /* frame = -1: by-value */
   unsigned char name[MIZU_NAME_MAX]; /* the staged region (write mode) */
   uint32_t name_len;
@@ -375,12 +380,14 @@ static void scw_node(mizu_scw *w, SEXP x, unsigned depth) {
         for (int i = 0; i < fp->ncand; i++)
           if (fp->cand[i] == x) {
             fp->occ[i]++;
+            if (depth > fp->depth[i]) fp->depth[i] = depth;
             w->total += MIZU_IX_ZC_RESERVE;
             return;
           }
         if (fp->ncand == MIZU_FRAME_MAX_CAND) { w->fail = 1; return; }
         fp->cand[fp->ncand] = x;
         fp->occ[fp->ncand] = 1;
+        fp->depth[fp->ncand] = depth;
         fp->ncand++;
         w->total += MIZU_IX_ZC_RESERVE;
         return;
@@ -495,6 +502,8 @@ static void scw_node(mizu_scw *w, SEXP x, unsigned depth) {
        from the tags of the tail on these (attrib.c), so the faithful
        pairlist form is the R_Serialize path's job */
     SEXP s = x;
+    SEXP slow = x;
+    int tick = 0;
     for (;;) {
       if (ANY_ATTRIB(s) || Rf_isObject(s)) { w->fail = 1; return; }
       int hastag = TAG(s) != R_NilValue;
@@ -508,6 +517,11 @@ static void scw_node(mizu_scw *w, SEXP x, unsigned depth) {
         scw_node(w, s, depth + 1);   /* the dotted tail, usually NIL */
         return;
       }
+      /* tortoise-and-hare: a C-crafted CDR cycle never reaches the dotted
+         tail, and the depth bound covers CAR recursion only */
+      tick ^= 1;
+      if (tick == 0) slow = CDR(slow);
+      if (s == slow) { w->fail = 1; return; }
     }
   }
   case CLOSXP: {
@@ -580,13 +594,15 @@ size_t mizu_codec_write(unsigned char *dst, size_t limit, SEXP x) {
 // The frame tier ----------------------------------------------------------------
 
 /* The plan-threaded walk: mizu_codec_write with the frame gate live.
-   Record mode is always count-only; write mode emits. */
+   Record mode is always count-only; write mode emits. depth is the walk's
+   starting depth — a converted value sized for a deep occurrence passes
+   the guard exactly when its write at that occurrence would. */
 static size_t frame_walk(unsigned char *dst, size_t limit, SEXP x,
-                         mizu_frameplan *plan) {
+                         mizu_frameplan *plan, unsigned depth) {
   mizu_scw w = { dst, limit, 0, 0, plan };
   unsigned char magic = MIZU_CODEC_MAGIC;
   scw_bytes(&w, &magic, 1);
-  scw_node(&w, x, 0);
+  scw_node(&w, x, depth);
   return w.fail ? 0 : w.total;
 }
 
@@ -616,7 +632,7 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
   /* 1. the record walk: count-only, every table counted as the reserve.
      A decline is the plain pass's non-table node (or past the candidate
      cap): the serialize fallback runs with nothing consumed. */
-  size_t total = frame_walk(NULL, 0, x, &plan);
+  size_t total = frame_walk(NULL, 0, x, &plan, 0);
   if (total == 0 || plan.ncand == 0) return 0;
 
   /* 2. pull / open / convert in pre-order between the walks; every fresh
@@ -649,20 +665,22 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
     UNPROTECT(1);
   }
 
-  /* 3. size each converted value individually (the encoding is
-     context-free — no ref table — so one count-only write per value
-     replaces a second tree walk), the slot's reserve coming out of the
-     record walk's total occurrence-for-occurrence. The write-mode walk
-     carries any lazy ALTREP left inside the converted values (the bail
-     materializes the top level; a list column's elements can still
-     arrive lazy). */
+  /* 3. size each converted value individually at its candidate's deepest
+     occurrence (the encoding is context-free — no ref table — so one
+     count-only write per value replaces a second tree walk, and the
+     depth guard's verdict there covers every shallower occurrence), the
+     slot's reserve coming out of the record walk's total
+     occurrence-for-occurrence. The write-mode walk carries any lazy
+     ALTREP left inside the converted values (the bail materializes the
+     top level; a list column's elements can still arrive lazy). */
   plan.mode = 1;
   for (int i = 0; i < plan.ncand; i++) {
     if (i == plan.frame) continue;
-    size_t vn = frame_walk(NULL, 0, VECTOR_ELT(plan.anchor, i), &plan);
+    size_t vn = frame_walk(NULL, 0, VECTOR_ELT(plan.anchor, i), &plan,
+                           plan.depth[i]);
     if (vn == 0) {
-      /* cannot occur for a nanoarrow-converted value — the caller's
-         fallback ships the original tree */
+      /* nested past the depth bound — the caller's fallback ships the
+         original tree */
       UNPROTECT(1);
       return 0;
     }
@@ -679,7 +697,7 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
                               &warn) == 0) {
       total -= (size_t) plan.occ[plan.frame] * MIZU_IX_ZC_RESERVE;
       total += (size_t) plan.occ[plan.frame] * (2 + plan.name_len);
-      size_t n = frame_walk(payload, inline_max, x, &plan);
+      size_t n = frame_walk(payload, inline_max, x, &plan, 0);
       if (n != total) Rf_error("mizu: codec write mismatch");
       hdr->kind = MIZU_KIND_INLINE;
       hdr->len = (uint32_t) n;
@@ -699,7 +717,7 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
     SEXP xp = VECTOR_ELT(plan.anchor, plan.ncand);
     SET_VECTOR_ELT(plan.anchor, plan.frame, mizu_arrow_value(xp));
     size_t vn = frame_walk(NULL, 0, VECTOR_ELT(plan.anchor, plan.frame),
-                           &plan);
+                           &plan, plan.depth[plan.frame]);
     if (vn == 0) {
       UNPROTECT(1);
       return 0;
@@ -714,7 +732,7 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
      correctness one). The write walk is deterministic — a byte-count
      mismatch is the other spills' raise */
   if (total <= (size_t) inline_max) {
-    size_t n = frame_walk(payload, inline_max, x, &plan);
+    size_t n = frame_walk(payload, inline_max, x, &plan, 0);
     if (n != total) Rf_error("mizu: codec write mismatch");
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
@@ -724,7 +742,7 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
   }
   mizu_stage_reap(h);
   mizu_shm *shm = mizu_spill_get_raise(h, total);
-  size_t n = frame_walk((unsigned char *) shm->addr, shm->size, x, &plan);
+  size_t n = frame_walk((unsigned char *) shm->addr, shm->size, x, &plan, 0);
   if (n != total) Rf_error("mizu: codec write mismatch");
   hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
@@ -1064,4 +1082,15 @@ SEXP mizu_codec_write_call(SEXP object) {
 SEXP mizu_codec_read_call(SEXP bytes) {
   if (TYPEOF(bytes) != RAWSXP) Rf_error("mizu: expected a raw vector");
   return mizu_codec_read(RAW(bytes), (size_t) XLENGTH(bytes));
+}
+
+/* A C-crafted CDR cycle (no R-level spell builds one): the write must
+   decline, never loop. */
+SEXP mizu_codec_cycle_call(void) {
+  SEXP car = PROTECT(Rf_ScalarInteger(1));
+  SEXP l = PROTECT(Rf_cons(car, R_NilValue));
+  SETCDR(l, l);
+  size_t n = mizu_codec_write(NULL, 0, l);
+  UNPROTECT(2);
+  return Rf_ScalarInteger((int) n);
 }

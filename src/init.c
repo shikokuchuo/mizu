@@ -48,6 +48,7 @@ SEXP mizu_bounded_call(SEXP, SEXP);
 SEXP mizu_unserialize_call(SEXP);
 SEXP mizu_codec_write_call(SEXP);
 SEXP mizu_codec_read_call(SEXP);
+SEXP mizu_codec_cycle_call(void);
 SEXP mizu_interop_write_call(SEXP);
 SEXP mizu_interop_read_call(SEXP);
 SEXP mizu_interop_write_err_call(SEXP, SEXP);
@@ -183,6 +184,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_interop_read_task_call", (DL_FUNC) &mizu_interop_read_task_call,    1},
   {"mizu_stream_read_call",       (DL_FUNC) &mizu_stream_read_call,          1},
   {"mizu_codec_read_call",        (DL_FUNC) &mizu_codec_read_call,           1},
+  {"mizu_codec_cycle_call",       (DL_FUNC) &mizu_codec_cycle_call,          0},
   {"mizu_region_create",          (DL_FUNC) &mizu_region_create,             1},
   {"mizu_region_open",            (DL_FUNC) &mizu_region_open,               2},
   {"mizu_region_name",            (DL_FUNC) &mizu_region_name,               1},

@@ -46,7 +46,9 @@ size_t mizu_serialize_bounded(unsigned char *dst, size_t limit, SEXP object) {
 SEXP mizu_bounded_call(SEXP object, SEXP limit) {
   double lim_in = Rf_asReal(limit);
   if (!(lim_in >= 0)) Rf_error("mizu: invalid limit");
-  size_t lim = (size_t) lim_in;
+  /* clamp ahead of the double→size_t cast: undefined past SIZE_MAX, and
+     the R_alloc below fails the clamped size cleanly */
+  size_t lim = lim_in >= 0x1p64 ? SIZE_MAX : (size_t) lim_in;
 
   unsigned char *buf = (unsigned char *) R_alloc(lim > 0 ? lim : 1, 1);
   size_t n = mizu_serialize_bounded(buf, lim, object);

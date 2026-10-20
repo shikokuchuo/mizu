@@ -244,6 +244,11 @@ test_that("the subset declines cleanly: NULL from the write surface", {
   ))
 })
 
+test_that("a CDR cycle declines the codec instead of hanging", {
+  # the seam builds the cycle in C — no R-level spell exists
+  expect_identical(.Call(mizu:::mizu_codec_cycle_call), 0L)
+})
+
 test_that("the reader rejects malformed streams", {
   expect_error(.Call(mizu:::mizu_codec_read_call, raw(0)), "corrupt")
   expect_error(.Call(mizu:::mizu_codec_read_call, as.raw(0x42)), "corrupt")
