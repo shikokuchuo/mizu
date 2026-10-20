@@ -1359,3 +1359,25 @@ wall (serial 81.4), skewed 50.9 ms; serialize result 8.9 us, codec
 result 5.3 us; submit-plan k 0/1/4/16 73.7 / 77.1 / 97.6 / 181.5 us.
 No best-known rows touched (Linux host; the table rows are M4 Pro).
 Status: full suite green on macOS (4790 pass, 0 fail, 4 skips).
+
+## 2026-10-20 — 4G sweep + read-path A/Bs (92e5717 / 94e545e, b05920a)
+
+Two back-to-back brackets closing the bug-fix plan's bench
+verification: the 4G core delta in isolation (94e545e -> b05920a), and
+everything since C1's parent (92e5717 -> b05920a: M4, M11-M16, the
+M-series re-vendor, 4A-4H, 4G — the M4/4H slot-header snapshots had
+landed after C1's own A/B, above). Full mizu-bench.R once per arm; the
+MIZL read path the 4G validators tighten got its own probe (a 200-leaf
+list view's REF round-trip + element walk, 5000 iters x3 per arm), and
+the four read-path rows were alternated A/B/A/B on a reduced script
+(min_time 1.0) after the suite's us-scale rows scattered +-10-30%
+between runs on near-identical builds.
+
+Results: every suite row within its band on every arm; the pipelined
+pool dips (568k -> 366k and 365k -> 583k across suites) re-probed as
+host jitter — the isolated row runs 764k/768k/763k vs 774k/754k/743k
+tasks/s. MIZL probe medians 6.06 -> 6.07 ms/iter. Read-path rows (A ->
+B medians): payload 8K 3.45 -> 3.43 us; 10k strings 88.5 -> 88.3 us;
+serialize result 5.01 -> 4.95 us; codec result 2.74 -> 2.63 us — B/A
+0.96-1.00 throughout. A/B isolations — no best-known rows touched.
+Status: full suite green on b05920a (4858 pass, 0 fail, 5 skips).
