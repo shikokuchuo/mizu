@@ -314,18 +314,20 @@ Cross-cutting invariants (shared by channel and pool):
   prot-anchored pin chain via `mizu_r_pin()` at stage: O(1) push, dead
   cells spliced lazily past `MIZU_SPLICE_MIN`, tombstoned through the
   binding’s `drop` hook at the core’s release points:
-  reap/collect/slot-reuse/sweep/rollback/teardown; only the init-time
-  singletons stay on R’s precious list). SHM_VEC regions instead recycle
-  only when the view refcount hits zero — release rides the views’
-  finalizers, so it is GC-gated on every holder process — and a spill
-  miss whose full ledger sweep reclaims nothing sets the handle’s
-  `churn` flag (Linux only — the core pre-faults fresh regions there,
-  while macOS/Windows creates are lazy, so SHM_VEC stays cheaper than
-  the copy tiers even under churn): staging falls back to the copy tiers
-  (pool SHM_RAW; channel arena/SHM_RAW) until a sweep or force-reclaim
-  returns a lent region (views are flowing again). The Linux THP
-  collapse runs at free-list insert rather than fresh create, so only
-  regions that completed a consumer-done cycle pay for it.
+  reap/collect/slot-reuse/sweep/rollback/teardown; rooting is two-tier:
+  read-only singletons/sentinels stay individually preserved, while
+  mutable/cached package state rides the private precious root
+  `mizu_precious` — the `MIZU_PRIV_*` slots, init.c). SHM_VEC regions
+  instead recycle only when the view refcount hits zero — release rides
+  the views’ finalizers, so it is GC-gated on every holder process — and
+  a spill miss whose full ledger sweep reclaims nothing sets the
+  handle’s `churn` flag (Linux only — the core pre-faults fresh regions
+  there, while macOS/Windows creates are lazy, so SHM_VEC stays cheaper
+  than the copy tiers even under churn): staging falls back to the copy
+  tiers (pool SHM_RAW; channel arena/SHM_RAW) until a sweep or
+  force-reclaim returns a lent region (views are flowing again). The
+  Linux THP collapse runs at free-list insert rather than fresh create,
+  so only regions that completed a consumer-done cycle pay for it.
 - **Zero-copy views** (`src/zc.c`; the protocol invariants are
   DESIGN.md’s): a layout-eligible object past
   `max(inline budget, MIZU_ZC_FLOOR)` stages as SHM_VEC — one layout
