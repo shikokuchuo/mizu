@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="dac8f2bedbf68375e4d2f066e4b9f958020ea69d"  # libmizu: admit all-inline string_view dictionaries
+PIN="e58b085a1ffa7fdf07ec6fe402aa8173ccf6344f"  # libmizu: low-severity sweep: timeout cast clamps, MIZL validation, FD hygiene
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
