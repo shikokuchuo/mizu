@@ -13,12 +13,13 @@ to_hex <- function(x) paste(charToRaw(enc2utf8(x)), collapse = "")
 
 # Launch a detached child R process evaluating `expr` (a length-1 character
 # vector of R code). The expression and the host's .libPaths() ride argv
-# hex-encoded: argv is copied into the child at creation, so concurrent
-# launches share no state and the host environment is never touched, and
-# pure [0-9a-f] has no quoting hazard on any platform. A static runner
-# avoids Rscript -e, whose implementation writes a per-spawn command file.
-# The runner lives at scripts/ once installed, inst/scripts/ in a source
-# tree (a bare load_all)
+# hex-encoded, one entry per element so a path containing the platform
+# separator survives: argv is copied into the child at creation, so
+# concurrent launches share no state and the host environment is never
+# touched, and pure [0-9a-f] has no quoting hazard on any platform. A
+# static runner avoids Rscript -e, whose implementation writes a per-spawn
+# command file. The runner lives at scripts/ once installed, inst/scripts/
+# in a source tree (a bare load_all)
 mizu_child_script <- function(root) {
   script <- file.path(root, "scripts", "mizu-child.R")
   if (!file.exists(script)) {
@@ -35,10 +36,14 @@ mizu_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
   }
   root <- getNamespaceInfo(asNamespace("mizu"), "path")
   script <- mizu_child_script(root)
-  libs <- paste(.libPaths(), collapse = .Platform[["path.sep"]])
+  # system2 shQuotes the command path itself; only the args take quoting
   system2(
     rscript_path(),
-    c(shQuote(script), to_hex(expr), to_hex(libs)),
+    c(
+      shQuote(script),
+      to_hex(expr),
+      vapply(.libPaths(), to_hex, character(1L), USE.NAMES = FALSE)
+    ),
     wait = FALSE,
     stdout = stdout,
     stderr = stderr
@@ -203,6 +208,19 @@ py_resolve <- function(python, module, caller) {
         call. = FALSE
       )
     }
+  } else {
+    resolved <- unname(Sys.which(python))
+    if (!nzchar(resolved)) {
+      stop(
+        sprintf(
+          "mizu: %s() cannot find the Python interpreter '%s'",
+          caller,
+          python
+        ),
+        call. = FALSE
+      )
+    }
+    python <- resolved
   }
   if (!pymizu_prober(python, module)) {
     stop(

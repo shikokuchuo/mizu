@@ -1,21 +1,18 @@
 # Static Rscript runner for mizu_spawn. A file rather than -e so no per-spawn
 # command file is written; argv rather than environment variables so
-# concurrent launches share no state. argv: <hex expr> <hex libpaths>.
+# concurrent launches share no state. argv: <hex expr> <hex libpath>...
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) != 2L || !all(grepl("^([0-9a-f][0-9a-f])+$", args))) {
+if (length(args) < 2L || !all(grepl("^([0-9a-f][0-9a-f])+$", args))) {
   quit(save = "no", status = 2L)
 }
-n <- nchar(args[[2L]])
-libs <- rawToChar(as.raw(strtoi(
-  substring(args[[2L]], seq.int(1L, n, 2L), seq.int(2L, n, 2L)),
-  16L
-)))
-Encoding(libs) <- "UTF-8"
-.libPaths(strsplit(libs, .Platform[["path.sep"]], fixed = TRUE)[[1L]])
-n <- nchar(args[[1L]])
-expr <- rawToChar(as.raw(strtoi(
-  substring(args[[1L]], seq.int(1L, n, 2L), seq.int(2L, n, 2L)),
-  16L
-)))
-Encoding(expr) <- "UTF-8"
-eval(parse(text = expr), envir = globalenv())
+unhex <- function(x) {
+  n <- nchar(x)
+  s <- rawToChar(as.raw(strtoi(
+    substring(x, seq.int(1L, n, 2L), seq.int(2L, n, 2L)),
+    16L
+  )))
+  Encoding(s) <- "UTF-8"
+  s
+}
+.libPaths(vapply(args[-1L], unhex, character(1L), USE.NAMES = FALSE))
+eval(parse(text = unhex(args[[1L]])), envir = globalenv())

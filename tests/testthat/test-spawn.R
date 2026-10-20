@@ -22,6 +22,29 @@ test_that("mizu_spawn propagates the host library paths via argv", {
   expect_true(all(host_libs %in% child_libs))
 })
 
+test_that("a path separator in a library path survives the child spawn", {
+  lib <- tempfile(paste0("lib", .Platform[["path.sep"]], "dir"))
+  dir.create(lib)
+  old <- .libPaths()
+  .libPaths(c(lib, old))
+  on.exit(.libPaths(old), add = TRUE)
+  f <- tfile()
+
+  mizu:::mizu_spawn(sprintf(
+    '
+    tmp <- paste0(%s, ".tmp")
+    writeLines(.libPaths(), tmp)
+    file.rename(tmp, %s)
+  ',
+    deparse(f),
+    deparse(f)
+  ))
+
+  expect_true(wait_for_file(f))
+  child_libs <- normalizePath(readLines(f), mustWork = FALSE)
+  expect_true(normalizePath(lib) %in% child_libs)
+})
+
 test_that("mizu_spawn runs a static script instead of Rscript -e", {
   f <- tfile()
   mizu:::mizu_spawn(sprintf("writeLines(commandArgs(FALSE), %s)", deparse(f)))
@@ -102,6 +125,33 @@ test_that("a cached pymizu probe revalidates against the package file", {
     mizu_py_launcher(python = python),
     "needs the Python package 'pymizu'"
   )
+})
+
+test_that("an interpreter path containing a space still spawns", {
+  skip_on_os("windows")
+  python3 <- unname(Sys.which("python3"))
+  skip_if_not(nzchar(python3), "python3 unavailable")
+  # system2 quotes the command itself; a pre-quoted path would fail here
+  bindir <- tempfile("bin with space")
+  dir.create(bindir)
+  python <- file.path(bindir, "python3")
+  writeLines(c("#!/bin/sh", sprintf('exec "%s" "$@"', python3)), python)
+  Sys.chmod(python, "755")
+  root <- tempfile()
+  dir.create(file.path(root, "pymizu"), recursive = TRUE)
+  file.create(file.path(root, "pymizu", "__init__.py"))
+  file.create(file.path(root, "pymizu", "child.py"))
+  old <- Sys.getenv("PYTHONPATH", unset = NA)
+  Sys.setenv(PYTHONPATH = root)
+  on.exit(
+    if (is.na(old)) {
+      Sys.unsetenv("PYTHONPATH")
+    } else {
+      Sys.setenv(PYTHONPATH = old)
+    },
+    add = TRUE
+  )
+  expect_true(mizu:::pymizu_prober(python, "child"))
 })
 
 test_that("mizu_py_launcher probes the interpreter for pymizu", {

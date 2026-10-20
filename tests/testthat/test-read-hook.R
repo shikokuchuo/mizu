@@ -15,10 +15,14 @@
 spawn_with_flags <- function(expr, flags, outfile) {
   root <- getNamespaceInfo(asNamespace("mizu"), "path")
   script <- mizu:::mizu_child_script(root)
-  libs <- paste(.libPaths(), collapse = .Platform[["path.sep"]])
   system2(
     mizu:::rscript_path(),
-    c(flags, shQuote(script), mizu:::to_hex(expr), mizu:::to_hex(libs)),
+    c(
+      flags,
+      shQuote(script),
+      mizu:::to_hex(expr),
+      vapply(.libPaths(), mizu:::to_hex, character(1L), USE.NAMES = FALSE)
+    ),
     wait = FALSE,
     stdout = FALSE,
     stderr = FALSE
