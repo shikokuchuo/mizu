@@ -43,12 +43,16 @@ exact layout, constructed without bit64 — with `NA` at `INT64_MIN` in
 each direction. A large vector arrives as a zero-copy read-only view
 over the shared pages — the same ALTREP mechanism as between R
 processes, surfaced on the Python side as a NumPy array that maps the
-region. Strings cross as strings in both directions; `NA_character_`
+region. On a channel, a contiguous vector below 256 KB instead travels
+as one copy into the channel’s spill arena — cheaper than region
+machinery at that size — and crosses as a view from 256 KB; the 32 KB
+floor applies everywhere else (pools, strings, frames, `dim` and strided
+arrays). Strings cross as strings in both directions; `NA_character_`
 reads as `None` in Python, and `None` comes back as `NULL`. A large
 Python `list[str | None]` arrives as a zero-copy character-vector view
 over the shared pages — `None` as `NA_character_`, an empty string as
-`""` — one layout write, no copy or parse; below the zero-copy floor the
-list crosses by value.
+`""` — one layout write, no copy or parse; below the zero-copy floor (32
+KB) the list crosses by value.
 
 Scalars, lists, and dicts with string keys cross both ways as R’s own
 logical/integer/double/complex/character/list values. A `Date` arrives
@@ -72,13 +76,14 @@ sending one on a Python channel raises at
 A data frame crosses as a `pymizu.Frame` — column dict on one side,
 `pl.from_arrow(f)` / `pa.table(f)` on the way into polars or pyarrow —
 and a polars, pyarrow, or pandas frame arrives back as a `data.frame`.
-Past a size floor the frame travels as one shared-memory region both
-directions: no copy, no parse, numeric columns read in place. An
-unmodified R → polars → R round trip moves zero payload bytes at all —
-the return hop is a reference to the region R itself staged. The full
-contract, with the NA-sentinel and widening rules per dtype, is the
-dtype matrix in the pymizu README; a value outside the portable subset
-raises at send time on either side, naming the path and reason.
+Past the zero-copy floor (32 KB of layout) the frame travels as one
+shared-memory region both directions: no copy, no parse, numeric columns
+read in place. An unmodified R → polars → R round trip moves zero
+payload bytes at all — the return hop is a reference to the region R
+itself staged. The full contract, with the NA-sentinel and widening
+rules per dtype, is the dtype matrix in the pymizu README; a value
+outside the portable subset raises at send time on either side, naming
+the path and reason.
 
 ## Arrow data
 
@@ -166,7 +171,7 @@ stages it:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.2095302 0.4755000 0.6880084
+#> [1] 0.2231668 0.3895195 0.6429728
 s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -186,9 +191,9 @@ raises `mizu_error_not_portable` at submit. Task errors cross as
 `mizu_error_remote` conditions with the remote type preserved, and a
 result without a portable home fails the task with one naming the type.
 Large arguments cross by reference rather than by copy: a fresh array
-past the zero-copy floor stages one layout write into a shared region
-and the worker reads a view over it, and an argument that is already a
-shared view (received from a channel, a pool result, or a
+past the zero-copy floor (32 KB) stages one layout write into a shared
+region and the worker reads a view over it, and an argument that is
+already a shared view (received from a channel, a pool result, or a
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector)
 crosses as its identifier alone — a received view re-sent as an argument
 moves zero payload bytes. A pool whose workers predate the ref reader
@@ -214,23 +219,23 @@ them:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.1434125 0.1434125
+#> [1] 0.2129575 0.2129575
 #> 
 #> [[2]]
-#> [1] 0.2659144 0.2659144
+#> [1] 0.712264 0.712264
 #> 
 #> [[3]]
-#> [1] 0.6339995 0.6339995
+#> [1] 0.8655867 0.8655867
 #> 
 #> [[4]]
-#> [1] 0.1843297 0.1843297
+#> [1] 0.1099131 0.1099131
 #> 
 #> [[5]]
-#> [1] 0.4566701 0.4566701
+#> [1] 0.08909684 0.08909684
 #> 
 #> [[6]]
-#> [1] 0.4056132 0.4056132
+#> [1] 0.02469717 0.02469717
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -0.04634729 -2.91077089 -0.06263358 -0.51582964 -0.39514927 -0.24444677
+#> [1] -3.6658544 -1.8181696 -1.8572237 -1.5106673 -0.8620051 -3.9720940
 mizu_pool_stop(p)
 ```
