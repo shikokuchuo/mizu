@@ -1,3 +1,35 @@
+# the attr decline names the offending attributes
+
+    Code
+      mizu_send(p$host, ts(1:12, frequency = 4, start = c(2020, 1)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an attribute set (tsp) outside the portable whitelist at x)
+
+---
+
+    Code
+      mizu_send(p$host, dfr)
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an attribute set (reference) outside the portable whitelist at x)
+
+---
+
+    Code
+      mizu_send(p$host, matrix(1:4, 2, dimnames = list(c("a", "b"), c("c", "d"))))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an attribute set (dimnames) outside the portable whitelist at x)
+
+---
+
+    Code
+      mizu_send(p$host, structure(1, class = "Date", tzone = "UTC"))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an attribute set outside the portable whitelist at x)
+
 # corrupt and unknown streams raise informatively
 
     Code

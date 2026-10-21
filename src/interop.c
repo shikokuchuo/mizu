@@ -933,6 +933,59 @@ static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
   UNPROTECT(7);
 }
 
+/* One attribute name the whitelisted shapes admit (the union over the
+   shapes: levels+class, the frame's names/class/row.names, dim, tzone,
+   units). */
+static int ix_attr_name_admitted(const char *nm) {
+  return !strcmp(nm, "names") || !strcmp(nm, "class") ||
+    !strcmp(nm, "row.names") || !strcmp(nm, "levels") ||
+    !strcmp(nm, "dim") || !strcmp(nm, "tzone") || !strcmp(nm, "units");
+}
+
+/* The catch-all attr decline names the offenders generically: the value's
+   attribute names minus those the whitelisted shapes admit — a ts's tsp,
+   a frame's reference, an array's dimnames. A whitelisted-name set in a
+   wrong combination (a Date with a tzone) names nothing and keeps the
+   bare reason. */
+static void ixw_decline_attrs(mizu_ixw *w, SEXP x) {
+  char names[101];
+  size_t len = 0;
+  int n = 0;
+#if R_VERSION >= R_Version(4, 6, 0)
+  SEXP attrs = PROTECT(R_getAttributes(x));
+  SEXP keys = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
+  for (R_xlen_t i = 0; i < XLENGTH(attrs); i++) {
+    const char *nm = CHAR(STRING_ELT(keys, i));
+    if (ix_attr_name_admitted(nm)) continue;
+    int m = snprintf(names + len, sizeof names - len, "%s%s",
+                     n ? ", " : "", nm);
+    if ((size_t) m >= sizeof names - len) { len = sizeof names - 1; break; }
+    len += (size_t) m;
+    n++;
+  }
+  UNPROTECT(2);
+#else
+  for (SEXP a = ATTRIB(x); a != R_NilValue; a = CDR(a)) {
+    if (TAG(a) == R_NilValue) continue;
+    const char *nm = CHAR(PRINTNAME(TAG(a)));
+    if (ix_attr_name_admitted(nm)) continue;
+    int m = snprintf(names + len, sizeof names - len, "%s%s",
+                     n ? ", " : "", nm);
+    if ((size_t) m >= sizeof names - len) { len = sizeof names - 1; break; }
+    len += (size_t) m;
+    n++;
+  }
+#endif
+  if (n == 0) {
+    ixw_decline(w, "an attribute set outside the portable whitelist", NULL);
+    return;
+  }
+  char reason[160];
+  snprintf(reason, sizeof reason,
+           "an attribute set (%s) outside the portable whitelist", names);
+  ixw_decline(w, reason, NULL);
+}
+
 static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
   /* the ref gate never fires inside an attr shape: the whitelisted
      shapes are value-exact byte contracts (a frame's columns, a factor's
@@ -950,8 +1003,7 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
     } else if (ix_class_is(x, ix_ordered_class)) {
       ixw_decline(w, "an ordered factor has no portable home", NULL);
     } else {
-      ixw_decline(w, "an attribute set outside the portable whitelist",
-                  NULL);
+      ixw_decline_attrs(w, x);
     }
     w->refs = saved_refs;
     return;

@@ -266,6 +266,31 @@ test_that("the decline set raises mizu_error_not_portable on a foreign handle", 
   expect_identical(e$remedy, "as.list(x)")
 })
 
+test_that("the attr decline names the offending attributes", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+
+  expect_snapshot(
+    mizu_send(p$host, ts(1:12, frequency = 4, start = c(2020, 1))),
+    error = TRUE
+  )
+  dfr <- data.frame(x = 1:2)
+  attr(dfr, "reference") <- "A1.4, p. 270"
+  expect_snapshot(mizu_send(p$host, dfr), error = TRUE)
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      matrix(1:4, 2, dimnames = list(c("a", "b"), c("c", "d")))
+    ),
+    error = TRUE
+  )
+  # a whitelisted-name set in a wrong combination names no attribute
+  expect_snapshot(
+    mizu_send(p$host, structure(1, class = "Date", tzone = "UTC")),
+    error = TRUE
+  )
+})
+
 test_that("the depth cap declines", {
   p <- foreign_pair()
   on.exit(channel_end(p))
