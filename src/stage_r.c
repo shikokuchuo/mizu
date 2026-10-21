@@ -973,6 +973,12 @@ int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                      mizu_read_ctx *ctx) {
   mizu_pool *p = sink->p;
   mizu_r_handle *rh = (mizu_r_handle *) ctx->binding_ctx;
+  /* the boundary collection runs here: this step's reap (ahead of the
+     exec) dropped the previous task's REF-result retain, so its argument
+     view and task env are unreachable and still in New space — collected,
+     not promoted. A nested exec skips it: a collection mid-outer-task
+     would only promote the outer task's live views. */
+  if (!catching) mizu_zc_gc_boundary();
   /* the submitter-identity word: a nested exec's lives on this stack frame
      (pymizu's sub_ident discipline — helping must not clobber the outer
      task's word); the outermost exec's is the global itself, left readable
@@ -1149,7 +1155,11 @@ void mizu_r_drop(void *ctx, void *pin) {
 
 /* The sweep hook: a pool worker going idle or departing drops its map
    cache (prot[2]) — the per-worker context env, re-created lazily by
-   mizu_pool_map_cache on the next map. */
+   mizu_pool_map_cache on the next map. It deliberately does not run the
+   boundary collection: at idle the previous REF result is still retained,
+   so a collection would promote it and the task env to Old[0], slipping
+   the release to the level-1 cadence (the generation trap — the exec-entry
+   collection is the well-timed one). */
 void mizu_r_sweep(void *ctx) {
   SET_VECTOR_ELT(((mizu_r_handle *) ctx)->prot, 2, R_NilValue);
 }

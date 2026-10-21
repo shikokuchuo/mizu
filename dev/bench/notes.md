@@ -1426,3 +1426,40 @@ create-cost win is lever 2's. A/B isolations — no best-known rows
 touched (Linux host; the table rows are M4 Pro).
 Status: full suite green on a66a25b (4564 pass, 0 fail, 63 skips — the
 cross-language probes are absent on this box).
+
+## 2026-10-21 — lever 3: the byte-gated boundary minor gc (R binding)
+
+The zc-churn-budget plan's lever 3, A/B on the second Linux host
+(i7-1165G7, kernel 7.0.0-38-generic, R 4.6.1, `LTO = -flto` in the
+user Makevars; no taskset, perf counters kernel-blocked). Arm A the
+pre-change HEAD (a2a6e69), arm B the boundary change; arms installed
+side-by-side, full mizu-bench.R once per arm back-to-back, then a
+reduced row set alternated A/B/A/B x3, and isolated single-row
+probes. Mechanism acceptance first (real 1-worker pool, 30-rep 8 MB
+identity loop, results dropped): the armed-bytes counter fires the
+boundary per collect (16 MiB armed per wrap against the 8 MiB gate),
+ledger_entries <= 2 on the new pool-dump field, fl_hits 28/30 —
+free-list recycling replaces the stock churn fallback's SHM_RAW +
+fresh creates — /dev/shm +40 MB over the run (flat per rep), median
+2.0 ms/rep.
+
+8 MB payload row (reduced harness, 30 reps/mark): A 5,787-5,924
+us/task across three runs, B 2,488-2,501 across three — -57% (one B
+mark at 3,107, still -47%) — with the mechanism above as the
+attribution. The full-bench A1 -> B1 read 5,949 -> 2,206; the
+harnesses differ on the A side (the full bench's row runs after the
+other payload rows in-process), so the reduced alternation is the
+controlled comparison. Every other row within band: seq rt pool
+3.6/3.6/3.6 -> 3.6/4.0/3.7 us, pool batch 1.084-1.089M ->
+1.068-1.126M tasks/s, 10k strings 1,073-1,244 -> 1,104-1,253 us/rt,
+plan k = 0 69.8-70.0 -> 67.4-68.3 us/task, payload 800 KB 322-355 ->
+322-333 us.
+
+A/B isolations — no best-known rows touched (Linux host; the table
+rows are M4 Pro).
+
+Status: full suite green (4574 pass, 0 fail, 63 skips); the
+cross-language suite green against pymizu (186 pass, 12 skips —
+pyarrow absent); rchk zero findings in package code (the pre-existing
+pool_submit unprotected-arguments warning fixed in this round). The
+pymizu venv needed a plain reinstall first (stale non-editable copy).

@@ -384,6 +384,16 @@ static inline void mizu_decline_foreign(mizu_read_ctx *ctx) {
 
 // Zero-copy payload tiers (zc.c) ---------------------------------------------------
 
+/* The boundary-collection gate (zc.c): region bytes armed since the last
+   boundary collection that trigger a minor gc at the pool task boundaries
+   (the worker's exec entry, the submitter's collect entry). A view is
+   ~100 B of R heap over MBs of shm, so R's own gc cadence never sees the
+   pin pressure. The gate sizes the reclaim drip against the spill free
+   list's 2-per-class cap: a firing hands back one or two regions per class
+   (they rejoin the list); a bigger gate would burst past the cap, the
+   excess destroyed at insert and re-created next task. */
+#define MIZU_R_GC_BYTES ((size_t) 8 << 20)
+
 void mizu_zc_init(void);
 /* The by-reference emission record: the mark list holds every view a
    by-reference emission marked REFHELD since the last reset — the stage's
@@ -431,8 +441,17 @@ SEXP mizu_zc_lookup_wrap(mizu_zc_cache *oc, const unsigned char *name,
                          uint32_t len);
 void mizu_zc_cache_store(mizu_zc_cache *oc, const unsigned char *name,
                          uint32_t len, SEXP wrap);
+/* The byte-gated minor collection at a pool task boundary: releases the
+   views the finished task left behind while they are still in New space.
+   Past MIZU_R_GC_BYTES of armed view bytes only — a task that wrapped
+   nothing or only small views pays one load. The idle sweep hook
+   deliberately never collects: at idle the previous REF result is still
+   retained, and a collection there would promote it to Old[0], slipping
+   its release to the level-1 cadence (the generation trap). */
+void mizu_zc_gc_boundary(void);
 SEXP mizu_zc_view_check_call(SEXP x);
 SEXP mizu_zc_refcount_call(SEXP x);
+SEXP mizu_zc_armed_bytes_call(void);
 SEXP mizu_zc_fl_info(mizu_handle *h);
 
 // Classed error conditions (condition.c) -------------------------------------------
@@ -539,6 +558,8 @@ enum {
   MIZU_PRIV_FN_ALLOC_ARRAY,
   MIZU_PRIV_RUNNER_NS,         /* stage_r.c: the mizu namespace (runner path) */
   MIZU_PRIV_FN_MAP_RUNNER,
+  MIZU_PRIV_GC_MINOR,          /* zc.c: the cached .Internal(gc(FALSE, FALSE,
+                                  FALSE)) of the boundary collection */
   MIZU_PRIV_MAX
 };
 

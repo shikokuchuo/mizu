@@ -740,8 +740,9 @@ mizu_pool_status <- function(pool) {
 #'   `local` is the process-private machinery of this handle: the
 #'   occupancy of the producer free list (`fl_entries`, `fl_bytes`), its
 #'   reuse count (`fl_hits`), the `open_hits` and `open_misses` of the
-#'   consumer mapping cache, and `collect_parks` (how often a collect on
-#'   this handle parked waiting for a result).
+#'   consumer mapping cache, `collect_parks` (how often a collect on
+#'   this handle parked waiting for a result), and `ledger_entries`
+#'   (lent-out regions still pinned by consumer views).
 #'
 #' @examples
 #' p <- mizu_pool()

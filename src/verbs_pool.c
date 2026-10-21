@@ -592,8 +592,11 @@ SEXP mizu_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
                           SEXP flags_sexp) {
   double d = Rf_asReal(deadline);
   double timeout_s = R_FINITE(d) ? d - mizu_now() : R_PosInf;
-  return pool_submit(xp, payload, Rf_ScalarReal(timeout_s),
-                     Rf_asInteger(flags_sexp), 1);
+  const int flags = Rf_asInteger(flags_sexp);
+  SEXP timeout = PROTECT(Rf_ScalarReal(timeout_s));
+  SEXP out = pool_submit(xp, payload, timeout, flags, 1);
+  UNPROTECT(1);
+  return out;
 }
 
 /* The spec map's runner submit (Phase 5): the runner spec — (region name,
@@ -780,6 +783,11 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   mizu_r_handle *h;
   mizu_task t = task_get(xp, &h);
   void *v = NULL;
+  /* the submitter-side boundary collection (zc.c): dead result views
+     release here instead of piling up as lent bytes the submitter's own
+     gc cadence cannot see. Skipped inside a task — a collection in a
+     nested collect would only promote the outer task's live views. */
+  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
   SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st =
     mizu_pool_collect((mizu_pool *) h->core, &t, &v, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
@@ -801,7 +809,11 @@ SEXP mizu_pool_collect_call(SEXP xp, SEXP timeout) {
 SEXP mizu_pool_collect_try(SEXP xp, SEXP deadline) {
   double d = Rf_asReal(deadline);
   double timeout_s = R_FINITE(d) ? d - mizu_now() : R_PosInf;
-  return pool_collect_impl(xp, Rf_ScalarReal(timeout_s), 1);
+  /* protected: pool_collect_impl's entry boundary collection allocates */
+  SEXP timeout = PROTECT(Rf_ScalarReal(timeout_s));
+  SEXP out = pool_collect_impl(xp, timeout, 1);
+  UNPROTECT(1);
+  return out;
 }
 
 /* Extract a task list's handles and shared pool. */
@@ -835,6 +847,8 @@ SEXP mizu_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   mizu_pool *p = tasks_get(tasks, &ts, &h, &n);
   void *v = NULL;
   size_t idx = 0;
+  /* the submitter-side boundary (pool_collect_impl) */
+  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
   SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st = mizu_pool_collect_any(p, ts, (size_t) n, &idx, &v,
                                        mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
@@ -875,6 +889,8 @@ SEXP mizu_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   mizu_pool *p = tasks_get(tasks, &ts, &h, &n);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
   size_t err_idx = 0, consumed = 0;
+  /* the submitter-side boundary (pool_collect_impl) */
+  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
   SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st = mizu_pool_collect_all_fn(p, ts, (size_t) n, mizu_vec_sink,
                                           out, &err_idx, &consumed,
@@ -1104,10 +1120,12 @@ SEXP mizu_pool_dump_call(SEXP xp) {
                    Rf_ScalarInteger((int) (uint32_t) (word >> 32)));
   }
 
-  /* the spill free list, mapping cache, and collect park count are
-     handle-local, surfacing here rather than in the cross-process stats */
+  /* the spill free list and lent ledger, mapping cache, and collect park
+     count are handle-local, surfacing here rather than in the
+     cross-process stats */
   const char *lnames[] = {"fl_entries", "fl_bytes", "fl_hits", "open_hits",
-                          "open_misses", "collect_parks", ""};
+                          "open_misses", "collect_parks", "ledger_entries",
+                          ""};
   SEXP lo = Rf_mkNamed(VECSXP, lnames);
   SET_VECTOR_ELT(out, 5, lo);
   SET_VECTOR_ELT(lo, 0, Rf_ScalarInteger((int) d.fl_entries));
@@ -1116,6 +1134,7 @@ SEXP mizu_pool_dump_call(SEXP xp) {
   SET_VECTOR_ELT(lo, 3, Rf_ScalarReal((double) d.open_hits));
   SET_VECTOR_ELT(lo, 4, Rf_ScalarReal((double) d.open_misses));
   SET_VECTOR_ELT(lo, 5, Rf_ScalarReal((double) d.collect_parks));
+  SET_VECTOR_ELT(lo, 6, Rf_ScalarInteger((int) d.ledger_entries));
 
   const char *wnames[] = {"status", "pid", "park_state", "parked", "top",
                           "bottom", "in_flight", ""};

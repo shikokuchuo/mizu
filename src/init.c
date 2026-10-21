@@ -167,6 +167,7 @@ SEXP mizu_strip_srcref(SEXP);
 SEXP mizu_zc_view_check_call(SEXP);
 SEXP mizu_zc_refcount_call(SEXP);
 SEXP mizu_zc_view_name_call(SEXP);
+SEXP mizu_zc_armed_bytes_call(void);
 SEXP mizu_pool_zc_info(SEXP);
 SEXP mizu_arrow_export_call(SEXP, SEXP);
 
@@ -295,6 +296,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_zc_view_check",          (DL_FUNC) &mizu_zc_view_check_call,        1},
   {"mizu_zc_refcount",            (DL_FUNC) &mizu_zc_refcount_call,          1},
   {"mizu_zc_view_name",           (DL_FUNC) &mizu_zc_view_name_call,         1},
+  {"mizu_zc_armed_bytes",         (DL_FUNC) &mizu_zc_armed_bytes_call,       0},
   {"mizu_pool_zc_info",           (DL_FUNC) &mizu_pool_zc_info,              1},
   {"mizu_arrow_export",           (DL_FUNC) &mizu_arrow_export_call,         2},
   {NULL, NULL, 0}

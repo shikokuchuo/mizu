@@ -64,6 +64,11 @@ static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminu
    task's R code kept. */
 static int mizu_zc_nmarks;
 
+/* The boundary counter: region bytes whose release records armed since the
+   last boundary collection — the view-pin pressure R's own gc cadence
+   cannot see (a view is ~100 B of R heap over MBs of shm). */
+static size_t mizu_zc_armed;
+
 static void zc_list_clear(SEXP list, int *pn) {
   const int n = *pn;
   for (int i = 0; i < n; i++)
@@ -105,7 +110,14 @@ void mizu_zc_init(void) {
   mizu_shm_tag_sym = Rf_install(MIZU_VIEW_TAG_SHM);
   SEXP marks = PROTECT(Rf_allocVector(VECSXP, 0));
   mizu_priv_set(MIZU_PRIV_ZC_MARKS, marks);
-  UNPROTECT(1);
+  /* the boundary collection's cached call: .Internal(gc(FALSE, FALSE,
+     FALSE)) — a level-0 collection of New space, then the pending
+     finalizers (do_gc's three-argument form predates the R >= 4.3 floor) */
+  SEXP f = PROTECT(Rf_ScalarLogical(FALSE));
+  SEXP inner = PROTECT(Rf_lang4(Rf_install("gc"), f, f, f));
+  SEXP gc = PROTECT(Rf_lang2(Rf_install(".Internal"), inner));
+  mizu_priv_set(MIZU_PRIV_GC_MINOR, gc);
+  UNPROTECT(4);
   mizu_view_set_wire_hooks(mizu_zc_ref_mark, mizu_zc_wire_resolve);
   /* the vendored resolve cache opens through mizu's split open, so every
      consumer mapping — cached or prep-path — has a writable page 0 */
@@ -115,6 +127,8 @@ void mizu_zc_init(void) {
 void mizu_zc_fini(void) {
   /* no release — the precious root outlives it (the unload order) */
   mizu_priv_set(MIZU_PRIV_ZC_MARKS, R_NilValue);
+  mizu_priv_set(MIZU_PRIV_GC_MINOR, R_NilValue);
+  mizu_zc_armed = 0;
   mizu_zc_nmarks = 0;
 }
 
@@ -171,6 +185,29 @@ static void mizu_rel_finalizer(SEXP ptr) {
    shared pages are dead weight from there. */
 static void mizu_zc_rel_fire(void *arg) {
   mizu_rel_finalizer((SEXP) arg);
+}
+
+// The boundary collection -----------------------------------------------------------
+
+/* Arm a release record and charge its region to the boundary counter. The
+   count is a heuristic: a re-wrap charges its region again and releases
+   never refund — over-counting fires the boundary early, never late. */
+static void mizu_zc_rel_arm(mizu_zc_rel *rel, const mizu_shm *shm) {
+  rel->armed = 1;
+  mizu_zc_armed += shm->size;
+}
+
+static void mizu_zc_gc_run(void *data) {
+  (void) data;
+  Rf_eval(mizu_priv(MIZU_PRIV_GC_MINOR), R_BaseEnv);
+}
+
+void mizu_zc_gc_boundary(void) {
+  if (mizu_zc_armed <= MIZU_R_GC_BYTES) return;
+  mizu_zc_armed = 0;
+  /* the top-level context contains the eval (finalizers included: each
+     rides its own top-level context and cannot unwind into this frame) */
+  R_ToplevelExec(mizu_zc_gc_run, NULL);
 }
 
 // Consumer open: split mapping ---------------------------------------------------
@@ -871,7 +908,7 @@ SEXP mizu_zc_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
   SEXP rel_xp = PROTECT(R_ExternalPtrProtected(name_xp));
   SEXP view = PROTECT(mizu_zc_wrap0(shm, name_xp, rel_xp, hdr->aux));
   mizu_zc_ref(shm);
-  ((mizu_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
+  mizu_zc_rel_arm((mizu_zc_rel *) R_ExternalPtrAddr(rel_xp), shm);
   UNPROTECT(3);
   return view;
 }
@@ -965,7 +1002,7 @@ SEXP mizu_zc_ref_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
   if (path_len == 0) {
     view = PROTECT(mizu_zc_wrap0(shm, name_xp, rel_xp, 0));
     mizu_zc_ref(shm);
-    ((mizu_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
+    mizu_zc_rel_arm((mizu_zc_rel *) R_ExternalPtrAddr(rel_xp), shm);
   } else {
     view = PROTECT(mizu_view_walk_path((unsigned char *) shm->addr,
                                   (int64_t) shm->size, path, path_len,
@@ -978,7 +1015,7 @@ SEXP mizu_zc_ref_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
         o->release = mizu_zc_rel_fire;
         o->release_arg = (void *) rel_xp;
         mizu_zc_ref(shm);
-        ((mizu_zc_rel *) R_ExternalPtrAddr(rel_xp))->armed = 1;
+        mizu_zc_rel_arm((mizu_zc_rel *) R_ExternalPtrAddr(rel_xp), shm);
         if (TYPEOF(view) == VECSXP) {
           /* a list view: loan its remote leaves' regions with its record */
           mizu_view_list *lv =
@@ -1116,7 +1153,7 @@ static void mizu_zc_wire_resolve(SEXP view, mizu_shm *shm) {
   o->release = mizu_zc_wire_rel;
   o->release_arg = rel;
   mizu_zc_ref(shm);
-  rel->armed = 1;
+  mizu_zc_rel_arm(rel, shm);
   if (TYPEOF(view) == VECSXP) {
     /* a list view's remote leaves count at the wrap, not at lazy access */
     mizu_view_list *lv =
@@ -1154,6 +1191,12 @@ SEXP mizu_zc_refcount_call(SEXP x) {
 SEXP mizu_zc_view_name_call(SEXP x) {
   if (!mizu_view_check(x)) return R_NilValue;
   return mizu_view_shm_name(x);
+}
+
+/* Test surface: the boundary counter — region bytes armed since the last
+   boundary collection (mizu_zc_gc_boundary resets it on firing). */
+SEXP mizu_zc_armed_bytes_call(void) {
+  return Rf_ScalarReal((double) mizu_zc_armed);
 }
 
 /* c(free-list entries, lent-ledger entries) for a handle's spill state. */

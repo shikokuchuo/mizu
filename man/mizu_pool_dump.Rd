@@ -25,8 +25,9 @@ nested \code{\link[=mizu_collect]{mizu_collect()}} (the \code{rehome} event of \
 \code{local} is the process-private machinery of this handle: the
 occupancy of the producer free list (\code{fl_entries}, \code{fl_bytes}), its
 reuse count (\code{fl_hits}), the \code{open_hits} and \code{open_misses} of the
-consumer mapping cache, and \code{collect_parks} (how often a collect on
-this handle parked waiting for a result).
+consumer mapping cache, \code{collect_parks} (how often a collect on
+this handle parked waiting for a result), and \code{ledger_entries}
+(lent-out regions still pinned by consumer views).
 }
 \description{
 A read-only debugging snapshot of the entire pool region, one level

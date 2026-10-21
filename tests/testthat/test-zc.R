@@ -610,6 +610,48 @@ test_that("the churn fallback clears once lent regions reclaim", {
   pool_end(p)
 })
 
+test_that("the exec-entry boundary fires past the byte gate", {
+  p <- pool_pair()
+  armed <- function() .Call(mizu:::mizu_zc_armed_bytes)
+  x <- runif(2^20) # 8 MB payload: one wrap arms past the 8 MB gate
+  t <- mizu_submit(p[["ctrl"]], x, x = x)
+  pool_step(p) # the arg wrap arms the gate (a residual counter fires first)
+  r <- mizu_collect(t, 5) # the collect boundary fires; the REF wrap re-arms
+  expect_true(is_view(r))
+  expect_gt(armed(), 8 * 1024 * 1024)
+  # the next exec entry fires the boundary; a value task arms nothing
+  t2 <- mizu_submit(p[["ctrl"]], 1L)
+  pool_step(p)
+  expect_identical(armed(), 0)
+  expect_identical(mizu_collect(t2, 5), 1L)
+  pool_end(p)
+})
+
+test_that("the collect-entry boundary fires past the gate; dead views never leak", {
+  p <- channel_pair(arena_size = 0)
+  pp <- pool_pair()
+  armed <- function() .Call(mizu:::mizu_zc_armed_bytes)
+  x <- runif(2^20)
+  t <- mizu_submit(pp[["ctrl"]], 1L) # a value task arms nothing
+  pool_step(pp) # clears any residual counter through the exec boundary
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  expect_gt(armed(), 8 * 1024 * 1024)
+  # the collect veneer is the only boundary past the wrap: it fires, resets
+  expect_identical(mizu_collect(t, 5), 1L)
+  expect_identical(armed(), 0)
+  # the held view pins its region; a full gc of the dead view drains it
+  mizu_send(p[["host"]], x)
+  expect_identical(chan_ledger(p[["host"]]), 1L)
+  rm(y)
+  invisible(gc())
+  mizu_send(p[["host"]], x)
+  expect_identical(chan_ledger(p[["host"]]), 0L)
+  channel_end(p)
+  pool_end(pp)
+})
+
 test_that("channel zc churn falls back to the copy tiers and recovers", {
   skip_on_os(c("mac", "windows")) # the churn signal is Linux-only (spill_fl_pop)
   p <- channel_pair(arena_size = 0)
