@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="e58b085a1ffa7fdf07ec6fe402aa8173ccf6344f"  # libmizu: low-severity sweep: timeout cast clamps, MIZL validation, FD hygiene
+PIN="a66a25b4c0ef495ed4dc6f46de5c61cbe3422f02"  # libmizu: align >= 2 MiB region mappings to the THP extent on Linux; unhide MADV_COLLAPSE in spill.c
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

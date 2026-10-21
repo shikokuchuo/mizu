@@ -1381,3 +1381,48 @@ B medians): payload 8K 3.45 -> 3.43 us; 10k strings 88.5 -> 88.3 us;
 serialize result 5.01 -> 4.95 us; codec result 2.74 -> 2.63 us — B/A
 0.96-1.00 throughout. A/B isolations — no best-known rows touched.
 Status: full suite green on b05920a (4858 pass, 0 fail, 5 skips).
+
+## 2026-10-21 — lever 1: extent-aligned region mappings (libmizu e58b085 -> a66a25b)
+
+The THP-alignment lever from the zc-churn-budget plan, A/B on the second
+Linux host (i7-1165G7, kernel 7.0.0-38-generic, R 4.6.1, GLIBC_TUNABLES
+mmap 32 MiB / trim 128 MiB both arms, no taskset; perf counters are
+kernel-blocked here, so attribution is proc.time + strace). Arms
+installed side-by-side from the two vendor pins; full mizu-bench.R once
+per arm back-to-back, then a reduced row set alternated A/B/A/B x3 and
+targeted isolations. Mechanism acceptance first: the 8 MB row's
+MADV_COLLAPSE calls flip from 116/116 EINVAL (A) to 116/116 success (B)
+— 492 per 252-task run, exactly 2 per task (the two recycled regions'
+inserts); the channel rows fire 2 per run (control-region create +
+attach), EINVAL under A, success under B.
+
+Results (full suite, A -> B): sequential rt channel 2.7 -> 2.7 us, pool
+2.8 -> 2.8; pipelined channel 416.3k -> 438.6k rt/s, channel batch
+7.14M -> 7.24M rt/s, pool 254.9k -> 269.4k tasks/s, pool batch
+1.116M -> 1.134M; payload 8 KB 6.2 -> 6.2 us, 800 KB 247.5 -> 250.8 us;
+10k strings 1,135.8 -> 1,062.9 us/rt (the one consistent gain — see
+below), small named 4.4 -> 4.3; frame factor col 1,195.6 -> 1,173.0,
+char col 11,085.3 -> 11,428.4; fan-out 137.9k -> 142.5k (in-process
+anchor 51.1k -> 51.7k); streaming 14.86M -> 14.05M msg/s (-5.5%,
+re-probed as jitter: isolated runs B 15.12M/13.19M span A
+14.86M/14.86M); map/serialize/codec/plan rows flat (serialize 9.2 ->
+9.1, codec 5.8 -> 5.6). The one regression: payload 8 MB 2,811 ->
+3,177 us/task; the alternation narrows it to A 2,614/2,637/2,684 vs B
+2,806/2,840/2,908 (medians +8%), and the 252-task harness to +2-3% —
+horizon-dependent, and fully attributed: worker.sys +40-75 us/task and
+submitter.sys +5-10 with user CPU and faults (111.8/task) flat on both
+sides, i.e. the two now-real insert collapses per task (~10-20 us
+steady) replacing their instant EINVALs. A C probe pins the shape: the
+first collapse of a region with a live consumer mapping costs 8.4 ms
+(3x the 2.6 ms solo cost), decaying over 2-3 write cycles (1,062 -> 195
+-> 2.9 us means) — the plan's "~ms one-time per region" watch item
+confirmed with a 3x second-mapping factor and a short decay, so
+short-horizon loops show +8% and long loops +2-3%. The 10k-string gain
+is the same mechanism in the other direction (the collapsed
+control-region ring); no other row shows an effect past noise, matching
+the plan's "second-order on this row" — the view-read fault elimination
+needs a view-materializing workload the bench rows don't have, and the
+create-cost win is lever 2's. A/B isolations — no best-known rows
+touched (Linux host; the table rows are M4 Pro).
+Status: full suite green on a66a25b (4564 pass, 0 fail, 63 skips — the
+cross-language probes are absent on this box).
