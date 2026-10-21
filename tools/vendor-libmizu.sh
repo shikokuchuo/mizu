@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="a66a25b4c0ef495ed4dc6f46de5c61cbe3422f02"  # libmizu: align >= 2 MiB region mappings to the THP extent on Linux; unhide MADV_COLLAPSE in spill.c
+PIN="438c5550b5567c61dc3ee54b94f58c250f984c3c"  # libmizu: create Linux regions >= 2 MiB as huge folios: one fault per extent + MADV_COLLAPSE, populate fallback
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

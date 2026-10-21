@@ -1463,3 +1463,46 @@ cross-language suite green against pymizu (186 pass, 12 skips —
 pyarrow absent); rchk zero findings in package code (the pre-existing
 pool_submit unprotected-arguments warning fixed in this round). The
 pymizu venv needed a plain reinstall first (stale non-editable copy).
+
+## 2026-10-21 — lever 2: huge-folio region creates (libmizu a66a25b -> 438c555)
+
+The zc-churn-budget plan's lever 2, A/B on the second Linux host
+(i7-1165G7, kernel 7.0.0-38-generic, R 4.6.1, GLIBC_TUNABLES mmap
+32 MiB / trim 128 MiB both arms, LTO builds; no taskset, perf counters
+kernel-blocked). Arm A mizu b41d491 (vendored a66a25b), arm B the
+lever-2 re-vendor (438c555); arms installed side-by-side. Mechanism
+acceptance first (C probe, n = 200 held 8 MiB creates, interleaved
+A/B/A/B x3): p50 2.08-2.11 -> 0.96-0.98 ms per create, minflt 2,048 ->
+4.0 per create (one per 2 MiB extent), p99 2.5-2.6 -> 1.5-2.1 ms, and
+the ShmemHugePages delta reads exactly +1,638,400 kB for the 200 held
+regions — every region born huge. The plan's defrag risk, first probe
+run on a fragmented free list (~3 h uptime): p50 3.78 / p99 10.2 ms —
+bounded, comparable to stock populate's own recorded bad tail
+(3.1-9.5 ms), with the steady state re-measuring sub-ms, so no
+per-process latch. The long-uptime-box tail check stays open per the
+risk note.
+
+R-side (dedicated harness, A/B/A/B x2): cold fresh-pool 8 MB identity
+task 3.00 -> 2.00 ms median, minflt 2,049 -> 5 — the plan's ~2 ms
+rep-1 prediction; 8 MB row rep-1 3,300-3,433 -> 2,767 us/task with
+steady reps unchanged (lever-3 recycling: no creates left to save);
+held-views growth identical on both arms (+17 files / +54.5 MB held,
++16 / +46.5 after drop+gc) — the churn-fallback safety regime
+untouched. Full mizu-bench.R once per arm back-to-back: payload 8 MB
+2,472.6 -> 2,341.5 us/task (-5%), 10k strings 1,148.9 -> 1,007.6
+us/rt; the two out-of-band rows (pipelined pool -13%, codec result
++26%) re-probed as jitter by a 3x alternation (A 303,981-308,531 vs B
+302,764-312,213 tasks/s; codec 6.8/6.8/6.8 vs 6.8/6.9/7.5 us); every
+other row within band.
+
+A/B isolations — no best-known rows touched (Linux host; the table
+rows are M4 Pro).
+
+Status: libmizu make test + make test-integration green (new
+test_region blocks: mincore all-resident incl. the non-extent tail,
+and a collapse-availability-gated fault-count assert);
+tools/check-exports.sh symbol-identical to exports.txt (its diff is
+this box's locale sort order, present on the stock build too); mizu
+suite green on 438c555 (4574 pass,
+0 fail, 63 skips — the cross-language probes are absent on this box).
+clang-tidy unavailable on this box (the report-only tidy leg skipped).
