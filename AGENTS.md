@@ -321,13 +321,18 @@ Cross-cutting invariants (shared by channel and pool):
   instead recycle only when the view refcount hits zero — release rides
   the views’ finalizers, so it is GC-gated on every holder process — and
   a spill miss whose full ledger sweep reclaims nothing sets the
-  handle’s `churn` flag (Linux only — the core pre-faults fresh regions
-  there, while macOS/Windows creates are lazy, so SHM_VEC stays cheaper
-  than the copy tiers even under churn): staging falls back to the copy
-  tiers (pool SHM_RAW; channel arena/SHM_RAW) until a sweep or
-  force-reclaim returns a lent region (views are flowing again). The
-  Linux THP collapse runs at free-list insert rather than fresh create,
-  so only regions that completed a consumer-done cycle pay for it.
+  handle’s `churn` flag once outstanding lent bytes pass
+  `MIZU_ZC_LENT_BUDGET` (256 MB; Linux only — the core pre-faults fresh
+  regions there, while macOS/Windows creates are lazy, so SHM_VEC stays
+  cheaper than the copy tiers even under churn): staging falls back to
+  the copy tiers (pool SHM_RAW; channel arena/SHM_RAW) until reclaims
+  bring lent bytes back under the budget (a churn-gated quota sweep at
+  the core’s `pool_submit1` lifts it on pool submitters, whose pops stop
+  missing under the copy tiers). On Linux, \>= 2 MiB region mappings are
+  extent-aligned (`mizu_mmap_aligned`) and creates are born huge on
+  kernel \>= 6.1 (one fault per extent + MADV_COLLAPSE, the populate as
+  fallback); the free-list-insert collapse remains as the heal path for
+  fallback-created regions.
 - **Zero-copy views** (`src/zc.c`; the protocol invariants are
   DESIGN.md’s): a layout-eligible object past
   `max(inline budget, MIZU_ZC_FLOOR)` stages as SHM_VEC — one layout
@@ -671,9 +676,10 @@ Conventions:
 - On R \< 4.6 [`identical()`](https://rdrr.io/r/base/identical.html)
   materializes ALTREP views (writable `DATAPTR`), firing the zc release
   early — assert view refcounts before deep value comparisons, never
-  after. And holding many live views trips the Linux churn fallback
-  (later sends degrade to the copy tiers), so multi-view scenarios gate
-  with `skip_on_os("linux")`.
+  after. Holding live views past the 256 MB lent budget trips the Linux
+  churn fallback (staging degrades to the copy tiers): tests asserting
+  the fallback gate with `skip_on_os(c("mac", "windows"))`, while small
+  held-view sets stay on the zero-copy tiers on every platform.
 - Avoid the `.package` argument to `local_mocked_bindings()` (it
   modifies another package’s namespace); instead create a mockable
   version of the function in this package. See `?local_mocked_bindings`.
