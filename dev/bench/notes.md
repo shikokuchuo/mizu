@@ -1506,3 +1506,63 @@ this box's locale sort order, present on the stock build too); mizu
 suite green on 438c555 (4574 pass,
 0 fail, 63 skips — the cross-language probes are absent on this box).
 clang-tidy unavailable on this box (the report-only tidy leg skipped).
+
+## 2026-10-21 — the churn budget + submitter sweep (libmizu 438c555 -> 40a5ac5)
+
+The zc-churn-budget plan's step 4 (the budget itself), A/B on the
+second Linux host (i7-1165G7, kernel 7.0.0-38-generic, R 4.6.1,
+GLIBC_TUNABLES mmap 32 MiB / trim 128 MiB both arms, LTO builds; no
+taskset). Arm A mizu 0d3a0c1 (vendored 438c555: levers 1-3 in, the
+any-lent trigger), arm B the budget re-vendor (40a5ac5); arms
+installed side-by-side. Protocol: a dedicated harness A/B/A/B x2 (the
+8 MB rows, 60 held results, a pipelined held run, the submitter-churn
+scenario), full mizu-bench.R once per arm, and the standout rows
+re-probed A/B/A/B x3.
+
+The Findings' regression regime is not just closed but banked: the
+8 MB identity row runs 3,200/2,867 -> 1,700/1,667 us (harness marks;
+the standalone probe 2,149 -> 1,311 us/task, full-bench 2,381 ->
+1,339) — with lever 3 alone the any-lent trigger still flipped the
+handle to the copy tiers on every task-lagged reclaim; the 256 MB
+budget absorbs the transient lent. x+0 3,200/3,767 -> 2,967/2,833.
+Full bench: 10k-string echo 1,134 -> 211 us/rt (probe 1,152-1,312 ->
+209-213, n_itr 370-423 -> 1,342-1,356 — the whole mark now fits under
+the budget), frame factor col 1,061 -> 776, char col 11,039 -> 8,036;
+every other row within band.
+
+Past-budget (60 held 8 MB x+0 results): B holds the zc window at
+4.0 ms for 32 tasks (A is already degraded at 6-7); the fallback phase
+runs 5-6 ms on both arms — the Findings' asymmetric-steady-state
+regression is gone (degraded B == steady A, and B banked the 32-task
+fast window); /dev/shm pins bounded at 311 MB against the budget
+(the no-churn disaster pinned +1,600 MB at 200 held; the budget is the
+design's cap for exactly this), and the drop+gc recovery returns views
+on both arms (B 3.4-4.8 ms/task, shm back to 55 MB). Pipelined 40
+held: 3.63-3.68 vs 3.52-3.55 ms/task — parity, so the pipelined
+view-holding regime does not regress and B (the shared churn word)
+stays parked.
+
+Submitter sweep (worker-stashed arg views): A churns at task ~2
+(task32 FALSE) and never lifts after release+gc (FALSE x5 — the
+pre-existing starvation gap: its SHM_RAW pops hit the free list, so no
+miss-sweep ever runs); B holds zc to task ~34 (task32 TRUE), crosses
+(task40 FALSE), and lifts on the first reclaim (TRUE x5). shm peak
+287 MB, bounded.
+
+Free-list caps re-derivation (owed to this round): no change forced —
+the lever-3 8 MB gate drips 1-2 regions per firing against the
+2-per-class cap, and regions > 16 MB drip 1 by construction. Left
+as-is.
+
+A/B isolations — no best-known rows touched (Linux host; the table
+rows are M4 Pro).
+
+Status: libmizu make test + make test-integration green (test_spill
+gains the budget blocks — below-budget no-churn, past-budget set and
+clear, a reclaims-nothing sweep keeps churn, the overflow drop keeps
+its bytes counted; test_pool gains submit_sweep_churn). mizu suite
+green (4589 pass, 0 fail, 61 skips): the two pool churn tests merged
+and reworked to cross the budget (40 held 8 MB x+0 results), the
+channel churn test likewise (40 held 8 MB sends), and the two
+skip_on_os("linux") zc tests unskipped — their lent volumes stay far
+under the budget now.

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="438c5550b5567c61dc3ee54b94f58c250f984c3c"  # libmizu: create Linux regions >= 2 MiB as huge folios: one fault per extent + MADV_COLLAPSE, populate fallback
+PIN="40a5ac56f8a125c05a8985ca3a3e0e2f92be1c96"  # libmizu: engage the Linux zc churn fallback past a lent-bytes budget; lift it via a submit-time sweep on churned pool submitters
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

@@ -571,38 +571,28 @@ test_that("pool results cross as views; a held result pins the worker's region",
   pool_end(p)
 })
 
-test_that("zc churn falls back to SHM_RAW: reuse resumes without any GC", {
+test_that("zc churn falls back past the lent budget and clears once lent regions reclaim", {
   skip_on_os(c("mac", "windows")) # the churn signal is Linux-only (spill_fl_pop)
   p <- pool_pair()
-  x <- runif(20000) # 160 KB: past the zc floor, spills
-  # collected views pin their regions until GC (none here), so SHM_VEC
-  # would churn a fresh region per payload; the fallback's SHM_RAW
-  # surrenders deterministically at consumer-done, restoring warm reuse
-  for (i in seq_len(6L)) {
-    t <- mizu_submit(p[["ctrl"]], x, x = x)
-    pool_step(p)
-    expect_identical(mizu_collect(t, 5), x)
-  }
-  st <- mizu_pool_stats(p[["ctrl"]])[["submitters"]]
-  st <- st[st[["status"]] == "live", ]
-  expect_gt(st[["spill_reuse"]], 0)
-  pool_end(p)
-})
-
-test_that("the churn fallback clears once lent regions reclaim", {
-  p <- pool_pair()
-  x <- runif(20000)
-  held <- vector("list", 4L) # held views pin their regions: churn
+  x <- runif(1e6) # 8 MB: 34 held results cross the 256 MB lent budget
+  # x + 0 stages a fresh worker-side region per result (an identity result
+  # REFs the argument's region and never exercises the worker's own
+  # ledger); the held collects pin them: past the budget the worker
+  # degrades to SHM_RAW's deterministic reuse
+  held <- vector("list", 40L)
   for (i in seq_along(held)) {
-    t <- mizu_submit(p[["ctrl"]], x, x = x)
+    t <- mizu_submit(p[["ctrl"]], x + 0, x = x)
     pool_step(p)
     held[[i]] <- mizu_collect(t, 5)
   }
+  expect_true(is_view(held[[1L]]))
+  expect_false(is_view(held[[40L]]))
+  expect_identical(held[[40L]], x)
   rm(held)
   invisible(gc())
   for (i in seq_len(3L)) {
     # the sweeps reclaim; staging returns to SHM_VEC
-    t <- mizu_submit(p[["ctrl"]], x, x = x)
+    t <- mizu_submit(p[["ctrl"]], x + 0, x = x)
     pool_step(p)
     r <- mizu_collect(t, 5)
   }
@@ -652,18 +642,18 @@ test_that("the collect-entry boundary fires past the gate; dead views never leak
   pool_end(pp)
 })
 
-test_that("channel zc churn falls back to the copy tiers and recovers", {
+test_that("channel zc churn falls back to the copy tiers past the lent budget and recovers", {
   skip_on_os(c("mac", "windows")) # the churn signal is Linux-only (spill_fl_pop)
   p <- channel_pair(arena_size = 0)
-  x <- runif(20000) # 160 KB: past the zc floor, spills
-  held <- vector("list", 4L) # held views pin their regions: churn
+  x <- runif(1e6) # 8 MB: 34 held views cross the 256 MB lent budget
+  held <- vector("list", 40L)
   for (i in seq_along(held)) {
     mizu_send(p[["host"]], x)
     held[[i]] <- mizu_recv(p[["peer"]], 5)
   }
   expect_true(is_view(held[[1L]]))
-  expect_false(is_view(held[[4L]])) # the churn gate: a materialized copy
-  expect_identical(held[[4L]], x)
+  expect_false(is_view(held[[40L]])) # past the budget: a materialized copy
+  expect_identical(held[[40L]], x)
   rm(held)
   invisible(gc())
   mizu_send(p[["host"]], x) # the reap's sweep reclaims; staging returns to SHM_VEC
@@ -1365,7 +1355,6 @@ test_that("a data frame crosses as a view with its class and row names", {
 })
 
 test_that("attributed views carry 'I' blobs: identical() across the shapes", {
-  skip_on_os("linux") # the unreleased live views trip the churn fallback there
   p <- channel_pair(arena_size = 0)
 
   # a standalone factor: an 'I' blob on the MIZH root, applied as-is
@@ -1702,7 +1691,6 @@ test_that("wire resolves cluster on the mapping cache; counts stay per-view", {
 })
 
 test_that("cache eviction never unmaps under live views; counts rebalance after GC", {
-  skip_on_os("linux") # 18 unreleased live views trip the churn fallback there
   p <- channel_pair(arena_size = 0)
   xs <- lapply(1:18, function(i) runif(100000))
   vs <- lapply(xs, function(xi) {
