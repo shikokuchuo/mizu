@@ -925,6 +925,7 @@ ch.send(x)
 y = ch.recv(30).view(pymizu.DimArray)
 y.dimnames = (('lo', 'hi'), tuple('c%d' % i for i in range(1, 5001)))  # changed
 ch.send(y)
+ch.recv(30)  # wait for the ack: the region must outlive the receive
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   )
@@ -938,6 +939,7 @@ ch.send(y)
   dimnames(want) <- list(c("lo", "hi"), paste0("c", 1:5000))
   # the region's (absent) labels never resurrect: the new ones arrive
   expect_identical(got2, want)
+  mizu_send(ch, 0)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
