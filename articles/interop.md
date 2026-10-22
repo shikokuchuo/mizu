@@ -69,9 +69,21 @@ only its region’s name moves, and R resolves it to a view of the
 original region. A `difftime` arrives as `timedelta64[us]`, `NA` as
 `NaT` — and `timedelta64` arrays of any non-calendar unit travel back as
 a `difftime`; units cross by value and normalize to seconds on a round
-trip. A `POSIXlt`, a named vector, and S4 objects stay on R’s side:
-sending one on a Python channel raises at
+trip. A `POSIXlt`, a character matrix, a named character vector, and S4
+objects stay on R’s side: sending one on a Python channel raises at
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md).
+
+Labels cross with the values they name: a named vector keeps its names
+(an unmodified round trip is
+[`identical()`](https://rdrr.io/r/base/identical.html)), and a matrix or
+array keeps its `dimnames` — axis names included, so a `table` object
+arrives with its class and every axis label intact. On the Python side
+these arrive as `pymizu.DimArray`, an `ndarray` subclass carrying the
+labels; NumPy operations drop them rather than risk mislabeling reshaped
+data, so a modified array comes back as a plain array — re-attach labels
+in Python and they ride back. A labeled array used as a cross-language
+map’s `x` rides the raw-bytes section and drops its labels there — the
+same honest-loss rule as a same-language send.
 
 A data frame crosses as a `pymizu.Frame` — column dict on one side,
 `pl.from_arrow(f)` / `pa.table(f)` on the way into polars or pyarrow —
@@ -84,6 +96,20 @@ itself staged. The full contract, with the NA-sentinel and widening
 rules per dtype, is the dtype matrix in the pymizu README; a value
 outside the portable subset raises at send time on either side, naming
 the path and reason.
+
+Frame metadata rides along verbatim: the full class vector (a tibble’s
+`c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`)
+and extra attributes such as a `reference` note or readr’s column
+specification cross opaquely — Python stashes them undecoded on the
+`pymizu.Frame`, and an unmodified echo restores them, so a pristine
+round trip is [`identical()`](https://rdrr.io/r/base/identical.html).
+The stash rides the pristine received frame only: a frame rebuilt
+through pyarrow, polars, pandas, or `from_arrow` arrives in R as a plain
+`data.frame` — honest loss, never wrong labels. A *named* classed column
+(a named factor, Date, or POSIXct) and a column that is itself a labeled
+matrix stay declined, as do groupedData-style frames (a formula
+attribute is not portable) and data.table (its `.internal.selfref`
+pointer is not either).
 
 ## Arrow data
 
@@ -171,7 +197,7 @@ stages it:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.2231668 0.3895195 0.6429728
+#> [1] 0.2095956 0.4574587 0.6860231
 s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
@@ -219,23 +245,23 @@ them:
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
 mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
 #> [[1]]
-#> [1] 0.2129575 0.2129575
+#> [1] 0.9576389 0.9576389
 #> 
 #> [[2]]
-#> [1] 0.712264 0.712264
+#> [1] 0.1820563 0.1820563
 #> 
 #> [[3]]
-#> [1] 0.8655867 0.8655867
+#> [1] 0.03642347 0.03642347
 #> 
 #> [[4]]
-#> [1] 0.1099131 0.1099131
+#> [1] 0.6637499 0.6637499
 #> 
 #> [[5]]
-#> [1] 0.08909684 0.08909684
+#> [1] 0.228136 0.228136
 #> 
 #> [[6]]
-#> [1] 0.02469717 0.02469717
+#> [1] 0.6275008 0.6275008
 mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -3.6658544 -1.8181696 -1.8572237 -1.5106673 -0.8620051 -3.9720940
+#> [1] -1.8544914 -1.3848598 -0.5880317 -1.1311784 -0.1497597 -0.4560346
 mizu_pool_stop(p)
 ```
