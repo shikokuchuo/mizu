@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="5404135db62c9c21f1001179e81bf1ece6ba4c27"  # libmizu: Scale the spill free list for GC-batched recycling, latch the collapse heal scan
+PIN="42062e62c347b1497047935511b57dd0606fa457"  # libmizu: Wait for the peer's in-flight drain in mizu_channel_destroy
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

@@ -9,11 +9,10 @@
 #                             one crossing per burst instead of per op
 #   3. payload round-trip     identity task on numeric vectors of 8 KB /
 #                             800 KB / 8 MB, 1 worker: data both ways.
-#                             mizu slots are sized to the payload where
-#                             the 2^20 slot_size cap allows, so 8 KB and
-#                             800 KB ride in-slot and 8 MB takes the spill
-#                             tier (SHM_VEC views; on Linux the churn
-#                             signal falls back to SHM_RAW reuse); plus a
+#                             8 KB rides in-slot on sized slots (the
+#                             by-value copy floor); 800 KB and 8 MB
+#                             take the spill tier on default slots
+#                             (SHM_VEC views over recycled regions); plus a
 #                             same-language 10k-string channel echo (the
 #                             MIZS layout write; the cross-language
 #                             counterpart is crosslang-channel-bench.R)
@@ -294,12 +293,10 @@ with_pool(
 
 cat("\n== 3. payload round-trip (identity task on a numeric vector) ==\n")
 
-# slots sized to the payload where the cap allows: 8 KB and 800 KB ride
-# in-slot (RAWVEC, no spill); 8 MB exceeds 2^20 and spills on default
-# slots — staged SHM_VEC (one layout write, a view at receive, REF back),
-# its recycling GC-gated, so this sequential loop churns a fresh region
-# per payload; on Linux the churn signal (payload.c) falls back to
-# SHM_RAW's deterministic reuse instead
+# 8 KB rides in-slot on sized slots (RAWVEC, no spill); 800 KB and 8 MB
+# spill on default slots — staged SHM_VEC (one layout write, a view at
+# receive, REF back) over regions recycled through the producer's free
+# list as the boundary collection releases consumer views
 payloads <- list(
   list(size = 1e3, n = 1000L, args = list(slot_size = 16384L)),
   list(
@@ -308,8 +305,7 @@ payloads <- list(
     args = list(
       injection_cap = 16L,
       per_worker_cap = 16L,
-      result_slots = 4L,
-      slot_size = 1048576L
+      result_slots = 4L
     )
   ),
   list(size = 1e6, n = 30L, args = list())
