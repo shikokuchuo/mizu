@@ -208,10 +208,12 @@ SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs);
 size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                               SEXP cond);
 int mizu_interop_attrs_qualify(SEXP x);
-/* The per-stage attr-qualification verdict cache (interop.c): the stage
-   hooks arm a fresh generation at entry and void it at exit (the raise
-   paths through the stage wrapper's unwind cleanup), so a cached verdict
-   is only ever consulted while the staged tree stays anchored. */
+/* The per-stage attr-qualification verdict cache (interop.c): every
+   consult-root arms a fresh generation — the stage hooks per invocation
+   (stage_r.c's guard), the public writer entries by self-arm — and
+   voids it at exit, so a cached verdict is only ever consulted while
+   its tree stays anchored; a raise-orphaned generation is never
+   consulted (the next arm replaces it). */
 void mizu_interop_stage_arm(void);
 void mizu_interop_stage_disarm(void);
 SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate);

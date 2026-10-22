@@ -694,18 +694,19 @@ static int ix_qualify_full(SEXP x) {
 /* The per-stage verdict cache. One stage qualifies the same nodes
    repeatedly — the zc gates, the 'I' writer's two passes, and the
    layout layer's size/write blob hooks — so verdicts ride an
-   open-addressed pointer table stamped with the stage's generation:
-   the stage hook arms a fresh generation at entry and voids it at
-   every exit (the raise paths through the stage wrapper's unwind
-   cleanup), so a naked key is compared only while the staged tree
-   stays anchored, and a stale generation is never consulted. The mint
-   never reissues a generation — a disarmed 0 rearmed to 1 would let
-   entries accumulate across stages until the probe cycle closes — and
-   IX_QC_MAX < IX_QC_CAP keeps a full table of one generation
-   impossible, so the probe always terminates. A full table stops
-   inserting (the stage computes fresh past it — a wide frame's one
-   expensive verdict, the root's, is still cached); disarmed callers
-   always compute fresh. */
+   open-addressed pointer table stamped with the live generation. The
+   rule: every consult-root arms afresh — the stage hooks per
+   invocation (stage_r.c's guard), the public writer entries by
+   self-arm below — so a naked key is compared only while its tree
+   stays anchored (the arming scope's), and a generation orphaned by a
+   raise is never consulted: the next consult-root's arm replaces it,
+   and disarmed callers compute fresh. The mint never reissues a
+   generation — a disarmed 0 rearmed to 1 would let entries accumulate
+   across stages until the probe cycle closes — and IX_QC_MAX <
+   IX_QC_CAP keeps a full table of one generation impossible, so the
+   probe always terminates. A full table stops inserting (the stage
+   computes fresh past it — a wide frame's one expensive verdict, the
+   root's, is still cached); disarmed callers always compute fresh. */
 #define IX_QC_CAP 256u
 #define IX_QC_MAX 192u
 static struct {
@@ -724,6 +725,23 @@ void mizu_interop_stage_arm(void) {
 
 void mizu_interop_stage_disarm(void) {
   ix_qc_gen = 0;
+}
+
+/* The writer entries' self-arm: callable off a stage hook (the map
+   descriptor/runner veneers, the foreign ERR publish), so with no
+   generation live they arm their own and every table consultation rides
+   a fresh anchored scope. A no-op inside a stage hook — the hook's
+   generation must not be reseated (its size and write passes share
+   it). */
+static int ix_qc_enter(void) {
+  if (ix_qc_gen != 0) return 0;
+  mizu_interop_stage_arm();
+  return 1;
+}
+
+static size_t ix_qc_exit(int self, size_t n) {
+  if (self) mizu_interop_stage_disarm();
+  return n;
 }
 
 /* The qualification behind the cache: a hit returns the verdict this
@@ -1786,10 +1804,11 @@ size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
     rec->reason[0] = '\0';
     rec->remedy[0] = '\0';
   }
+  const int qc = ix_qc_enter();
   IXW_PUT0(&w, mizu_ix_put_header);
   ixw_node(&w, x);
-  if (w.depth < 0) return 0;
-  return w.total;
+  if (w.depth < 0) return ix_qc_exit(qc, 0);
+  return ix_qc_exit(qc, w.total);
 }
 
 // Task streams (Phase 4) ------------------------------------------------------
@@ -1889,12 +1908,13 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                  .inline_max = inline_max, .refs = 1, .no_zc = no_zc,
                  .zc_node = zc_node, .zc_size_hint = zc_size,
                  .plan = plan, .plan_nocand = nocand };
+  const int qc = ix_qc_enter();
   IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
-  if (w.abandon) return SIZE_MAX;
-  if (w.depth < 0) return 0;
-  return w.total;
+  if (w.abandon) return ix_qc_exit(qc, SIZE_MAX);
+  if (w.depth < 0) return ix_qc_exit(qc, 0);
+  return ix_qc_exit(qc, w.total);
 }
 
 // Map descriptors and runner tasks (Phase 5) ---------------------------------------
@@ -1928,11 +1948,12 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
      descriptor read */
   mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
                  .path = "args", .path_len = 4, .refs = 1 };
+  const int qc = ix_qc_enter();
   IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_list_begin, 2);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
-  if (w.depth < 0) return 0;
+  if (w.depth < 0) return ix_qc_exit(qc, 0);
   if (x == R_NilValue) {
     IXW_PUT0(&w, mizu_ix_put_nil);
   } else if (mizu_view_check(x)) {
@@ -1941,7 +1962,7 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
     memcpy(w.path, "x", 2);
     w.path_len = 1;
     ixw_node(&w, x);
-    if (w.depth < 0) return 0;
+    if (w.depth < 0) return ix_qc_exit(qc, 0);
   } else {
     const R_xlen_t n = XLENGTH(x);
     IXW_PUT(&w, mizu_ix_put_list_begin, (uint64_t) n);
@@ -1953,11 +1974,11 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
       ixw_path_push(&w, i + 1);
       ixw_node(&w, VECTOR_ELT(x, i));
       ixw_path_pop(&w, saved);
-      if (w.depth < 0) return 0;
+      if (w.depth < 0) return ix_qc_exit(qc, 0);
     }
     w.depth--;
   }
-  return w.total;
+  return ix_qc_exit(qc, w.total);
 }
 
 /* The kind-2 (runner) task stream: the header fields, then the region
@@ -1971,6 +1992,7 @@ size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
                                  SEXP name, double gen_field, SEXP seed,
                                  uint32_t target, uint64_t ident) {
   mizu_ixw w = { .dst = dst, .limit = limit, .path = "x", .path_len = 1 };
+  const int qc = ix_qc_enter();
   IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, 2, ident);
   SEXP cs = STRING_ELT(name, 0);
@@ -1984,7 +2006,7 @@ size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
     pair[1] = (int64_t) REAL(seed)[1];
     IXW_PUT(&w, mizu_ix_put_vec, MIZU_TYPE_INT64, pair, 2);
   }
-  return w.total;
+  return ix_qc_exit(qc, w.total);
 }
 
 // Err streams ----------------------------------------------------------------------
@@ -2050,6 +2072,7 @@ static SEXP ix_err_call_text(SEXP call) {
    only (the test hook's two-pass). */
 size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                               SEXP cond) {
+  const int qc = ix_qc_enter();
   const char *type = "", *msg = "", *detail = "";
   int32_t type_n = 0, msg_n = 0, detail_n = 0;
   int has_index = 0;
@@ -2132,7 +2155,7 @@ size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                                      detail, (size_t) detail_n,
                                      has_index, index);
   UNPROTECT(1);                    /* klass */
-  return n;
+  return ix_qc_exit(qc, n);
 }
 
 // Reader ---------------------------------------------------------------------------

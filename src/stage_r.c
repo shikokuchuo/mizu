@@ -26,48 +26,31 @@
 // The stage guard ----------------------------------------------------------------
 
 /* Wraps each stage hook: arms the attr-qualification verdict cache's
-   fresh generation at entry (interop.c) and voids it at exit, the raise
-   paths covered by the unwind cleanup so an armed generation never
-   outlives the staged tree's anchoring. Re-entrant by construction — the
-   Arrow decline path re-enters the stage hook, whose arm simply starts
-   another generation. Also resets the by-reference mark list at entry:
-   the list is one stage's emission record (the pin-and-no-keeperless
-   signal, the worker's emitted-set for the argument-loan release), so a
-   view marked by an earlier send must not stay referenced by it — the
-   serialize-fallback reset alone left every REF-tier / remote-leaf mark
-   pinned across all later stages. */
+   fresh generation at entry (interop.c) and voids it at exit. Re-entrant
+   by construction — the Arrow decline path re-enters the stage hook,
+   whose arm simply starts another generation (the outer stage resumes
+   disarmed, computing fresh, as it always has). A raise leaves the armed
+   generation orphaned, safe under the cache's rule (interop.c): every
+   consult-root arms afresh — this guard or a writer entry's self-arm —
+   so the orphan is never consulted and no unwind cleanup rides this
+   per-element path (the 2026-10-22 bisection: one R_ExecWithCleanup per
+   staged element cost the batch verbs ~28%). Also resets the
+   by-reference mark list at entry: the list is one stage's emission
+   record (the pin-and-no-keeperless signal, the worker's emitted-set for
+   the argument-loan release), so a view marked by an earlier send must
+   not stay referenced by it — the serialize-fallback reset alone left
+   every REF-tier / remote-leaf mark pinned across all later stages. */
 typedef int (*mizu_stage_impl_fn)(void *, mizu_slot_hdr *, unsigned char *,
                                   uint32_t, mizu_handle *, void *);
-typedef struct {
-  mizu_stage_impl_fn fn;
-  void *obj;
-  mizu_slot_hdr *hdr;
-  unsigned char *payload;
-  uint32_t inline_max;
-  mizu_handle *h;
-  void *ctx;
-  int rc;
-} mizu_stage_guard_s;
-
-static SEXP mizu_stage_guard_run(void *d) {
-  mizu_stage_guard_s *g = (mizu_stage_guard_s *) d;
-  g->rc = g->fn(g->obj, g->hdr, g->payload, g->inline_max, g->h, g->ctx);
-  return R_NilValue;
-}
-
-static void mizu_stage_guard_clean(void *d) {
-  mizu_interop_stage_disarm();
-}
 
 static int mizu_stage_guard(mizu_stage_impl_fn fn, void *obj,
                             mizu_slot_hdr *hdr, unsigned char *payload,
                             uint32_t inline_max, mizu_handle *h, void *ctx) {
-  mizu_stage_guard_s g = { fn, obj, hdr, payload, inline_max, h, ctx, 0 };
   mizu_zc_ref_reset();
   mizu_interop_stage_arm();
-  /* cleanup runs on the normal and the raise exits alike */
-  R_ExecWithCleanup(mizu_stage_guard_run, &g, mizu_stage_guard_clean, &g);
-  return g.rc;
+  const int rc = fn(obj, hdr, payload, inline_max, h, ctx);
+  mizu_interop_stage_disarm();
+  return rc;
 }
 
 // Channel stage -------------------------------------------------------------------

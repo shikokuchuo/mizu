@@ -51,19 +51,19 @@ probes and A/B isolations stay in the log.
 | pipelined, channel batch | 20.4M rt/s | 2026-10-03 |
 | pipelined, pool | 680k tasks/s | 2026-10-03 |
 | pipelined, pool batch | 4.07M tasks/s | 2026-10-01 |
-| payload 8,000 B | 2.8 us/task | 2026-09-30 |
-| payload 800,000 B | 75.5 us/task | 2026-09-26 |
-| payload 8,000,000 B | 415.6 us/task | 2026-09-26 |
-| fan-out x 2000, 4 workers | 378k tasks/s | 2026-09-26 |
+| payload 8,000 B | 2.7 us/task | 2026-10-22 |
+| payload 800,000 B | 47.3 us/task | 2026-10-22 |
+| payload 8,000,000 B | 262.8 us/task | 2026-10-22 |
+| fan-out x 2000, 4 workers | 383k tasks/s | 2026-10-22 |
 | streaming, channel batch | 42.0M msg/s | 2026-10-01 |
 | map trivial f | 0.1 us/elt | 2026-09-26 |
 | map trivial f, template | 0.1 us/elt | 2026-09-26 |
 | map trivial f, .seed | 0.1 us/elt | 2026-09-26 |
 | map trivial f, prepared | 0.1 us/elt | 2026-10-01 |
-| map ~10us tasks x 2000 | 5.3 ms wall | 2026-09-28 |
+| map ~10us tasks x 2000 | 5.2 ms wall | 2026-10-22 |
 | map skewed f x 4000 | 11.1 ms wall | 2026-10-01 |
 | serialize-tier result | 3.3 us/task | 2026-09-30 |
-| codec-tier result | 2.1 us/task | 2026-10-01 |
+| codec-tier result | 2.0 us/task | 2026-10-22 |
 | crosslang map trivial f, spec | 0.23 us/elt | 2026-10-01 |
 | crosslang map trivial f, spec template | 0.06 us/elt | 2026-10-01 |
 | crosslang map trivial f, spec .seed | 1.8 us/elt | 2026-10-01 |
@@ -73,10 +73,10 @@ probes and A/B isolations stay in the log.
 | crosslang frame relay, one computed col | 0.47 ms/rt | 2026-10-01 |
 | crosslang channel rt, small (<= 8 KB) | 0.9-2.5 us/rt | 2026-10-04 |
 | crosslang channel rt, 8 MB (REF relay) | 390.7 us/rt | 2026-10-04 |
-| submit plan k = 0 (W2 row) | 62.1 us/task | 2026-10-04 |
-| submit plan k = 1 (W2 row) | 64.6 us/task | 2026-10-04 |
-| submit plan k = 4 (W2 row) | 68.1 us/task | 2026-10-04 |
-| submit plan k = 16 (W2 row) | 84.2 us/task | 2026-10-04 |
+| submit plan k = 0 (W2 row) | 37.2 us/task | 2026-10-22 |
+| submit plan k = 1 (W2 row) | 39.5 us/task | 2026-10-22 |
+| submit plan k = 4 (W2 row) | 43.7 us/task | 2026-10-22 |
+| submit plan k = 16 (W2 row) | 61.0 us/task | 2026-10-22 |
 | crosslang channel rt, 100k difftime | 159.8 us/rt | 2026-10-04 |
 
 ## Incumbent baselines (2026-07)
@@ -1610,3 +1610,72 @@ producer-exit race (fire-and-exit R sources unlinking a payload's
 region before the consumer resolves it — 20% on the pre-change build,
 5% post), fixed by rendezvous waits on the 10 region-backed sources,
 not by the transport.
+
+## 2026-10-22 — M4 Pro re-record on the day's builds; the stage-guard regression found and fixed [(53382e7, 5cb1aca, 91fb808, de2875f)]
+
+First M4 Pro record carrying the day's work: libmizu 5404135 (spill
+free-list caps for GC-batched recycling + the collapse latch — the
+Linux read is the entry above) and 42062e6 (the in-flight drain wait
+at channel destroy), the channel recv-side zc gc boundary (53382e7),
+and the MIZU_CAP_LABELED interop rewrite (91fb808). The bench edit
+rides along: the 800 KB pool payload drops its sized slots (was
+slot_size = 1 MiB, the in-slot RAWVEC copy floor) and spills on
+default slots like the 8 MB row, so the row's date flips definition
+per the table convention.
+
+The re-record surfaced depressed channel batch / streaming rows
+(14.7-15.2M rt/s / 26-29M msg/s against the 20.4M / 42.0M bests) that
+did not recover as the host quieted — the pool fire-rate rows' lows
+meanwhile matched their recorded bimodal low modes (host noise, the
+10-03 record's precedent). A bisect over the window since 2943a7d
+(the last in-band M4 Pro reading, 10-03 — re-verified in-band on the
+day) landed on b9836cf (W2, 10-14): its stage guard ran one
+R_ExecWithCleanup per staged element, ~12 ns/msg at the streaming
+row's ~24 ns/msg budget — -28% streaming, -17% batch (A/B/A/B on the
+boundary: 40.9-42.0M -> 29.7-30.2M msg/s, 18.1-18.5M -> 15.0-15.3M
+rt/s). Invisible on the pool's us-scale tasks, which is all W2's
+"guard costs nothing" check measured. Fixed the same day: the guard
+keeps per-invocation generations with plain arm/disarm, and every
+consult-root arms afresh — the five public 'I' writer entries self-arm
+when no generation is live, covering the off-hook consultors (the map
+descriptor veneer, the foreign ERR publish) — so a raise-orphaned
+generation is never consulted and no unwind boundary runs anywhere.
+
+Results (post-fix build): streaming 40.2M probe / 37.4M full-bench
+msg/s, channel batch 17.5M / 18.1M rt/s — in band against the
+pre-regression 40.9-43.7M / 18.1-18.5M; the 42.0M / 20.4M bests
+stand, reachable again. Pool pipelined 641.8k (the high mode — the
+guard taxed pool stages too). The re-record itself (the guard never
+touched these rows): sequential rt channel 1.0 / pool 1.5 us; payload
+8 KB 2.8 -> 2.7 us; payload 800 KB 75.5 -> 47.3 us/task — the new
+default-slot SHM_VEC definition beating the old sized-slot copy
+floor's record (the Linux entry above is the same shape: ~400 -> 117
+there); payload 8 MB 415.6 -> 262.8 us/task; 10k strings 72.7-74.7
+us/rt (band ~86-88 — the recv-side gc boundary keeps the echo peer's
+views releasing on cadence); small named char 1.4-1.5; 100k frame
+5k-level factor 220.6-290.6 / character 700.2-734.2 us/rt; fan-out
+378k -> 383k tasks/s (mirai-bench's best-of-3 read 400.0k); map
+trivial f 0.1 us/elt across the variants; map ~10us 5.3 -> 5.2 ms
+wall; map skewed 11.1 ms (ties the best); serialize 3.3 us (ties);
+codec 2.1 -> 2.0 us; submit plan k = 0/1/4/16 37.2 / 39.5 / 43.7 /
+61.0 us/task — all four swap (was 62.1 / 64.6 / 68.1 / 84.2, the
+10-04 records; the day's 'I'-stream rewrite the candidate mechanism,
+no A/B taken).
+
+vs mirai (best-of-3, tick-quantized): 800 KB 35.0 vs 1,690-1,745
+us/task (~48x — the dip the sized-slot row hid is gone on this host
+too); 8 KB 5.0 vs 68-106 (~14-21x); 8 MB 400.0 vs 18,000-18,100
+(~45x); fan-out 400.0k vs 9.6k/23.8k tasks/s; map trivial 0.1 vs
+43.3/104.0 us/elt; ~10us map 5.0 vs 82-208 ms wall. Reference rows in
+their incumbent bands (nanonext 32.0 us/rt vs the 31.7 baseline; mirai
+sequential 66-105 us vs 63-124).
+
+Best-known swaps (11 rows, all 2026-10-22): payload 8,000 B 2.7,
+payload 800,000 B 47.3, payload 8,000,000 B 262.8, fan-out 383k,
+map ~10us 5.2 ms, codec-tier 2.0, plan k = 0/1/4/16 37.2 / 39.5 /
+43.7 / 61.0. Cross-language rows not re-run — their benches are
+unchanged and the MIZU_CAP_LABELED commit carries its own corpus
+tests; the 2026-10-04 rows stand.
+
+Status: full suite green on the fixed build (4978 pass, 0 fail, 5
+skips — the pymizu venv on PATH, so the cross-language legs ran).
