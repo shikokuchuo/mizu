@@ -387,7 +387,7 @@ test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     "
-assert ch._h._peer_ident() == (2, 95)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF | MIZL_REF | MIZL_U64V
+assert ch._h._peer_ident() == (2, 223)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF | MIZL_REF | MIZL_U64V | LABELED
 ch.send('ok')
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
@@ -772,4 +772,284 @@ ch.recv(30)  # wait for the ack: the region must outlive the receive
   expect_identical(out[["a"]], df[["a"]])
   mizu_send(ch, 0)
   expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("labeled vectors and arrays round-trip identical via Python", {
+  skip_if_not_installed("bit64")
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  nv <- c(a = 1.5, b = 2.5, c = 3.5)
+  mizu_send(ch, nv)
+  expect_identical(mizu_recv(ch, 30), nv)
+  ni <- c(x = 1L, z = 3L)
+  mizu_send(ch, ni)
+  expect_identical(mizu_recv(ch, 30), ni)
+  nd <- c(a = 1, NA, c = 3)
+  mizu_send(ch, nd)
+  expect_identical(mizu_recv(ch, 30), nd)
+  ni64 <- structure(bit64::as.integer64(c(1, 2)), names = c("a", "b"))
+  mizu_send(ch, ni64)
+  expect_identical(mizu_recv(ch, 30), ni64)
+  dup <- c(a = 1, a = 2)
+  mizu_send(ch, dup)
+  expect_identical(mizu_recv(ch, 30), dup)
+  nna <- structure(1, names = NA_character_)
+  mizu_send(ch, nna)
+  expect_identical(mizu_recv(ch, 30), nna)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("dimnames, axis names, and tables round-trip identical via Python", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  m <- matrix(1:6, 2, dimnames = list(c("r1", "r2"), c("c1", "c2", "c3")))
+  mizu_send(ch, m)
+  expect_identical(mizu_recv(ch, 30), m)
+  a <- array(
+    1:8,
+    c(2, 2, 2),
+    dimnames = list(c("a", "b"), NULL, c("x", "y"))
+  )
+  mizu_send(ch, a)
+  expect_identical(mizu_recv(ch, 30), a)
+  mm <- matrix(1:4, 2, dimnames = list(c("a", NA), c("c", "d")))
+  mizu_send(ch, mm)
+  expect_identical(mizu_recv(ch, 30), mm)
+  mixed <- structure(
+    1:6,
+    dim = c(2L, 3L),
+    dimnames = structure(
+      list(c("r1", "r2"), c("c1", "c2", "c3")),
+      names = c("row", "")
+    )
+  )
+  mizu_send(ch, mixed)
+  expect_identical(mizu_recv(ch, 30), mixed)
+  t1 <- table(c("x", "y", "x"))
+  mizu_send(ch, t1)
+  expect_identical(mizu_recv(ch, 30), t1)
+  t2 <- table(a = c("x", "y", "x"), b = c("p", "q", "p"))
+  names(dimnames(t2)) <- c("", "")
+  mizu_send(ch, t2)
+  expect_identical(mizu_recv(ch, 30), t2)
+  hec <- HairEyeColor[,, 1]
+  mizu_send(ch, hec)
+  expect_identical(mizu_recv(ch, 30), hec)
+  mizu_send(ch, HairEyeColor)
+  expect_identical(mizu_recv(ch, 30), HairEyeColor)
+  # extent-1 label positions (the 0x04 collapse would break these)
+  t0 <- table("a")
+  mizu_send(ch, t0)
+  expect_identical(mizu_recv(ch, 30), t0)
+  e1 <- array(1, 1L, list(NA_character_))
+  mizu_send(ch, e1)
+  expect_identical(mizu_recv(ch, 30), e1)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("extended frames round-trip identical via Python", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  bod <- data.frame(
+    Time = c(1, 2, 3, 5, 7),
+    demand = c(8.3, 10.3, 19, 16, 15.6)
+  )
+  attr(bod, "reference") <- "A1.4, p. 270"
+  mizu_send(ch, bod)
+  expect_identical(mizu_recv(ch, 30), bod)
+  tbl <- structure(
+    data.frame(x = 1:2, y = c("a", "b")),
+    class = c("tbl_df", "tbl", "data.frame")
+  )
+  mizu_send(ch, tbl)
+  expect_identical(mizu_recv(ch, 30), tbl)
+  ext <- data.frame(x = 1:3)
+  attr(ext, "labels_vec") <- c("p", "q")
+  attr(ext, "scores") <- c(0.5, NA, 2.5)
+  attr(ext, "nested") <- list(a = 1L, b = list("s", TRUE))
+  attr(ext, "spec") <- structure(
+    list(cols = c("x", "y"), skip = 1L),
+    class = "col_spec",
+    names = c("cols", "skip")
+  )
+  attr(ext, "comment") <- "a comment"
+  mizu_send(ch, ext)
+  expect_identical(mizu_recv(ch, 30), ext)
+  big <- data.frame(x = rnorm(70000))
+  attr(big, "spec") <- structure(list(a = "x", b = 1:3), class = "col_spec")
+  mizu_send(ch, big)
+  expect_identical(mizu_recv(ch, 30), big) # the SHM_VEC/blob tier
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a rebuilt Python frame arrives as a plain data.frame", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import pymizu
+f = ch.recv(30)
+ch.send(pymizu.Frame.from_arrow(f))  # a rebuild drops the stash
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  tbl <- structure(
+    data.frame(x = 1:3),
+    class = c("tbl_df", "tbl", "data.frame")
+  )
+  attr(tbl, "reference") <- "A1.4"
+  mizu_send(ch, tbl)
+  got <- mizu_recv(ch, 30)
+  expect_identical(class(got), "data.frame")
+  expect_null(attr(got, "reference"))
+  expect_identical(got, data.frame(x = 1:3))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("Python-attached labels restore and relabels cross by value", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import pymizu
+x = ch.recv(30).view(pymizu.DimArray)
+x.names = ('u', 'v', 'w')  # re-attached labels ride back
+ch.send(x)
+y = ch.recv(30).view(pymizu.DimArray)
+y.dimnames = (('lo', 'hi'), tuple('c%d' % i for i in range(1, 5001)))  # changed
+ch.send(y)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  mizu_send(ch, c(1.5, 2.5, 3.5))
+  got <- mizu_recv(ch, 30)
+  expect_identical(got, c(u = 1.5, v = 2.5, w = 3.5))
+  big <- matrix(runif(10000), 2, 5000)
+  mizu_send(ch, big)
+  got2 <- mizu_recv(ch, 30)
+  want <- big
+  dimnames(want) <- list(c("lo", "hi"), paste0("c", 1:5000))
+  # the region's (absent) labels never resurrect: the new ones arrive
+  expect_identical(got2, want)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a malformed DimArray stash declines on the Python side", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import numpy as np
+import pymizu
+a = np.arange(3, dtype=np.float64).view(pymizu.DimArray)
+a.names = ('x', 'y')  # short
+try:
+    ch.send(a)
+except pymizu.DeclinedError as e:
+    ch.send(str(e))
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  e <- mizu_recv(ch, 30)
+  expect_match(e, "names")
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("reserved-collision and tsp frame dicts no-home on the Python side", {
+  py <- skip_if_no_pymizu()
+  cases <- ix_cases()
+  corpus <- ix_corpus()
+  ch <- mizu_channel(
+    sprintf(
+      "
+from pymizu import _pymizu
+for h in ('%s', '%s'):
+    try:
+        _pymizu._read_stream(bytes.fromhex(h))
+        ch.send('no error')
+    except Exception as e:
+        ch.send(str(e))
+",
+      corpus[["err-frame-reserved"]],
+      corpus[["err-frame-tsp"]]
+    ),
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  e1 <- mizu_recv(ch, 30)
+  expect_match(e1, "no portable home")
+  e2 <- mizu_recv(ch, 30)
+  expect_match(e2, "unexpected type")
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("groupedData-style and ordered-factor frames still decline", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  gd <- data.frame(x = 1:3)
+  attr(gd, "formula") <- y ~ x
+  expect_error(mizu_send(ch, gd), class = "mizu_error_not_portable")
+  df <- data.frame(f = ordered(c("a", "b")))
+  expect_error(mizu_send(ch, df), class = "mizu_error_not_portable")
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a region-backed labeled array REFs on the pristine echo", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  m <- matrix(runif(20000), 200, 100)
+  dimnames(m) <- list(paste0("r", 1:200), paste0("c", 1:100))
+  mizu_send(ch, m)
+  y <- mizu_recv(ch, 30)
+  expect_true(.Call(mizu:::mizu_zc_view_check, y))
+  expect_identical(rc_of(y)[[2L]] %% 2L, 1L) # REFHELD: the return was a REF
+  expect_identical(y, m)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("the labeled shapes decline on a caps-less peer but still REF", {
+  p <- foreign_pair(caps = 95L) # the full mask without LABELED
+  on.exit(channel_end(p))
+  e <- tryCatch(
+    mizu_send(p$host, c(a = 1)),
+    error = function(e) e
+  )
+  expect_s3_class(e, "mizu_error_not_portable")
+  expect_match(e$reason, "labeled")
+  expect_error(
+    mizu_send(
+      p$host,
+      matrix(1:4, 2, dimnames = list(c("a", "b"), c("c", "d")))
+    ),
+    class = "mizu_error_not_portable"
+  )
+  big <- matrix(runif(20000), 200, 100)
+  dimnames(big) <- list(paste0("r", 1:200), paste0("c", 1:100))
+  expect_error(mizu_send(p$host, big), class = "mizu_error_not_portable") # SHM_VEC
+  dfr <- data.frame(x = 1:2)
+  attr(dfr, "reference") <- "A1.4"
+  expect_error(mizu_send(p$host, dfr), class = "mizu_error_not_portable")
+
+  # a received labeled view re-sent still REFs: the REF gate is exempt
+  # (the resolver is the labeled blob's creator)
+  q <- foreign_pair(caps = 223L)
+  on.exit(channel_end(q), add = TRUE)
+  mizu_send(q$host, big)
+  z <- mizu_recv(q$peer, 5)
+  expect_true(is_view(z))
+  mizu_send(q$peer, z)
+  z2 <- mizu_recv(q$host, 5)
+  expect_identical(rc_of(z2)[[2L]] %% 2L, 1L)
+  expect_identical(z2, big)
 })

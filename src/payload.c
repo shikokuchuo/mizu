@@ -181,11 +181,14 @@ void mizu_payload_spill_codec(mizu_slot_hdr *hdr, unsigned char *payload,
 
 /* The SHM_RAW spill of an interop stream (n from the counting first
    pass): the region alone is retained — the stream is self-contained
-   (no view identifier can ride along, the codec discipline). */
+   (no view identifier can ride along, the codec discipline). caps is
+   the first pass's peer word — the two passes must agree. */
 void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
-                                SEXP x, size_t n, mizu_handle *h) {
+                                SEXP x, size_t n, mizu_handle *h,
+                                uint32_t caps) {
   mizu_shm *shm = mizu_spill_get_raise(h, n);
-  if (mizu_interop_write((unsigned char *) shm->addr, shm->size, x, NULL) != n)
+  if (mizu_interop_write((unsigned char *) shm->addr, shm->size, x, NULL,
+                         caps) != n)
     Rf_error("mizu: interop write mismatch");   /* the walk is deterministic */
   hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
@@ -298,7 +301,8 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
       return;
     }
     mizu_ix_decline rec;
-    size_t n = mizu_interop_write(payload, inline_max, x, &rec);
+    size_t n = mizu_interop_write(payload, inline_max, x, &rec,
+                                  rh->peer_caps);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     if (n <= inline_max) {
       hdr->kind = MIZU_KIND_INLINE;
@@ -306,7 +310,7 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
       hdr->aux = MIZU_AUX_F_KEEPERLESS;
       return;
     }
-    mizu_payload_spill_interop(hdr, payload, x, n, h);
+    mizu_payload_spill_interop(hdr, payload, x, n, h, rh->peer_caps);
     return;
   }
   /* the compact codec ahead of R_Serialize: no per-call ref-table

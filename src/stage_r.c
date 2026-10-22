@@ -123,7 +123,8 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
     /* a top-level length-1 attribute-free atomic stages as the 'I'
        scalar tag (inline at RAWVEC's cost) — R scalars reach Python as
        scalars, top level and nested alike */
-    size_t n = mizu_interop_write(payload, inline_max, x, NULL);
+    size_t n = mizu_interop_write(payload, inline_max, x, NULL,
+                                  rh->peer_caps);
     if (n == 0 || n > inline_max)
       Rf_error("mizu: interop scalar staging failed");
     hdr->kind = MIZU_KIND_INLINE;
@@ -202,7 +203,8 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
        nothing and claims keeperless; past it, the arena then a region
        retain like any codec stream. */
     mizu_ix_decline rec;
-    size_t n = mizu_interop_write(payload, inline_max, x, &rec);
+    size_t n = mizu_interop_write(payload, inline_max, x, &rec,
+                                  rh->peer_caps);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     if (n <= inline_max) {
       hdr->kind = MIZU_KIND_INLINE;
@@ -211,7 +213,7 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
       return 0;
     }
     if ((chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off)) != NULL) {
-      if (mizu_interop_write(chunk, n, x, NULL) != n)
+      if (mizu_interop_write(chunk, n, x, NULL, rh->peer_caps) != n)
         Rf_error("mizu: interop write mismatch");
       hdr->kind = MIZU_KIND_ARENA;
       hdr->len = 0;
@@ -221,7 +223,7 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
       return 0;
     }
     mizu_stage_reap(h);
-    mizu_payload_spill_interop(hdr, payload, x, n, h);
+    mizu_payload_spill_interop(hdr, payload, x, n, h, rh->peer_caps);
     return 0;
   }
   /* the compact codec ahead of R_Serialize (payload.c): a codec stream
@@ -725,7 +727,7 @@ static void pool_result_gate(SEXP value, mizu_result_sink *sink,
     mizu_ix_decline rec = { 0, "", "", "" };
     PROTECT(value);
     if (mizu_raw_type(value, &rawlen) == 0 &&
-        mizu_interop_write(NULL, 0, value, &rec) == 0 &&
+        mizu_interop_write(NULL, 0, value, &rec, caps) == 0 &&
         !mizu_zc_eligible_foreign(value, sink->inline_max, &total,
                                   caps))
       mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);

@@ -432,11 +432,11 @@ static size_t mizu_zc_tree_walk_fx(SEXP x, uint32_t caps, int *reject,
       if (!(caps & MIZU_CAP_ATTRS)) { *reject = 1; return 0; }
       /* the whitelisted leaf shapes a region-backed reader homes:
          factor, dim, Date, POSIXct, difftime (the 'I' leaf blob
-         carries them) */
+         carries them), and the labeled shapes when the peer's mask
+         carries MIZU_CAP_LABELED — the verdict's own caps word decides */
       const int q = mizu_interop_attrs_qualify(x);
-      if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DIM &&
-          q != MIZU_IXQ_DATE && q != MIZU_IXQ_POSIXCT &&
-          q != MIZU_IXQ_DIFFTIME) { *reject = 1; return 0; }
+      const uint32_t need = ix_q_caps(q);
+      if (need == 0 || (caps & need) != need) { *reject = 1; return 0; }
     }
     if (ALTREP(x)) {
       if (mizu_view_check(x)) { *reject = 1; return 0; }
@@ -513,10 +513,12 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
       *out_total = total;
       return 1;
     }
-    /* an attributed MIZH root: the whitelisted shapes, ATTRS-gated */
-    if (!(caps & MIZU_CAP_ATTRS)) return 0;
+    /* an attributed MIZH root: the whitelisted shapes, the verdict's
+       own caps word the gate (ATTRS for the baseline, + LABELED for the
+       labeled shapes) */
     const int q = mizu_interop_attrs_qualify(x);
-    if (q == MIZU_IXQ_NONE || q == MIZU_IXQ_ENCODABLE) return 0;
+    const uint32_t need = ix_q_caps(q);
+    if (need == 0 || (caps & need) != need) return 0;
     return mizu_zc_eligible(x, inline_max, out_total, 1);
   }
   if (type == STRSXP) {
@@ -550,13 +552,15 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
     return 1;
   }
   if (type != VECSXP) return 0;
-  /* a plain data.frame: ATTRS + MIZL, plus MIZS when any column is a
-     string; a generic tree: MIZL, plus MIZS for a string leaf and ATTRS
-     for the names blob or a factor leaf — a peer short of any one bit
-     gets the whole value as an attr copy */
+  /* a data.frame: ATTRS + MIZL (plus LABELED for the extended form),
+     plus MIZS when any column is a string; a generic tree: MIZL, plus
+     MIZS for a string leaf and ATTRS for the names blob or a factor
+     leaf — a peer short of any one bit gets the whole value as an attr
+     copy */
   const int q = mizu_interop_attrs_qualify(x);
-  if (q == MIZU_IXQ_FRAME) {
-    uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL;
+  if (q == MIZU_IXQ_FRAME || q == MIZU_IXQ_FRAME_EXT) {
+    uint32_t need = MIZU_CAP_ATTRS | MIZU_CAP_MIZL |
+      (q == MIZU_IXQ_FRAME_EXT ? MIZU_CAP_LABELED : 0);
     int has_ref = 0;
     for (R_xlen_t i = 0; i < XLENGTH(x); i++) {
       SEXP col = VECTOR_ELT(x, i);

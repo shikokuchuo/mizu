@@ -9,22 +9,6 @@
 ---
 
     Code
-      mizu_send(p$host, dfr)
-    Condition
-      Error:
-      ! mizu: value is not portable to the peer (an attribute set (reference) outside the portable whitelist at x)
-
----
-
-    Code
-      mizu_send(p$host, matrix(1:4, 2, dimnames = list(c("a", "b"), c("c", "d"))))
-    Condition
-      Error:
-      ! mizu: value is not portable to the peer (an attribute set (dimnames) outside the portable whitelist at x)
-
----
-
-    Code
       mizu_send(p$host, structure(1, class = "Date", tzone = "UTC"))
     Condition
       Error:

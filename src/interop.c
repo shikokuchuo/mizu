@@ -105,6 +105,17 @@ static int ix_class_is(SEXP x, SEXP cls) {
   return 1;
 }
 
+static int ix_strv_is(SEXP v, const char *s) {
+  return TYPEOF(v) == STRSXP && XLENGTH(v) == 1 &&
+    strcmp(CHAR(STRING_ELT(v, 0)), s) == 0;
+}
+
+static int ix_strv_is2(SEXP v, const char *a, const char *b) {
+  return TYPEOF(v) == STRSXP && XLENGTH(v) == 2 &&
+    strcmp(CHAR(STRING_ELT(v, 0)), a) == 0 &&
+    strcmp(CHAR(STRING_ELT(v, 1)), b) == 0;
+}
+
 /* x carries the integer64 class (a REALSXP classed exactly "integer64",
    however many attributes) — the dim shape's value, whose class the 0x0e
    tag consumes. mizu_view_is_int64 is the class-only probe (exactly one
@@ -219,6 +230,128 @@ int mizu_interop_strings_utf8(SEXP x, size_t *bytes) {
 
 // The attr qualification ------------------------------------------------------------
 
+/* One value is encodable: an attribute-free atomic or string vector, a
+   class-only integer64, a plain list tree with dict-key-ok names, or a
+   whitelisted shape (recursively — strictly smaller values, so the walk
+   terminates). The §3.5 layout blob's R-peer gate: an attribute set is
+   encodable when its names pass the dict-key rules and every attribute
+   value is encodable. ALTREP is admitted and crosses by value (the write
+   copies through *_GET_REGION). */
+static int ix_encodable(SEXP x, unsigned depth) {
+  if (depth > MIZU_IX_DEPTH_MAX || Rf_isS4(x)) return 0;
+  if (x == R_NilValue) return 1;
+  switch (TYPEOF(x)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+  case STRSXP:
+    break;
+  case VECSXP:
+    for (R_xlen_t i = 0; i < XLENGTH(x); i++)
+      if (!ix_encodable(VECTOR_ELT(x, i), depth + 1)) return 0;
+    break;
+  default:
+    return 0;
+  }
+  if (!ANY_ATTRIB(x)) return 1;
+  if (mizu_view_is_int64_any(x)) return ix_attr_count(x) == 1;
+  /* the attribute set itself: names under the dict-key rules, every
+     value encodable (a whitelisted shape's values always pass, so this
+     alone answers both questions without consulting the whitelist) */
+#if R_VERSION >= R_Version(4, 6, 0)
+  SEXP attrs = PROTECT(R_getAttributes(x));
+  SEXP keys = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
+  int ok = mizu_interop_names_ok(keys);
+  for (R_xlen_t i = 0; ok && i < XLENGTH(attrs); i++)
+    ok = ix_encodable(VECTOR_ELT(attrs, i), depth + 1);
+  UNPROTECT(2);
+  return ok;
+#else
+  SEXP keys = PROTECT(Rf_allocVector(STRSXP, ix_attr_count(x)));
+  R_xlen_t i = 0;
+  for (SEXP a = ATTRIB(x); a != R_NilValue; a = CDR(a), i++)
+    SET_STRING_ELT(keys, i, TAG(a) == R_NilValue ? R_BlankString :
+                   PRINTNAME(TAG(a)));
+  int ok = mizu_interop_names_ok(keys);
+  UNPROTECT(1);
+  for (SEXP a = ATTRIB(x); ok && a != R_NilValue; a = CDR(a))
+    ok = ix_encodable(CAR(a), depth + 1);
+  return ok;
+#endif
+}
+
+/* The capability bits a verdict needs (mizu.h): the zero-copy filters
+   key their admission on it, so a labeled shape never stages to a peer
+   that cannot read it (decline at send, never strip). */
+uint32_t ix_q_caps(int q) {
+  switch (q) {
+  case MIZU_IXQ_FACTOR:
+  case MIZU_IXQ_DIM:
+  case MIZU_IXQ_DATE:
+  case MIZU_IXQ_POSIXCT:
+  case MIZU_IXQ_DIFFTIME:
+    return MIZU_CAP_ATTRS;
+  case MIZU_IXQ_NAMES:
+  case MIZU_IXQ_DIMNAMES:
+  case MIZU_IXQ_FRAME_EXT:
+    return MIZU_CAP_ATTRS | MIZU_CAP_LABELED;
+  default:   /* NONE / ENCODABLE / FRAME (the frame branch adds MIZL) */
+    return q == MIZU_IXQ_FRAME ? MIZU_CAP_ATTRS : 0;
+  }
+}
+
+/* The dim attribute's own rules (writer and reader alike): an integer
+   vector of length >= 1 with no NA, every element >= 0, product == n. */
+static int ix_dim_ok(SEXP dim, R_xlen_t n) {
+  if (TYPEOF(dim) != INTSXP || XLENGTH(dim) < 1 || ALTREP(dim)) return 0;
+  const R_xlen_t nd = XLENGTH(dim);
+  const int *d = INTEGER(dim);
+  R_xlen_t prod = 1;
+  for (R_xlen_t i = 0; i < nd; i++) {
+    if (d[i] == NA_INTEGER || d[i] < 0 ||
+        (d[i] != 0 && prod > n / (R_xlen_t) d[i]))
+      return 0;
+    prod *= d[i];
+  }
+  return prod == n;
+}
+
+/* A labels strv (the {names} shape, the dimnames entries and the axis
+   names): attribute-free STRSXP of length n, every element NA or
+   UTF-8-writable — duplicates and "" are legal, NA is NA_character_. */
+static int ix_names_ok(SEXP names, R_xlen_t n) {
+  if (TYPEOF(names) != STRSXP || XLENGTH(names) != n || ANY_ATTRIB(names))
+    return 0;
+  for (R_xlen_t i = 0; i < n; i++) {
+    SEXP cs = STRING_ELT(names, i);
+    if (cs == NA_STRING) continue;
+    int ok;
+    int32_t len;
+    ix_char_utf8(cs, &ok, &len);
+    if (!ok) return 0;
+  }
+  return 1;
+}
+
+/* The dimnames value's rules (both wire forms): a VECSXP of length(dim)
+   entries, each NULL or an attribute-free STRSXP of that axis's extent
+   (NA allowed), itself attribute-free or carrying exactly names (the
+   axis names, a labels strv of length(dim)). */
+static int ix_dimnames_ok(SEXP dn, SEXP dim) {
+  if (TYPEOF(dn) != VECSXP) return 0;
+  const R_xlen_t nd = XLENGTH(dim);
+  if (XLENGTH(dn) != nd) return 0;
+  const int *d = INTEGER(dim);
+  for (R_xlen_t i = 0; i < nd; i++) {
+    SEXP e = VECTOR_ELT(dn, i);
+    if (e != R_NilValue && !ix_names_ok(e, (R_xlen_t) d[i])) return 0;
+  }
+  if (!ANY_ATTRIB(dn)) return 1;
+  if (ix_attr_count(dn) != 1) return 0;
+  SEXP names = PROTECT(Rf_getAttrib(dn, R_NamesSymbol));
+  const int ok = ix_names_ok(names, nd);
+  UNPROTECT(1);
+  return ok;
+}
+
 /* A plain factor: class exactly "factor", attributes exactly levels and
    class, levels unique, non-NA, UTF-8-writable. */
 static int ix_qualify_factor(SEXP x) {
@@ -314,82 +447,103 @@ static int ix_qualify_dim(SEXP x) {
              ix_attr_count(x) != 1) {
     return 0;
   }
-  SEXP dim = PROTECT(Rf_getAttrib(x, R_DimSymbol));
-  if (TYPEOF(dim) != INTSXP || XLENGTH(dim) < 1 || ALTREP(dim)) {
-    UNPROTECT(1);
-    return 0;
-  }
-  const R_xlen_t nd = XLENGTH(dim);
-  const int *d = INTEGER(dim);
-  R_xlen_t prod = 1;
-  for (R_xlen_t i = 0; i < nd; i++) {
-    if (d[i] == NA_INTEGER || d[i] < 0 || 
-        (d[i] != 0 && prod > XLENGTH(x) / (R_xlen_t) d[i])) {
-      UNPROTECT(1);
-      return 0;
-    }
-    prod *= d[i];
-  }
-  UNPROTECT(1);
-  return prod == XLENGTH(x);
+  return ix_dim_ok(Rf_getAttrib(x, R_DimSymbol), XLENGTH(x));
 }
 
-/* A plain data.frame: class exactly "data.frame", attributes exactly
-   names, class and row.names; names unique, non-NA, UTF-8-writable;
-   row.names an integer or character vector of length n with no NA (the
-   compact automatic c(NA, ±n) included); one or more columns, each an
-   attribute-free atomic vector, a class-only integer64, a plain factor,
-   a Date, or a POSIXct, all of one length. */
-static int ix_qualify_frame(SEXP x, int *rn_seq1n) {
-  if (TYPEOF(x) != VECSXP || !ix_class_is(x, ix_frame_class) ||
-      ix_attr_count(x) != 3)
+/* A named vector (MIZU_CAP_LABELED): attributes exactly names (the
+   integer64 class riding the 0x0e tag alongside), names a labels strv of
+   length(x). The value is any atomic vector but character — a named
+   character vector keeps declining (list homes carry no labels). */
+static int ix_qualify_names(SEXP x) {
+  switch (TYPEOF(x)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    break;
+  default:
     return 0;
+  }
+  if (ix_is_int64(x)) {
+    if (ix_attr_count(x) != 2) return 0;
+  } else if (Rf_getAttrib(x, R_ClassSymbol) != R_NilValue ||
+             ix_attr_count(x) != 1) {
+    return 0;
+  }
   SEXP names = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
-  if (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(x) ||
-      !mizu_interop_names_ok(names)) {
+  const int ok = ix_names_ok(names, XLENGTH(x));
+  UNPROTECT(1);
+  return ok;
+}
+
+/* A dim array with dimnames (MIZU_CAP_LABELED): the plain dim rules plus
+   attributes exactly dim, dimnames, and optionally class exactly "table"
+   (the integer64 class still riding the 0x0e tag — its dict is
+   {dim, dimnames} either way). */
+static int ix_qualify_dimnames(SEXP x) {
+  switch (TYPEOF(x)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    break;
+  default:
+    return 0;
+  }
+  const int i64 = ix_is_int64(x);
+  SEXP klass = PROTECT(Rf_getAttrib(x, R_ClassSymbol));
+  if (klass != R_NilValue && !i64 &&
+      !ix_strv_is(klass, MIZU_IX_CLASS_TABLE)) {
     UNPROTECT(1);
     return 0;
   }
+  if (ix_attr_count(x) != (klass != R_NilValue ? 3 : 2)) {
+    UNPROTECT(1);
+    return 0;
+  }
+  SEXP dim = PROTECT(Rf_getAttrib(x, R_DimSymbol));
+  SEXP dn = PROTECT(Rf_getAttrib(x, R_DimNamesSymbol));
+  const int ok = dn != R_NilValue && ix_dim_ok(dim, XLENGTH(x)) &&
+    ix_dimnames_ok(dn, dim);
+  UNPROTECT(3);
+  return ok;
+}
+
+/* The frame shape's column half: one or more columns, each an
+   attribute-free atomic vector, a class-only integer64, a plain factor,
+   a Date, a POSIXct, or a difftime, all of one length (*n_out). */
+static int ix_frame_cols_ok(SEXP x, R_xlen_t *n_out) {
   const R_xlen_t ncols = XLENGTH(x);
-  if (ncols < 1) {
-    UNPROTECT(1);
-    return 0;
-  }
+  if (ncols < 1) return 0;
   R_xlen_t n = -1;
-  int ok_cols = 1;
-  for (R_xlen_t j = 0; ok_cols && j < ncols; j++) {
+  for (R_xlen_t j = 0; j < ncols; j++) {
     SEXP col = VECTOR_ELT(x, j);
     switch (TYPEOF(col)) {
     case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
     case STRSXP:
       break;
     default:
-      ok_cols = 0;
-      break;
+      return 0;
     }
-    if (ok_cols && ANY_ATTRIB(col)) {
+    if (ANY_ATTRIB(col)) {
       if (mizu_view_is_int64_any(col)) {
-        if (ix_attr_count(col) != 1) ok_cols = 0;
+        if (ix_attr_count(col) != 1) return 0;
       } else {
         const int q = mizu_interop_attrs_qualify(col);
         if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
             q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
-          ok_cols = 0;
+          return 0;
       }
     }
     if (n < 0) {
       n = XLENGTH(col);
     } else if (XLENGTH(col) != n) {
-      ok_cols = 0;
+      return 0;
     }
   }
-  if (!ok_cols) {
-    UNPROTECT(1);
-    return 0;
-  }
-  SEXP rn = PROTECT(Rf_getAttrib(x, R_RowNamesSymbol));
+  *n_out = n;
+  return 1;
+}
+
+/* The frame shape's row.names half: an integer or character vector of
+   length n with no NA (the compact automatic c(NA, ±n) included); the
+   seq test doubles as the NA check (1:n carries no NA). */
+static int ix_frame_rn_ok(SEXP rn, R_xlen_t n) {
   int ok = 0;
-  if (rn_seq1n != NULL) *rn_seq1n = 0;
   switch (TYPEOF(rn)) {
   case INTSXP:
     if (XLENGTH(rn) == 2 && !ALTREP(rn) && INTEGER(rn)[0] == NA_INTEGER) {
@@ -397,12 +551,8 @@ static int ix_qualify_frame(SEXP x, int *rn_seq1n) {
     } else if (XLENGTH(rn) != n) {
       ok = 0;
     } else {
-      /* the seq test doubles as the NA check (1:n carries no NA): one
-         pass settles both, and the blob's row.names normalization reads
-         the verdict back instead of re-scanning */
       int seq = ix_int_is_seq1n(rn, n);
       if (seq) {
-        if (rn_seq1n != NULL) *rn_seq1n = 1;
         ok = 1;
       } else if (ALTREP(rn)) {
         ok = 1;
@@ -429,72 +579,115 @@ static int ix_qualify_frame(SEXP x, int *rn_seq1n) {
   default:
     ok = 0;
   }
-  UNPROTECT(2);
   return ok;
 }
 
-/* One value is encodable: an attribute-free atomic or string vector, a
-   class-only integer64, a plain list tree with dict-key-ok names, or a
-   whitelisted shape (recursively — strictly smaller values, so the walk
-   terminates). The §3.5 layout blob's R-peer gate: an attribute set is
-   encodable when its names pass the dict-key rules and every attribute
-   value is encodable. */
-static int ix_encodable(SEXP x, unsigned depth) {
-  if (depth > MIZU_IX_DEPTH_MAX || Rf_isS4(x)) return 0;
-  if (x == R_NilValue) return 1;
-  switch (TYPEOF(x)) {
-  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
-  case STRSXP:
-    break;
-  case VECSXP:
-    for (R_xlen_t i = 0; i < XLENGTH(x); i++)
-      if (!ix_encodable(VECTOR_ELT(x, i), depth + 1)) return 0;
-    break;
-  default:
+/* The frame column names: unique, non-NA, UTF-8-writable. */
+static int ix_frame_names_ok(SEXP x) {
+  SEXP names = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
+  const int ok = TYPEOF(names) == STRSXP && XLENGTH(names) == XLENGTH(x) &&
+    mizu_interop_names_ok(names);
+  UNPROTECT(1);
+  return ok;
+}
+
+/* A plain data.frame: class exactly "data.frame", attributes exactly
+   names, class and row.names; the column and row.names rules ride the
+   shared halves above. */
+static int ix_qualify_frame(SEXP x) {
+  if (TYPEOF(x) != VECSXP || !ix_class_is(x, ix_frame_class) ||
+      ix_attr_count(x) != 3 || !ix_frame_names_ok(x))
     return 0;
-  }
-  if (!ANY_ATTRIB(x)) return 1;
-  if (mizu_view_is_int64_any(x)) return ix_attr_count(x) == 1;
-  /* the attribute set itself: names under the dict-key rules, every
-     value encodable (a whitelisted shape's values always pass, so this
-     alone answers both questions without consulting the whitelist) */
+  R_xlen_t n = -1;
+  return ix_frame_cols_ok(x, &n) &&
+    ix_frame_rn_ok(Rf_getAttrib(x, R_RowNamesSymbol), n);
+}
+
+/* An extended data.frame (MIZU_CAP_LABELED): class a STRSXP whose last
+   element is "data.frame" (prefix classes ride along — tibble, user
+   classes); attributes ⊇ names, class, row.names (the plain frame's
+   column and row.names rules unchanged); every other key outside the
+   reserved set (mizu_ix_attr_reserved — the vocabulary plus tsp), a
+   comment NULL or character, and every extra's value encodable. */
+static int ix_qualify_frame_ext(SEXP x) {
+  if (TYPEOF(x) != VECSXP) return 0;
+  SEXP klass = Rf_getAttrib(x, R_ClassSymbol);
+  if (TYPEOF(klass) != STRSXP || XLENGTH(klass) < 1 ||
+      strcmp(CHAR(STRING_ELT(klass, XLENGTH(klass) - 1)),
+             MIZU_IX_CLASS_DATAFRAME) != 0)
+    return 0;
+  if (Rf_getAttrib(x, R_RowNamesSymbol) == R_NilValue ||
+      !ix_frame_names_ok(x))
+    return 0;
+  int ok = 1;
 #if R_VERSION >= R_Version(4, 6, 0)
   SEXP attrs = PROTECT(R_getAttributes(x));
   SEXP keys = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
-  int ok = mizu_interop_names_ok(keys);
-  for (R_xlen_t i = 0; ok && i < XLENGTH(attrs); i++)
-    ok = ix_encodable(VECTOR_ELT(attrs, i), depth + 1);
+  for (R_xlen_t i = 0; ok && i < XLENGTH(attrs); i++) {
+    const char *nm = CHAR(STRING_ELT(keys, i));
+    if (!strcmp(nm, MIZU_IX_ATTR_NAMES) ||
+        !strcmp(nm, MIZU_IX_ATTR_CLASS) ||
+        !strcmp(nm, MIZU_IX_ATTR_ROWNAMES))
+      continue;
+    if (mizu_ix_attr_reserved(nm, strlen(nm))) {
+      ok = 0;
+      break;
+    }
+    SEXP v = VECTOR_ELT(attrs, i);
+    if (!strcmp(nm, "comment") && v != R_NilValue && TYPEOF(v) != STRSXP) {
+      ok = 0;
+      break;
+    }
+    if (!ix_encodable(v, 0)) ok = 0;
+  }
   UNPROTECT(2);
-  return ok;
 #else
-  SEXP keys = PROTECT(Rf_allocVector(STRSXP, ix_attr_count(x)));
-  R_xlen_t i = 0;
-  for (SEXP a = ATTRIB(x); a != R_NilValue; a = CDR(a), i++)
-    SET_STRING_ELT(keys, i, TAG(a) == R_NilValue ? R_BlankString :
-                   PRINTNAME(TAG(a)));
-  int ok = mizu_interop_names_ok(keys);
-  UNPROTECT(1);
-  for (SEXP a = ATTRIB(x); ok && a != R_NilValue; a = CDR(a))
-    ok = ix_encodable(CAR(a), depth + 1);
-  return ok;
+  for (SEXP a = ATTRIB(x); ok && a != R_NilValue; a = CDR(a)) {
+    if (TAG(a) == R_NilValue) {
+      ok = 0;
+      break;
+    }
+    const char *nm = CHAR(PRINTNAME(TAG(a)));
+    if (!strcmp(nm, MIZU_IX_ATTR_NAMES) ||
+        !strcmp(nm, MIZU_IX_ATTR_CLASS) ||
+        !strcmp(nm, MIZU_IX_ATTR_ROWNAMES))
+      continue;
+    if (mizu_ix_attr_reserved(nm, strlen(nm))) {
+      ok = 0;
+      break;
+    }
+    SEXP v = CAR(a);
+    if (!strcmp(nm, "comment") && v != R_NilValue && TYPEOF(v) != STRSXP) {
+      ok = 0;
+      break;
+    }
+    if (!ix_encodable(v, 0)) ok = 0;
+  }
 #endif
+  if (!ok) return 0;
+  R_xlen_t n = -1;
+  return ix_frame_cols_ok(x, &n) &&
+    ix_frame_rn_ok(Rf_getAttrib(x, R_RowNamesSymbol), n);
 }
 
 /* The one qualification chain (the attrs form the inline writer's
    foreign gate consumes — whitelisted required; MIZU_IXQ_ENCODABLE is
    the §3.5 layout blob's R-peer answer): a (class, attribute set) pair
    is a shape the foreign reader homes, or the attribute set is at least
-   encodable. rn_seq1n takes the frame row.names seq verdict (its scan
-   doubles as the qualification's NA check, so the blob's normalization
-   never re-scans); untouched for a non-frame. */
-static int ix_qualify_full(SEXP x, int *rn_seq1n) {
+   encodable. The six baseline verdicts keep their order (the frame
+   column gates and the zero-copy filters enumerate them); the three
+   labeled shapes try after their plain counterparts. */
+static int ix_qualify_full(SEXP x) {
   if (Rf_isS4(x) || !ANY_ATTRIB(x)) return MIZU_IXQ_NONE;
   if (ix_qualify_factor(x)) return MIZU_IXQ_FACTOR;
-  if (ix_qualify_frame(x, rn_seq1n)) return MIZU_IXQ_FRAME;
+  if (ix_qualify_frame(x)) return MIZU_IXQ_FRAME;
   if (ix_qualify_dim(x)) return MIZU_IXQ_DIM;
   if (ix_qualify_date(x)) return MIZU_IXQ_DATE;
   if (ix_qualify_posixct(x)) return MIZU_IXQ_POSIXCT;
   if (ix_qualify_difftime(x)) return MIZU_IXQ_DIFFTIME;
+  if (ix_qualify_names(x)) return MIZU_IXQ_NAMES;
+  if (ix_qualify_dimnames(x)) return MIZU_IXQ_DIMNAMES;
+  if (ix_qualify_frame_ext(x)) return MIZU_IXQ_FRAME_EXT;
   return ix_encodable(x, 0) ? MIZU_IXQ_ENCODABLE : MIZU_IXQ_NONE;
 }
 
@@ -519,7 +712,6 @@ static struct {
   SEXP node;
   uint64_t gen;
   int q;
-  int rn_seq1n;
 } ix_qc[IX_QC_CAP];
 static uint64_t ix_qc_gen;        /* 0: disarmed */
 static uint64_t ix_qc_mint;
@@ -536,40 +728,36 @@ void mizu_interop_stage_disarm(void) {
 
 /* The qualification behind the cache: a hit returns the verdict this
    stage already computed for x; a miss runs the chain and inserts. */
-static int ix_qualify_cached(SEXP x, int *rn_seq1n) {
+static int ix_qualify_cached(SEXP x) {
   uint32_t m = 0;
   if (ix_qc_gen != 0) {
     m = (uint32_t) ((uintptr_t) x >> 4) & (IX_QC_CAP - 1u);
     while (ix_qc[m].gen == ix_qc_gen) {
       if (ix_qc[m].node == x) {
-        *rn_seq1n = ix_qc[m].rn_seq1n;
         return ix_qc[m].q;
       }
       m = (m + 1u) & (IX_QC_CAP - 1u);
     }
   }
-  const int q = ix_qualify_full(x, rn_seq1n);
+  const int q = ix_qualify_full(x);
   if (ix_qc_gen != 0 && ix_qc_n < IX_QC_MAX) {
     ix_qc[m].node = x;
     ix_qc[m].gen = ix_qc_gen;
     ix_qc[m].q = q;
-    ix_qc[m].rn_seq1n = *rn_seq1n;
     ix_qc_n++;
   }
   return q;
 }
 
 int mizu_interop_attrs_qualify(SEXP x) {
-  int rn_seq1n = -1;
-  return ix_qualify_cached(x, &rn_seq1n);
+  return ix_qualify_cached(x);
 }
 
 /* The blob hooks' half: the verdict in the blob chain's form (that
    chain carries no difftime check, so DIFFTIME reads as its own
-   answer there, ENCODABLE), with the frame row.names seq verdict
-   handed back. */
-static int ix_qualify_blob(SEXP x, int *rn_seq1n) {
-  const int q = ix_qualify_cached(x, rn_seq1n);
+   answer there, ENCODABLE). */
+static int ix_qualify_blob(SEXP x) {
+  const int q = ix_qualify_cached(x);
   return q == MIZU_IXQ_DIFFTIME ? MIZU_IXQ_ENCODABLE : q;
 }
 
@@ -606,6 +794,11 @@ typedef struct mizu_ixw_s {
   mizu_ix_plan *plan;
   int plan_suppress;
   int plan_nocand;         /* churn or no handle: no candidates */
+  /* the opaque-subtree mode: set while an extended frame's extra value
+     emits — an attributed value bypasses the shape whitelist for the
+     apply-as-is attr form (ixw_opaque_attr), a named list staying the
+     0x0d dict */
+  int opaque;
 } mizu_ixw;
 
 /* One emit: the put helpers count with a NULL dst; past the limit the
@@ -769,6 +962,15 @@ static void ixw_strv_elts(mizu_ixw *w, SEXP x) {
   }
 }
 
+/* A labels strv, always the vector tag — never the length-1 scalar
+   collapse: names, dimnames entries and axis names. A scalar reads back
+   as a Python scalar (an extent-1 dimnames entry arrives a bare str, an
+   NA one as None — indistinguishable from a nil axis). */
+static void ixw_strv_vec(mizu_ixw *w, SEXP x) {
+  IXW_PUT(w, mizu_ix_put_strv_begin, (uint64_t) XLENGTH(x));
+  ixw_strv_elts(w, x);
+}
+
 /* A dict pair list (names + values), keys under the dict-key rules. */
 static void ixw_dict_pairs(mizu_ixw *w, SEXP names, SEXP values) {
   const R_xlen_t n = XLENGTH(values);
@@ -863,59 +1065,205 @@ static void ixw_rownames(mizu_ixw *w, SEXP rn, R_xlen_t n) {
   ixw_node(w, rn);
 }
 
+/* The dimnames value's wire form: the plain list (nil / strv entries)
+   when its names are NULL, else attr(list, {names}) — the one site a
+   names-attributed list writes the attr form rather than the 0x0d dict
+   (repeated axis names are legal data, so the dict's key uniqueness
+   rules it out). */
+static void ixw_dimnames_put(mizu_ixw *w, SEXP dn) {
+  SEXP dn_names = PROTECT(Rf_getAttrib(dn, R_NamesSymbol));
+  if (dn_names != R_NilValue) {
+    IXW_PUT0(w, mizu_ix_put_attr);
+  }
+  IXW_PUT(w, mizu_ix_put_list_begin, (uint64_t) XLENGTH(dn));
+  w->depth++;
+  for (R_xlen_t i = 0; i < XLENGTH(dn); i++) {
+    SEXP e = VECTOR_ELT(dn, i);
+    /* the entries are label positions: strv always, nil for an
+       unnamed axis (ix_dimnames_ok admitted nothing else) */
+    if (e == R_NilValue) {
+      ixw_node(w, e);
+    } else {
+      ixw_strv_vec(w, e);
+    }
+    if (w->depth < 0) {
+      UNPROTECT(1);
+      return;
+    }
+  }
+  if (w->depth > 0) w->depth--;
+  if (dn_names == R_NilValue) {
+    UNPROTECT(1);
+    return;
+  }
+  IXW_PUT(w, mizu_ix_put_dict_begin, 1);
+  IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_NAMES,
+          IX_KEYLEN(MIZU_IX_ATTR_NAMES));
+  ixw_strv_vec(w, dn_names);
+  UNPROTECT(1);
+}
+
+/* x's attribute pairs, keys translated to their emitted UTF-8 form and
+   byte-sorted (the deterministic order of the extended frame's extras
+   and the opaque subtree). keys / lens / vals are caller R_alloc'd with
+   ix_attr_count(x) slots; the pair count is returned. skip_canon
+   excludes the frame's canonical keys (names, class, row.names) — the
+   extras collection. */
+static R_xlen_t ix_pairs_sorted(SEXP x, const char **keys, int32_t *lens,
+                                SEXP *vals, int skip_canon) {
+  const R_xlen_t na = ix_attr_count(x);
+  R_xlen_t n = 0;
+#if R_VERSION >= R_Version(4, 6, 0)
+  SEXP attrs = PROTECT(R_getAttributes(x));
+  SEXP knames = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
+  for (R_xlen_t i = 0; i < na; i++) {
+    SEXP cs = STRING_ELT(knames, i);
+    int ok;
+    int32_t len;
+    const char *u = ix_char_utf8(cs, &ok, &len);
+    if (!ok) continue;   /* the encodable gate passed every key */
+    if (skip_canon &&
+        (!strcmp(u, MIZU_IX_ATTR_NAMES) ||
+         !strcmp(u, MIZU_IX_ATTR_CLASS) ||
+         !strcmp(u, MIZU_IX_ATTR_ROWNAMES)))
+      continue;
+    keys[n] = u;
+    lens[n] = len;
+    vals[n] = VECTOR_ELT(attrs, i);
+    n++;
+  }
+  UNPROTECT(2);
+#else
+  for (SEXP a = ATTRIB(x); a != R_NilValue; a = CDR(a)) {
+    if (TAG(a) == R_NilValue) continue;
+    SEXP cs = PRINTNAME(TAG(a));
+    int ok;
+    int32_t len;
+    const char *u = ix_char_utf8(cs, &ok, &len);
+    if (!ok) continue;
+    if (skip_canon &&
+        (!strcmp(u, MIZU_IX_ATTR_NAMES) ||
+         !strcmp(u, MIZU_IX_ATTR_CLASS) ||
+         !strcmp(u, MIZU_IX_ATTR_ROWNAMES)))
+      continue;
+    keys[n] = u;
+    lens[n] = len;
+    vals[n] = CAR(a);
+    n++;
+  }
+#endif
+  /* insertion sort in UTF-8 byte order (memcmp to the common length, a
+     prefix ahead of its extension) — attribute sets are small */
+  for (R_xlen_t i = 1; i < n; i++) {
+    const char *k = keys[i];
+    int32_t l = lens[i];
+    SEXP v = vals[i];
+    R_xlen_t j = i;
+    while (j > 0) {
+      const int32_t m = lens[j - 1] < l ? lens[j - 1] : l;
+      const int c = memcmp(keys[j - 1], k, (size_t) m);
+      if (c < 0 || (c == 0 && lens[j - 1] <= l)) break;
+      keys[j] = keys[j - 1];
+      lens[j] = lens[j - 1];
+      vals[j] = vals[j - 1];
+      j--;
+    }
+    keys[j] = k;
+    lens[j] = l;
+    vals[j] = v;
+  }
+  return n;
+}
+
 /* The attribute dict for a whitelisted shape: pairs in the canonical
-   stored order (the corpus's order), each value an ordinary value. The
-   integer64 dim array's class rides the 0x0e value tag, so its dict
-   skips the class key. */
-static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
+   stored order (the corpus's order — names, levels, dim, dimnames,
+   class, units, row.names, tzone), each value an ordinary value. The
+   integer64 class rides the 0x0e value tag, so its dict skips the class
+   key. The extended frame's extras follow in UTF-8 byte order, each
+   value written under the opaque flag (an attributed one emits the
+   apply-as-is attr form, never the shape dispatch). */
+static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q, int blob) {
   SEXP names_attr = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
   SEXP klass = PROTECT(Rf_getAttrib(x, R_ClassSymbol));
   SEXP levels = PROTECT(Rf_getAttrib(x, R_LevelsSymbol));
   SEXP dim = PROTECT(Rf_getAttrib(x, R_DimSymbol));
+  SEXP dn = PROTECT(Rf_getAttrib(x, R_DimNamesSymbol));
   SEXP rn = PROTECT(Rf_getAttrib(x, R_RowNamesSymbol));
   SEXP tz = PROTECT(Rf_getAttrib(x, ix_tzone_sym));
   SEXP units = PROTECT(q == MIZU_IXQ_DIFFTIME ?
     Rf_getAttrib(x, ix_units_sym) : R_NilValue);
-  const int skip_class = q == MIZU_IXQ_DIM && ix_is_int64(x);
+  /* the integer64 class rides the 0x0e value tag inline (the dict skips
+     the key); a blob has no value tag — the attr-shape MIZH leaf is
+     REAL-typed, so the class is a pair like any other */
+  const int skip_class = ix_is_int64(x) && !blob;
 
-  uint64_t count = 0;
-  if (names_attr != R_NilValue) count++;
+  R_xlen_t nex = 0;
+  const char **ekeys = NULL;
+  int32_t *elens = NULL;
+  SEXP *evals = NULL;
+  if (q == MIZU_IXQ_FRAME_EXT) {
+    const R_xlen_t na = ix_attr_count(x);
+    ekeys = (const char **) R_alloc((size_t) na, sizeof(char *));
+    elens = (int32_t *) R_alloc((size_t) na, sizeof(int32_t));
+    evals = (SEXP *) R_alloc((size_t) na, sizeof(SEXP));
+    nex = ix_pairs_sorted(x, ekeys, elens, evals, 1);
+  }
+
+  /* getAttrib synthesizes a 1-D array's names from its dimnames[[1]] —
+   the DIMNAMES dict carries the labels once, inside dimnames */
+  const int emit_names = names_attr != R_NilValue && q != MIZU_IXQ_DIMNAMES;
+  uint64_t count = (uint64_t) nex;
+  if (emit_names) count++;
   if (levels != R_NilValue) count++;
   if (dim != R_NilValue) count++;
+  if (dn != R_NilValue) count++;
   if (klass != R_NilValue && !skip_class) count++;
   if (units != R_NilValue) count++;
   if (rn != R_NilValue) count++;
   if (tz != R_NilValue) count++;
   IXW_PUT(w, mizu_ix_put_dict_begin, count);
 
-  if (names_attr != R_NilValue) {
+  if (emit_names) {
     IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_NAMES,
             IX_KEYLEN(MIZU_IX_ATTR_NAMES));
-    ixw_node(w, names_attr);
-    if (w->depth < 0) { UNPROTECT(7); return; }
+    /* a label position on the {names} shape (a length-1 NA would cross
+       as an NA scalar and decline one hop late); the frame's names keep
+       the scalar rule (the wire's established form) */
+    if (q == MIZU_IXQ_NAMES) {
+      ixw_strv_vec(w, names_attr);
+    } else {
+      ixw_node(w, names_attr);
+    }
+    if (w->depth < 0) { UNPROTECT(8); return; }
   }
   if (levels != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_LEVELS,
             IX_KEYLEN(MIZU_IX_ATTR_LEVELS));
     ixw_node(w, levels);
-    if (w->depth < 0) { UNPROTECT(7); return; }
+    if (w->depth < 0) { UNPROTECT(8); return; }
   }
   if (dim != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_DIM, IX_KEYLEN(MIZU_IX_ATTR_DIM));
     ixw_node(w, dim);
-    if (w->depth < 0) { UNPROTECT(7); return; }
+    if (w->depth < 0) { UNPROTECT(8); return; }
+  }
+  if (dn != R_NilValue) {
+    IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_DIMNAMES,
+            IX_KEYLEN(MIZU_IX_ATTR_DIMNAMES));
+    ixw_dimnames_put(w, dn);
+    if (w->depth < 0) { UNPROTECT(8); return; }
   }
   if (klass != R_NilValue && !skip_class) {
     IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_CLASS,
             IX_KEYLEN(MIZU_IX_ATTR_CLASS));
     ixw_node(w, klass);
-    if (w->depth < 0) { UNPROTECT(7); return; }
+    if (w->depth < 0) { UNPROTECT(8); return; }
   }
   if (units != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_UNITS,
             IX_KEYLEN(MIZU_IX_ATTR_UNITS));
     ixw_node(w, units);
-    if (w->depth < 0) { UNPROTECT(7); return; }
+    if (w->depth < 0) { UNPROTECT(8); return; }
   }
   if (rn != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_ROWNAMES,
@@ -923,23 +1271,35 @@ static void ixw_attr_dict(mizu_ixw *w, SEXP x, int q) {
     ixw_rownames(w, rn,
                  TYPEOF(x) == VECSXP && XLENGTH(x) > 0 ?
                    XLENGTH(VECTOR_ELT(x, 0)) : 0);
-    if (w->depth < 0) { UNPROTECT(7); return; }
+    if (w->depth < 0) { UNPROTECT(8); return; }
   }
   if (tz != R_NilValue) {
     IXW_PUT(w, mizu_ix_put_key, MIZU_IX_ATTR_TZONE,
             IX_KEYLEN(MIZU_IX_ATTR_TZONE));
     ixw_node(w, tz);
+    if (w->depth < 0) { UNPROTECT(8); return; }
   }
-  UNPROTECT(7);
+  for (R_xlen_t i = 0; i < nex; i++) {
+    IXW_PUT(w, mizu_ix_put_key, ekeys[i], (uint32_t) elens[i]);
+    size_t saved = w->path_len;
+    ixw_path_key(w, ekeys[i]);
+    w->opaque = 1;
+    ixw_node(w, evals[i]);
+    w->opaque = 0;
+    ixw_path_pop(w, saved);
+    if (w->depth < 0) { UNPROTECT(8); return; }
+  }
+  UNPROTECT(8);
 }
 
 /* One attribute name the whitelisted shapes admit (the union over the
-   shapes: levels+class, the frame's names/class/row.names, dim, tzone,
-   units). */
+   shapes: levels+class, the frame's names/class/row.names, dim,
+   dimnames, tzone, units). */
 static int ix_attr_name_admitted(const char *nm) {
   return !strcmp(nm, "names") || !strcmp(nm, "class") ||
     !strcmp(nm, "row.names") || !strcmp(nm, "levels") ||
-    !strcmp(nm, "dim") || !strcmp(nm, "tzone") || !strcmp(nm, "units");
+    !strcmp(nm, "dim") || !strcmp(nm, "dimnames") ||
+    !strcmp(nm, "tzone") || !strcmp(nm, "units");
 }
 
 /* The catch-all attr decline names the offenders generically: the value's
@@ -1008,13 +1368,24 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
     w->refs = saved_refs;
     return;
   }
+  /* the labeled shapes' send gate: the peer's mask must carry the bit —
+     decline, never strip (metadata is data). The zero-copy filters gate
+     the same verdicts for the layout tiers; the blob path routes around
+     this function, its admission the filter's upstream. */
+  if (ix_q_caps(q) & MIZU_CAP_LABELED & ~w->caps) {
+    ixw_decline(w, "the peer predates the labeled attribute capability",
+                NULL);
+    w->refs = saved_refs;
+    return;
+  }
   IXW_PUT0(w, mizu_ix_put_attr);
   switch (q) {
   case MIZU_IXQ_FACTOR:
     ixw_atomic_put(w, MIZU_TYPE_INT, x);
-    ixw_attr_dict(w, x, q);
+    ixw_attr_dict(w, x, q, 0);
     break;
-  case MIZU_IXQ_FRAME: {
+  case MIZU_IXQ_FRAME:
+  case MIZU_IXQ_FRAME_EXT: {
     const R_xlen_t nc = XLENGTH(x);
     IXW_PUT(w, mizu_ix_put_list_begin, (uint64_t) nc);
     w->depth++;
@@ -1026,23 +1397,25 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
       if (w->depth < 0) break;
     }
     if (w->depth > 0) w->depth--;
-    if (w->depth >= 0) ixw_attr_dict(w, x, q);
+    if (w->depth >= 0) ixw_attr_dict(w, x, q, 0);
     break;
   }
-  case MIZU_IXQ_DIM: {
+  case MIZU_IXQ_NAMES:
+  case MIZU_IXQ_DIM:
+  case MIZU_IXQ_DIMNAMES: {
     const int code = ix_is_int64(x) ? MIZU_TYPE_INT64 :
       TYPEOF(x) == LGLSXP ? MIZU_TYPE_LGL :
       TYPEOF(x) == INTSXP ? MIZU_TYPE_INT :
       TYPEOF(x) == REALSXP ? MIZU_TYPE_REAL :
       TYPEOF(x) == CPLXSXP ? MIZU_TYPE_CPLX : MIZU_TYPE_RAW;
     ixw_atomic_put(w, code, x);
-    ixw_attr_dict(w, x, q);
+    ixw_attr_dict(w, x, q, 0);
     break;
   }
   default:
     /* Date and POSIXct: the realv days / epoch seconds, then the dict */
     ixw_atomic_put(w, MIZU_TYPE_REAL, x);
-    ixw_attr_dict(w, x, q);
+    ixw_attr_dict(w, x, q, 0);
     break;
   }
   w->refs = saved_refs;
@@ -1163,6 +1536,123 @@ static void ixw_node(mizu_ixw *w, SEXP x) {
   ixw_value(w, x);
 }
 
+/* The bare atomic emission: a class-only integer64 as 0x0e; any other
+   (attribute-free) atomic as the scalar form at length 1, else the
+   vector tag. The opaque form's value half rides this too — an int64's
+   class still rides the tag there, the dict carrying every pair. */
+static void ixw_atomic_bare(mizu_ixw *w, SEXP x) {
+  const SEXPTYPE ty = TYPEOF(x);
+  if (mizu_view_is_int64_any(x)) {
+    ixw_atomic_put(w, MIZU_TYPE_INT64, x);
+    return;
+  }
+  const R_xlen_t n = XLENGTH(x);
+  if (n == 1 && ty != RAWSXP) {
+    /* GET_REGION is total (a non-ALTREP copy is its default), so the
+       resident and ALTREP forms share one switch */
+    switch (ty) {
+    case LGLSXP: {
+      int v;
+      INTEGER_GET_REGION(x, 0, 1, &v);
+      IXW_PUT(w, mizu_ix_put_lgl, v == NA_LOGICAL ? 2 : v);
+      break;
+    }
+    case INTSXP: {
+      int v;
+      INTEGER_GET_REGION(x, 0, 1, &v);
+      IXW_PUT(w, mizu_ix_put_int,
+              v == NA_INTEGER ? INT64_MIN : (int64_t) v);
+      break;
+    }
+    case REALSXP: {
+      double v;
+      REAL_GET_REGION(x, 0, 1, &v);
+      IXW_PUT(w, mizu_ix_put_real, v);
+      break;
+    }
+    default: {
+      Rcomplex v;
+      COMPLEX_GET_REGION(x, 0, 1, &v);
+      IXW_PUT(w, mizu_ix_put_cplx, v.r, v.i);
+      break;
+    }
+    }
+    return;
+  }
+  const int code = ty == LGLSXP ? MIZU_TYPE_LGL :
+    ty == INTSXP ? MIZU_TYPE_INT : ty == REALSXP ? MIZU_TYPE_REAL :
+    ty == CPLXSXP ? MIZU_TYPE_CPLX : MIZU_TYPE_RAW;
+  ixw_atomic_put(w, code, x);
+}
+
+/* The bare string vector emission: the scalar form at length 1, else
+   the strv tag (attribute-free — the opaque form's value half). */
+static void ixw_strv_bare(mizu_ixw *w, SEXP x) {
+  if (XLENGTH(x) != 1) {
+    ixw_strv_vec(w, x);
+    return;
+  }
+  SEXP cs = STRING_ELT(x, 0);
+  int32_t len;
+  const char *u;
+  if (!ixw_str_size(cs, &len, &u)) {
+    ixw_decline(w, "a string is not writable as UTF-8 (CE_BYTES or "
+                   "invalid native bytes)", NULL);
+    return;
+  }
+  ixw_str_put(w, u, len, 0);
+}
+
+/* The opaque-subtree attr form (an extended frame's extras): any
+   encodable attribute set emits as attr(value, dict) with the pairs
+   byte-sorted, class a pair like any other — the shape whitelist does
+   not apply here; R reads it apply-as-is, Python never decodes it. A
+   non-encodable set declines naming the path (unreachable past
+   qualification: the extended frame's gate walked every extra). */
+static void ixw_opaque_attr(mizu_ixw *w, SEXP x) {
+  if (!ix_encodable(x, 0)) {
+    ixw_decline(w, "an attribute set inside a frame extra is not "
+                   "encodable", NULL);
+    return;
+  }
+  IXW_PUT0(w, mizu_ix_put_attr);
+  switch (TYPEOF(x)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    ixw_atomic_bare(w, x);
+    break;
+  case STRSXP:
+    ixw_strv_bare(w, x);
+    break;
+  default: {
+    /* VECSXP (ix_encodable admitted nothing else): the bare list */
+    const R_xlen_t n = XLENGTH(x);
+    IXW_PUT(w, mizu_ix_put_list_begin, (uint64_t) n);
+    w->depth++;
+    for (R_xlen_t i = 0; i < n; i++) {
+      size_t saved = w->path_len;
+      ixw_path_push(w, i + 1);
+      ixw_node(w, VECTOR_ELT(x, i));
+      ixw_path_pop(w, saved);
+      if (w->depth < 0) return;
+    }
+    w->depth--;
+    break;
+  }
+  }
+  if (w->depth < 0) return;
+  const R_xlen_t na = ix_attr_count(x);
+  const char **keys = (const char **) R_alloc((size_t) na, sizeof(char *));
+  int32_t *lens = (int32_t *) R_alloc((size_t) na, sizeof(int32_t));
+  SEXP *vals = (SEXP *) R_alloc((size_t) na, sizeof(SEXP));
+  const R_xlen_t np = ix_pairs_sorted(x, keys, lens, vals, 0);
+  IXW_PUT(w, mizu_ix_put_dict_begin, (uint64_t) np);
+  for (R_xlen_t i = 0; i < np; i++) {
+    IXW_PUT(w, mizu_ix_put_key, keys[i], (uint32_t) lens[i]);
+    ixw_node(w, vals[i]);
+    if (w->depth < 0) return;
+  }
+}
+
 /* The value dispatch (the ref gate's fall-through): every position the
    gate covers reaches here — the gate itself, or a recorded candidate's
    by-value subtree walk. */
@@ -1175,76 +1665,22 @@ static void ixw_value(mizu_ixw *w, SEXP x) {
   const SEXPTYPE ty = TYPEOF(x);
   switch (ty) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP: {
-    if (mizu_view_is_int64_any(x) && ix_attr_count(x) == 1 && !Rf_isS4(x)) {
-      /* a class-only integer64 writes 0x0e at every length */
-      ixw_atomic_put(w, MIZU_TYPE_INT64, x);
-      return;
-    }
-    if (!ANY_ATTRIB(x) && !Rf_isS4(x)) {
-      /* attribute-free (resident or ALTREP, which crosses by value) */
-      const R_xlen_t n = XLENGTH(x);
-      if (n == 1 && ty != RAWSXP) {
-        if (!ALTREP(x)) {
-          switch (ty) {
-          case LGLSXP: {
-            const int v = LOGICAL(x)[0];
-            IXW_PUT(w, mizu_ix_put_lgl, v == NA_LOGICAL ? 2 : v);
-            break;
-          }
-          case INTSXP: {
-            const int v = INTEGER(x)[0];
-            IXW_PUT(w, mizu_ix_put_int,
-                    v == NA_INTEGER ? INT64_MIN : (int64_t) v);
-            break;
-          }
-          case REALSXP:
-            IXW_PUT(w, mizu_ix_put_real, REAL(x)[0]);
-            break;
-          default: {
-            const Rcomplex v = COMPLEX(x)[0];
-            IXW_PUT(w, mizu_ix_put_cplx, v.r, v.i);
-            break;
-          }
-          }
-        } else {
-          switch (ty) {
-          case LGLSXP: {
-            int v;
-            INTEGER_GET_REGION(x, 0, 1, &v);
-            IXW_PUT(w, mizu_ix_put_lgl, v == NA_LOGICAL ? 2 : v);
-            break;
-          }
-          case INTSXP: {
-            int v;
-            INTEGER_GET_REGION(x, 0, 1, &v);
-            IXW_PUT(w, mizu_ix_put_int,
-                    v == NA_INTEGER ? INT64_MIN : (int64_t) v);
-            break;
-          }
-          case REALSXP: {
-            double v;
-            REAL_GET_REGION(x, 0, 1, &v);
-            IXW_PUT(w, mizu_ix_put_real, v);
-            break;
-          }
-          default: {
-            Rcomplex v;
-            COMPLEX_GET_REGION(x, 0, 1, &v);
-            IXW_PUT(w, mizu_ix_put_cplx, v.r, v.i);
-            break;
-          }
-          }
-        }
-        return;
-      }
-      const int code = ty == LGLSXP ? MIZU_TYPE_LGL :
-        ty == INTSXP ? MIZU_TYPE_INT : ty == REALSXP ? MIZU_TYPE_REAL :
-        ty == CPLXSXP ? MIZU_TYPE_CPLX : MIZU_TYPE_RAW;
-      ixw_atomic_put(w, code, x);
-      return;
-    }
     if (Rf_isS4(x)) {
       ixw_decline(w, "an S4 object has no portable home", NULL);
+      return;
+    }
+    if (!ANY_ATTRIB(x) ||
+        (!w->opaque && mizu_view_is_int64_any(x) &&
+         ix_attr_count(x) == 1)) {
+      /* attribute-free (resident or ALTREP, which crosses by value), or
+         the class-only integer64's 0x0e */
+      ixw_atomic_bare(w, x);
+      return;
+    }
+    if (w->opaque) {
+      w->depth++;
+      ixw_opaque_attr(w, x);
+      if (w->depth > 0) w->depth--;
       return;
     }
     w->depth++;
@@ -1258,26 +1694,18 @@ static void ixw_value(mizu_ixw *w, SEXP x) {
       return;
     }
     if (ANY_ATTRIB(x)) {
+      if (w->opaque) {
+        w->depth++;
+        ixw_opaque_attr(w, x);
+        if (w->depth > 0) w->depth--;
+        return;
+      }
       w->depth++;
       ixw_attr(w, x, mizu_interop_attrs_qualify(x));
       if (w->depth > 0) w->depth--;
       return;
     }
-    const R_xlen_t n = XLENGTH(x);
-    if (n == 1) {
-      SEXP cs = STRING_ELT(x, 0);
-      int32_t len;
-      const char *u;
-      if (!ixw_str_size(cs, &len, &u)) {
-        ixw_decline(w, "a string is not writable as UTF-8 (CE_BYTES or "
-                       "invalid native bytes)", NULL);
-        return;
-      }
-      ixw_str_put(w, u, len, 0);
-      return;
-    }
-    IXW_PUT(w, mizu_ix_put_strv_begin, (uint64_t) n);
-    ixw_strv_elts(w, x);
+    ixw_strv_bare(w, x);
     return;
   }
   case VECSXP: {
@@ -1289,7 +1717,10 @@ static void ixw_value(mizu_ixw *w, SEXP x) {
     const R_xlen_t n = XLENGTH(x);
     if (names != R_NilValue && TYPEOF(names) == STRSXP &&
         ix_attr_count(x) == 1) {
-      /* a named list: the dict, names under the dict-key rules */
+      /* a named list: the dict, names under the dict-key rules (also
+         inside an opaque subtree — list order is data, and the
+         names-attributed list's attr form is the dimnames value's
+         alone) */
       if (!mizu_interop_names_ok(names)) {
         UNPROTECT(1);
         ixw_decline(w, "a named list has duplicate, NA, or non-UTF-8 "
@@ -1305,6 +1736,12 @@ static void ixw_value(mizu_ixw *w, SEXP x) {
     }
     UNPROTECT(1);
     if (ANY_ATTRIB(x)) {
+      if (w->opaque) {
+        w->depth++;
+        ixw_opaque_attr(w, x);
+        if (w->depth > 0) w->depth--;
+        return;
+      }
       w->depth++;
       ixw_attr(w, x, mizu_interop_attrs_qualify(x));
       if (w->depth > 0) w->depth--;
@@ -1333,14 +1770,16 @@ static void ixw_value(mizu_ixw *w, SEXP x) {
 }
 
 /* The two-pass entry: NULL dst sizes and qualifies (0 = decline, the
-   record filled); a real dst writes behind the size pass's total. */
+   record filled); a real dst writes behind the size pass's total. caps
+   is the peer's capability word (the labeled shapes' send gate; this
+   build's own word on peer-less paths — the §3.5 blob, the test hook). */
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
-                          mizu_ix_decline *rec) {
+                          mizu_ix_decline *rec, uint32_t caps) {
   /* the value entry is the channel mode: refs off — a view nested in a
      channel payload keeps the materialize behavior (the channel readers
      decline 0x13), and nested attribute blobs inherit this bit */
   mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
-                 .path = "x", .path_len = 1 };
+                 .path = "x", .path_len = 1, .caps = caps };
   if (rec != NULL) {
     rec->decline = 0;
     rec->path[0] = '\0';
@@ -1715,7 +2154,7 @@ NORET static void ixr_stop_tls(void) {
   Rf_error("mizu: %s", mizu_last_error_message());
 }
 
-static SEXP ixr_value(mizu_ix *cur, int refs);
+static SEXP ixr_value(mizu_ix *cur, int refs, int opaque);
 
 static void ixr_expect_str(mizu_ix *cur, mizu_ix_item *it) {
   if (mizu_ix_next(cur, it) != MIZU_OK) ixr_stop_tls();
@@ -1757,8 +2196,12 @@ static void ixr_keyset_init(ix_keyset *ks, uint64_t count) {
   ks->cap = cap;
 }
 
+/* The dict pairs' read: attr_mode marks the attr tag's dict — a
+   non-reserved key's value is an extended frame's extra and reads
+   opaque (its subtree homes no shape checks: apply-as-is). */
 static void ixr_dict_into(mizu_ix *cur, SEXP out, SEXP names, uint64_t n,
-                          ix_keyset *ks, int refs) {
+                          ix_keyset *ks, int refs, int opaque,
+                          int attr_mode) {
   mizu_ix_item it;
   for (uint64_t i = 0; i < n; i++) {
     ixr_expect_str(cur, &it);
@@ -1768,8 +2211,11 @@ static void ixr_dict_into(mizu_ix *cur, SEXP out, SEXP names, uint64_t n,
       mizu_stop_interop("malformed interop stream: a duplicate dict key");
     }
     SET_STRING_ELT(names, (R_xlen_t) i, key);
+    const int vopaque = opaque ||
+      (attr_mode &&
+       !mizu_ix_attr_reserved(CHAR(key), (size_t) LENGTH(key)));
     UNPROTECT(1);
-    SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur, refs));
+    SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur, refs, vopaque));
   }
 }
 
@@ -1822,15 +2268,83 @@ static void ixr_attrs_apply(SEXP value, SEXP attrs) {
   UNPROTECT(1);
 }
 
-static int ix_strv_is(SEXP v, const char *s) {
-  return TYPEOF(v) == STRSXP && XLENGTH(v) == 1 &&
-    strcmp(CHAR(STRING_ELT(v, 0)), s) == 0;
+/* The frame shape's shared reader validation: the column names, the
+   columns' types and one length, and the row.names forms — the plain
+   and extended frames enforce these identically. */
+static void ixr_frame_body_check(SEXP value, SEXP attrs) {
+  SEXP cnames = ix_dict_get(attrs, MIZU_IX_ATTR_NAMES);
+  SEXP rn = ix_dict_get(attrs, MIZU_IX_ATTR_ROWNAMES);
+  const R_xlen_t nc = XLENGTH(value);
+  if (nc < 1 || TYPEOF(cnames) != STRSXP || XLENGTH(cnames) != nc ||
+      !mizu_interop_names_ok(cnames))
+    ixr_stop_no_home(attrs);
+  R_xlen_t n = -1;
+  for (R_xlen_t j = 0; j < nc; j++) {
+    SEXP col = VECTOR_ELT(value, j);
+    switch (TYPEOF(col)) {
+    case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    case STRSXP:
+      break;
+    default:
+      ixr_stop_no_home(attrs);
+    }
+    if (ANY_ATTRIB(col)) {
+      if (mizu_view_is_int64(col)) {
+        if (ix_attr_count(col) != 1) ixr_stop_no_home(attrs);
+      } else {
+        const int q = mizu_interop_attrs_qualify(col);
+        if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
+            q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
+          ixr_stop_no_home(attrs);
+      }
+    }
+    if (n < 0) {
+      n = XLENGTH(col);
+    } else if (XLENGTH(col) != n) {
+      ixr_stop_no_home(attrs);
+    }
+  }
+  switch (TYPEOF(rn)) {
+  case INTSXP:
+    if (XLENGTH(rn) == 2 && INTEGER(rn)[0] == NA_INTEGER) {
+      if (INTEGER(rn)[1] != n && INTEGER(rn)[1] != -n)
+        ixr_stop_no_home(attrs);
+    } else {
+      if (XLENGTH(rn) != n) ixr_stop_no_home(attrs);
+      for (R_xlen_t i = 0; i < n; i++)
+        if (INTEGER(rn)[i] == NA_INTEGER) ixr_stop_no_home(attrs);
+    }
+    break;
+  case STRSXP:
+    if (XLENGTH(rn) != n) ixr_stop_no_home(attrs);
+    for (R_xlen_t i = 0; i < n; i++)
+      if (STRING_ELT(rn, i) == NA_STRING) ixr_stop_no_home(attrs);
+    break;
+  default:
+    ixr_stop_no_home(attrs);
+  }
 }
 
-static int ix_strv_is2(SEXP v, const char *a, const char *b) {
-  return TYPEOF(v) == STRSXP && XLENGTH(v) == 2 &&
-    strcmp(CHAR(STRING_ELT(v, 0)), a) == 0 &&
-    strcmp(CHAR(STRING_ELT(v, 1)), b) == 0;
+/* The apply-as-is guard for the opaque subtree (an extended frame's
+   extras): the rules R's special setters enforce, checked ahead — a bad
+   names length, dim product or dimnames shape longjmps mid-read at
+   Rf_setAttrib, and a short names pads with NA *silently*, so a corrupt
+   nested extra becomes the no-home error here instead. tsp is barred
+   (reserved: R validates it at apply), comment character or NULL. */
+static int ixr_special_ok(SEXP value, SEXP dict) {
+  SEXP names = ix_dict_get(dict, MIZU_IX_ATTR_NAMES);
+  if (names != R_NilValue &&
+      (TYPEOF(names) != STRSXP || XLENGTH(names) != XLENGTH(value)))
+    return 0;
+  SEXP dim = ix_dict_get(dict, MIZU_IX_ATTR_DIM);
+  if (dim != R_NilValue && !ix_dim_ok(dim, XLENGTH(value))) return 0;
+  SEXP dn = ix_dict_get(dict, MIZU_IX_ATTR_DIMNAMES);
+  if (dn != R_NilValue &&
+      (dim == R_NilValue || !ix_dimnames_ok(dn, dim)))
+    return 0;
+  if (ix_dict_get(dict, MIZU_IX_ATTR_TSP) != R_NilValue) return 0;
+  SEXP comment = ix_dict_get(dict, "comment");
+  return comment == R_NilValue || TYPEOF(comment) == STRSXP;
 }
 
 /* The whitelisted shape check, then the application (validating mode:
@@ -1841,6 +2355,7 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
   SEXP klass = ix_dict_get(attrs, MIZU_IX_ATTR_CLASS);
   SEXP levels = ix_dict_get(attrs, MIZU_IX_ATTR_LEVELS);
   SEXP dim = ix_dict_get(attrs, MIZU_IX_ATTR_DIM);
+  SEXP dn = ix_dict_get(attrs, MIZU_IX_ATTR_DIMNAMES);
   SEXP rn = ix_dict_get(attrs, MIZU_IX_ATTR_ROWNAMES);
   SEXP tz = ix_dict_get(attrs, MIZU_IX_ATTR_TZONE);
   SEXP units = ix_dict_get(attrs, MIZU_IX_ATTR_UNITS);
@@ -1868,80 +2383,56 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
      names, class, row.names */
   if (TYPEOF(value) == VECSXP && !ANY_ATTRIB(value) && na == 3 &&
       ix_strv_is(klass, MIZU_IX_CLASS_DATAFRAME) && rn != R_NilValue) {
-    SEXP cnames = ix_dict_get(attrs, MIZU_IX_ATTR_NAMES);
-    const R_xlen_t nc = XLENGTH(value);
-    if (nc < 1 || TYPEOF(cnames) != STRSXP || XLENGTH(cnames) != nc ||
-        !mizu_interop_names_ok(cnames))
-      ixr_stop_no_home(attrs);
-    R_xlen_t n = -1;
-    for (R_xlen_t j = 0; j < nc; j++) {
-      SEXP col = VECTOR_ELT(value, j);
-      switch (TYPEOF(col)) {
-      case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
-      case STRSXP:
-        break;
-      default:
-        ixr_stop_no_home(attrs);
-      }
-      if (ANY_ATTRIB(col)) {
-        if (mizu_view_is_int64(col)) {
-          if (ix_attr_count(col) != 1) ixr_stop_no_home(attrs);
-        } else {
-          const int q = mizu_interop_attrs_qualify(col);
-          if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
-              q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
-            ixr_stop_no_home(attrs);
-        }
-      }
-      if (n < 0) {
-        n = XLENGTH(col);
-      } else if (XLENGTH(col) != n) {
-        ixr_stop_no_home(attrs);
-      }
-    }
-    switch (TYPEOF(rn)) {
-    case INTSXP:
-      if (XLENGTH(rn) == 2 && INTEGER(rn)[0] == NA_INTEGER) {
-        if (INTEGER(rn)[1] != n && INTEGER(rn)[1] != -n)
-          ixr_stop_no_home(attrs);
-      } else {
-        if (XLENGTH(rn) != n) ixr_stop_no_home(attrs);
-        for (R_xlen_t i = 0; i < n; i++)
-          if (INTEGER(rn)[i] == NA_INTEGER) ixr_stop_no_home(attrs);
-      }
-      break;
-    case STRSXP:
-      if (XLENGTH(rn) != n) ixr_stop_no_home(attrs);
-      for (R_xlen_t i = 0; i < n; i++)
-        if (STRING_ELT(rn, i) == NA_STRING) ixr_stop_no_home(attrs);
-      break;
-    default:
-      ixr_stop_no_home(attrs);
-    }
+    ixr_frame_body_check(value, attrs);
     ixr_attrs_apply(value, attrs);
     return value;
   }
   /* dim array: attrs exactly dim, product == length, value atomic but
      character (an integer64 array's class rides the 0x0e value tag, so
      its dict is {dim} alone here too) */
-  if (dim != R_NilValue && na == 1 && TYPEOF(dim) == INTSXP &&
-      XLENGTH(dim) >= 1) {
+  if (dim != R_NilValue && na == 1) {
     switch (TYPEOF(value)) {
     case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
       break;
     default:
       ixr_stop_no_home(attrs);
     }
-    const R_xlen_t nd = XLENGTH(dim);
-    const int *d = INTEGER(dim);
-    R_xlen_t prod = 1;
-    for (R_xlen_t i = 0; i < nd; i++) {
-      if (d[i] == NA_INTEGER || d[i] < 0) ixr_stop_no_home(attrs);
-      if (d[i] != 0 && prod > XLENGTH(value) / (R_xlen_t) d[i])
-        ixr_stop_no_home(attrs);
-      prod *= d[i];
+    if (!ix_dim_ok(dim, XLENGTH(value))) ixr_stop_no_home(attrs);
+    ixr_attrs_apply(value, attrs);
+    return value;
+  }
+  /* dim array with dimnames (MIZU_CAP_LABELED): attrs exactly dim and
+     dimnames, class absent or exactly "table" (an integer64 array's own
+     class still rides the 0x0e tag) */
+  if (dim != R_NilValue && dn != R_NilValue && (na == 2 || na == 3)) {
+    if (na == 3 && !ix_strv_is(klass, MIZU_IX_CLASS_TABLE))
+      ixr_stop_no_home(attrs);
+    switch (TYPEOF(value)) {
+    case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+      break;
+    default:
+      ixr_stop_no_home(attrs);
     }
-    if (prod != XLENGTH(value)) ixr_stop_no_home(attrs);
+    if (!ix_dim_ok(dim, XLENGTH(value)) || !ix_dimnames_ok(dn, dim))
+      ixr_stop_no_home(attrs);
+    ixr_attrs_apply(value, attrs);
+    return value;
+  }
+  /* a named vector (MIZU_CAP_LABELED): attrs exactly names — on an
+     atomic non-character, or on a list (the dimnames carrier's
+     names-attributed form, the one place that shape is not a 0x0d
+     dict) */
+  if (na == 1 && ix_dict_get(attrs, MIZU_IX_ATTR_NAMES) != R_NilValue) {
+    switch (TYPEOF(value)) {
+    case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    case VECSXP:
+      break;
+    default:
+      ixr_stop_no_home(attrs);
+    }
+    if (!ix_names_ok(ix_dict_get(attrs, MIZU_IX_ATTR_NAMES),
+                     XLENGTH(value)))
+      ixr_stop_no_home(attrs);
     ixr_attrs_apply(value, attrs);
     return value;
   }
@@ -1971,6 +2462,35 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
     ixr_attrs_apply(value, attrs);
     return value;
   }
+  /* the extended frame (MIZU_CAP_LABELED): required keys present, class
+     a strv whose last element is "data.frame", every extra outside the
+     reserved set, comment character or NULL — the extras read opaque
+     already (the attr dict's per-key rule), so a corrupt one failed
+     there; this branch's own checks mirror the writer's */
+  if (TYPEOF(value) == VECSXP && !ANY_ATTRIB(value) && na >= 3 &&
+      TYPEOF(klass) == STRSXP && XLENGTH(klass) >= 1 &&
+      strcmp(CHAR(STRING_ELT(klass, XLENGTH(klass) - 1)),
+             MIZU_IX_CLASS_DATAFRAME) == 0) {
+    if (rn == R_NilValue ||
+        ix_dict_get(attrs, MIZU_IX_ATTR_NAMES) == R_NilValue)
+      ixr_stop_no_home(attrs);
+    SEXP keys = Rf_getAttrib(attrs, R_NamesSymbol);
+    for (R_xlen_t i = 0; i < na; i++) {
+      const char *nm = CHAR(STRING_ELT(keys, i));
+      if (!strcmp(nm, MIZU_IX_ATTR_NAMES) ||
+          !strcmp(nm, MIZU_IX_ATTR_CLASS) ||
+          !strcmp(nm, MIZU_IX_ATTR_ROWNAMES))
+        continue;
+      if (mizu_ix_attr_reserved(nm, strlen(nm)))
+        ixr_stop_no_home(attrs);
+      SEXP v = VECTOR_ELT(attrs, i);
+      if (!strcmp(nm, "comment") && v != R_NilValue && TYPEOF(v) != STRSXP)
+        ixr_stop_no_home(attrs);
+    }
+    ixr_frame_body_check(value, attrs);
+    ixr_attrs_apply(value, attrs);
+    return value;
+  }
   ixr_stop_no_home(attrs);
 }
 
@@ -1995,56 +2515,26 @@ SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate) {
 
 // The layout attribute blob (§3.5: the view layer's embedder hooks) ------------------
 
-/* The blob's row.names value for a frame: automatic forms write the
-   compact c(NA, ∓n) (the ixw_rownames discipline — a 1:n ALTREP would
-   otherwise serialize a full element per row into the blob). seq1n is
-   the qualification's verdict (it scanned already — the seq test
-   doubles as its NA check), 0 for character or explicit row names. */
-static SEXP ix_blob_rownames(SEXP rn, R_xlen_t n, int seq1n) {
-  if (TYPEOF(rn) != INTSXP) return rn;
-  if (XLENGTH(rn) == 2 && !ALTREP(rn) && INTEGER(rn)[0] == NA_INTEGER)
-    return rn;                         /* already the compact form */
-  if (XLENGTH(rn) == 0) seq1n = 1;
-  if (!seq1n) return rn;
-  SEXP compact = PROTECT(Rf_allocVector(INTSXP, 2));
-  INTEGER(compact)[0] = NA_INTEGER;
-  INTEGER(compact)[1] = XLENGTH(rn) == 0 ? 0 : (int) -n;
-  UNPROTECT(1);
-  return compact;
-}
-
-/* The attribute set as a plain named list — the blob's dict value:
-   R_getAttributes' named list on R >= 4.6, the pairlist walked below.
-   seq1n (the qualification's row.names verdict) drives the row.names
-   normalization; -1 means "not a frame" (no normalization). Caller
-   PROTECTs. */
-static SEXP ix_attrs_list(SEXP x, int seq1n) {
+/* The attribute set as a plain named list — the blob's dict value for
+   an arbitrary encodable set: R_getAttributes' named list on R >= 4.6,
+   the pairlist walked below. Caller PROTECTs. */
+static SEXP ix_attrs_list(SEXP x) {
   if (!ANY_ATTRIB(x)) return R_NilValue;
-  const int frame = seq1n >= 0;
   const R_xlen_t na = ix_attr_count(x);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, na));
   SEXP names = PROTECT(Rf_allocVector(STRSXP, na));
-  const R_xlen_t nrows = frame && TYPEOF(x) == VECSXP && XLENGTH(x) > 0 ?
-    XLENGTH(VECTOR_ELT(x, 0)) : 0;
 #if R_VERSION >= R_Version(4, 6, 0)
   SEXP attrs = PROTECT(R_getAttributes(x));
   SEXP keys = PROTECT(Rf_getAttrib(attrs, R_NamesSymbol));
   for (R_xlen_t i = 0; i < na; i++) {
-    SEXP nm = STRING_ELT(keys, i);
-    SEXP value = VECTOR_ELT(attrs, i);
-    if (frame && Rf_installChar(nm) == R_RowNamesSymbol)
-      value = ix_blob_rownames(value, nrows, seq1n);
-    SET_VECTOR_ELT(out, i, value);
-    SET_STRING_ELT(names, i, nm);
+    SET_VECTOR_ELT(out, i, VECTOR_ELT(attrs, i));
+    SET_STRING_ELT(names, i, STRING_ELT(keys, i));
   }
   UNPROTECT(2);
 #else
   R_xlen_t i = 0;
   for (SEXP a = ATTRIB(x); a != R_NilValue; a = CDR(a), i++) {
-    SEXP value = CAR(a);
-    if (frame && TAG(a) == R_RowNamesSymbol)
-      value = ix_blob_rownames(value, nrows, seq1n);
-    SET_VECTOR_ELT(out, i, value);
+    SET_VECTOR_ELT(out, i, CAR(a));
     SET_STRING_ELT(names, i, PRINTNAME(TAG(a)));
   }
 #endif
@@ -2053,18 +2543,34 @@ static SEXP ix_attrs_list(SEXP x, int seq1n) {
   return out;
 }
 
+/* A whitelisted shape's blob dict: the inline writer's attr dict, so
+   the wire forms are the blob's forms too (row.names normalization
+   included — ixw_rownames re-detects the compact form; the generic
+   dict write would emit a named-axes dimnames list as a 0x0d dict and
+   decline a classed extra). No caps word: the zero-copy filter's
+   admission is the gate upstream. */
+static size_t ix_blob_dict_write(unsigned char *dst, size_t limit, SEXP x,
+                                 int q) {
+  mizu_ixw w = { .dst = dst, .limit = limit };
+  IXW_PUT0(&w, mizu_ix_put_header);
+  ixw_attr_dict(&w, x, q, 1);
+  if (w.depth < 0) return 0;
+  return w.total;
+}
+
 /* The blob size hook: a complete 'I' stream whose value is the attribute
    dict, when the set is encodable — else a decline (0) and the view
    layer's R_Serialize fallback. No peer knowledge: the §1.1 zero-copy
    filter keeps a peer without MIZU_CAP_ATTRS off the layouts, and an R
    reader homes any dict. */
 static size_t mizu_interop_attrs_blob_size(SEXP x) {
-  int rn_seq1n = -1;
-  const int q = ix_qualify_blob(x, &rn_seq1n);
+  const int q = ix_qualify_blob(x);
   if (q == MIZU_IXQ_NONE) return 0;
-  SEXP attrs = PROTECT(ix_attrs_list(x, q == MIZU_IXQ_FRAME ? rn_seq1n : -1));
+  if (q != MIZU_IXQ_ENCODABLE)
+    return ix_blob_dict_write(NULL, 0, x, q);
+  SEXP attrs = PROTECT(ix_attrs_list(x));
   size_t total = attrs == R_NilValue ? 0 :
-    mizu_interop_write(NULL, 0, attrs, NULL);
+    mizu_interop_write(NULL, 0, attrs, NULL, MIZU_R_CAPS);
   UNPROTECT(1);
   return total;
 }
@@ -2075,12 +2581,13 @@ static size_t mizu_interop_attrs_blob_size(SEXP x) {
    agree (a zero return after a nonzero size is the view layer's bug
    guard, never a fallback). */
 static size_t mizu_interop_attrs_blob_write(unsigned char *dst, SEXP x) {
-  int rn_seq1n = -1;
-  const int q = ix_qualify_blob(x, &rn_seq1n);
+  const int q = ix_qualify_blob(x);
   if (q == MIZU_IXQ_NONE) return 0;
-  SEXP attrs = PROTECT(ix_attrs_list(x, q == MIZU_IXQ_FRAME ? rn_seq1n : -1));
+  if (q != MIZU_IXQ_ENCODABLE)
+    return ix_blob_dict_write(dst, SIZE_MAX, x, q);
+  SEXP attrs = PROTECT(ix_attrs_list(x));
   size_t total = attrs == R_NilValue ? 0 :
-    mizu_interop_write(dst, SIZE_MAX, attrs, NULL);
+    mizu_interop_write(dst, SIZE_MAX, attrs, NULL, MIZU_R_CAPS);
   UNPROTECT(1);
   return total;
 }
@@ -2126,12 +2633,20 @@ static int ix_u64_marker(SEXP attrs) {
   return TYPEOF(u) == LGLSXP && XLENGTH(u) == 1 && LOGICAL(u)[0] == TRUE;
 }
 
+/* The whole-stream read (defined with the task decoders below): the
+   blob hooks' opaque entry — an attr dict's extras build apply-as-is,
+   the mode the blob's apply runs anyway, so an extended frame's
+   classed-list extra parses where the validating mode would no-home
+   it. */
+static SEXP ixr_read(const unsigned char *buf, size_t len, int refs,
+                     int opaque);
+
 /* The blob parse hook (the REF gates' attrs compare): the attr dict
    read as a value — no object to apply it to, so the TSN/u64 landings
    and the apply path never run; the compare needs the verbatim dict. */
 static SEXP mizu_interop_attrs_blob_parse(const unsigned char *buf,
                                           size_t size) {
-  return mizu_interop_read(buf, size);
+  return ixr_read(buf, size, 0, 1);
 }
 
 /* The blob read hook: the cursor opens the 'I' stream (its own errors
@@ -2147,7 +2662,7 @@ static SEXP mizu_interop_attrs_blob_parse(const unsigned char *buf,
 static SEXP mizu_interop_attrs_blob_read(SEXP result,
                                          const unsigned char *buf,
                                          size_t size) {
-  SEXP attrs = PROTECT(mizu_interop_read(buf, size));
+  SEXP attrs = PROTECT(ixr_read(buf, size, 0, 1));
   if (ix_is_int64(result)) {
     SEXP out = ix_tsn_landing(result, attrs);
     if (out != R_NilValue) {
@@ -2213,7 +2728,7 @@ static SEXP ixr_err(const mizu_ix_item *it) {
    resolve, the consumer-mapping cache dedupes), 2 represents the
    identifier as a classed string for the corpus's conformance loop (the
    hook decode — never resolves, so synthetic identifiers round-trip). */
-static SEXP ixr_value(mizu_ix *cur, int refs) {
+static SEXP ixr_value(mizu_ix *cur, int refs, int opaque) {
   mizu_ix_item it;
   if (mizu_ix_next(cur, &it) != MIZU_OK) ixr_stop_tls();
   R_CheckStack();
@@ -2274,7 +2789,7 @@ static SEXP ixr_value(mizu_ix *cur, int refs) {
   case MIZU_IX_LIST: {
     SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) it.count));
     for (uint64_t i = 0; i < it.count; i++)
-      SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur, refs));
+      SET_VECTOR_ELT(out, (R_xlen_t) i, ixr_value(cur, refs, opaque));
     UNPROTECT(1);
     return out;
   }
@@ -2284,16 +2799,33 @@ static SEXP ixr_value(mizu_ix *cur, int refs) {
     ix_keyset ks = { NULL, 0 };
     if (it.count != 0) ixr_keyset_init(&ks, it.count);
     ixr_dict_into(cur, out, names, it.count, it.count != 0 ? &ks : NULL,
-                  refs);
+                  refs, opaque, 0);
     Rf_setAttrib(out, R_NamesSymbol, names);
     UNPROTECT(2);
     return out;
   }
   case MIZU_IX_ATTR: {
-    SEXP value = PROTECT(ixr_value(cur, refs));
-    SEXP attrs = PROTECT(ixr_value(cur, refs));
-    value = mizu_interop_attrs_build(value, attrs, 1);
-    UNPROTECT(2);
+    SEXP value = PROTECT(ixr_value(cur, refs, opaque));
+    mizu_ix_item d;
+    if (mizu_ix_next(cur, &d) != MIZU_OK) {
+      UNPROTECT(1);
+      ixr_stop_tls();
+    }
+    /* the attr dict (the cursor's position rule guarantees the dict
+       begin): an extras value reads opaque, so a nested attr homes
+       apply-as-is behind the special-setter pre-check — the top-level
+       dict's own checks run in the builder either way */
+    SEXP names = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t) d.count));
+    SEXP attrs = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) d.count));
+    ix_keyset ks = { NULL, 0 };
+    if (d.count != 0) ixr_keyset_init(&ks, d.count);
+    ixr_dict_into(cur, attrs, names, d.count, d.count != 0 ? &ks : NULL,
+                  refs, opaque, 1);
+    Rf_setAttrib(attrs, R_NamesSymbol, names);
+    if (opaque && !ixr_special_ok(value, attrs))
+      ixr_stop_no_home(attrs);
+    value = mizu_interop_attrs_build(value, attrs, opaque ? 0 : 1);
+    UNPROTECT(3);
     return value;
   }
   case MIZU_IX_ERR:
@@ -2387,7 +2919,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
     SEXP tail = out;
     for (uint64_t i = 0; i < pos.count; i++) {
       SEXP cell = PROTECT(Rf_cons(R_NilValue, R_NilValue));
-      SETCAR(cell, ixr_value(cur, 1));
+      SETCAR(cell, ixr_value(cur, 1, 0));
       SETCDR(tail, cell);
       tail = cell;
       UNPROTECT(1);
@@ -2405,7 +2937,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
       }
       SEXP cell = PROTECT(Rf_cons(R_NilValue, R_NilValue));
       SET_TAG(cell, Rf_installChar(cs));
-      SETCAR(cell, ixr_value(cur, 1));
+      SETCAR(cell, ixr_value(cur, 1, 0));
       SETCDR(tail, cell);
       tail = cell;
       UNPROTECT(2);
@@ -2423,7 +2955,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
      the named ones bound in the closure's frame */
   SEXP pos_args = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));
   for (uint64_t i = 0; i < pos.count; i++)
-    SET_VECTOR_ELT(pos_args, (R_xlen_t) i, ixr_value(cur, 1));
+    SET_VECTOR_ELT(pos_args, (R_xlen_t) i, ixr_value(cur, 1, 0));
   if (mizu_ixt_want_dict(cur, &named) != MIZU_OK) ixr_stop_tls();
   ix_keyset ks = { NULL, 0 };
   if (named.count != 0) ixr_keyset_init(&ks, named.count);
@@ -2435,7 +2967,7 @@ static SEXP ixt_call(mizu_ix *cur, int kind, SEXP base, int map) {
       UNPROTECT(1);
       mizu_stop_interop("malformed task stream: a duplicate dict key");
     }
-    SEXP v = PROTECT(ixr_value(cur, 1));
+    SEXP v = PROTECT(ixr_value(cur, 1, 0));
     Rf_defineVar(Rf_installChar(kc), v, env);
     UNPROTECT(2);
   }
@@ -2557,7 +3089,7 @@ SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
     mizu_stop_interop("malformed map descriptor: kind 0x%02X is not a "
                       "call spec", it.task_kind);
   SEXP task = PROTECT(ixt_call(&cur, (int) it.task_kind, base, 1));
-  SEXP x = PROTECT(ixr_value(&cur, 1));
+  SEXP x = PROTECT(ixr_value(&cur, 1, 0));
   if (mizu_ix_end(&cur) != MIZU_OK) {
     UNPROTECT(2);
     ixr_stop_tls();
@@ -2576,10 +3108,14 @@ SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
 }
 
 /* The builder entry: one value, then the cursor's finishing check. */
-SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs) {
+/* The one stream read: refs as the mode requires; opaque marks the
+   §3.5 blob's stream (an attr dict — its extras build apply-as-is, the
+   mode the apply below runs anyway). */
+static SEXP ixr_read(const unsigned char *buf, size_t len, int refs,
+                     int opaque) {
   mizu_ix cur;
   if (mizu_ix_open(&cur, buf, len) != MIZU_OK) ixr_stop_tls();
-  SEXP out = PROTECT(ixr_value(&cur, refs));
+  SEXP out = PROTECT(ixr_value(&cur, refs, opaque));
   if (mizu_ix_end(&cur) != MIZU_OK) {
     UNPROTECT(1);
     ixr_stop_tls();
@@ -2588,21 +3124,26 @@ SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs) {
   return out;
 }
 
+SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs) {
+  return ixr_read(buf, len, refs, 0);
+}
+
 /* The channel mode entry: refs off — a 0x13 leaf raises the builder
    decline. */
 SEXP mizu_interop_read(const unsigned char *buf, size_t len) {
-  return mizu_interop_read_mode(buf, len, 0);
+  return ixr_read(buf, len, 0, 0);
 }
 
 // Test hooks (init.c) -----------------------------------------------------------------
 
 SEXP mizu_interop_write_call(SEXP object) {
   mizu_ix_decline rec;
-  size_t n = mizu_interop_write(NULL, 0, object, &rec);
+  size_t n = mizu_interop_write(NULL, 0, object, &rec, MIZU_R_CAPS);
   if (n == 0)
     mizu_stop_interop("not portable at %s (%s)", rec.path, rec.reason);
   SEXP bytes = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
-  size_t wrote = mizu_interop_write(RAW(bytes), n, object, NULL);
+  size_t wrote = mizu_interop_write(RAW(bytes), n, object, NULL,
+                                    MIZU_R_CAPS);
   if (wrote != n) {
     UNPROTECT(1);
     mizu_stop_interop("interop write mismatch");
@@ -2770,7 +3311,7 @@ SEXP mizu_interop_read_task_call(SEXP bytes) {
   if (mizu_ixt_want_list(&cur, &pos) != MIZU_OK) ixr_stop_tls();
   SEXP positional = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) pos.count));
   for (uint64_t i = 0; i < pos.count; i++)
-    SET_VECTOR_ELT(positional, (R_xlen_t) i, ixr_value(&cur, 2));
+    SET_VECTOR_ELT(positional, (R_xlen_t) i, ixr_value(&cur, 2, 0));
   if (mizu_ixt_want_dict(&cur, &named) != MIZU_OK) ixr_stop_tls();
   SEXP nn = PROTECT(Rf_allocVector(STRSXP, (R_xlen_t) named.count));
   SEXP nv = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) named.count));
@@ -2785,7 +3326,7 @@ SEXP mizu_interop_read_task_call(SEXP bytes) {
       mizu_stop_interop("malformed task stream: a duplicate dict key");
     }
     SET_STRING_ELT(nn, (R_xlen_t) i, kc);
-    SET_VECTOR_ELT(nv, (R_xlen_t) i, ixr_value(&cur, 2));
+    SET_VECTOR_ELT(nv, (R_xlen_t) i, ixr_value(&cur, 2, 0));
     UNPROTECT(1);
   }
   Rf_setAttrib(nv, R_NamesSymbol, nn);

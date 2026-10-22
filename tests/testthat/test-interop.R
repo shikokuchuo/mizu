@@ -259,8 +259,8 @@ test_that("the decline set raises mizu_error_not_portable on a foreign handle", 
   names(dfd) <- c("a", "a")
   expect_error(mizu_send(p$host, dfd), class = "mizu_error_not_portable")
 
-  # the condition's fields: path, reason, and the named-vector remedy
-  e <- tryCatch(mizu_send(p$host, c(a = 1)), error = function(e) e)
+  # the condition's fields: path, reason, and the named-character remedy
+  e <- tryCatch(mizu_send(p$host, c(a = "x")), error = function(e) e)
   expect_s3_class(e, "mizu_error_not_portable")
   expect_identical(e$reason, "a named atomic vector has no portable home")
   expect_identical(e$remedy, "as.list(x)")
@@ -274,20 +274,37 @@ test_that("the attr decline names the offending attributes", {
     mizu_send(p$host, ts(1:12, frequency = 4, start = c(2020, 1))),
     error = TRUE
   )
-  dfr <- data.frame(x = 1:2)
-  attr(dfr, "reference") <- "A1.4, p. 270"
-  expect_snapshot(mizu_send(p$host, dfr), error = TRUE)
-  expect_snapshot(
-    mizu_send(
-      p$host,
-      matrix(1:4, 2, dimnames = list(c("a", "b"), c("c", "d")))
-    ),
-    error = TRUE
-  )
   # a whitelisted-name set in a wrong combination names no attribute
   expect_snapshot(
     mizu_send(p$host, structure(1, class = "Date", tzone = "UTC")),
     error = TRUE
+  )
+})
+
+test_that("the labeled shapes round-trip on a labeled peer", {
+  p <- foreign_pair(caps = 130L) # ATTRS + LABELED
+  on.exit(channel_end(p))
+
+  dfr <- data.frame(x = 1:2)
+  attr(dfr, "reference") <- "A1.4, p. 270"
+  expect_identical(ix_rt(p, dfr), dfr)
+  m <- matrix(1:4, 2, dimnames = list(c("a", "b"), c("c", "d")))
+  expect_identical(ix_rt(p, m), m)
+  tbl <- structure(
+    data.frame(x = 1:2),
+    class = c("tbl_df", "tbl", "data.frame")
+  )
+  expect_identical(ix_rt(p, tbl), tbl)
+  expect_identical(ix_rt(p, c(a = 1, b = 2)), c(a = 1, b = 2))
+  # extent-1 label positions: never the 0x04 scalar collapse
+  expect_identical(ix_rt(p, table("a")), table("a"))
+  expect_identical(
+    ix_rt(p, structure(1, names = NA_character_)),
+    structure(1, names = NA_character_)
+  )
+  expect_identical(
+    ix_rt(p, array(1, 1L, list(NA_character_))),
+    array(1, 1L, list(NA_character_))
   )
 })
 

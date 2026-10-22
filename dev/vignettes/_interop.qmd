@@ -55,12 +55,20 @@ A `Date` arrives as `datetime64[D]`, a `POSIXct` as naive `datetime64[us]`, a fa
 A large numpy array arrives as a zero-copy matrix view over the shared pages in any memory order — F order, C order, or strided — one layout write, no copy or parse, and a large `datetime64` array crosses the same way as a `POSIXct` or `Date` view (`NaT` as `NA`).
 A large nested Python tree of lists, dicts, arrays, and strings arrives as a zero-copy list view over one shared region, and a view nested inside one crosses by reference — only its region's name moves, and R resolves it to a view of the original region.
 A `difftime` arrives as `timedelta64[us]`, `NA` as `NaT` — and `timedelta64` arrays of any non-calendar unit travel back as a `difftime`; units cross by value and normalize to seconds on a round trip.
-A `POSIXlt`, a named vector, and S4 objects stay on R's side: sending one on a Python channel raises at `mizu_send()`.
+A `POSIXlt`, a character matrix, a named character vector, and S4 objects stay on R's side: sending one on a Python channel raises at `mizu_send()`.
+
+Labels cross with the values they name: a named vector keeps its names (an unmodified round trip is `identical()`), and a matrix or array keeps its `dimnames` — axis names included, so a `table` object arrives with its class and every axis label intact.
+On the Python side these arrive as `pymizu.DimArray`, an `ndarray` subclass carrying the labels; NumPy operations drop them rather than risk mislabeling reshaped data, so a modified array comes back as a plain array — re-attach labels in Python and they ride back.
+A labeled array used as a cross-language map's `x` rides the raw-bytes section and drops its labels there — the same honest-loss rule as a same-language send.
 
 A data frame crosses as a `pymizu.Frame` — column dict on one side, `pl.from_arrow(f)` / `pa.table(f)` on the way into polars or pyarrow — and a polars, pyarrow, or pandas frame arrives back as a `data.frame`.
 Past the zero-copy floor (32 KB of layout) the frame travels as one shared-memory region both directions: no copy, no parse, numeric columns read in place.
 An unmodified R → polars → R round trip moves zero payload bytes at all — the return hop is a reference to the region R itself staged.
 The full contract, with the NA-sentinel and widening rules per dtype, is the dtype matrix in the pymizu README; a value outside the portable subset raises at send time on either side, naming the path and reason.
+
+Frame metadata rides along verbatim: the full class vector (a tibble's `c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`) and extra attributes such as a `reference` note or readr's column specification cross opaquely — Python stashes them undecoded on the `pymizu.Frame`, and an unmodified echo restores them, so a pristine round trip is `identical()`.
+The stash rides the pristine received frame only: a frame rebuilt through pyarrow, polars, pandas, or `from_arrow` arrives in R as a plain `data.frame` — honest loss, never wrong labels.
+A *named* classed column (a named factor, Date, or POSIXct) and a column that is itself a labeled matrix stay declined, as do groupedData-style frames (a formula attribute is not portable) and data.table (its `.internal.selfref` pointer is not either).
 
 ## Arrow data
 

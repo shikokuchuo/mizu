@@ -95,7 +95,8 @@ typedef struct mizu_r_handle_s {
    receive-side copy and the view. */
 #define MIZU_R_IDENT \
   MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS | \
-             MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_U64V)
+             MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_U64V | \
+             MIZU_CAP_LABELED)
 
 /* A same-language stage's own capability word (pymizu's precedent: a task
    frame is same-language by construction, so this build's caps is the
@@ -179,11 +180,20 @@ enum {
   MIZU_IXQ_DATE,
   MIZU_IXQ_POSIXCT,
   MIZU_IXQ_DIFFTIME,
-  MIZU_IXQ_ENCODABLE
+  MIZU_IXQ_ENCODABLE,
+  MIZU_IXQ_NAMES,    /* attrs exactly {names} on an atomic non-character */
+  MIZU_IXQ_DIMNAMES, /* {dim, dimnames[, class = "table"]} */
+  MIZU_IXQ_FRAME_EXT /* the extended frame: class suffix + extras */
 };
 
+/* The capability bits a verdict needs: MIZU_CAP_ATTRS for the baseline
+   shapes, plus MIZU_CAP_LABELED for the three labeled ones (zc.c's
+   foreign filters key on it so a labeled shape never stages to a peer
+   that cannot read it). */
+uint32_t ix_q_caps(int q);
+
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
-                          mizu_ix_decline *rec);
+                          mizu_ix_decline *rec, uint32_t caps);
 SEXP mizu_interop_read(const unsigned char *buf, size_t len);
 /* The refs mode of the value reader: with refs, a 0x13 leaf resolves to
    a view (the task decode, the map descriptor reader, and the pool's
@@ -347,7 +357,8 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
 SEXP mizu_stream_read(const unsigned char *buf, size_t len,
                       mizu_read_ctx *ctx, int consume_foreign);
 void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
-                                SEXP x, size_t n, mizu_handle *h);
+                                SEXP x, size_t n, mizu_handle *h,
+                                uint32_t caps);
 /* The SHM_RAW spill of a task stream (a pool has no arena): the ordinary
    SHM_RAW retain, no keeperless claim (§4.0). Refs stay on (a REF leaf
    needs no checkout) with no_zc forced — the fresh values cross by
