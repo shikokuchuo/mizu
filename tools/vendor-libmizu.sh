@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="40a5ac56f8a125c05a8985ca3a3e0e2f92be1c96"  # libmizu: engage the Linux zc churn fallback past a lent-bytes budget; lift it via a submit-time sweep on churned pool submitters
+PIN="5404135db62c9c21f1001179e81bf1ece6ba4c27"  # libmizu: Scale the spill free list for GC-batched recycling, latch the collapse heal scan
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

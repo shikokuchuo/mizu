@@ -1566,3 +1566,47 @@ and reworked to cross the budget (40 held 8 MB x+0 results), the
 channel churn test likewise (40 held 8 MB sends), and the two
 skip_on_os("linux") zc tests unskipped — their lent volumes stay far
 under the budget now.
+
+## 2026-10-22 — spill free-list caps for GC-batched recycling, the channel gc boundary, and the collapse latch (libmizu 5404135)
+
+The 800 KB pool payload row was the suite's smallest relative gain vs
+mirai (~2x where 8 KB is ~15x and 8 MB ~7x). The first read — releases
+GC-gated, so regions never recycle mid-loop — was wrong on the release
+side: releases already ride the zc gc-boundary's minor GCs
+(mizu_zc_gc_boundary, charged per wrapped view byte). The starvation
+point was downstream: the free list's per-size-class cap of 2 destroyed
+every reclaimed region beyond the second at insert (~78% of reclaims
+munmap+unlinked immediately), so uniform-size traffic recycled through
+exactly two slots (~22% reuse) and every other iteration paid a fresh
+region create (POPULATE ~230 us + destroy ~70 us on this host). Fix:
+FL_MAX 16 -> 32, FL_CLASS 2 -> 16, FL_BYTES 32 -> 64 MB, LEDGER_MAX
+64 -> 256 (the knee is low because releases arrive steadily). Also two
+follow-ons: the gc boundary now fires on the channel recv verbs too
+(verbs_channel.c — the pool collects already had it; the channel had
+the same starvation plus no release cadence), and the free-list-insert
+MADV_COLLAPSE is skipped once a mapping is known huge (a collapsed
+latch on mizu_shm_s — the re-scan was ~67 us per reuse cycle at
+>= 2 MiB).
+
+Results (Linux x86_64 host, fresh-process best-of; the best-known table
+is M4 Pro, so no rows touched): pool payload 800,000 B default slots
+(SHM_VEC) ~400 -> 117 us/task (spill reuse 22% -> 99%); the bench's
+sized-slot row 445.8 -> 244.3; channel echo 800 KB default slots 365
+-> 130 us/rt; pool payload 8,000,000 B band 1000-1667 -> 900-967 us
+(the collapse latch; zero ftruncate in steady state); 10k strings
+channel 206.4 -> 112.1 us/rt; 100k frame 5k-level character column
+7224.4 -> 1727.2 us/rt. Hot rows flat (sequential rt 2.8/2.8 us,
+payload 8 KB 6.1 -> 6.0, streaming, map rows). The four rows initially
+reading worse (pipelined pool -17%, channel batch -7%, 8 MB +13%,
+factor column +13%) were host-band noise on repeat runs. mizu's ratio
+vs mirai is now ~15x / ~7.8x / ~7.2x across 8 KB / 800 KB / 8 MB — the
+800 KB dip is gone.
+
+Status: libmizu make test green (test_spill rescaled to the new caps +
+the collapsed-latch block). mizu suite green (4651 pass, 0 fail, 70
+skips): test-spill-reuse.R rescaled likewise. pymizu vendored at the
+same pin: 919 pass; two crosslang tests surfaced a pre-existing
+producer-exit race (fire-and-exit R sources unlinking a payload's
+region before the consumer resolves it — 20% on the pre-change build,
+5% post), fixed by rendezvous waits on the 10 region-backed sources,
+not by the transport.

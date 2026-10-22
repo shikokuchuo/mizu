@@ -154,43 +154,52 @@ test_that("consumer mapping caches skip the open once names repeat", {
 test_that("surrender past the free list's byte cap evicts the oldest", {
   p <- pool_pair()
   v <- big_obj(3e6) # a ~24 MB stream lands in the 32 MB size class
-  # both submits find an empty list, so two distinct regions exist at once
+  # the submits find an empty list, so three distinct regions exist at once
   t1 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
   t2 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+  t3 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+  pool_step(p)
   pool_step(p)
   pool_step(p)
   expect_identical(mizu_collect(t1, 5), sum(v[[1]]))
   expect_identical(mizu_collect(t2, 5), sum(v[[1]]))
-  # t2's surrender would put the list past its 32 MB cap: t1's region —
+  expect_identical(mizu_collect(t3, 5), sum(v[[1]]))
+  # t3's surrender would put the list past its 64 MB cap: t1's region —
   # equal size, older stamp — was evicted to make room
   local <- mizu_pool_dump(p[["ctrl"]])[["local"]]
-  expect_identical(local[["fl_entries"]], 1L)
-  expect_lte(local[["fl_bytes"]], 32 * 2^20)
+  expect_identical(local[["fl_entries"]], 2L)
+  expect_lte(local[["fl_bytes"]], 64 * 2^20)
   pool_end(p)
 })
 
 test_that("a surrender past the free list's slot cap is destroyed in place", {
   p <- pool_pair()
-  # fill all 16 slots: two regions per 4 KB..512 KB pow2 class (the per-class
-  # cap), ascending so no later submit pops an earlier surrender; the two of
-  # a class must be outstanding together to slip past the cap
+  # fill all 32 slots: four regions per 4 KB..512 KB pow2 class, ascending
+  # so no later submit pops an earlier surrender; the four of a class must
+  # be outstanding together to slip past the result-slot share
   for (c in 2^(12:19)) {
     v <- big_obj(as.integer(c * 0.7 / 8)) # ~70% of the class
     ta <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
     tb <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+    tc <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+    td <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+    pool_step(p)
+    pool_step(p)
     pool_step(p)
     pool_step(p)
     mizu_collect(ta, 5)
     mizu_collect(tb, 5)
+    mizu_collect(tc, 5)
+    mizu_collect(td, 5)
   }
-  expect_identical(mizu_pool_dump(p[["ctrl"]])[["local"]][["fl_entries"]], 16L)
+  expect_identical(mizu_pool_dump(p[["ctrl"]])[["local"]][["fl_entries"]], 32L)
   # a 1 MB-class surrender then fits nowhere: no class-mate, no empty slot,
   # the byte cap nowhere near — destroyed in place, the count unmoved
   v <- big_obj(as.integer(2^20 * 0.7 / 8))
   t <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
   pool_step(p)
   mizu_collect(t, 5)
-  expect_identical(mizu_pool_dump(p[["ctrl"]])[["local"]][["fl_entries"]], 16L)
+  expect_identical(mizu_pool_dump(p[["ctrl"]])[["local"]][["fl_entries"]], 32L)
   pool_end(p)
 })
 
@@ -214,20 +223,26 @@ test_that("a seventeenth distinct region evicts from the mapping cache", {
 
 test_that("eviction between equal-size regions takes the older stamp", {
   p <- pool_pair()
-  v <- big_obj(1.5e6) # ~12 MB stream: the 16 MB size class, two fit the cap
+  v <- big_obj(1.5e6) # ~12 MB stream: the 16 MB size class, four fit the cap
   t1 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
   t2 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
   t3 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+  t4 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+  t5 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)
+  pool_step(p)
+  pool_step(p)
   pool_step(p)
   pool_step(p)
   pool_step(p)
   expect_identical(mizu_collect(t1, 5), sum(v[[1]]))
   expect_identical(mizu_collect(t2, 5), sum(v[[1]]))
   expect_identical(mizu_collect(t3, 5), sum(v[[1]]))
-  # t3's surrender puts the list past its 32 MB cap: one of the two
+  expect_identical(mizu_collect(t4, 5), sum(v[[1]]))
+  expect_identical(mizu_collect(t5, 5), sum(v[[1]]))
+  # t5's surrender puts the list past its 64 MB cap: one of the four
   # equal-size residents is evicted on the stamp tie-break
   local <- mizu_pool_dump(p[["ctrl"]])[["local"]]
-  expect_identical(local[["fl_entries"]], 2L)
-  expect_lte(local[["fl_bytes"]], 32 * 2^20)
+  expect_identical(local[["fl_entries"]], 4L)
+  expect_lte(local[["fl_bytes"]], 64 * 2^20)
   pool_end(p)
 })
