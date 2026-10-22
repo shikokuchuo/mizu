@@ -350,6 +350,11 @@ SEXP mizu_channel_send_batch_call(SEXP xp, SEXP xs) {
 SEXP mizu_channel_recv_call(SEXP xp, SEXP timeout) {
   mizu_r_handle *h = chan_get(xp);
   mizu_channel *c = (mizu_channel *) h->core;
+  /* the consumer-side boundary collection (zc.c): dead received views
+     release here instead of piling up as lent bytes — the pool collect's
+     discipline, mirrored. Skipped inside a pool task — a collection there
+     would only promote the task's live views. */
+  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
   SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   void *obj = NULL;
   mizu_status st = mizu_channel_recv(c, &obj, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
@@ -378,6 +383,8 @@ SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   if (n < 1) Rf_error("mizu: n must be at least 1");
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
   size_t count = 0;
+  /* the consumer-side boundary collection (mizu_channel_recv_call) */
+  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
   SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
   mizu_status st = mizu_channel_recv_batch_fn(c, (size_t) n, &count,
                                             mizu_vec_sink, out,
