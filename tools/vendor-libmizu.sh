@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="42062e62c347b1497047935511b57dd0606fa457"  # libmizu: Wait for the peer's in-flight drain in mizu_channel_destroy
+PIN="c76b2e372190841422ead938b3728c006ccb64cc"  # libmizu: Add the tree-dim-leaf corpus case: pin a dim leaf nested in a list
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

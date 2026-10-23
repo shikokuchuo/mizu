@@ -257,6 +257,20 @@ test_that("R -> Python -> R documented shifts", {
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a matrix nested in a list echoes identical via Python", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  # the Python echo sees the matrix as an F-order view nested in the
+  # dict: it re-stages strided, gathered F-order
+  x <- list(m = matrix(1:6, 2, 3), v = 1:3)
+  mizu_send(ch, x)
+  expect_identical(mizu_recv(ch, 30), x)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("a data.frame relays through the received Frame's own export", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
@@ -850,6 +864,19 @@ test_that("dimnames, axis names, and tables round-trip identical via Python", {
   e1 <- array(1, 1L, list(NA_character_))
   mizu_send(ch, e1)
   expect_identical(mizu_recv(ch, 30), e1)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("an ability.cov-shaped list echoes identical via Python", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  # a dimnames matrix leaf and a named vector leaf: both arrive in
+  # Python as labeled F-order views and re-stage strided on the echo
+  mizu_send(ch, ability.cov)
+  expect_identical(mizu_recv(ch, 30), ability.cov)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
