@@ -194,6 +194,11 @@ uint32_t ix_q_caps(int q);
 
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
                           mizu_ix_decline *rec, uint32_t caps);
+/* The in-hook forms (payload.c, stage_r.c): the caller's stage scope
+   owns the verdict-cache generation — the public entries' arm would
+   reseat it, splitting the size and write passes' shared verdicts. */
+size_t mizu_interop_write_scoped(unsigned char *dst, size_t limit, SEXP x,
+                                 mizu_ix_decline *rec, uint32_t caps);
 SEXP mizu_interop_read(const unsigned char *buf, size_t len);
 /* The refs mode of the value reader: with refs, a 0x13 leaf resolves to
    a view (the task decode, the map descriptor reader, and the pool's
@@ -207,15 +212,38 @@ SEXP mizu_interop_read_mode(const unsigned char *buf, size_t len, int refs);
    class, raw message field, and call text. */
 size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                               SEXP cond);
+size_t mizu_interop_write_err_scoped(unsigned char *dst,
+                                     uint32_t inline_max, SEXP cond);
 int mizu_interop_attrs_qualify(SEXP x);
-/* The per-stage attr-qualification verdict cache (interop.c): every
-   consult-root arms a fresh generation — the stage hooks per invocation
-   (stage_r.c's guard), the public writer entries by self-arm — and
-   voids it at exit, so a cached verdict is only ever consulted while
-   its tree stays anchored; a raise-orphaned generation is never
-   consulted (the next arm replaces it). */
+/* The per-stage attr-qualification verdict cache (interop.c): a cached
+   verdict is consulted only under a live armed generation whose scope
+   anchors the qualified trees — the stage hooks arm per invocation
+   (stage_r.c's guard; per element loop under an opted-in batch verb),
+   the off-hook writer entries arm unconditionally — and every arm is
+   eager, so a raise-orphaned generation is replaced before the next
+   consultation. */
 void mizu_interop_stage_arm(void);
 void mizu_interop_stage_disarm(void);
+/* A saved cache scope (the live generation and its insert budget),
+   pushed/popped around a converted-temporary re-stage inside a batch
+   verb (arrow.c's decline re-entries), so the temporary's verdict keys
+   die with it instead of riding the batch's generation. */
+typedef struct {
+  uint64_t gen;
+  unsigned n;
+} mizu_qc_scope;
+void mizu_interop_stage_push(mizu_qc_scope *s);
+void mizu_interop_stage_pop(const mizu_qc_scope *s);
+/* The batch verbs' wide scope (stage_r.c's guard): begin arms one
+   generation for the whole element loop; end voids it (the veneer's
+   unwind cleanup covers the raise path — mizu_stage_batch_clean is the
+   R_ExecWithCleanup arm). The temp pair scopes a converted-temporary
+   re-stage within it. */
+void mizu_stage_batch_begin(void);
+void mizu_stage_batch_end(void);
+void mizu_stage_batch_clean(void *ignored);
+void mizu_stage_temp_begin(mizu_qc_scope *s);
+void mizu_stage_temp_end(const mizu_qc_scope *s);
 SEXP mizu_interop_attrs_build(SEXP value, SEXP attrs, int validate);
 /* The dict-key rules on a names vector (non-NA, UTF-8-writable, unique
    after translation), and the foreign MIZS string gate (every element
@@ -269,6 +297,13 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t caps, uint32_t inline_max,
                                SEXP zc_node, size_t zc_size, int no_zc,
                                mizu_ix_plan *plan);
+size_t mizu_interop_write_task_scoped(unsigned char *dst, size_t limit,
+                                      SEXP spec, uint32_t target,
+                                      uint64_t ident, mizu_ix_decline *rec,
+                                      mizu_handle *h, uint32_t caps,
+                                      uint32_t inline_max, SEXP zc_node,
+                                      size_t zc_size, int no_zc,
+                                      mizu_ix_plan *plan);
 /* The exec-hook decode of a task stream: validates the header and the
    per-kind shape off the cursor, returns the submitter identity through
    ident_out ahead of every field read (so even a torn stream fails the

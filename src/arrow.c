@@ -444,7 +444,10 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
     /* a non-struct stream: convert on the unconsumed stream and re-enter
        as an ordinary vector */
     SEXP value = PROTECT(mizu_arrow_value(xp));
+    mizu_qc_scope temp;
+    mizu_stage_temp_begin(&temp);
     reenter((void *) value, hdr, payload, inline_max, h, ctx);
+    mizu_stage_temp_end(&temp);
     UNPROTECT(2);
     return;
   }
@@ -513,7 +516,10 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
     /* declined by the stage's caps/churn gate or a failed reservation:
        the held batches convert and re-enter as an ordinary data.frame */
     SEXP value = PROTECT(mizu_arrow_value(xp));
+    mizu_qc_scope temp;
+    mizu_stage_temp_begin(&temp);
     reenter((void *) value, hdr, payload, inline_max, h, ctx);
+    mizu_stage_temp_end(&temp);
     UNPROTECT(2);
     return;
   }

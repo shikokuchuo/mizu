@@ -77,7 +77,11 @@ static void zc_list_clear(SEXP list, int *pn) {
 }
 
 void mizu_zc_ref_reset(void) {
-  zc_list_clear(mizu_priv(MIZU_PRIV_ZC_MARKS), &mizu_zc_nmarks);
+  /* nmarks == 0 is exactly "already empty" (pushes append, the clear
+     NILs): the common attr-free stage pays one load, never the root
+     chase */
+  if (mizu_zc_nmarks > 0)
+    zc_list_clear(mizu_priv(MIZU_PRIV_ZC_MARKS), &mizu_zc_nmarks);
 }
 int mizu_zc_ref_fired(void) { return mizu_zc_nmarks > 0; }
 

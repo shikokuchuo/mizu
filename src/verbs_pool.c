@@ -665,6 +665,26 @@ static void *mizu_batch_supply_next(void *ctx, size_t i) {
   return pair;
 }
 
+/* The batch mode's wide scope (stage_r.c's guard): one verdict-cache
+   generation spans the element loop — the elements stay anchored by
+   exprs throughout — the cleanup voiding it on the raise path too. */
+typedef struct {
+  mizu_pool *p;
+  mizu_batch_supply *supply;
+  size_t n;
+  mizu_task *ts;
+  size_t done;
+  int timeout_ms;
+  mizu_status st;
+} pool_batch_s;
+
+static SEXP pool_batch_run(void *d) {
+  pool_batch_s *b = (pool_batch_s *) d;
+  b->st = mizu_pool_submit_batch_fn(b->p, mizu_batch_supply_next, b->supply,
+                                    b->n, b->ts, &b->done, b->timeout_ms);
+  return R_NilValue;
+}
+
 SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
                             SEXP flags_sexp) {
   if (TYPEOF(exprs) != VECSXP)
@@ -678,14 +698,14 @@ SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   supply.args = args;
   supply.pairs = PROTECT(Rf_allocVector(VECSXP, n));
   mizu_task *ts = (mizu_task *) R_alloc(n, sizeof(mizu_task));
-  size_t done = 0;
-  mizu_status st = mizu_pool_submit_batch_fn(p, mizu_batch_supply_next, &supply,
-                                           (size_t) n, ts, &done,
-                                           mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
+  pool_batch_s b = { p, &supply, (size_t) n, ts, 0,
+                     mizu_timeout_ms(mizu_r_timeout_arg(timeout)), MIZU_OK };
+  mizu_stage_batch_begin();
+  R_ExecWithCleanup(pool_batch_run, &b, mizu_stage_batch_clean, NULL);
   UNPROTECT(1);
-  if (st == MIZU_ERR) pool_raise(p);
-  SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) done));
-  for (size_t i = 0; i < done; i++)
+  if (b.st == MIZU_ERR) pool_raise(p);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) b.done));
+  for (size_t i = 0; i < b.done; i++)
     SET_VECTOR_ELT(out, (R_xlen_t) i, mizu_task_wrap(xp, &ts[i]));
   UNPROTECT(1);
   return out;

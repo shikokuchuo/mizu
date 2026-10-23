@@ -26,15 +26,14 @@
 // The stage guard ----------------------------------------------------------------
 
 /* Wraps each stage hook: arms the attr-qualification verdict cache's
-   fresh generation at entry (interop.c) and voids it at exit. Re-entrant
-   by construction — the Arrow decline path re-enters the stage hook,
-   whose arm simply starts another generation (the outer stage resumes
-   disarmed, computing fresh, as it always has). A raise leaves the armed
-   generation orphaned, safe under the cache's rule (interop.c): every
-   consult-root arms afresh — this guard or a writer entry's self-arm —
-   so the orphan is never consulted and no unwind cleanup rides this
-   per-element path (the 2026-10-22 bisection: one R_ExecWithCleanup per
-   staged element cost the batch verbs ~28%). Also resets the
+   fresh generation at entry (interop.c) and voids it at exit — the
+   eager arm replaces a raise-orphaned generation before the next
+   consultation, so no unwind cleanup rides this per-element path (the
+   2026-10-22 bisection: one R_ExecWithCleanup per staged element cost
+   the batch verbs ~28%; the plain arm is three stores). Re-entrant by
+   construction — the Arrow decline path re-enters the stage hook, whose
+   arm simply starts another generation (the outer stage resumes
+   disarmed, computing fresh, as it always has). Also resets the
    by-reference mark list at entry: the list is one stage's emission
    record (the pin-and-no-keeperless signal, the worker's emitted-set for
    the argument-loan release), so a view marked by an earlier send must
@@ -43,10 +42,50 @@
 typedef int (*mizu_stage_impl_fn)(void *, mizu_slot_hdr *, unsigned char *,
                                   uint32_t, mizu_handle *, void *);
 
+/* The batch verbs' wide scope (verbs_channel.c / verbs_pool.c): one
+   armed generation across the element loop — the elements stay anchored
+   by the veneer's argument throughout — the veneer's unwind boundary
+   voiding it on raise. Opt-in: any stage outside a batch verb self-arms
+   per invocation below, so a forgotten verb degrades, never goes
+   unsafe. */
+static int stage_batch_mode;
+
+void mizu_stage_batch_begin(void) {
+  stage_batch_mode = 1;
+  mizu_interop_stage_arm();
+}
+
+void mizu_stage_batch_end(void) {
+  mizu_interop_stage_disarm();
+  stage_batch_mode = 0;
+}
+
+void mizu_stage_batch_clean(void *ignored) {
+  (void) ignored;
+  mizu_stage_batch_end();
+}
+
+/* The converted-temporary scope inside a batch stage (arrow.c's decline
+   re-entries): the temporary's verdict keys must die with it, not ride
+   the batch's generation. Outside batch mode the guard's per-stage arm
+   already scopes the re-entry. */
+void mizu_stage_temp_begin(mizu_qc_scope *s) {
+  if (stage_batch_mode) {
+    mizu_interop_stage_push(s);
+  } else {
+    s->gen = 0;
+  }
+}
+
+void mizu_stage_temp_end(const mizu_qc_scope *s) {
+  if (s->gen != 0) mizu_interop_stage_pop(s);
+}
+
 static int mizu_stage_guard(mizu_stage_impl_fn fn, void *obj,
                             mizu_slot_hdr *hdr, unsigned char *payload,
                             uint32_t inline_max, mizu_handle *h, void *ctx) {
   mizu_zc_ref_reset();
+  if (stage_batch_mode) return fn(obj, hdr, payload, inline_max, h, ctx);
   mizu_interop_stage_arm();
   const int rc = fn(obj, hdr, payload, inline_max, h, ctx);
   mizu_interop_stage_disarm();
@@ -74,7 +113,7 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
        the value codec choice below. Bounded by construction; pins
        nothing. §4.1's spec submit reuses this pattern for task streams. */
     rh->err_cond = NULL;
-    size_t en = mizu_interop_write_err(payload, inline_max, x);
+    size_t en = mizu_interop_write_err_scoped(payload, inline_max, x);
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) en;
     hdr->aux = MIZU_AUX_F_KEEPERLESS;
@@ -106,8 +145,8 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
     /* a top-level length-1 attribute-free atomic stages as the 'I'
        scalar tag (inline at RAWVEC's cost) — R scalars reach Python as
        scalars, top level and nested alike */
-    size_t n = mizu_interop_write(payload, inline_max, x, NULL,
-                                  rh->peer_caps);
+    size_t n = mizu_interop_write_scoped(payload, inline_max, x, NULL,
+                                         rh->peer_caps);
     if (n == 0 || n > inline_max)
       Rf_error("mizu: interop scalar staging failed");
     hdr->kind = MIZU_KIND_INLINE;
@@ -186,8 +225,8 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
        nothing and claims keeperless; past it, the arena then a region
        retain like any codec stream. */
     mizu_ix_decline rec;
-    size_t n = mizu_interop_write(payload, inline_max, x, &rec,
-                                  rh->peer_caps);
+    size_t n = mizu_interop_write_scoped(payload, inline_max, x, &rec,
+                                         rh->peer_caps);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     if (n <= inline_max) {
       hdr->kind = MIZU_KIND_INLINE;
@@ -196,7 +235,7 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
       return 0;
     }
     if ((chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off)) != NULL) {
-      if (mizu_interop_write(chunk, n, x, NULL, rh->peer_caps) != n)
+      if (mizu_interop_write_scoped(chunk, n, x, NULL, rh->peer_caps) != n)
         Rf_error("mizu: interop write mismatch");
       hdr->kind = MIZU_KIND_ARENA;
       hdr->len = 0;
@@ -455,9 +494,9 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
        over the recorded subtree sizes (F1's D3, the first candidate
        whose remainder fits), never a size pass per candidate */
     const size_t total =
-      mizu_interop_write_task(payload, inline_max, spec, target,
-                              rh->spec_ident, &rec, h, caps, inline_max,
-                              R_NilValue, 0, 0, &plan);
+      mizu_interop_write_task_scoped(payload, inline_max, spec, target,
+                                     rh->spec_ident, &rec, h, caps,
+                                     inline_max, R_NilValue, 0, 0, &plan);
     if (total == 0)
       mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     SEXP zc_node = R_NilValue;
@@ -477,9 +516,10 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
         "the pool's workers cannot read by-reference task arguments",
         "upgrade the workers' binding");
     if (zc_node != R_NilValue) {
-      n = mizu_interop_write_task(payload, inline_max, spec, target,
-                                  rh->spec_ident, &rec, h, caps,
-                                  inline_max, zc_node, zc_size, 0, NULL);
+      n = mizu_interop_write_task_scoped(payload, inline_max, spec, target,
+                                         rh->spec_ident, &rec, h, caps,
+                                         inline_max, zc_node, zc_size, 0,
+                                         NULL);
       if (n != SIZE_MAX) {
         if (n == 0)
           mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
@@ -506,9 +546,10 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
        record walk counted the by-value stream — rewrite it inline, or
        spill it at the recorded size */
     if (total <= (size_t) inline_max) {
-      n = mizu_interop_write_task(payload, inline_max, spec, target,
-                                  rh->spec_ident, &rec, h, caps,
-                                  inline_max, R_NilValue, 0, 1, NULL);
+      n = mizu_interop_write_task_scoped(payload, inline_max, spec, target,
+                                         rh->spec_ident, &rec, h, caps,
+                                         inline_max, R_NilValue, 0, 1,
+                                         NULL);
       if (n == 0)
         mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
       hdr->kind = MIZU_KIND_INLINE;

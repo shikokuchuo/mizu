@@ -333,6 +333,23 @@ SEXP mizu_channel_send_error_call(SEXP xp, SEXP cond) {
 
 /* One .Call; the core batches the tail store and the wake. Returns the count
    accepted (short on ring-full or close midway — probe why with mizu_send). */
+/* The batch mode's wide scope (stage_r.c's guard): one verdict-cache
+   generation spans the element loop — the elements stay anchored by xs
+   throughout — the cleanup voiding it on the raise path too. */
+typedef struct {
+  mizu_channel *c;
+  void **objs;
+  size_t n;
+  size_t accepted;
+  mizu_status st;
+} chan_batch_s;
+
+static SEXP chan_batch_run(void *d) {
+  chan_batch_s *b = (chan_batch_s *) d;
+  b->st = mizu_channel_send_batch(b->c, b->objs, b->n, &b->accepted);
+  return R_NilValue;
+}
+
 SEXP mizu_channel_send_batch_call(SEXP xp, SEXP xs) {
   mizu_channel *c = chan_core(xp);
   if (TYPEOF(xs) != VECSXP)
@@ -341,10 +358,11 @@ SEXP mizu_channel_send_batch_call(SEXP xp, SEXP xs) {
   void **objs = (void **) R_alloc(n, sizeof(void *));
   for (R_xlen_t i = 0; i < n; i++)
     objs[i] = (void *) VECTOR_ELT(xs, i);
-  size_t accepted = 0;
-  mizu_status st = mizu_channel_send_batch(c, objs, (size_t) n, &accepted);
-  if (st == MIZU_ERR) chan_raise(c);
-  return Rf_ScalarInteger((int) accepted);
+  chan_batch_s b = { c, objs, (size_t) n, 0, MIZU_OK };
+  mizu_stage_batch_begin();
+  R_ExecWithCleanup(chan_batch_run, &b, mizu_stage_batch_clean, NULL);
+  if (b.st == MIZU_ERR) chan_raise(c);
+  return Rf_ScalarInteger((int) b.accepted);
 }
 
 SEXP mizu_channel_recv_call(SEXP xp, SEXP timeout) {

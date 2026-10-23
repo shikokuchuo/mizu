@@ -1679,3 +1679,45 @@ tests; the 2026-10-04 rows stand.
 
 Status: full suite green on the fixed build (4978 pass, 0 fail, 5
 skips — the pymizu venv on PATH, so the cross-language legs ran).
+
+## 2026-10-23 — closing the residual: the batch-mode stage scope
+
+Yesterday's fix left ~5% on the channel batch rows (38.2M msg/s vs the
+pre-guard parent's 40.7M anchor — the anchor is stable across both
+days). Decomposition: the guard's remaining per-element work was the
+whole residual — a stub build with the mark-list reset kept but the
+arm/disarm removed matched the parent exactly. Two changes close it:
+the reset gates on nmarks > 0 (an empty list is one static load), and
+the two batch veneers (channel send_batch, pool submit_batch) now hold
+one armed generation across the element loop — the elements stay
+anchored by the veneer's argument throughout — behind one
+R_ExecWithCleanup per verb (~12 ns per 4096 elements, amortized to
+nothing). The guard skips its per-element arm/disarm in batch mode;
+any stage outside an opted-in verb self-arms per invocation, so a
+forgotten verb degrades, never goes unsafe. The Arrow decline
+re-entries push/pop a temporary scope (mizu_stage_temp_begin/end), so
+a converted value's verdict keys die with it instead of riding the
+batch's generation.
+
+The follow-up audit also caught a hole in yesterday's conditional
+self-arm: a writer entry reached while a raise-orphaned generation was
+live would have consulted it (ix_qc_enter no-opped on any armed
+generation, unable to tell live from orphaned). The writer entries now
+split: in-hook callers (payload.c, the channel stage's condition send,
+the pool spec branch) use _scoped forms riding the caller's
+generation; off-hook callers (the veneers, the foreign ERR publish,
+pool_result_gate) arm unconditionally, so an orphan is always
+replaced, never consulted.
+
+Results (quiet-window A/B, 6 alternations + a same-day preguard
+control): committed fix 38.6M -> batch-mode 39.5M msg/s streaming
+(anchor 40.7M both days); channel batch 17.4M -> 17.9M rt/s (anchor
+18.5-18.6M). The remaining ~3% vs the anchor is two static loads per
+element (the batch-mode check + the reset gate) — the per-element
+safety floor; the anchor itself spread 40.3-41.4M across the two
+days. Full bench in band: channel batch 18.56M, streaming 37.8M,
+every other row at yesterday's records. The 42.0M / 20.4M bests
+stand; the build is within ~3% of the pre-regression code path.
+
+Status: full suite green (4978 pass, 0 fail, 5 skips — the pymizu
+venv on PATH, so the cross-language legs ran).

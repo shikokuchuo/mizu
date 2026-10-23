@@ -187,8 +187,8 @@ void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
                                 SEXP x, size_t n, mizu_handle *h,
                                 uint32_t caps) {
   mizu_shm *shm = mizu_spill_get_raise(h, n);
-  if (mizu_interop_write((unsigned char *) shm->addr, shm->size, x, NULL,
-                         caps) != n)
+  if (mizu_interop_write_scoped((unsigned char *) shm->addr, shm->size, x,
+                                NULL, caps) != n)
     Rf_error("mizu: interop write mismatch");   /* the walk is deterministic */
   hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
@@ -207,9 +207,10 @@ void mizu_payload_spill_task(mizu_slot_hdr *hdr, unsigned char *payload,
                              size_t n, mizu_handle *h, uint32_t caps,
                              uint32_t inline_max) {
   mizu_shm *shm = mizu_spill_get_raise(h, n);
-  if (mizu_interop_write_task((unsigned char *) shm->addr, shm->size, spec,
-                              target, ident, NULL, h, caps, inline_max,
-                              R_NilValue, 0, 1, NULL) != n)
+  if (mizu_interop_write_task_scoped((unsigned char *) shm->addr,
+                                     shm->size, spec, target, ident, NULL,
+                                     h, caps, inline_max, R_NilValue, 0, 1,
+                                     NULL) != n)
     Rf_error("mizu: task write mismatch");   /* the walk is deterministic */
   hdr->kind = MIZU_KIND_SHM_RAW;
   hdr->len = (uint32_t) shm->name_len;
@@ -301,8 +302,8 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
       return;
     }
     mizu_ix_decline rec;
-    size_t n = mizu_interop_write(payload, inline_max, x, &rec,
-                                  rh->peer_caps);
+    size_t n = mizu_interop_write_scoped(payload, inline_max, x, &rec,
+                                         rh->peer_caps);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
     if (n <= inline_max) {
       hdr->kind = MIZU_KIND_INLINE;

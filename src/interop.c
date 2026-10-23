@@ -695,18 +695,18 @@ static int ix_qualify_full(SEXP x) {
    repeatedly — the zc gates, the 'I' writer's two passes, and the
    layout layer's size/write blob hooks — so verdicts ride an
    open-addressed pointer table stamped with the live generation. The
-   rule: every consult-root arms afresh — the stage hooks per
-   invocation (stage_r.c's guard), the public writer entries by
-   self-arm below — so a naked key is compared only while its tree
-   stays anchored (the arming scope's), and a generation orphaned by a
-   raise is never consulted: the next consult-root's arm replaces it,
-   and disarmed callers compute fresh. The mint never reissues a
-   generation — a disarmed 0 rearmed to 1 would let entries accumulate
-   across stages until the probe cycle closes — and IX_QC_MAX <
-   IX_QC_CAP keeps a full table of one generation impossible, so the
-   probe always terminates. A full table stops inserting (the stage
-   computes fresh past it — a wide frame's one expensive verdict, the
-   root's, is still cached); disarmed callers always compute fresh. */
+   rule: a verdict is consulted only under a live generation whose
+   scope anchors the qualified trees — the stage hooks arm per
+   invocation (stage_r.c's guard; per element loop under an opted-in
+   batch verb), the off-hook writer entries arm unconditionally — and
+   every arm is eager, so a generation orphaned by a raise is replaced
+   before the next consultation. The mint never reissues a generation —
+   a disarmed 0 rearmed to 1 would let entries accumulate across stages
+   until the probe cycle closes — and IX_QC_MAX < IX_QC_CAP keeps a
+   full table of one generation impossible, so the probe always
+   terminates. A full table stops inserting (the stage computes fresh
+   past it — a wide frame's one expensive verdict, the root's, is still
+   cached); disarmed callers always compute fresh. */
 #define IX_QC_CAP 256u
 #define IX_QC_MAX 192u
 static struct {
@@ -727,20 +727,26 @@ void mizu_interop_stage_disarm(void) {
   ix_qc_gen = 0;
 }
 
-/* The writer entries' self-arm: callable off a stage hook (the map
-   descriptor/runner veneers, the foreign ERR publish), so with no
-   generation live they arm their own and every table consultation rides
-   a fresh anchored scope. A no-op inside a stage hook — the hook's
-   generation must not be reseated (its size and write passes share
-   it). */
-static int ix_qc_enter(void) {
-  if (ix_qc_gen != 0) return 0;
+/* The scope save/restore pair (stage_r.c's temp helpers, for arrow.c's
+   converted-temporary re-stages inside a batch verb): push arms a fresh
+   generation so the temporary's keys die with it; pop restores the
+   batch's. */
+void mizu_interop_stage_push(mizu_qc_scope *s) {
+  s->gen = ix_qc_gen;
+  s->n = ix_qc_n;
   mizu_interop_stage_arm();
-  return 1;
 }
 
-static size_t ix_qc_exit(int self, size_t n) {
-  if (self) mizu_interop_stage_disarm();
+void mizu_interop_stage_pop(const mizu_qc_scope *s) {
+  ix_qc_gen = s->gen;
+  ix_qc_n = s->n;
+}
+
+/* The off-hook writer entries' exit: disarm the generation armed at
+   entry — unconditional, so an orphan is always replaced, never
+   consulted. */
+static size_t ix_armed_exit(size_t n) {
+  mizu_interop_stage_disarm();
   return n;
 }
 
@@ -1793,6 +1799,17 @@ static void ixw_value(mizu_ixw *w, SEXP x) {
    build's own word on peer-less paths — the §3.5 blob, the test hook). */
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
                           mizu_ix_decline *rec, uint32_t caps) {
+  mizu_interop_stage_arm();
+  const size_t n = mizu_interop_write_scoped(dst, limit, x, rec, caps);
+  mizu_interop_stage_disarm();
+  return n;
+}
+
+/* The in-hook form (payload.c's foreign stage): the caller's stage
+   scope owns the generation — a reseat would split the size and write
+   passes' shared verdicts. */
+size_t mizu_interop_write_scoped(unsigned char *dst, size_t limit, SEXP x,
+                                 mizu_ix_decline *rec, uint32_t caps) {
   /* the value entry is the channel mode: refs off — a view nested in a
      channel payload keeps the materialize behavior (the channel readers
      decline 0x13), and nested attribute blobs inherit this bit */
@@ -1804,11 +1821,10 @@ size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
     rec->reason[0] = '\0';
     rec->remedy[0] = '\0';
   }
-  const int qc = ix_qc_enter();
   IXW_PUT0(&w, mizu_ix_put_header);
   ixw_node(&w, x);
-  if (w.depth < 0) return ix_qc_exit(qc, 0);
-  return ix_qc_exit(qc, w.total);
+  if (w.depth < 0) return 0;
+  return w.total;
 }
 
 // Task streams (Phase 4) ------------------------------------------------------
@@ -1888,6 +1904,23 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                                uint32_t caps, uint32_t inline_max,
                                SEXP zc_node, size_t zc_size, int no_zc,
                                mizu_ix_plan *plan) {
+  mizu_interop_stage_arm();
+  const size_t n = mizu_interop_write_task_scoped(
+    dst, limit, spec, target, ident, rec, h, caps, inline_max, zc_node,
+    zc_size, no_zc, plan);
+  mizu_interop_stage_disarm();
+  return n;
+}
+
+/* The in-hook form (payload.c's task stage): the caller's stage scope
+   owns the generation. */
+size_t mizu_interop_write_task_scoped(unsigned char *dst, size_t limit,
+                                      SEXP spec, uint32_t target,
+                                      uint64_t ident, mizu_ix_decline *rec,
+                                      mizu_handle *h, uint32_t caps,
+                                      uint32_t inline_max, SEXP zc_node,
+                                      size_t zc_size, int no_zc,
+                                      mizu_ix_plan *plan) {
   if (rec != NULL) {
     rec->decline = 0;
     rec->path[0] = '\0';
@@ -1908,13 +1941,12 @@ size_t mizu_interop_write_task(unsigned char *dst, size_t limit, SEXP spec,
                  .inline_max = inline_max, .refs = 1, .no_zc = no_zc,
                  .zc_node = zc_node, .zc_size_hint = zc_size,
                  .plan = plan, .plan_nocand = nocand };
-  const int qc = ix_qc_enter();
   IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
-  if (w.abandon) return ix_qc_exit(qc, SIZE_MAX);
-  if (w.depth < 0) return ix_qc_exit(qc, 0);
-  return ix_qc_exit(qc, w.total);
+  if (w.abandon) return SIZE_MAX;
+  if (w.depth < 0) return 0;
+  return w.total;
 }
 
 // Map descriptors and runner tasks (Phase 5) ---------------------------------------
@@ -1948,12 +1980,13 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
      descriptor read */
   mizu_ixw w = { .dst = dst, .limit = limit, .rec = rec,
                  .path = "args", .path_len = 4, .refs = 1 };
-  const int qc = ix_qc_enter();
+  /* veneer-only entry: the unconditional arm replaces any orphan */
+  mizu_interop_stage_arm();
   IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_list_begin, 2);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, kind, ident);
   ixw_task_fields(&w, spec);
-  if (w.depth < 0) return ix_qc_exit(qc, 0);
+  if (w.depth < 0) return ix_armed_exit(0);
   if (x == R_NilValue) {
     IXW_PUT0(&w, mizu_ix_put_nil);
   } else if (mizu_view_check(x)) {
@@ -1962,7 +1995,7 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
     memcpy(w.path, "x", 2);
     w.path_len = 1;
     ixw_node(&w, x);
-    if (w.depth < 0) return ix_qc_exit(qc, 0);
+    if (w.depth < 0) return ix_armed_exit(0);
   } else {
     const R_xlen_t n = XLENGTH(x);
     IXW_PUT(&w, mizu_ix_put_list_begin, (uint64_t) n);
@@ -1974,11 +2007,11 @@ size_t mizu_interop_write_map_desc(unsigned char *dst, size_t limit,
       ixw_path_push(&w, i + 1);
       ixw_node(&w, VECTOR_ELT(x, i));
       ixw_path_pop(&w, saved);
-      if (w.depth < 0) return ix_qc_exit(qc, 0);
+      if (w.depth < 0) return ix_armed_exit(0);
     }
     w.depth--;
   }
-  return ix_qc_exit(qc, w.total);
+  return ix_armed_exit(w.total);
 }
 
 /* The kind-2 (runner) task stream: the header fields, then the region
@@ -1992,7 +2025,7 @@ size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
                                  SEXP name, double gen_field, SEXP seed,
                                  uint32_t target, uint64_t ident) {
   mizu_ixw w = { .dst = dst, .limit = limit, .path = "x", .path_len = 1 };
-  const int qc = ix_qc_enter();
+  mizu_interop_stage_arm();
   IXW_PUT0(&w, mizu_ix_put_header);
   IXW_PUT(&w, mizu_ix_put_task, (int) target, 2, ident);
   SEXP cs = STRING_ELT(name, 0);
@@ -2006,7 +2039,7 @@ size_t mizu_interop_write_runner(unsigned char *dst, size_t limit,
     pair[1] = (int64_t) REAL(seed)[1];
     IXW_PUT(&w, mizu_ix_put_vec, MIZU_TYPE_INT64, pair, 2);
   }
-  return ix_qc_exit(qc, w.total);
+  return ix_armed_exit(w.total);
 }
 
 // Err streams ----------------------------------------------------------------------
@@ -2070,9 +2103,20 @@ static SEXP ix_err_call_text(SEXP call) {
    the stream size, always within inline_max (the budget guarantees it),
    so the caller stamps INLINE with the keeperless claim. NULL dst sizes
    only (the test hook's two-pass). */
+/* The off-hook arm (the foreign ERR publish, the veneer): unconditional
+   — an orphan is always replaced, never consulted. */
 size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                               SEXP cond) {
-  const int qc = ix_qc_enter();
+  mizu_interop_stage_arm();
+  const size_t n = mizu_interop_write_err_scoped(dst, inline_max, cond);
+  mizu_interop_stage_disarm();
+  return n;
+}
+
+/* The in-hook form (the channel stage's condition send): the caller's
+   stage scope owns the generation. */
+size_t mizu_interop_write_err_scoped(unsigned char *dst,
+                                     uint32_t inline_max, SEXP cond) {
   const char *type = "", *msg = "", *detail = "";
   int32_t type_n = 0, msg_n = 0, detail_n = 0;
   int has_index = 0;
@@ -2155,7 +2199,7 @@ size_t mizu_interop_write_err(unsigned char *dst, uint32_t inline_max,
                                      detail, (size_t) detail_n,
                                      has_index, index);
   UNPROTECT(1);                    /* klass */
-  return ix_qc_exit(qc, n);
+  return n;
 }
 
 // Reader ---------------------------------------------------------------------------
