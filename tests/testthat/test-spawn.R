@@ -121,10 +121,16 @@ test_that("a cached pymizu probe revalidates against the package file", {
   expect_true(mizu:::pymizu_prober(python, "child")) # caches the init file
   unlink(root, recursive = TRUE)
   expect_false(mizu:::pymizu_prober(python, "child")) # stale entry re-probed
-  expect_error(
+  err <- expect_error(
     mizu_py_launcher(python = python),
     "needs the Python package 'pymizu'"
   )
+  # the probe's exit status and stderr tail ride the error: the
+  # interpreter's import failure, and the search path it printed first
+  msg <- conditionMessage(err)
+  expect_match(msg, "exit status 1", fixed = TRUE)
+  expect_match(msg, "ModuleNotFoundError", fixed = TRUE)
+  expect_match(msg, "python3", fixed = TRUE)
 })
 
 test_that("an interpreter path containing a space still spawns", {

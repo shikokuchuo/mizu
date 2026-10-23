@@ -157,7 +157,10 @@ mizu_launcher <- function(stdout = "", stderr = "") {
 # interpreter and module, keyed by the package's init file: a hit
 # revalidates with one file.exists, so an uninstalled or replaced
 # environment re-probes (and the launcher errors early) instead of
-# failing only at spawn with a startup timeout.
+# failing only at spawn with a startup timeout. A failed probe is FALSE
+# with a `detail` attribute (the exit status, the interpreter's stderr
+# tail) for the launcher's error: the probe runs in this process's
+# environment, which is the part a shell cannot reproduce.
 pymizu_prober <- local({
   cache <- new.env(parent = emptyenv())
   function(python, module) {
@@ -166,33 +169,51 @@ pymizu_prober <- local({
     if (!is.null(hit) && file.exists(hit)) {
       return(TRUE)
     }
-    # errors only, so an interrupt propagates rather than reading as a
-    # failed probe; the non-zero-status warning is muffled
+    # the search path goes to stderr ahead of the import, so a failure
+    # shows where the interpreter looked; stderr lands in a file (TRUE
+    # would merge it into the stdout read below). Errors only, so an
+    # interrupt propagates rather than reading as a failed probe; the
+    # non-zero-status warning is muffled
+    err <- tempfile("mizu-probe-")
+    on.exit(unlink(err))
     res <- tryCatch(
       suppressWarnings(
         system2(
           python,
           c(
             "-c",
-            shQuote(sprintf(
-              "import pymizu.%s, pymizu; print(pymizu.__file__)",
-              module
+            shQuote(paste0(
+              "import sys; print(sys.path, file=sys.stderr); ",
+              sprintf("import pymizu.%s, pymizu; ", module),
+              "print(pymizu.__file__)"
             ))
           ),
           stdout = TRUE,
-          stderr = FALSE,
+          stderr = err,
           timeout = 60
         )
       ),
-      error = function(e) character(0)
+      error = function(e) {
+        structure(character(0), reason = conditionMessage(e))
+      }
     )
     st <- attr(res, "status")
     file <- if (length(res) >= 1L) res[[length(res)]] else ""
-    ok <- (is.null(st) || st == 0L) && nzchar(file) && file.exists(file)
-    if (ok) {
+    if ((is.null(st) || st == 0L) && nzchar(file) && file.exists(file)) {
       cache[[key]] <- file
+      return(TRUE)
     }
-    ok
+    lines <- if (file.exists(err)) readLines(err, warn = FALSE) else character()
+    detail <- c(
+      attr(res, "reason"),
+      if (identical(st, 124L)) "timed out after 60 s",
+      if (!is.null(st)) sprintf("exit status %d", st),
+      if (nzchar(file) && !file.exists(file)) {
+        sprintf("reported '%s', which does not exist", file)
+      },
+      lines[seq.int(to = length(lines), length.out = min(length(lines), 8L))]
+    )
+    structure(FALSE, detail = paste(detail, collapse = "\n"))
   }
 })
 
@@ -226,12 +247,14 @@ py_resolve <- function(python, module, caller) {
     }
     python <- resolved
   }
-  if (!pymizu_prober(python, module)) {
+  ok <- pymizu_prober(python, module)
+  if (!ok) {
     stop(
       sprintf(
-        "mizu: %s() needs the Python package 'pymizu' installed for %s",
+        "mizu: %s() needs the Python package 'pymizu' installed for %s\n%s",
         caller,
-        python
+        python,
+        attr(ok, "detail")
       ),
       call. = FALSE
     )
