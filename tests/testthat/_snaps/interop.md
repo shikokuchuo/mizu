@@ -148,6 +148,14 @@
       Error:
       ! mizu: value is not portable to the peer (an S4 object has no portable home at x)
 
+---
+
+    Code
+      mizu_send(p$host, lt)
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a POSIXlt has no portable home at x)
+
 # corrupt and unknown streams raise informatively
 
     Code

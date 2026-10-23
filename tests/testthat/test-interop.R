@@ -403,6 +403,12 @@ test_that("the decline diagnoses the frame's own shape and keeps prior text", {
   attr(gd, "formula") <- y ~ x
   expect_snapshot(mizu_send(p$host, gd), error = TRUE)
   expect_snapshot(mizu_send(p$host, methods::new("ixS4top", 1:3)), error = TRUE)
+
+  # a top-level POSIXlt names its POSIXct rewrite
+  lt <- as.POSIXlt(.POSIXct(c(0, 86400), tz = "UTC"))
+  expect_snapshot(mizu_send(p$host, lt), error = TRUE)
+  e <- tryCatch(mizu_send(p$host, lt), error = function(e) e)
+  expect_identical(e$remedy, "as.POSIXct(x)")
 })
 
 test_that("the labeled shapes round-trip on a labeled peer", {

@@ -1423,14 +1423,19 @@ static void ixw_diagnose_col(mizu_ixw *w, SEXP col) {
    rules mirror ix_qualify_frame's class → names → columns → row.names
    order — so diagnosis cannot drift from qualification. A frame-classed
    value is one whose class vector ends in "data.frame"; a data.frame
-   anywhere else in the vector is the misordered shape, anything else
-   keeps the attr-set naming. Returns 1 when it declined. */
+   anywhere else in the vector is the misordered shape, a top-level
+   POSIXlt names its POSIXct rewrite, anything else keeps the attr-set
+   naming. Returns 1 when it declined. */
 static int ixw_diagnose(mizu_ixw *w, SEXP x) {
   if (TYPEOF(x) == STRSXP && Rf_getAttrib(x, R_DimSymbol) != R_NilValue) {
     ixw_decline(w, "a character matrix has no portable home", NULL);
     return 1;
   }
   if (TYPEOF(x) != VECSXP) return 0;
+  if (ix_class_is(x, ix_posixlt_class)) {
+    ixw_decline(w, "a POSIXlt has no portable home", "as.POSIXct(x)");
+    return 1;
+  }
   SEXP klass = Rf_getAttrib(x, R_ClassSymbol);
   if (TYPEOF(klass) != STRSXP || XLENGTH(klass) < 1) return 0;
   SEXP last = STRING_ELT(klass, XLENGTH(klass) - 1);
