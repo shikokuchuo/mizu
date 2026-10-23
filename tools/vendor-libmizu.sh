@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="c76b2e372190841422ead938b3728c006ccb64cc"  # libmizu: Add the tree-dim-leaf corpus case: pin a dim leaf nested in a list
+PIN="125adab6109e039e5ef44fbdf7dfbef513a9e2e5"  # libmizu: Single-source mizu_timeout_ms, dedupe duplicated helpers, name magic constants
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
