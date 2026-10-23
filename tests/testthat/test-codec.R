@@ -482,6 +482,23 @@ test_that("a data.frame's ALTREP row.names write the compact form", {
   expect_identical(.Call(mizu:::mizu_codec_read_call, b), x)
 })
 
+test_that("a data.frame with a view row.names scans it to the compact form", {
+  p <- channel_pair(arena_size = 0)
+  on.exit(channel_end(p))
+  x <- integer(100000)
+  x[] <- 1:100000 # a plain (non-ALTREP) 1:n, region-sized
+  mizu_send(p[["host"]], x)
+  v <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(v))
+  df <- data.frame(y = runif(100000))
+  attr(df, "row.names") <- v
+  b <- .Call(mizu:::mizu_codec_write_call, df)
+  expect_false(is.null(b))
+  # the 400 KB row.names is not in the stream: it wrote the compact form
+  expect_lt(length(b), 801000L)
+  expect_identical(.Call(mizu:::mizu_codec_read_call, b), df)
+})
+
 test_that("an unbound-value node reads back", {
   # the single element's tag byte re-pointed at SC_UNBOUND (13)
   b <- c(.Call(mizu:::mizu_codec_write_call, list(1L))[1:10], as.raw(13L))

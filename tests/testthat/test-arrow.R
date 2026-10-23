@@ -136,6 +136,25 @@ test_that("a non-struct nanoarrow_array arrives as a vector", {
   expect_identical(mizu_recv(p$peer, 5), f)
 })
 
+test_that("non-struct nanoarrow payloads re-enter inside a send batch", {
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  n <- mizu_send_batch(
+    p$host,
+    list(
+      nanoarrow::as_nanoarrow_array(1:5),
+      nanoarrow::as_nanoarrow_array(c("a", "b", NA)),
+      42L
+    )
+  )
+  expect_identical(n, 3L)
+  expect_identical(
+    mizu_recv_batch(p$peer, 3L),
+    list(1:5, c("a", "b", NA_character_), 42L)
+  )
+})
+
 test_that("a bare integer64 array keeps its class", {
   skip_if_not_installed("bit64")
   p <- channel_pair()

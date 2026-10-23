@@ -80,6 +80,21 @@ test_that("automatic row.names canonicalize off the ALTREP sequence", {
   expect_identical(ix_rt(p, off), off)
 })
 
+test_that("a view row.names is scanned to the automatic form", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  q <- channel_pair(arena_size = 0)
+  on.exit(channel_end(q))
+  x <- integer(100000)
+  x[] <- 1:100000 # a plain (non-ALTREP) 1:n, region-sized
+  mizu_send(q[["host"]], x)
+  v <- mizu_recv(q[["peer"]], 5)
+  expect_true(is_view(v))
+  df <- data.frame(y = runif(100000))
+  attr(df, "row.names") <- v
+  expect_identical(ix_rt(p, df), df)
+})
+
 test_that("the dim shape round-trips", {
   skip_if_not_installed("bit64")
   p <- foreign_pair()
@@ -1552,6 +1567,186 @@ test_that("the attr shape builder rejects malformed attribute sets", {
     rd(attr_of(strv(c("a", "b")), i_dict(dim = intv(2L)))),
     "no portable home"
   )
+})
+
+test_that("malformed streams reject at the reader's own checks", {
+  u32 <- function(x) writeBin(x, raw(4L), size = 4L, endian = "little")
+  u64 <- function(x) c(u32(x), raw(4L))
+  s_str <- function(s) c(u32(nchar(s, "bytes")), charToRaw(s))
+  intv <- function(v) {
+    c(as.raw(0x07), u64(length(v)), do.call(c, lapply(v, u32)))
+  }
+  strv <- function(v) {
+    c(
+      as.raw(0x0b),
+      u64(length(v)),
+      do.call(c, lapply(v, function(s) if (is.na(s)) u32(-1L) else s_str(s)))
+    )
+  }
+  i_list <- function(...) {
+    xs <- list(...)
+    c(as.raw(0x0c), u64(length(xs)), do.call(c, xs))
+  }
+  i_dict <- function(...) {
+    xs <- list(...)
+    items <- do.call(c, lapply(names(xs), function(k) c(s_str(k), xs[[k]])))
+    c(as.raw(0x0d), u64(length(xs)), items)
+  }
+  attr_of <- function(item, dict) c(as.raw(0x0f), item, dict)
+  rd <- function(bytes) {
+    .Call(mizu:::mizu_interop_read_call, c(as.raw(c(0x49, 0x01)), bytes))
+  }
+  # a tag the cursor predates
+  expect_error(rd(as.raw(0x7f)), "unsupported interop tag")
+  # a names attribute on a character vector
+  expect_error(
+    rd(attr_of(strv("a"), i_dict(names = strv("x")))),
+    "no portable home"
+  )
+  # a dim+dimnames array whose class is not "table"
+  expect_error(
+    rd(attr_of(
+      intv(1:2),
+      i_dict(
+        dim = intv(c(1L, 2L)),
+        dimnames = i_list(strv("a"), strv(c("b", "c"))),
+        class = strv("foo")
+      )
+    )),
+    "no portable home"
+  )
+  # a dim+dimnames array over a list value
+  expect_error(
+    rd(attr_of(
+      i_list(intv(1L)),
+      i_dict(dim = intv(1L), dimnames = i_list(strv("a")))
+    )),
+    "no portable home"
+  )
+  # an extended frame with no row.names
+  expect_error(
+    rd(attr_of(
+      i_list(intv(1:2)),
+      i_dict(
+        names = strv("x"),
+        class = strv("data.frame"),
+        comment = strv("hi")
+      )
+    )),
+    "no portable home"
+  )
+  # an extended frame with a reserved extra key
+  expect_error(
+    rd(attr_of(
+      i_list(intv(1:2)),
+      i_dict(
+        names = strv("x"),
+        class = strv("data.frame"),
+        row.names = intv(c(NA, -2)),
+        tsp = intv(1L)
+      )
+    )),
+    "no portable home"
+  )
+  # an extended frame with a non-character comment
+  expect_error(
+    rd(attr_of(
+      i_list(intv(1:2)),
+      i_dict(
+        names = strv("x"),
+        class = strv("data.frame"),
+        row.names = intv(c(NA, -2)),
+        comment = intv(1L)
+      )
+    )),
+    "no portable home"
+  )
+  # an opaque extra whose names disagree with its length
+  expect_error(
+    rd(attr_of(
+      i_list(intv(1:2)),
+      i_dict(
+        names = strv("x"),
+        class = strv("data.frame"),
+        row.names = intv(c(NA, -2)),
+        note = attr_of(strv(c("a", "b")), i_dict(names = strv("x")))
+      )
+    )),
+    "no portable home"
+  )
+  # an opaque extra whose dimnames lack a dim
+  expect_error(
+    rd(attr_of(
+      i_list(intv(1:2)),
+      i_dict(
+        names = strv("x"),
+        class = strv("data.frame"),
+        row.names = intv(c(NA, -2)),
+        note = attr_of(
+          intv(1:2),
+          i_dict(dimnames = i_list(strv("a"), strv("b")))
+        )
+      )
+    )),
+    "no portable home"
+  )
+})
+
+test_that("a malformed frame declines at the writer", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  # column lengths disagreeing
+  bad <- structure(
+    list(a = 1:3, b = 1:4),
+    class = "data.frame",
+    row.names = 1:3
+  )
+  expect_error(mizu_send(p[["host"]], bad), "not portable to the peer")
+  # a compact row.names naming the wrong count
+  bad <- structure(
+    list(a = 1:3),
+    class = "data.frame",
+    row.names = c(NA_integer_, 7L)
+  )
+  expect_error(mizu_send(p[["host"]], bad), "not portable to the peer")
+})
+
+test_that("an S4 frame column declines naming the column", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  methods::setClass(
+    "mizuTestS4num",
+    contains = "numeric",
+    where = environment()
+  )
+  df <- data.frame(x = 1:3)
+  df$s <- methods::new("mizuTestS4num", 1:3)
+  expect_error(
+    mizu_send(p[["host"]], df),
+    "an S4 object has no portable home at x[$]s"
+  )
+})
+
+test_that("a frame extra with a reserved name declines", {
+  p <- foreign_pair(caps = 131L) # ATTRS | LABELED
+  on.exit(channel_end(p))
+  df <- data.frame(x = 1:3)
+  attr(df, "units") <- "secs"
+  expect_error(
+    mizu_send(p[["host"]], df),
+    "an attribute set outside the portable whitelist"
+  )
+})
+
+test_that("an extended frame's attributed extras round-trip", {
+  p <- foreign_pair(caps = 131L) # ATTRS | LABELED
+  on.exit(channel_end(p))
+  df <- data.frame(x = 1:3)
+  attr(df, "comment") <- c(note = "hello")
+  attr(df, "source") <- c(a = 1, b = 2)
+  attr(df, "plain") <- "text"
+  attr(df, "labels") <- list("a", "b")
+  expect_identical(ix_rt(p, df), df)
 })
 
 test_that("a malformed foreign factor declines", {

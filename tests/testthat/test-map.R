@@ -320,6 +320,9 @@ test_that("the view collect's dim gate declines an unrepresentable geometry", {
   expect_identical(dim_of(1e5, 1e5), c(100000L, 100000L))
   expect_snapshot(dim_of(0, 2^32 + 6), error = TRUE)
   expect_snapshot(dim_of(2^33, 2), error = TRUE)
+  expect_error(dim_of(-1, 2), "invalid map dimensions")
+  expect_error(dim_of(2, 1.5), "invalid map dimensions")
+  expect_error(dim_of(2, NA), "invalid map dimensions")
 })
 
 test_that("character templates assemble through the generic path", {

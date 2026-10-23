@@ -566,6 +566,39 @@ ch.send(t)
   expect_true(mizu_close(ch, timeout = 10))
 })
 
+test_that("a uint64 view COWs on write, the copy diverging from the bits", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+f = ch.recv(60)
+t = pa.table(f)
+ch.send(t)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  iv <- c(0, -9.2233720368547758e18, NA, 9007199254740994, rep(1, 9996))
+  orig <- arrow::Array$create(iv)$cast(
+    arrow::int64(),
+    safe = FALSE
+  )$cast(arrow::uint64(), safe = FALSE)
+  mizu_send(ch, arrow::arrow_table(u = orig))
+  df <- mizu_recv(ch, 60)
+  v <- df$u
+  expect_true(is_view(v))
+  ws <- grab_warnings(v[1] <- 5)
+  expect_match(ws, "beyond ...2\\^53 convert to NA", all = FALSE)
+  expect_false(is_view(v))
+  expect_identical(length(v), 10000L)
+  expect_identical(v[1], 5)
+  expect_true(is.na(v[2]))
+  expect_identical(v[5], 1)
+  expect_true(is.na(sum(v)))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
 test_that("a Python peer mutates the frame and returns it", {
   py <- skip_if_no_pymizu()
   skip_if_no_pyarrow(py)

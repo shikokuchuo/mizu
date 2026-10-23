@@ -1325,6 +1325,53 @@ test_that("a materialized or attributed view keeps the serialize path", {
   channel_end(p)
 })
 
+test_that("a view nested past the identifier depth serializes by value", {
+  p <- channel_pair(arena_size = 0)
+  on.exit(channel_end(p))
+  deep <- c("leaf", "strings")
+  for (i in 1:64) {
+    deep <- list(deep)
+  }
+  mizu_send(p[["host"]], list(runif(100000), deep))
+  v <- mizu_recv(p[["peer"]], 5)
+  leaf <- v[[2L]]
+  for (i in 1:64) {
+    leaf <- leaf[[1L]]
+  }
+  expect_true(is_view(leaf))
+  # the 65-step path no longer formats an identifier
+  expect_null(.Call(mizu:::mizu_zc_view_name, leaf))
+  out <- unserialize(serialize(leaf, NULL))
+  expect_false(is_view(out))
+  expect_identical(out, c("leaf", "strings"))
+})
+
+test_that("a list view nested past the identifier depth keeps value semantics", {
+  p <- channel_pair(arena_size = 0)
+  on.exit(channel_end(p))
+  deep <- list("x")
+  for (i in 1:64) {
+    deep <- list(deep)
+  }
+  mizu_send(p[["host"]], list(runif(100000), deep))
+  v <- mizu_recv(p[["peer"]], 5)
+  sub <- v[[2L]]
+  for (i in 1:64) {
+    sub <- sub[[1L]]
+  }
+  expect_true(is_view(sub))
+  expect_null(.Call(mizu:::mizu_zc_view_name, sub))
+  out <- unserialize(serialize(sub, NULL))
+  expect_false(is_view(out))
+  expect_identical(out, list("x"))
+  # re-sent in a zc-sized tree, the probe rejects the tree: by value,
+  # never a bad REF
+  mizu_send(p[["host"]], list(runif(100000), sub))
+  back <- mizu_recv(p[["peer"]], 5)
+  expect_false(is_view(back[[2L]]))
+  expect_identical(back[[2L]], list("x"))
+})
+
 test_that("an attributed string view nested in a payload resolves as a view", {
   p <- channel_pair(arena_size = 0)
   x <- paste0("s", 1:50000)
