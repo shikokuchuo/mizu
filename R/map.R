@@ -933,13 +933,9 @@ map_stage <- function(
     }
   }
 
-  # the names-tolerant RAWVEC gate: C checks type / ALTREP / S4, the
-  # attribute condition (none, names only, or class-only integer64) is
-  # cheaper here
+  # the raw x-section gate: type / ALTREP / S4 only — the as.list
+  # coercion above owns the attribute rule
   xlen <- .Call(mizu_map_eligible, x)
-  if (xlen >= 0 && !map_x_attrs_ok(x)) {
-    xlen <- -1
-  }
   st[["xraw"]] <- xlen >= 0
 
   # Region-less probe (generic maps only — the template path needs the
@@ -1158,7 +1154,7 @@ map_stage_stream <- function(
     # values the non-streaming spec map hands f), so the 'I' descriptor
     # builds once with x nil; a list x's slice rides its own descriptor
     xlen <- .Call(mizu_map_eligible, x)
-    xraw <- xlen >= 0 && map_x_attrs_ok(x)
+    xraw <- xlen >= 0
     if (!xraw) {
       x <- as.list(x)
       st[["x"]] <- x
