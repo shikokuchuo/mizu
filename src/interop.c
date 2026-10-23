@@ -1385,7 +1385,7 @@ static void ixw_diagnose_col(mizu_ixw *w, SEXP col) {
   switch (TYPEOF(col)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
   case STRSXP: {
-    SEXP names = Rf_getAttrib(col, R_NamesSymbol);
+    SEXP names = PROTECT(Rf_getAttrib(col, R_NamesSymbol));
     if (ix_class_is(col, ix_ordered_class)) {
       ixw_decline(w, "an ordered factor has no portable home", NULL);
     } else if (TYPEOF(col) == STRSXP &&
@@ -1399,6 +1399,7 @@ static void ixw_diagnose_col(mizu_ixw *w, SEXP col) {
     } else {
       ixw_decline_attrs(w, col);
     }
+    UNPROTECT(1);
     return;
   }
   default:
@@ -1457,15 +1458,16 @@ static int ixw_diagnose(mizu_ixw *w, SEXP x) {
                 NULL);
     return 1;
   }
-  SEXP names = Rf_getAttrib(x, R_NamesSymbol);
   R_xlen_t n = -1;
   for (R_xlen_t j = 0; j < XLENGTH(x); j++) {
     SEXP col = VECTOR_ELT(x, j);
     if (!ix_frame_col_ok(col)) {
       size_t saved = w->path_len;
+      SEXP names = PROTECT(Rf_getAttrib(x, R_NamesSymbol));
       ixw_path_key(w, CHAR(STRING_ELT(names, j)));
       ixw_diagnose_col(w, col);
       ixw_path_pop(w, saved);
+      UNPROTECT(1);
       return 1;
     }
     if (n < 0) n = XLENGTH(col);
