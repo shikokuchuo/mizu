@@ -369,6 +369,34 @@ static SEXP mizu_cond_build(SEXP msg, SEXP cond, SEXP names,
   return flat;
 }
 
+/* The exact codec-framing base cost of a flattened condition: magic(1) +
+   tag(1) + length(8) + attribute count(4) = 14; each attribute its name
+   string (13) + STRSXP scaffold (9); each condition element its name
+   (8 + bytes) + node (its stream size less the magic byte). The class
+   vector's two strings and the message element are unconditional. */
+static size_t cond_budget_base(SEXP klass, SEXP msg) {
+  size_t spent = 14 + 22 + 22;
+  for (R_xlen_t i = 0; i < XLENGTH(klass); i++)
+    spent += 8 + (size_t) LENGTH(STRING_ELT(klass, i));
+  return spent + (8 + 7) + (9 + 8 + (size_t) LENGTH(msg));   /* message */
+}
+
+/* The dropped_fields fit: the element name (8 + 14) + STRSXP scaffold (9),
+   then as many dropped names in order as the remaining budget admits,
+   each its element cost (8 + bytes). */
+static R_xlen_t cond_fit_dropped(SEXP dropped, R_xlen_t ndrop, size_t spent,
+                                 size_t budget) {
+  size_t dcost = (8 + 14) + 9;
+  R_xlen_t dfit = 0;
+  for (R_xlen_t i = 0; i < ndrop; i++) {
+    size_t c = 8 + (size_t) LENGTH(STRING_ELT(dropped, i));
+    if (spent + dcost + c > budget) break;
+    dcost += c;
+    dfit++;
+  }
+  return dfit;
+}
+
 /* Flatten a caught task condition for the ERR publish; budget is the
    target result slot's inline budget. Returns the transport condition
    UNPROTECTED — nothing allocates between the last internal allocation
@@ -419,14 +447,7 @@ SEXP mizu_condition_flatten(SEXP cond, size_t budget) {
     }
   }
 
-  /* exact codec-framing accounting: magic(1) + tag(1) + length(8) +
-     attribute count(4); each attribute its name string (13) + STRSXP
-     scaffold (9) + per element (8 + bytes); each condition element its
-     name (8 + bytes) + node (its stream size less the magic byte) */
-  size_t spent = 14 + 22 + 22;
-  for (R_xlen_t i = 0; i < XLENGTH(klass); i++)
-    spent += 8 + (size_t) LENGTH(STRING_ELT(klass, i));
-  spent += (8 + 7) + (9 + 8 + (size_t) LENGTH(msg));   /* message */
+  size_t spent = cond_budget_base(klass, msg);
 
   int have_call = 0;
   if (call_idx >= 0) {
@@ -453,14 +474,7 @@ SEXP mizu_condition_flatten(SEXP cond, size_t budget) {
   }
 
   /* dropped_fields, last priority: as many names in order as fit */
-  size_t dcost = (8 + 14) + 9;
-  R_xlen_t dfit = 0;
-  for (R_xlen_t i = 0; i < ndrop; i++) {
-    size_t c = 8 + (size_t) LENGTH(STRING_ELT(dropped, i));
-    if (spent + dcost + c > budget) break;
-    dcost += c;
-    dfit++;
-  }
+  R_xlen_t dfit = cond_fit_dropped(dropped, ndrop, spent, budget);
 
   SEXP flat = PROTECT(mizu_cond_build(msg, cond, names, mk, n,
                                       have_call ? call_idx : (R_xlen_t) -1,
@@ -474,18 +488,8 @@ SEXP mizu_condition_flatten(SEXP cond, size_t budget) {
   if (total == 0 || total > budget) {
     UNPROTECT(1);                /* flat */
     SEXP fmsg = PROTECT(Rf_mkChar(MIZU_COND_FALLBACK));
-    size_t fspent = 14 + 22 + 22;
-    for (R_xlen_t i = 0; i < XLENGTH(klass); i++)
-      fspent += 8 + (size_t) LENGTH(STRING_ELT(klass, i));
-    fspent += (8 + 7) + (9 + 8 + (size_t) LENGTH(fmsg));
-    size_t fdcost = (8 + 14) + 9;
-    R_xlen_t fdfit = 0;
-    for (R_xlen_t i = 0; i < ndrop; i++) {
-      size_t c = 8 + (size_t) LENGTH(STRING_ELT(dropped, i));
-      if (fspent + fdcost + c > budget) break;
-      fdcost += c;
-      fdfit++;
-    }
+    size_t fspent = cond_budget_base(klass, fmsg);
+    R_xlen_t fdfit = cond_fit_dropped(dropped, ndrop, fspent, budget);
     flat = PROTECT(mizu_cond_build(fmsg, cond, names, mk, 0, -1, dropped,
                                    fdfit, klass));
     UNPROTECT(6);                /* msg, klass, mark, dropped, fmsg, flat */

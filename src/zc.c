@@ -31,12 +31,6 @@
 #include <R_ext/Utils.h>
 #include "mizu.h"
 
-/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
-   earlier R, where ATTRIB() was still the sanctioned spelling. */
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
-
 static SEXP mizu_rel_tag;      /* the release-record extptr */
 static SEXP mizu_shm_tag_sym;  /* installed MIZU_VIEW_TAG_SHM: the chain terminus */
 
@@ -375,8 +369,7 @@ int mizu_zc_eligible(SEXP x, uint32_t inline_max, size_t *out_total,
     *out_total = total;
     return 1;
   }
-  size_t gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
-    (size_t) inline_max : MIZU_ZC_FLOOR;
+  size_t gate = mizu_zc_gate(inline_max);
   if (type == STRSXP) {
     /* a foreign ALTREP string's Elt may materialize it — the probe must
        not touch it (a mizu view is safe: its accessors read the shared
@@ -541,8 +534,7 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
       return 0;
     size_t bytes = 0;
     if (!mizu_interop_strings_utf8(x, &bytes)) return 0;
-    const size_t gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
-      (size_t) inline_max : MIZU_ZC_FLOOR;
+    const size_t gate = mizu_zc_gate(inline_max);
     const size_t total = MIZU_HEADER_SIZE +
       mizu_view_str_geometry((size_t) XLENGTH(x)).data + bytes;
     if (total <= gate) return 0;
@@ -592,8 +584,7 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
        does one nested in a list column. Verdict before sum per column,
        and every column visited: a late verdict decides as the early
        one did. */
-    const size_t gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
-      (size_t) inline_max : MIZU_ZC_FLOOR;
+    const size_t gate = mizu_zc_gate(inline_max);
     size_t total = 0;
     int reject = 0;
     mizu_zc_sums sums = { .n = 0, .exact = 1 };
@@ -626,8 +617,7 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
     return 1;
   }
   if (!(caps & MIZU_CAP_MIZL)) return 0;
-  const size_t gate = (size_t) inline_max > MIZU_ZC_FLOOR ?
-    (size_t) inline_max : MIZU_ZC_FLOOR;
+  const size_t gate = mizu_zc_gate(inline_max);
   int reject = 0;
   mizu_zc_sums sums = { .n = 0, .exact = 1 };
   if (mizu_zc_tree_walk_fx(x, caps, &reject, &sums) <= gate || reject)
@@ -836,16 +826,9 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
     SEXP view = PROTECT(mizu_view_vec_wrap(base + MIZU_HEADER_SIZE,
                                       (R_xlen_t) length, type, name_xp,
                                       mizu_zc_rel_fire, rel_xp));
-    if (attrs_size > 0) {
-      view = PROTECT(mizu_view_restore_attrs(
-        view, base + MIZU_HEADER_SIZE + (size_t) length * elt,
-        (size_t) attrs_size
-      ));
-      view = mizu_view_apply_s4(view, base);
-      UNPROTECT(1);
-    } else {
-      view = mizu_view_apply_s4(view, base);
-    }
+    view = mizu_view_restore_tail(view, base + MIZU_HEADER_SIZE +
+                                  (size_t) length * elt,
+                                  (size_t) attrs_size, base);
     UNPROTECT(1);
     return view;
   }
@@ -869,16 +852,9 @@ static SEXP mizu_zc_wrap0(mizu_shm *shm, SEXP name_xp, SEXP rel_xp,
     SEXP view = PROTECT(mizu_view_str_wrap(base + MIZU_HEADER_SIZE, (R_xlen_t) n,
                                       str_size, name_xp, mizu_zc_rel_fire,
                                       rel_xp));
-    if (attrs_size > 0) {
-      view = PROTECT(mizu_view_restore_attrs(
-        view, base + MIZU_HEADER_SIZE + (size_t) str_size,
-        (size_t) attrs_size
-      ));
-      view = mizu_view_apply_s4(view, base);
-      UNPROTECT(1);
-    } else {
-      view = mizu_view_apply_s4(view, base);
-    }
+    view = mizu_view_restore_tail(view, base + MIZU_HEADER_SIZE +
+                                  (size_t) str_size, (size_t) attrs_size,
+                                  base);
     UNPROTECT(1);
     return view;
   }

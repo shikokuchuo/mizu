@@ -97,29 +97,9 @@
 #include <string.h>
 #include <stdint.h>
 
-/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
-   earlier R, where ATTRIB() was still the sanctioned spelling. */
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
-
-/* R_getAttributes() joined the C API in R 4.6.0, returning the
-   named-list form; on earlier R the same attributes are read off the
-   pairlist directly (WRE "Some backports" discipline — defined
-   conditionally). scw_attrs() handles both forms. */
-#if R_VERSION < R_Version(4, 6, 0)
-#define R_getAttributes(x) ATTRIB(x)
-#endif
-
-/* R_ClosureFormals() and siblings plus R_mkClosure() joined the C API in
-   R 4.5.0 (the closure slot setters left the public headers then); the
-   slot macros for earlier R, and the constructor from map.c's backport. */
-#if R_VERSION < R_Version(4, 5, 0)
-#define R_ClosureFormals(x) FORMALS(x)
-#define R_ClosureBody(x)    BODY(x)
-#define R_ClosureEnv(x)     CLOENV(x)
-SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
-#endif
+/* The R-version backports (ANY_ATTRIB, R_getAttributes, the closure
+   accessors, R_mkClosure) are mizu.h's; scw_attrs() handles both
+   R_getAttributes forms. */
 
 /* Node types (low nibble of the tag byte). */
 enum {
@@ -640,8 +620,7 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
      extptr in the last slot (its finalizer releases the pull either
      way). */
   plan.anchor = PROTECT(Rf_allocVector(VECSXP, plan.ncand + 1));
-  const size_t gate =
-    inline_max > MIZU_ZC_FLOOR ? (size_t) inline_max : MIZU_ZC_FLOOR;
+  const size_t gate = mizu_zc_gate(inline_max);
   for (int i = 0; i < plan.ncand; i++) {
     SEXP xp = PROTECT(mizu_arrow_pull(plan.cand[i]));
     if (mizu_arrow_nonstruct(xp)) {

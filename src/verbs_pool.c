@@ -444,6 +444,14 @@ SEXP mizu_pool_submit_call(SEXP xp, SEXP payload, SEXP timeout, SEXP flags_sexp)
   return pool_submit(xp, payload, timeout, Rf_asInteger(flags_sexp), 0);
 }
 
+/* The map path's entries take the map's one deadline absolute (mizu_now()
+   timescale, Inf waits indefinitely) and convert once, at entry, to a
+   relative-seconds timeout scalar. Fresh UNPROTECTED. */
+static SEXP pool_deadline_arg(SEXP deadline) {
+  double d = Rf_asReal(deadline);
+  return Rf_ScalarReal(R_FINITE(d) ? d - mizu_now() : R_PosInf);
+}
+
 /* The private-frame guard: a pool whose joined workers are not R takes
    spec tasks only — a private frame would reach a worker that cannot
    parse it, and its ERR would publish in a format the submitter cannot
@@ -516,25 +524,23 @@ static int pool_name_qualified(const char *s, uint32_t lang) {
   }
 }
 
-/* mizu_submit_call's entry: standard evaluation, the spec validated and
-   qualifier-checked here, the task stream written by the stage hook off
-   the spec field (the err_cond pattern). The field rides
-   R_ExecWithCleanup, not a plain clear-on-return: the core's full-ring
-   wait polls the check hook (an interrupt longjmps) before the stage
-   runs, and a dangling field would mis-frame a later stage whose object
-   landed at that address. The trailing ident is a test-only identity
-   override (helper.R's foreign-submitter simulation), NULL for this
-   build's word. */
+/* The spec seam's submit scaffolding (mizu_pool_submit_spec,
+   mizu_pool_submit_map_runner): the spec rides the handle's spec field —
+   the err_cond pattern — which R_ExecWithCleanup clears, not a plain
+   clear-on-return: the core's full-ring wait polls the check hook (an
+   interrupt longjmps) before the stage runs, and a dangling field would
+   mis-frame a later stage whose object landed at that address. */
 typedef struct mizu_spec_submit_s {
   mizu_r_handle *h;
   SEXP xp, timeout;
+  int flags, tryflag;
   SEXP out;
 } mizu_spec_submit;
 
 static SEXP mizu_spec_submit_do(void *data) {
   mizu_spec_submit *c = (mizu_spec_submit *) data;
   SEXP spec = c->h->spec;
-  c->out = pool_submit(c->xp, spec, c->timeout, 0, 0);
+  c->out = pool_submit(c->xp, spec, c->timeout, c->flags, c->tryflag);
   return c->out;
 }
 
@@ -567,7 +573,7 @@ SEXP mizu_pool_submit_spec(SEXP xp, SEXP spec, SEXP timeout,
              "for R workers, 'mod.fn' for Python workers): '%s'",
              CHAR(STRING_ELT(code, 0)));
   uint64_t ident = mizu_r_ident_override(ident_sexp, MIZU_R_IDENT);
-  mizu_spec_submit c = { h, xp, timeout, R_NilValue };
+  mizu_spec_submit c = { h, xp, timeout, 0, 0, R_NilValue };
   h->spec = spec;
   h->spec_ident = ident;
   R_ExecWithCleanup(mizu_spec_submit_do, &c, mizu_spec_submit_clean, &c);
@@ -586,14 +592,10 @@ SEXP mizu_pool_ident_call(SEXP xp) {
   return out;
 }
 
-/* The map path's entries take the map's one deadline absolute (mizu_now()
-   timescale, Inf waits indefinitely) and convert once, at entry. */
 SEXP mizu_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
                           SEXP flags_sexp) {
-  double d = Rf_asReal(deadline);
-  double timeout_s = R_FINITE(d) ? d - mizu_now() : R_PosInf;
   const int flags = Rf_asInteger(flags_sexp);
-  SEXP timeout = PROTECT(Rf_ScalarReal(timeout_s));
+  SEXP timeout = PROTECT(pool_deadline_arg(deadline));
   SEXP out = pool_submit(xp, payload, timeout, flags, 1);
   UNPROTECT(1);
   return out;
@@ -603,40 +605,16 @@ SEXP mizu_pool_submit_try(SEXP xp, SEXP payload, SEXP deadline,
    packed ordinal+generation, seed pair | NULL) — rides the spec seam (the
    stage hook frames the kind-2 task stream off it), flagged
    MIZU_ENTRY_RUNNER so a doorbell help beat re-homes it instead of
-   executing a join ticket nested. The map's one deadline, absolute like
-   submit_try. */
-typedef struct {
-  mizu_r_handle *h;
-  SEXP xp;
-  SEXP timeout;
-  SEXP out;
-} mizu_runner_submit;
-
-static SEXP mizu_runner_submit_do(void *data) {
-  mizu_runner_submit *c = (mizu_runner_submit *) data;
-  SEXP spec = c->h->spec;
-  c->out = pool_submit(c->xp, spec, c->timeout, MIZU_ENTRY_RUNNER, 1);
-  return c->out;
-}
-
-static void mizu_runner_submit_clean(void *data) {
-  mizu_runner_submit *c = (mizu_runner_submit *) data;
-  c->h->spec = NULL;
-  c->h->spec_ident = 0;
-}
-
+   executing a join ticket nested. */
 SEXP mizu_pool_submit_map_runner(SEXP xp, SEXP spec, SEXP deadline) {
   mizu_r_handle *h = pool_get(xp);
   if (pool_word(h) == 0)
     Rf_error("mizu: no worker has joined this pool");
-  double d = Rf_asReal(deadline);
-  double timeout_s = R_FINITE(d) ? d - mizu_now() : R_PosInf;
-  mizu_runner_submit c = { h, xp, PROTECT(Rf_ScalarReal(timeout_s)),
-                           R_NilValue };
+  mizu_spec_submit c = { h, xp, PROTECT(pool_deadline_arg(deadline)),
+                         MIZU_ENTRY_RUNNER, 1, R_NilValue };
   h->spec = spec;
   h->spec_ident = MIZU_R_IDENT;
-  R_ExecWithCleanup(mizu_runner_submit_do, &c, mizu_runner_submit_clean,
-                    &c);
+  R_ExecWithCleanup(mizu_spec_submit_do, &c, mizu_spec_submit_clean, &c);
   UNPROTECT(1);
   return c.out;
 }
@@ -803,12 +781,8 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   mizu_r_handle *h;
   mizu_task t = task_get(xp, &h);
   void *v = NULL;
-  /* the submitter-side boundary collection (zc.c): dead result views
-     release here instead of piling up as lent bytes the submitter's own
-     gc cadence cannot see. Skipped inside a task — a collection in a
-     nested collect would only promote the outer task's live views. */
-  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
-  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
+  /* the submitter-side boundary collection and a fresh decline slot (verbs.c) */
+  mizu_r_recv_begin(h);
   mizu_status st =
     mizu_pool_collect((mizu_pool *) h->core, &t, &v, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_TIMEOUT) return mizu_sent_timeout;
@@ -827,10 +801,8 @@ SEXP mizu_pool_collect_call(SEXP xp, SEXP timeout) {
 
 /* absolute deadline, as mizu_pool_submit_try */
 SEXP mizu_pool_collect_try(SEXP xp, SEXP deadline) {
-  double d = Rf_asReal(deadline);
-  double timeout_s = R_FINITE(d) ? d - mizu_now() : R_PosInf;
   /* protected: pool_collect_impl's entry boundary collection allocates */
-  SEXP timeout = PROTECT(Rf_ScalarReal(timeout_s));
+  SEXP timeout = PROTECT(pool_deadline_arg(deadline));
   SEXP out = pool_collect_impl(xp, timeout, 1);
   UNPROTECT(1);
   return out;
@@ -868,8 +840,7 @@ SEXP mizu_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   void *v = NULL;
   size_t idx = 0;
   /* the submitter-side boundary (pool_collect_impl) */
-  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
-  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
+  mizu_r_recv_begin(h);
   mizu_status st = mizu_pool_collect_any(p, ts, (size_t) n, &idx, &v,
                                        mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
   if (st == MIZU_TIMEOUT) return mizu_sent_timeout;
@@ -910,8 +881,7 @@ SEXP mizu_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
   size_t err_idx = 0, consumed = 0;
   /* the submitter-side boundary (pool_collect_impl) */
-  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
-  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
+  mizu_r_recv_begin(h);
   mizu_status st = mizu_pool_collect_all_fn(p, ts, (size_t) n, mizu_vec_sink,
                                           out, &err_idx, &consumed,
                                           mizu_timeout_ms(mizu_r_timeout_arg(timeout)));

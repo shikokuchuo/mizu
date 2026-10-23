@@ -115,7 +115,7 @@ SEXP mizu_map_rng_base(SEXP seed_sexp) {
 SEXP mizu_map_rng_seek(SEXP state, SEXP k_sexp) {
   mizu_rng_state_check(state);
   double kd = Rf_asReal(k_sexp);
-  if (!(kd >= 0) || kd > 9.007199254740992e15)
+  if (!(kd >= 0) || kd > MIZU_DBL_SAFE_INT)
     Rf_error("mizu: invalid stream index");
   unsigned long long P1[3][3], P2[3][3], v1[3], v2[3], o1[3], o2[3];
   mat_pow_mod(A1p127[0], (uint64_t) kd, P1, MIZU_RNG_M1);
@@ -136,13 +136,13 @@ SEXP mizu_map_rng_seek(SEXP state, SEXP k_sexp) {
 }
 
 /* Install state as the evaluating process's .Random.seed (L'Ecuyer-CMRG
-   form: kind word 10407, then the 6 state words) and return the state
+   form: the kind word, then the 6 state words) and return the state
    advanced one jump — the chunk loop's per-element step. The worker's own
    RNG state is saved and restored around the chunk loop on the R side. */
 SEXP mizu_map_rng_install(SEXP state) {
   mizu_rng_state_check(state);
   SEXP seed = PROTECT(Rf_allocVector(INTSXP, 7));
-  INTEGER(seed)[0] = 10407;
+  INTEGER(seed)[0] = MIZU_RNG_CMRG_KIND;
   memcpy(INTEGER(seed) + 1, INTEGER(state), 6 * sizeof(int));
   Rf_defineVar(Rf_install(".Random.seed"), seed, R_GlobalEnv);
   SEXP nxt = Rf_allocVector(INTSXP, 6);

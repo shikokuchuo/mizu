@@ -49,7 +49,7 @@ int mizu_r_pow2(uint64_t v) {
    the failure the caller raises next. */
 double mizu_r_size_arg(SEXP x, const char *what) {
   const double d = Rf_asReal(x);
-  if (ISNAN(d) || d < 0 || d >= 18446744073709551616.0 /* 2^64 */ ||
+  if (ISNAN(d) || d < 0 || d >= MIZU_DBL_U64 ||
       d != (double) (uint64_t) d)
     Rf_error("mizu: %s must be a whole number", what);
   return d;
@@ -104,4 +104,9 @@ mizu_r_handle *mizu_r_handle_get(SEXP xp, SEXP tag, const char *what) {
   mizu_r_handle *h = mizu_r_handle_peek(xp, tag, what);
   if (h == NULL) Rf_error("mizu: %s handle is closed", what);
   return h;
+}
+
+void mizu_r_recv_begin(mizu_r_handle *h) {
+  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
+  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
 }

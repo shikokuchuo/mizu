@@ -146,6 +146,17 @@ NORET static void chan_raise(mizu_channel *c) {
   mizu_stop("mizu_error", "mizu: %s", mizu_channel_error(c));
 }
 
+/* The recv verbs' ERR tail: a declining read hook stashes its condition on
+   the handle's decline slot and fails the read with MIZU_READ_CONSUME —
+   the slot is already consumed, so the informative error costs the
+   message, not the channel, and the core records nothing for a consumed
+   read (chan_raise would format a stale or blank record). */
+NORET static void chan_err_raise(mizu_r_handle *h, mizu_channel *c) {
+  SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
+  if (decline != R_NilValue) mizu_cond_signal(decline);   /* no return */
+  chan_raise(c);
+}
+
 /* Provenance, not class: TRUE only for the interned singletons themselves,
    so a payload merely carrying the class never passes. */
 SEXP mizu_sentinel_check(SEXP x) {
@@ -368,24 +379,11 @@ SEXP mizu_channel_send_batch_call(SEXP xp, SEXP xs) {
 SEXP mizu_channel_recv_call(SEXP xp, SEXP timeout) {
   mizu_r_handle *h = chan_get(xp);
   mizu_channel *c = (mizu_channel *) h->core;
-  /* the consumer-side boundary collection (zc.c): dead received views
-     release here instead of piling up as lent bytes — the pool collect's
-     discipline, mirrored. Skipped inside a pool task — a collection there
-     would only promote the task's live views. */
-  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
-  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
+  /* the consumer-side boundary collection and a fresh decline slot (verbs.c) */
+  mizu_r_recv_begin(h);
   void *obj = NULL;
   mizu_status st = mizu_channel_recv(c, &obj, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
-  /* a declining read hook stashes its condition on the handle and fails the
-     read with MIZU_READ_CONSUME: the slot is already consumed, so the
-     informative error costs the message, not the channel — and the core
-     records nothing for a consumed read, so chan_raise would format a stale
-     or blank record */
-  if (st == MIZU_ERR) {
-    SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
-    if (decline != R_NilValue) mizu_cond_signal(decline);   /* no return */
-    chan_raise(c);
-  }
+  if (st == MIZU_ERR) chan_err_raise(h, c);
   if (st != MIZU_OK) return status_sentinel(st);
   return (SEXP) obj;
 }
@@ -401,22 +399,15 @@ SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   if (n < 1) Rf_error("mizu: n must be at least 1");
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
   size_t count = 0;
-  /* the consumer-side boundary collection (mizu_channel_recv_call) */
-  if (mizu_curpool_xp == R_NilValue) mizu_zc_gc_boundary();
-  SET_VECTOR_ELT(h->prot, h->decline_slot, R_NilValue);
+  /* the consumer-side boundary collection and a fresh decline slot (verbs.c) */
+  mizu_r_recv_begin(h);
   mizu_status st = mizu_channel_recv_batch_fn(c, (size_t) n, &count,
                                             mizu_vec_sink, out,
                                             mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
-  /* a declining read in the batch: the stashed condition rides the handle
-     and its slot is consumed (MIZU_READ_CONSUME), so the informative error
-     costs the message, not the channel */
   if (st == MIZU_ERR) {
-    SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
-    if (decline != R_NilValue) {
-      UNPROTECT(1);
-      mizu_cond_signal(decline);   /* no return */
-    }
-    chan_raise(c);
+    /* keep the protect balance on the decline's signal path */
+    if (VECTOR_ELT(h->prot, h->decline_slot) != R_NilValue) UNPROTECT(1);
+    chan_err_raise(h, c);
   }
   if (st != MIZU_OK) {
     UNPROTECT(1);

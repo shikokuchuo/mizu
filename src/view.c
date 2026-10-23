@@ -1039,15 +1039,8 @@ SEXP mizu_view_list_wrap(unsigned char *base, int64_t region_size, int32_t index
   /* Cache is allocated lazily on first Elt access */
   SEXP result = PROTECT(R_new_altrep(mizu_view_list_class, ptr, R_NilValue));
 
-  if (attrs_size > 0) {
-    result = PROTECT(mizu_view_restore_attrs(
-      result, base + (size_t) attrs_offset, (size_t) attrs_size
-    ));
-    result = mizu_view_apply_s4(result, base);
-    UNPROTECT(1);
-  } else {
-    result = mizu_view_apply_s4(result, base);
-  }
+  result = mizu_view_restore_tail(result, base + (size_t) attrs_offset,
+                                  (size_t) attrs_size, base);
 
   UNPROTECT(2);
   return result;
@@ -2049,16 +2042,10 @@ static SEXP mizu_view_open_vector(SEXP shm_ptr) {
     base + MIZU_HEADER_SIZE, (R_xlen_t) length, sexptype, shm_ptr, NULL, NULL
   ));
 
-  if (attrs_size > 0) {
-    size_t data_bytes = (size_t) length * mizu_view_sizeof_elt(sexptype);
-    result = PROTECT(mizu_view_restore_attrs(
-      result, base + MIZU_HEADER_SIZE + data_bytes, (size_t) attrs_size
-    ));
-    result = mizu_view_apply_s4(result, base);
-    UNPROTECT(1);
-  } else {
-    result = mizu_view_apply_s4(result, base);
-  }
+  result = mizu_view_restore_tail(
+    result,
+    base + MIZU_HEADER_SIZE + (size_t) length * mizu_view_sizeof_elt(sexptype),
+    (size_t) attrs_size, base);
 
   UNPROTECT(1);
   return result;
@@ -2088,16 +2075,9 @@ static SEXP mizu_view_open_string(SEXP shm_ptr) {
     base + MIZU_HEADER_SIZE, (R_xlen_t) n, str_data_size, shm_ptr, NULL, NULL
   ));
 
-  if (attrs_size > 0) {
-    result = PROTECT(mizu_view_restore_attrs(
-      result, base + MIZU_HEADER_SIZE + (size_t) str_data_size,
-      (size_t) attrs_size
-    ));
-    result = mizu_view_apply_s4(result, base);
-    UNPROTECT(1);
-  } else {
-    result = mizu_view_apply_s4(result, base);
-  }
+  result = mizu_view_restore_tail(
+    result, base + MIZU_HEADER_SIZE + (size_t) str_data_size,
+    (size_t) attrs_size, base);
 
   UNPROTECT(1);
   return result;

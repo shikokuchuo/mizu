@@ -533,7 +533,7 @@ test_that("the drain ignores a sibling whose cancel the worker consumed", {
     .Call(mizu:::mizu_pool_task_state, st[["handles"]][[3L]]),
     "collected"
   )
-  expect_error(mizu:::map_stream_fail(st, v, k), "bad")
+  expect_error(mizu:::map_stream_fail(st, v, k, FALSE), "bad")
   pool_end(p)
 })
 
@@ -1040,7 +1040,7 @@ test_that("a streaming turn surfaces an infrastructure error, not a subscript er
   pool_end(p)
 })
 
-test_that("map_stream_fail_spec classifies on mizu_map_index only (R-18)", {
+test_that("map_stream_fail's spec arm classifies on mizu_map_index only (R-18)", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], 1)
   # collect_any stamps every raised outcome with "index" the window
@@ -1049,7 +1049,7 @@ test_that("map_stream_fail_spec classifies on mizu_map_index only (R-18)", {
   st <- list(lo = 1, hi = 1, oi = 1L, handles = list(t), spec = TRUE)
   v <- simpleError("infrastructure boom")
   err <- tryCatch(
-    mizu:::map_stream_fail_spec(st, v, 1L),
+    mizu:::map_stream_fail(st, v, 1L, TRUE),
     error = function(e) e
   )
   expect_identical(conditionMessage(err), "infrastructure boom")

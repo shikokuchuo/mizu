@@ -83,10 +83,7 @@ mizu_channel <- function(
   launcher = mizu_launcher(),
   startup_timeout = 30
 ) {
-  if (
-    !is.language(expr) &&
-      !(is.character(expr) && length(expr) == 1L && !is.na(expr))
-  ) {
+  if (!is.language(expr) && !is_scalar_string(expr)) {
     stop(
       "mizu: expr must be a quoted expression (wrap it in quote()) or a ",
       "single source string (for a peer in another language)",

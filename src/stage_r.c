@@ -17,12 +17,6 @@
 #include "arrow.h"
 #include <R_ext/Utils.h>
 
-/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for
-   earlier R, where ATTRIB() was still the sanctioned spelling. */
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
-
 // The stage guard ----------------------------------------------------------------
 
 /* Wraps each stage hook: arms the attr-qualification verdict cache's
@@ -123,7 +117,7 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
      handles write interop only, filter the zero-copy tiers by the peer's
      capability mask, and stage top-level length-1 atomics as the 'I'
      scalar tags; same-language handles run today's path unchanged */
-  const int foreign = rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
+  const int foreign = mizu_r_peer_foreign(rh);
   size_t total;
   uint64_t off;
   unsigned char *chunk;
@@ -442,6 +436,19 @@ void *mizu_r_read_channel(const mizu_slot_hdr *hdr,
 
 // Pool stage --------------------------------------------------------------------
 
+/* The task stream's INLINE stamp: no keeperless claim (inert on task
+   entries), and the D4 submit-side handoff pin when the write emitted a
+   by-reference leaf. */
+static int pool_task_stamp_inline(mizu_slot_hdr *hdr, size_t n,
+                                  mizu_handle *h, void *ctx, SEXP spec) {
+  hdr->kind = MIZU_KIND_INLINE;
+  hdr->len = (uint32_t) n;
+  hdr->aux = 0;
+  if (mizu_zc_ref_fired())
+    mizu_r_pin(h, ctx, spec);
+  return 0;
+}
+
 /* The pool's stage_fn: the payload.c tier dispatch on the handle's services,
    registered at create/join/attach. Serves task payloads at submit and
    result payloads at publish — a pool has no arena, so out-of-line frames
@@ -523,24 +530,14 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
       if (n != SIZE_MAX) {
         if (n == 0)
           mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
-        hdr->kind = MIZU_KIND_INLINE;
-        hdr->len = (uint32_t) n;
-        hdr->aux = 0;      /* no keeperless claim: inert on task entries */
-        if (mizu_zc_ref_fired())
-          mizu_r_pin(h, ctx, spec);   /* D4: the submit-side handoff */
-        return 0;
+        return pool_task_stamp_inline(hdr, n, h, ctx, spec);
       }
       /* a mid-write checkout failure (a churn race): re-run by value,
          never a partial stream */
     }
     if (plan.ncand == 0 && total <= (size_t) inline_max) {
       /* one walk: the record walk's write is the stream */
-      hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) total;
-      hdr->aux = 0;        /* no keeperless claim: inert on task entries */
-      if (mizu_zc_ref_fired())
-        mizu_r_pin(h, ctx, spec);
-      return 0;
+      return pool_task_stamp_inline(hdr, total, h, ctx, spec);
     }
     /* candidates recorded, none fitting (or the zc write abandoned): the
        record walk counted the by-value stream — rewrite it inline, or
@@ -552,12 +549,7 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
                                          NULL);
       if (n == 0)
         mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
-      hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) n;
-      hdr->aux = 0;        /* no keeperless claim: inert on task entries */
-      if (mizu_zc_ref_fired())
-        mizu_r_pin(h, ctx, spec);
-      return 0;
+      return pool_task_stamp_inline(hdr, n, h, ctx, spec);
     }
     mizu_stage_reap(h);
     mizu_payload_spill_task(hdr, payload, spec, target, rh->spec_ident,
@@ -574,7 +566,7 @@ static int mizu_r_stage_pool_impl(void *obj, mizu_slot_hdr *hdr,
      same-language by construction. In practice this serves results — a
      submitted table is always nested in the list(expr, args) payload and
      rides the codec's frame leaf instead */
-  const int foreign = rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
+  const int foreign = mizu_r_peer_foreign(rh);
   if (!foreign && mizu_arrow_check((SEXP) obj)) {
     mizu_arrow_stage_r((SEXP) obj, hdr, payload, inline_max, h, ctx,
                        MIZU_R_CAPS, mizu_r_stage_pool);

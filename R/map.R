@@ -319,7 +319,7 @@ mizu_map <- function(
   .collect = "value",
   .stream = FALSE
 ) {
-  map_check_native(.pool, .f)
+  ident <- map_check_native(.pool, .f)
   dots <- list(...)
   .f <- map_check_f(.f, dots)
   map_template_check(.template)
@@ -335,9 +335,9 @@ mizu_map <- function(
     return(map_empty(.x, .template))
   }
   st <- if (.stream) {
-    map_stage_stream(.pool, .x, .f, dots, .template, .chunks, .seed)
+    map_stage_stream(.pool, .x, .f, dots, .template, .chunks, .seed, ident)
   } else {
-    map_stage(.pool, .x, .f, dots, .template, .chunks, .seed)
+    map_stage(.pool, .x, .f, dots, .template, .chunks, .seed, ident)
   }
   map_run(.pool, st, .timeout, .collect)
 }
@@ -419,7 +419,7 @@ mizu_map_prepare <- function(
   .chunks = NULL,
   .stream = FALSE
 ) {
-  map_check_native(.pool, .f)
+  ident <- map_check_native(.pool, .f)
   dots <- list(...)
   .f <- map_check_f(.f, dots)
   map_template_check(.template)
@@ -441,9 +441,9 @@ mizu_map_prepare <- function(
   pm[["stream"]] <- .stream
   if (length(.x) > 0L) {
     pm[["st"]] <- if (.stream) {
-      map_stage_stream(.pool, .x, .f, dots, .template, .chunks)
+      map_stage_stream(.pool, .x, .f, dots, .template, .chunks, ident = ident)
     } else {
-      map_stage(.pool, .x, .f, dots, .template, .chunks)
+      map_stage(.pool, .x, .f, dots, .template, .chunks, ident = ident)
     }
   }
   class(pm) <- "mizu_map_prepared"
@@ -532,26 +532,42 @@ mizu_map_run <- function(
   r
 }
 
+# The integer64 gates: the bare form — the class is the entire attribute
+# set — is the stage-side rule (the wire tag carries the class, consumed
+# at stage and re-applied per slice); the class form the assemble-side one
+# (a gathered vector keeps no attributes but its class, and typeof shared
+# with double means typeof alone cannot gate).
+map_is_int64_bare <- function(x) {
+  identical(attributes(x), list(class = "integer64"))
+}
+
+map_is_int64_class <- function(x) {
+  typeof(x) == "double" && identical(class(x), "integer64")
+}
+
+# lapply's coercion rule, so [[ on the workers sees what lapply's would.
+# The exception is class-only integer64: it stays a vector and rides the
+# raw x section, its class re-applied to each slice (and to each element
+# at batch time) — list-coercing it would forfeit the bare-bytes section
+map_coerce_x <- function(x) {
+  if ((!is.vector(x) || is.object(x)) && !map_is_int64_bare(x)) {
+    x <- as.list(x)
+  }
+  x
+}
+
 # The x-section attribute gate, mirroring the C raw gate: bare, names-only
 # (names stay submitter-side for assembly), or class-only integer64 (the
 # wire tag carries the class — consumed at stage, re-applied per slice).
 map_x_attrs_ok <- function(x) {
   attrs <- attributes(x)
-  is.null(attrs) ||
-    identical(names(attrs), "names") ||
-    identical(attrs, list(class = "integer64"))
+  is.null(attrs) || identical(names(attrs), "names") || map_is_int64_bare(x)
 }
 
 # The x-section wire type: class-only integer64 stages as int64 (int64 and
 # double share typeof "double", so typeof alone cannot gate a swap).
 map_wire_type <- function(x) {
-  if (
-    typeof(x) == "double" && identical(attributes(x), list(class = "integer64"))
-  ) {
-    "integer64"
-  } else {
-    typeof(x)
-  }
+  if (typeof(x) == "double" && map_is_int64_bare(x)) "integer64" else typeof(x)
 }
 
 # Replace a prepared map's x: an in-place memcpy over the region's x
@@ -586,12 +602,7 @@ map_swap_x <- function(pm, x) {
 # its output area sizes off the staged n, so a length change restages.
 map_swap_x_stream <- function(pm, x) {
   st <- pm[["st"]]
-  if (
-    (!is.vector(x) || is.object(x)) &&
-      !identical(attributes(x), list(class = "integer64"))
-  ) {
-    x <- as.list(x)
-  }
+  x <- map_coerce_x(x)
   pm[["x"]] <- x
   if (is.null(st)) {
     return(invisible(pm))
@@ -712,6 +723,17 @@ stop_slots_exhausted <- function() {
   )
 }
 
+# The map caps probe with the slots-exhausted guard: free_rs counts FREE
+# slots in this submitter's own subrange (claiming a worker's submitter
+# slot on nested first use); zero errors here, before any region exists.
+map_caps <- function(pool) {
+  caps <- .Call(mizu_pool_map_caps, pool)
+  if (caps[[2L]] == 0L) {
+    stop_slots_exhausted()
+  }
+  caps
+}
+
 # The worker-death failure, raised from either collect path with the lost
 # element ranges attached (blob path: the chunk range; region path: the
 # lost-set scan's arithmetic).
@@ -741,10 +763,7 @@ map_rearm <- function(pool, st, seed) {
     st[["seed_state"]] <- map_seed_state(seed)
   }
   if (is.null(st[["blob"]])) {
-    caps <- .Call(mizu_pool_map_caps, pool)
-    if (caps[[2L]] == 0L) {
-      stop_slots_exhausted()
-    }
+    caps <- map_caps(pool)
     st[["gen"]] <- .Call(mizu_map_reset, st[["wrap"]])
     st[["R"]] <- map_runner_count(caps, st[["nm"]])
     st[["live0"]] <- caps[[1L]]
@@ -763,10 +782,7 @@ map_rearm <- function(pool, st, seed) {
 # The chunk geometry is inherited from staging or the last swap.
 map_rearm_stream <- function(pool, st, seed) {
   st[["seed_state"]] <- map_seed_state(seed)
-  caps <- .Call(mizu_pool_map_caps, pool)
-  if (caps[[2L]] == 0L) {
-    stop_slots_exhausted()
-  }
+  caps <- map_caps(pool)
   .Call(mizu_map_reset, st[["wrap"]])
   map_stream_window(st, caps)
   st[["handles"]] <- vector("list", st[["C"]])
@@ -781,14 +797,15 @@ map_rearm_stream <- function(pool, st, seed) {
 # frames that would otherwise each fail remotely, one error per runner);
 # a spec f takes the cross-language path on any pool, needing the pool
 # word already set: the descriptor's target byte stages once, at stage
-# time. Language byte 2 is R.
+# time. Language byte 2 is R. Returns the pool word, which never resets
+# once set — the spec paths downstream take it rather than reading again.
 map_check_native <- function(pool, f) {
   ident <- .Call(mizu_pool_ident, pool)
   if (is.null(ident)) {
     stop("mizu: no worker has joined this pool", call. = FALSE)
   }
   if (inherits(f, "mizu_call") || ident[[1L]] == 2L) {
-    return(invisible())
+    return(ident)
   }
   stop(
     "mizu: this pool's workers are not R - mizu_map() needs a mizu_call() ",
@@ -857,7 +874,7 @@ map_empty <- function(x, template) {
     return(out)
   }
   out <- vector(typeof(template), 0L)
-  if (typeof(template) == "double" && identical(class(template), "integer64")) {
+  if (map_is_int64_class(template)) {
     class(out) <- "integer64"
   }
   m <- length(template)
@@ -871,6 +888,34 @@ map_empty <- function(x, template) {
 
 strip_srcref <- function(f) .Call(mizu_strip_srcref, f)
 
+# The .chunks gate, identical at every stage entry.
+map_check_chunks <- function(chunks) {
+  if (is.null(chunks)) {
+    return(NULL)
+  }
+  chunks <- as.numeric(chunks)
+  if (length(chunks) != 1L || is.na(chunks) || chunks < 1) {
+    stop("mizu: .chunks must be a positive number", call. = FALSE)
+  }
+  chunks
+}
+
+# The balanced-range split of n into st[["C"]] chunks — sizes differing by
+# at most one, the leading chunks one element longer — filling the 1-based
+# inclusive lo/hi ranges (the blob path and the streaming geometry).
+map_set_ranges <- function(st, n) {
+  C <- st[["C"]]
+  size <- n %/% C
+  sizes <- rep.int(size, C)
+  extra <- n %% C
+  if (extra > 0) {
+    sizes[seq_len(extra)] <- size + 1
+  }
+  st[["hi"]] <- cumsum(sizes)
+  st[["lo"]] <- st[["hi"]] - sizes + 1
+  invisible(st)
+}
+
 # Stage one map call: the RAWVEC gate, the region-less probe, morsel
 # geometry, and the region create — in that order, so slot exhaustion
 # errors before anything exists. Returns the mutable map state the other
@@ -883,7 +928,8 @@ map_stage <- function(
   dots,
   template = NULL,
   chunks = NULL,
-  seed = NULL
+  seed = NULL,
+  ident = NULL
 ) {
   spec <- inherits(f, "mizu_call")
   # srcrefs would serialize each closure's source (and its srcfile
@@ -893,16 +939,7 @@ map_stage <- function(
   if (typeof(f) == "closure") {
     f <- strip_srcref(f)
   }
-  # lapply's coercion rule, so [[ on the workers sees what lapply's would.
-  # The exception is class-only integer64: it stays a vector and rides the
-  # raw x section, its class re-applied to each slice (and to each element
-  # at batch time) — list-coercing it would forfeit the bare-bytes section
-  if (
-    (!is.vector(x) || is.object(x)) &&
-      !identical(attributes(x), list(class = "integer64"))
-  ) {
-    x <- as.list(x)
-  }
+  x <- map_coerce_x(x)
   n <- length(x)
   map_template_check(template)
   direct <- !is.null(template) && typeof(template) %in% map_template_types
@@ -919,19 +956,8 @@ map_stage <- function(
   st[["seed_state"]] <- if (spec) NULL else map_seed_state(seed)
   st[["seed_pair"]] <- if (spec) map_seed_pair(seed) else NULL
 
-  # free_rs counts FREE slots in this submitter's own subrange (claiming a
-  # worker's submitter slot on nested first use); zero errors here, before
-  # any region is created
-  caps <- .Call(mizu_pool_map_caps, pool)
-  if (caps[[2L]] == 0L) {
-    stop_slots_exhausted()
-  }
-  if (!is.null(chunks)) {
-    chunks <- as.numeric(chunks)
-    if (length(chunks) != 1L || is.na(chunks) || chunks < 1) {
-      stop("mizu: .chunks must be a positive number", call. = FALSE)
-    }
-  }
+  caps <- map_caps(pool)
+  chunks <- map_check_chunks(chunks)
 
   # the raw x-section gate: type / ALTREP / S4 only — the as.list
   # coercion above owns the attribute rule
@@ -976,14 +1002,7 @@ map_stage <- function(
       caps[[3L]]
     )
     st[["C"]] <- max(1L, as.integer(C))
-    size <- n %/% st[["C"]]
-    sizes <- rep.int(size, st[["C"]])
-    extra <- n %% st[["C"]]
-    if (extra > 0) {
-      sizes[seq_len(extra)] <- size + 1
-    }
-    st[["hi"]] <- cumsum(sizes)
-    st[["lo"]] <- st[["hi"]] - sizes + 1
+    map_set_ranges(st, n)
     st[["handles"]] <- vector("list", st[["C"]])
   } else {
     # region path: x rides its own bare-byte section when the gate admits
@@ -993,8 +1012,8 @@ map_stage <- function(
     # bypassing the cap (no per-morsel storage exists, so .chunks = n is
     # admissible at zero memory cost); the default targets
     # ~map_morsels_per_runner morsels per runner under the constant grain.
-    runners <- map_runner_count(caps)
     st[["ms"]] <- if (is.null(chunks)) {
+      runners <- map_runner_count(caps)
       max(1, min(n %/% (runners * map_morsels_per_runner), map_morsel_cap))
     } else {
       ceiling(n / min(n, floor(chunks)))
@@ -1007,7 +1026,9 @@ map_stage <- function(
       # it) and kind-2 runner tasks, on any pool language. A non-raw
       # atomic x (ALTREP, attributed) coerces to the element list — the
       # same values the native loop's [[ would hand f
-      ident <- .Call(mizu_pool_ident, pool)
+      # the pool word: read at the entry points; the restage paths fetch
+      # it here
+      ident <- if (is.null(ident)) .Call(mizu_pool_ident, pool) else ident
       st[["pymap"]] <- ident[[1L]] != 2L
       desc <- .Call(
         mizu_interop_map_desc_call,
@@ -1069,19 +1090,12 @@ map_stream_window <- function(st, caps) {
 # workers) by default, .chunks overriding outright, bounded only by n (the
 # window paces outstanding work, so no slot/ring clamp, unlike the blob
 # path; .chunks = n is the mirai extreme of one element per task). lo/hi
-# are the blob path's balanced ranges.
+# via map_set_ranges, shared with the blob path.
 map_stream_geometry <- function(st, caps) {
   n <- st[["n"]]
   C <- min(n, if (is.null(st[["chunks"]])) 32 * caps[[1L]] else st[["chunks"]])
   st[["C"]] <- max(1L, as.integer(C))
-  size <- n %/% st[["C"]]
-  sizes <- rep.int(size, st[["C"]])
-  extra <- n %% st[["C"]]
-  if (extra > 0) {
-    sizes[seq_len(extra)] <- size + 1
-  }
-  st[["hi"]] <- cumsum(sizes)
-  st[["lo"]] <- st[["hi"]] - sizes + 1
+  map_set_ranges(st, n)
   map_stream_window(st, caps)
 }
 
@@ -1105,7 +1119,8 @@ map_stage_stream <- function(
   dots,
   template = NULL,
   chunks = NULL,
-  seed = NULL
+  seed = NULL,
+  ident = NULL
 ) {
   spec <- inherits(f, "mizu_call")
   if (typeof(f) == "closure") {
@@ -1113,12 +1128,7 @@ map_stage_stream <- function(
   }
   # lapply's coercion rule, as map_stage (the class-only integer64
   # exception included: it stays a vector, its slices re-classed)
-  if (
-    (!is.vector(x) || is.object(x)) &&
-      !identical(attributes(x), list(class = "integer64"))
-  ) {
-    x <- as.list(x)
-  }
+  x <- map_coerce_x(x)
   n <- length(x)
   map_template_check(template)
   direct <- !is.null(template) && typeof(template) %in% map_template_types
@@ -1133,16 +1143,8 @@ map_stage_stream <- function(
   st[["direct"]] <- direct
   st[["m"]] <- if (direct) length(template)
 
-  caps <- .Call(mizu_pool_map_caps, pool)
-  if (caps[[2L]] == 0L) {
-    stop_slots_exhausted()
-  }
-  if (!is.null(chunks)) {
-    chunks <- as.numeric(chunks)
-    if (length(chunks) != 1L || is.na(chunks) || chunks < 1) {
-      stop("mizu: .chunks must be a positive number", call. = FALSE)
-    }
-  }
+  caps <- map_caps(pool)
+  chunks <- map_check_chunks(chunks)
   st[["chunks"]] <- chunks
   map_stream_geometry(st, caps)
 
@@ -1159,7 +1161,7 @@ map_stage_stream <- function(
       x <- as.list(x)
       st[["x"]] <- x
     }
-    ident <- .Call(mizu_pool_ident, pool)
+    ident <- if (is.null(ident)) .Call(mizu_pool_ident, pool) else ident
     st[["pymap"]] <- ident[[1L]] != 2L
     st[["xraw"]] <- xraw
     st[["f"]] <- f
@@ -1333,27 +1335,32 @@ map_stream_prime <- function(pool, st, deadline) {
 # element index among the elements that ran, the set that ran already
 # depending on completion order. An error carrying no element index is not
 # f's (pool stop, infrastructure) and stays fatal, as the runner path's.
-# The spec variant of the fail path: the same drain discipline, but every
-# error reads through map_err_index offset by its chunk's base — `v`
-# arrives from collect_any with "index" the window position and
-# "mizu_map_index" the chunk-local element; the drained siblings collect
-# per handle (no stamp), so their chunk is known. Each observed error's
-# fields normalize to the global element index before the minimum raises.
-map_stream_fail_spec <- function(st, v, k) {
+# The spec arm (spec = TRUE) reads every error through map_err_index
+# offset by its chunk's base — `v` arrives from collect_any with "index"
+# the window position and "mizu_map_index" the chunk-local element; the
+# drained siblings collect per handle (no stamp), so their chunk is known.
+# Each observed error's fields normalize to the global element index
+# before the minimum raises.
+map_stream_fail <- function(st, v, k, spec) {
   died <- NULL
   elts <- NULL
   errs <- list()
-  globalize <- function(e, kk) {
-    i <- map_err_index(e)
-    gi <- i + st[["lo"]][[kk]] - 1
-    if (is.integer(i) && gi <= .Machine$integer.max) {
-      gi <- as.integer(gi)
+  index_of <- function(e) e[["mizu_map_index"]]
+  globalize <- function(e, kk) e
+  if (spec) {
+    index_of <- map_err_index
+    globalize <- function(e, kk) {
+      i <- map_err_index(e)
+      gi <- i + st[["lo"]][[kk]] - 1
+      if (is.integer(i) && gi <= .Machine$integer.max) {
+        gi <- as.integer(gi)
+      }
+      e[["mizu_map_index"]] <- gi
+      if (!is.null(e[["index"]])) {
+        e[["index"]] <- gi
+      }
+      e
     }
-    e[["mizu_map_index"]] <- gi
-    if (!is.null(e[["index"]])) {
-      e[["index"]] <- gi
-    }
-    e
   }
   if (inherits(v, "mizu_error_worker_died")) {
     died <- v
@@ -1390,56 +1397,8 @@ map_stream_fail_spec <- function(st, v, k) {
         elts,
         c(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
       )
-    } else if (!is.null(map_err_index(w))) {
+    } else if (!is.null(index_of(w))) {
       errs[[length(errs) + 1L]] <- globalize(w, oi[[i]])
-    } else if (!inherits(w, "mizu_error_cancelled")) {
-      stop(w)
-    }
-  }
-  if (!is.null(died)) {
-    stop_worker_died(died[["slot"]], died[["pid"]], elts)
-  }
-  idx <- vapply(errs, function(e) as.numeric(e[["mizu_map_index"]]), 0)
-  stop(errs[[which.min(idx)]])
-}
-
-map_stream_fail <- function(st, v, k) {
-  died <- NULL
-  elts <- NULL
-  errs <- list()
-  if (inherits(v, "mizu_error_worker_died")) {
-    died <- v
-    elts <- rbind(elts, c(lo = st[["lo"]][[k]], hi = st[["hi"]][[k]]))
-  } else if (!is.null(v[["mizu_map_index"]])) {
-    errs <- list(v)
-  } else {
-    stop(v)
-  }
-  oi <- st[["oi"]]
-  hl <- st[["handles"]][oi]
-  map_cancel(st)
-  now <- mono_time()
-  for (i in seq_along(oi)) {
-    state <- .Call(mizu_pool_task_state, hl[[i]])
-    if (state != "ok" && state != "err" && state != "died") {
-      next
-    }
-    w <- .Call(mizu_pool_collect_try, hl[[i]], now)
-    if (!is.object(w) || !inherits(w, "mizu_caught")) {
-      next
-    }
-    w <- w[[1L]]
-    if (inherits(w, "mizu_error_worker_died")) {
-      # the first death reports slot/pid; every death adds its range
-      if (is.null(died)) {
-        died <- w
-      }
-      elts <- rbind(
-        elts,
-        c(lo = st[["lo"]][[oi[[i]]]], hi = st[["hi"]][[oi[[i]]]])
-      )
-    } else if (!is.null(w[["mizu_map_index"]])) {
-      errs[[length(errs) + 1L]] <- w
     } else if (!inherits(w, "mizu_error_cancelled")) {
       stop(w)
     }
@@ -1486,7 +1445,7 @@ map_stream_turn <- function(pool, st, deadline) {
   st[["handles"]][k] <- list(NULL)
   spec <- isTRUE(st[["spec"]])
   if (inherits(v, "condition")) {
-    if (spec) map_stream_fail_spec(st, v, k) else map_stream_fail(st, v, k)
+    map_stream_fail(st, v, k, spec)
   }
   if (spec) {
     lo <- st[["lo"]][[k]]
@@ -1679,7 +1638,9 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
         }
       }
       st[["handles"]][k] <- list(NULL)
-      out[seq.int(st[["lo"]][[k]], st[["hi"]][[k]])] <- v
+      # the splice is one C pass, as the streaming path's (an R-level
+      # `[<-` would dispatch per element, per chunk)
+      .Call(mizu_map_vsplice, out, st[["lo"]][[k]], v)
     }
   } else {
     # Region path: collect the R runner handles under the exhausted-runner
@@ -1873,10 +1834,7 @@ map_assemble <- function(st, out, collect = "value") {
       # a spec stream accumulated the flat vector a chunk gather at a
       # time; the memcpy splice carries no attributes, so a classed
       # integer64 gather's class is re-applied here
-      if (
-        typeof(st[["template"]]) == "double" &&
-          identical(class(st[["template"]]), "integer64")
-      ) {
+      if (map_is_int64_class(st[["template"]])) {
         class(out) <- "integer64"
       }
       out

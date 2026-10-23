@@ -2,6 +2,12 @@
 # the peer through a static Rscript runner — no control channel or descriptor
 # passing.
 
+# The scalar-string gate of the constructor surface (each caller keeps its
+# own contextual error message).
+is_scalar_string <- function(x) {
+  is.character(x) && length(x) == 1L && !is.na(x)
+}
+
 rscript_path <- function() {
   file.path(
     R.home("bin"),
@@ -29,9 +35,7 @@ mizu_child_script <- function(root) {
 }
 
 mizu_spawn <- function(expr, stdout = FALSE, stderr = FALSE) {
-  if (
-    !is.character(expr) || length(expr) != 1L || is.na(expr) || !nzchar(expr)
-  ) {
+  if (!is_scalar_string(expr) || !nzchar(expr)) {
     stop("mizu: expr must be a non-empty string", call. = FALSE)
   }
   root <- getNamespaceInfo(asNamespace("mizu"), "path")

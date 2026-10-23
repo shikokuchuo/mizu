@@ -80,7 +80,7 @@ mizu_shm *mizu_region(SEXP xp) {
 
 SEXP mizu_region_create(SEXP size) {
   double sz = Rf_asReal(size);
-  if (!(sz >= 1) || sz > 9.007199254740992e15)
+  if (!(sz >= 1) || sz > MIZU_DBL_SAFE_INT)
     Rf_error("mizu: invalid region size");
 
   mizu_shm *shm;

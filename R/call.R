@@ -71,7 +71,7 @@ mizu_call <- function(.name = NULL, ..., .source = NULL) {
     )
   }
   code <- if (is.null(.source)) .name else .source
-  if (!is.character(code) || length(code) != 1L || is.na(code)) {
+  if (!is_scalar_string(code)) {
     stop("mizu: '.name' and '.source' must be a single string", call. = FALSE)
   }
   args <- list(...)

@@ -206,7 +206,7 @@ mizu_retire_worker <- function(pool, slot) {
 #'
 #' @export
 mizu_pool_attach <- function(name) {
-  if (!is.character(name) || length(name) != 1L || is.na(name)) {
+  if (!is_scalar_string(name)) {
     stop("mizu: name must be a character string", call. = FALSE)
   }
   .Call(mizu_pool_attach_call, sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", name))
@@ -686,6 +686,13 @@ recode_states <- function(x, states) {
   states[x + 1L]
 }
 
+# The workers/submitters table assembly shared by mizu_pool_dump and
+# mizu_pool_stats: the status column recoded to labels, one row per slot.
+slot_frame <- function(x, states) {
+  x[["status"]] <- recode_states(x[["status"]], states)
+  data.frame(slot = seq_along(x[["status"]]) - 1L, x)
+}
+
 #' Inspect a Pool
 #'
 #' A read-only snapshot of the pool region: registry states, parked-worker
@@ -763,12 +770,9 @@ mizu_pool_dump <- function(pool) {
     "unknown"
   }
   w <- d[["workers"]]
-  w[["status"]] <- recode_states(w[["status"]], worker_states)
   w[["park_state"]] <- recode_states(w[["park_state"]], park_states)
-  d[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
-  s <- d[["submitters"]]
-  s[["status"]] <- recode_states(s[["status"]], submitter_states)
-  d[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
+  d[["workers"]] <- slot_frame(w, worker_states)
+  d[["submitters"]] <- slot_frame(d[["submitters"]], submitter_states)
   tk <- lapply(d[["tasks"]], `[`, !is.na(d[["tasks"]][["slot"]]))
   tk[["status"]] <- recode_states(tk[["status"]], slot_states)
   d[["tasks"]] <- data.frame(tk)
@@ -820,13 +824,10 @@ mizu_pool_dump <- function(pool) {
 #' @export
 mizu_pool_stats <- function(pool) {
   st <- .Call(mizu_pool_stats_call, pool)
-  w <- st[["workers"]]
-  w[["status"]] <- recode_states(w[["status"]], worker_states)
-  st[["workers"]] <- data.frame(slot = seq_along(w[["status"]]) - 1L, w)
+  st[["workers"]] <- slot_frame(st[["workers"]], worker_states)
   s <- st[["submitters"]]
-  s[["status"]] <- recode_states(s[["status"]], submitter_states)
   s[["queued"]] <- s[["injected"]] - s[["claimed"]]
-  st[["submitters"]] <- data.frame(slot = seq_along(s[["status"]]) - 1L, s)
+  st[["submitters"]] <- slot_frame(s, submitter_states)
   st
 }
 

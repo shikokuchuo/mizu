@@ -18,6 +18,35 @@
 #include "view.h"
 #include <stdatomic.h>
 
+/* R-version backports, one copy for the package's TUs (Writing R
+   Extensions, "Moving into C API compliance"): ANY_ATTRIB(), the closure
+   slot accessors, and R_mkClosure() joined the C API in R 4.5.0 (the
+   constructor's single definition is map.c's); R_getAttributes() in
+   R 4.6.0 (the named-list form — the fallback reads the pairlist, and
+   every consumer handles both forms). view.c carries its own ANY_ATTRIB
+   copy: mori vendors it without this header. */
+#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
+#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
+#endif
+#if R_VERSION < R_Version(4, 5, 0)
+#define R_ClosureFormals(x) FORMALS(x)
+#define R_ClosureBody(x)    BODY(x)
+#define R_ClosureEnv(x)     CLOENV(x)
+SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
+#endif
+#if R_VERSION < R_Version(4, 6, 0)
+#define R_getAttributes(x) ATTRIB(x)
+#endif
+
+/* Wire-relevant numeric bounds as named constants: the largest integer a
+   double represents exactly (2^53), the int64 magnitude bound (2^63), the
+   uint64 ceiling as a double (2^64), and R's L'Ecuyer-CMRG kind word
+   (.Random.seed's first element). */
+#define MIZU_DBL_SAFE_INT 0x1p53
+#define MIZU_DBL_I64      0x1p63
+#define MIZU_DBL_U64      0x1p64
+#define MIZU_RNG_CMRG_KIND 10407
+
 /* Cold-call annotation for raise-only helpers: keeps their call sites from
    perturbing the hot verbs' code layout (the 2026-08-23 cold-recorder
    record in dev/bench/notes.md). */
@@ -103,6 +132,22 @@ typedef struct mizu_r_handle_s {
    real word). The pool Arrow gate's word (stage_r.c) and the codec frame
    tier's (codec.c) — both run same-language only. */
 #define MIZU_R_CAPS ((uint32_t) (MIZU_R_IDENT >> 32))
+
+/* The SHM_VEC floor gate: a payload past max(inline budget,
+   MIZU_ZC_FLOOR) is a zero-copy candidate; at or under it the copy tiers
+   win. */
+static inline size_t mizu_zc_gate(uint32_t inline_max) {
+  return (size_t) inline_max > MIZU_ZC_FLOOR ?
+    (size_t) inline_max : MIZU_ZC_FLOOR;
+}
+
+/* The reader-language state (one predicted branch per stage): a foreign
+   handle — a channel whose peer is not R, or the §4.2 foreign result
+   policy armed around a pool publish — stages through the interop paths;
+   same-language handles run the private tiers. */
+static inline int mizu_r_peer_foreign(const mizu_r_handle *rh) {
+  return rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
+}
 
 /* Terminal-state sentinels (the channel/pool veneer), shared across the verb
    surface. */
@@ -571,6 +616,13 @@ double mizu_r_timeout_arg(SEXP timeout_sexp);
    guard. `what` ("channel" / "pool") composes the messages. */
 mizu_r_handle *mizu_r_handle_peek(SEXP xp, SEXP tag, const char *what);
 mizu_r_handle *mizu_r_handle_get(SEXP xp, SEXP tag, const char *what);
+/* The recv/collect entry discipline of both veneer's wait verbs: the
+   consumer-side boundary collection (dead received views release here
+   instead of piling up as lent bytes the caller's own gc cadence cannot
+   see), skipped inside a pool task — a collection there would only
+   promote the task's live views; then the decline slot cleared, so the
+   verb's read hook stashes a fresh caught condition there on MIZU_ERR. */
+void mizu_r_recv_begin(mizu_r_handle *h);
 
 // Pool-signal unwrap (verbs_pool.c; map.c's runner reads the words) -------
 
@@ -642,5 +694,145 @@ void mizu_cond_fini(void);
 extern SEXP mizu_srcref_sym;
 SEXP mizu_strip_srcref(SEXP f);
 SEXP mizu_strip_lang(SEXP x);
+
+// The .Call entry points (registered in init.c) ---------------------------------
+
+/* Declared here, not at the registration site: the defining TU then
+   compiles against its own prototype, so a signature drift is a compile
+   error rather than a DL_FUNC-cast mismatch. Sectioned by defining TU. */
+
+/* bounded.c */
+SEXP mizu_bounded_call(SEXP, SEXP);
+SEXP mizu_unserialize_call(SEXP);
+/* codec.c */
+SEXP mizu_codec_write_call(SEXP);
+SEXP mizu_codec_read_call(SEXP);
+SEXP mizu_codec_cycle_call(void);
+/* interop.c */
+SEXP mizu_interop_write_call(SEXP);
+SEXP mizu_interop_read_call(SEXP);
+SEXP mizu_interop_write_err_call(SEXP, SEXP);
+SEXP mizu_interop_write_task_call(SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_interop_map_desc_call(SEXP, SEXP, SEXP);
+SEXP mizu_interop_runner_call(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_interop_read_task_call(SEXP);
+SEXP mizu_stream_read_call(SEXP);
+/* wrap.c */
+SEXP mizu_region_create(SEXP);
+SEXP mizu_region_open(SEXP, SEXP);
+SEXP mizu_region_name(SEXP);
+SEXP mizu_region_size(SEXP);
+SEXP mizu_peek(SEXP, SEXP, SEXP);
+SEXP mizu_poke(SEXP, SEXP, SEXP);
+SEXP mizu_prune_call(void);
+/* preamble.c */
+SEXP mizu_preamble_write_call(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_preamble_validate_call(SEXP);
+/* entity.c */
+SEXP mizu_park_call(SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_unpark_call(SEXP, SEXP, SEXP);
+SEXP mizu_epoch_call(SEXP, SEXP);
+/* liveness.c */
+SEXP mizu_live_open_call(SEXP);
+SEXP mizu_live_try_call(SEXP);
+SEXP mizu_live_close_call(SEXP);
+SEXP mizu_live_dir_call(void);
+SEXP mizu_death_watch_call(SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_death_fired_call(SEXP);
+SEXP mizu_death_stop_call(SEXP);
+/* verbs_channel.c */
+SEXP mizu_channel_create_call(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_channel_suffix(SEXP);
+SEXP mizu_channel_ready_wait_call(SEXP, SEXP);
+SEXP mizu_channel_destroy_call(SEXP);
+SEXP mizu_channel_attach_call(SEXP, SEXP);
+SEXP mizu_channel_ready_set_call(SEXP);
+SEXP mizu_channel_send_call(SEXP, SEXP);
+SEXP mizu_channel_send_error_call(SEXP, SEXP);
+SEXP mizu_channel_send_batch_call(SEXP, SEXP);
+SEXP mizu_channel_recv_call(SEXP, SEXP);
+SEXP mizu_channel_recv_batch_call(SEXP, SEXP, SEXP);
+SEXP mizu_channel_close_call(SEXP, SEXP);
+SEXP mizu_channel_close_signal_call(SEXP);
+SEXP mizu_channel_alive_call(SEXP);
+SEXP mizu_channel_keep_out_call(SEXP);
+SEXP mizu_channel_stat(SEXP);
+SEXP mizu_sentinel_check(SEXP);
+SEXP mizu_now_call(void);
+/* verbs_pool.c */
+SEXP mizu_pool_create_call(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_suffix(SEXP);
+SEXP mizu_pool_ready_wait_call(SEXP, SEXP, SEXP);
+SEXP mizu_pool_destroy_call(SEXP);
+SEXP mizu_pool_worker_join_call(SEXP, SEXP, SEXP);
+SEXP mizu_pool_leave_call(SEXP);
+SEXP mizu_pool_lame_duck_call(SEXP);
+SEXP mizu_pool_retire_call(SEXP, SEXP);
+SEXP mizu_pool_attach_call(SEXP);
+SEXP mizu_pool_ident_call(SEXP);
+SEXP mizu_pool_submit_spec(SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_submit_call(SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_submit_batch_call(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_submit_expr(SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_submit_try(SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_submit_map_runner(SEXP, SEXP, SEXP);
+SEXP mizu_pool_step_call(SEXP, SEXP);
+SEXP mizu_pool_run(SEXP, SEXP);
+SEXP mizu_pool_run_outcome(SEXP, SEXP);
+SEXP mizu_pool_set_eval(SEXP);
+SEXP mizu_current_pool_call(void);
+SEXP mizu_pool_set_trace_call(SEXP, SEXP);
+SEXP mizu_pool_deque_pull_call(SEXP, SEXP);
+SEXP mizu_pool_exec_fail_call(SEXP, SEXP);
+SEXP mizu_pool_dump_call(SEXP);
+SEXP mizu_pool_collect_call(SEXP, SEXP);
+SEXP mizu_pool_collect_try(SEXP, SEXP);
+SEXP mizu_pool_collect_any_call(SEXP, SEXP);
+SEXP mizu_pool_collect_all_call(SEXP, SEXP);
+SEXP mizu_pool_cancel_call(SEXP);
+SEXP mizu_pool_task_state_call(SEXP);
+SEXP mizu_pool_stop_call(SEXP, SEXP);
+SEXP mizu_pool_status_call(SEXP);
+SEXP mizu_pool_stats_call(SEXP);
+SEXP mizu_pool_map_caps_call(SEXP);
+SEXP mizu_pool_map_cache(SEXP);
+SEXP mizu_pool_signals_call(SEXP);
+SEXP mizu_pool_help_once_call(SEXP);
+SEXP mizu_pool_zc_info(SEXP);
+/* map.c */
+SEXP mizu_map_eligible(SEXP);
+SEXP mizu_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_map_open(SEXP, SEXP);
+SEXP mizu_map_desc(SEXP);
+SEXP mizu_map_is_template(SEXP);
+SEXP mizu_map_slice(SEXP, SEXP, SEXP);
+SEXP mizu_map_xslice(SEXP, SEXP, SEXP);
+SEXP mizu_map_write(SEXP, SEXP, SEXP);
+SEXP mizu_map_gather(SEXP);
+SEXP mizu_map_gather_view(SEXP, SEXP, SEXP);
+SEXP mizu_map_dim_call(SEXP, SEXP);
+SEXP mizu_map_splice(SEXP, SEXP, SEXP);
+SEXP mizu_map_vsplice(SEXP, SEXP, SEXP);
+SEXP mizu_map_splice_ix(SEXP, SEXP, SEXP);
+SEXP mizu_map_asplice(SEXP, SEXP, SEXP);
+SEXP mizu_map_lost(SEXP, SEXP);
+SEXP mizu_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
+                    SEXP);
+SEXP mizu_map_abandon(SEXP, SEXP);
+SEXP mizu_map_cancel_set(SEXP);
+SEXP mizu_map_close(SEXP);
+SEXP mizu_map_cancel_get(SEXP);
+SEXP mizu_map_reset(SEXP);
+SEXP mizu_map_swap_x(SEXP, SEXP);
+SEXP mizu_map_info(SEXP);
+SEXP mizu_map_claim_state(SEXP, SEXP);
+SEXP mizu_map_timeout_call(void);
+/* rng.c */
+SEXP mizu_map_rng_base(SEXP);
+SEXP mizu_map_rng_seek(SEXP, SEXP);
+SEXP mizu_map_rng_install(SEXP);
+/* zc.c */
+SEXP mizu_zc_view_name_call(SEXP);
 
 #endif /* MIZU_H */

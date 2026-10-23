@@ -147,7 +147,7 @@ static uint32_t map_ordinal(mizu_map_h *mh, SEXP r_sexp) {
 SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
                    SEXP template_sexp, SEXP morsel_sexp) {
   double nd = Rf_asReal(n_sexp);
-  if (!(nd >= 1) || nd > 9.007199254740992e15)
+  if (!(nd >= 1) || nd > MIZU_DBL_SAFE_INT)
     Rf_error("mizu: invalid map length");
   uint64_t n = (uint64_t) nd;
   double msd = Rf_asReal(morsel_sexp);
@@ -525,7 +525,7 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     *ei = e;
     if (seeded) {
       SEXP seedv = PROTECT(Rf_allocVector(INTSXP, 7));
-      INTEGER(seedv)[0] = 10407;
+      INTEGER(seedv)[0] = MIZU_RNG_CMRG_KIND;
       memcpy(INTEGER(seedv) + 1, state, 6 * sizeof(int));
       Rf_defineVar(mizu_rs_sym, seedv, R_GlobalEnv);
       UNPROTECT(1);
@@ -616,7 +616,7 @@ static SEXP map_dim_build(uint64_t n, uint64_t m) {
 SEXP mizu_map_dim_call(SEXP n_sexp, SEXP m_sexp) {
   double nd = Rf_asReal(n_sexp), md = Rf_asReal(m_sexp);
   if (!(nd >= 0) || !(md >= 0) || nd != floor(nd) || md != floor(md) ||
-      nd >= 0x1p63 || md >= 0x1p63)
+      nd >= MIZU_DBL_I64 || md >= MIZU_DBL_I64)
     Rf_error("mizu: invalid map dimensions");
   return map_dim_build((uint64_t) nd, (uint64_t) md);
 }
@@ -1052,18 +1052,11 @@ SEXP mizu_map_timeout_call(void) {
   return mizu_sent_timeout;
 }
 
-/* ANY_ATTRIB(), the closure accessors and R_mkClosure() joined the C API
-   in R 4.5.0; backports for earlier R per Writing R Extensions, "Moving
-   into C API compliance" (the closure constructor is the allocSExp +
-   setters idiom — no mkClosure entry point existed before 4.5.0). */
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
+/* R_mkClosure() joined the C API in R 4.5.0; the package's one backport
+   definition for earlier R (the allocSExp + setters idiom — no mkClosure
+   entry point existed before 4.5.0), declared for every TU in mizu.h. The
+   slot macros and ANY_ATTRIB() are mizu.h's too. */
 #if R_VERSION < R_Version(4, 5, 0)
-#define R_ClosureFormals(x) FORMALS(x)
-#define R_ClosureBody(x)    BODY(x)
-#define R_ClosureEnv(x)     CLOENV(x)
-
 SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env) {
   SEXP fun = Rf_allocSExp(CLOSXP);
   SET_FORMALS(fun, formals);

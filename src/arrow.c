@@ -18,19 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
-   R, where ATTRIB() was still the sanctioned spelling. */
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
-
-/* R_getAttributes() joined the C API in R 4.6.0, returning the named-list
-   form; on earlier R the same attributes read off the pairlist (codec.c's
-   backport). */
-#if R_VERSION < R_Version(4, 6, 0)
-#define R_getAttributes(x) ATTRIB(x)
-#endif
-
 /* The attributes, if any: the (name, value) pairs, class last through
    Rf_classgets — the object bit follows the class as R's own setAttrib
    maintains it (view.c's apply discipline). */

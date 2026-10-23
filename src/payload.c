@@ -7,12 +7,6 @@
 
 #include "mizu.h"
 
-/* ANY_ATTRIB() joined the C API in R 4.5.0; equivalent fallback for earlier
-   R, where ATTRIB() was still the sanctioned spelling. */
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
-
 /* The vendored view layer owns the macro spellings (mori renames them); pin
    them to the core's wire-format numbers here, where both are visible. */
 _Static_assert(MIZU_VIEW_TYPE_INT64 == MIZU_TYPE_INT64,
@@ -231,7 +225,7 @@ void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
   /* the reader-language state (one predicted branch per stage): a foreign
      pool handle is the §4.2 foreign result, its zero-copy admission the
      submitter's capability mask; same-language handles run unchanged */
-  const int foreign = rh->peer_lang != 0 && rh->peer_lang != MIZU_LANG_R;
+  const int foreign = mizu_r_peer_foreign(rh);
   size_t rawlen, total;
   /* NULL stages as the immediate kind: the canonical empty result / ACK
      pays no serialize pass and no receive-side allocation */

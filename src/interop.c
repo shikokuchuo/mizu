@@ -30,16 +30,6 @@
 #include <stdlib.h>
 #include <R_ext/Parse.h>
 
-#if R_VERSION < R_Version(4, 5, 0) && !defined(ANY_ATTRIB)
-#define ANY_ATTRIB(x) (ATTRIB(x) != R_NilValue)
-#endif
-
-/* R_mkClosure() joined the C API in R 4.5.0; the definition is map.c's
-   backport on earlier R. */
-#if R_VERSION < R_Version(4, 5, 0)
-SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
-#endif
-
 static SEXP ix_tzone_sym, ix_units_sym;
 static SEXP ix_date_class, ix_posixct_class, ix_posixlt_class,
   ix_factor_class, ix_frame_class, ix_ordered_class, ix_ref_marker_class,
@@ -2207,6 +2197,22 @@ static SEXP ix_err_call_text(SEXP call) {
   return out;
 }
 
+/* A condition's numeric index field as the wire's 0-based u64: 1 when the
+   field is a usable scalar (>= 1 and exactly representable in a double),
+   the converted value through out. */
+static int ix_err_index(SEXP cond, const char *name, uint64_t *out) {
+  SEXP ix = ix_cond_field(cond, name);
+  if ((TYPEOF(ix) == INTSXP || TYPEOF(ix) == REALSXP) &&
+      XLENGTH(ix) == 1) {
+    const double v = Rf_asReal(ix);
+    if (!ISNA(v) && v >= 1 && v <= MIZU_DBL_SAFE_INT) {
+      *out = (uint64_t) v - 1;             /* wire is 0-based */
+      return 1;
+    }
+  }
+  return 0;
+}
+
 /* Frame cond as an 'I' err stream: the mode logic resolves the spans
    here; the bounded framer is the core's mizu_ix_write_err (the
    byte-shape helper registry) — dst has inline_max bytes; the return is
@@ -2253,15 +2259,7 @@ size_t mizu_interop_write_err_scoped(unsigned char *dst,
       type = t;
       msg = m;
       detail = d;
-      SEXP ix = ix_cond_field(cond, "index");
-      if ((TYPEOF(ix) == INTSXP || TYPEOF(ix) == REALSXP) &&
-          XLENGTH(ix) == 1) {
-        const double v = Rf_asReal(ix);
-        if (!ISNA(v) && v >= 1 && v <= 9007199254740992.0) {
-          has_index = 1;
-          index = (uint64_t) v - 1;             /* wire is 0-based */
-        }
-      }
+      has_index = ix_err_index(cond, "index", &index);
     } else {
       remote = 0;    /* a malformed hand-built one falls to local mode */
     }
@@ -2292,15 +2290,7 @@ size_t mizu_interop_write_err_scoped(unsigned char *dst,
     /* a map runner's per-element failure crosses with the in-flight
        element index (the runner's 1-based annotation; the wire is
        0-based) — Phase 5's flags bit 0 */
-    SEXP ix = ix_cond_field(cond, "mizu_map_index");
-    if ((TYPEOF(ix) == INTSXP || TYPEOF(ix) == REALSXP) &&
-        XLENGTH(ix) == 1) {
-      const double v = Rf_asReal(ix);
-      if (!ISNA(v) && v >= 1 && v <= 9007199254740992.0) {
-        has_index = 1;
-        index = (uint64_t) v - 1;
-      }
-    }
+    has_index = ix_err_index(cond, "mizu_map_index", &index);
   }
 
   const size_t n = mizu_ix_write_err(dst, inline_max,
@@ -3437,7 +3427,8 @@ static SEXP ix_runner_seed(SEXP seed) {
   const double *s = REAL(out);
   if (!R_FINITE(s[0]) || s[0] != floor(s[0]) ||
       !R_FINITE(s[1]) || s[1] != floor(s[1]) ||
-      s[0] <= -0x1p63 || s[0] >= 0x1p63 || s[1] <= -0x1p63 || s[1] >= 0x1p63)
+      s[0] <= -MIZU_DBL_I64 || s[0] >= MIZU_DBL_I64 ||
+      s[1] <= -MIZU_DBL_I64 || s[1] >= MIZU_DBL_I64)
     Rf_error("mizu: expected integral (seed, offset) elements within "
              "int64 range");
   return out;
@@ -3457,7 +3448,7 @@ SEXP mizu_interop_runner_call(SEXP name, SEXP gen_field, SEXP seed,
   if (!Rf_isNumeric(gen_field) || XLENGTH(gen_field) != 1)
     Rf_error("mizu: expected a length-1 numeric generation field");
   const double gen = Rf_asReal(gen_field);
-  if (!R_FINITE(gen) || gen != floor(gen) || gen < 0 || gen >= 0x1p63)
+  if (!R_FINITE(gen) || gen != floor(gen) || gen < 0 || gen >= MIZU_DBL_I64)
     Rf_error("mizu: expected a non-negative integer generation field "
              "below 2^63");
   SEXP seed2 = PROTECT(ix_runner_seed(seed));
