@@ -281,6 +281,130 @@ test_that("the attr decline names the offending attributes", {
   )
 })
 
+test_that("the decline diagnoses a frame's failing column", {
+  methods::setClass("ixS4col", contains = "integer")
+  on.exit(methods::removeClass("ixS4col"), add = TRUE)
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+
+  # esoph-shaped: an ordered-factor column names itself
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      data.frame(agegp = ordered(c("25-34", "35-44")), ncases = 0:1)
+    ),
+    error = TRUE
+  )
+  # freeny-shaped: a ts column names its attributes at the column
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(
+        list(y = ts(1:4, frequency = 4, start = c(2020, 1)), x = 1:4),
+        class = "data.frame",
+        row.names = c(NA_integer_, -4L)
+      )
+    ),
+    error = TRUE
+  )
+  # POSIXlt, list and S4 columns name the column and the type
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(
+        list(a = 1:2, t = as.POSIXlt(.POSIXct(c(0, 86400), tz = "UTC"))),
+        class = "data.frame",
+        row.names = c(NA_integer_, -2L)
+      )
+    ),
+    error = TRUE
+  )
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(
+        list(a = 1:2, l = list(1, 2)),
+        class = "data.frame",
+        row.names = c(NA_integer_, -2L)
+      )
+    ),
+    error = TRUE
+  )
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(
+        list(a = 1:2, s = methods::new("ixS4col", 3:4)),
+        class = "data.frame",
+        row.names = c(NA_integer_, -2L)
+      )
+    ),
+    error = TRUE
+  )
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(
+        list(v = 1:4, m = matrix(letters[1:4], 2)),
+        class = "data.frame",
+        row.names = c(NA_integer_, -4L)
+      )
+    ),
+    error = TRUE
+  )
+  # the named-atomic column keeps the reason but drops the remedy
+  bad <- structure(
+    list(a = 1:2, v = c(x = 1, y = 2)),
+    class = "data.frame",
+    row.names = c(NA_integer_, -2L)
+  )
+  expect_snapshot(mizu_send(p$host, bad), error = TRUE)
+  e <- tryCatch(mizu_send(p$host, bad), error = function(e) e)
+  expect_identical(e$reason, "a named atomic vector has no portable home")
+  expect_identical(e$remedy, character(0))
+  # the extended frame's failure path rides the same column walk
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(
+        data.frame(grp = ordered(c("a", "b"))),
+        class = c("tbl_df", "tbl", "data.frame")
+      )
+    ),
+    error = TRUE
+  )
+})
+
+test_that("the decline diagnoses the frame's own shape and keeps prior text", {
+  methods::setClass("ixS4top", contains = "integer")
+  on.exit(methods::removeClass("ixS4top"), add = TRUE)
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+
+  expect_snapshot(mizu_send(p$host, matrix(letters[1:4], 2)), error = TRUE)
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(data.frame(x = 1:2), class = c("data.frame", "foo"))
+    ),
+    error = TRUE
+  )
+  dfd <- data.frame(x = 1:2, y = 3:4)
+  names(dfd) <- c("a", "a")
+  expect_snapshot(mizu_send(p$host, dfd), error = TRUE)
+  df <- data.frame(x = 1:3)
+  attr(df, "row.names") <- c("a", NA, "c")
+  expect_snapshot(mizu_send(p$host, df), error = TRUE)
+
+  # unchanged text: the pre-existing specific and attr-naming declines
+  expect_snapshot(mizu_send(p$host, c(a = "x")), error = TRUE)
+  expect_snapshot(mizu_send(p$host, ordered(c("a", "b"))), error = TRUE)
+  gd <- data.frame(x = 1:3)
+  attr(gd, "formula") <- y ~ x
+  expect_snapshot(mizu_send(p$host, gd), error = TRUE)
+  expect_snapshot(mizu_send(p$host, methods::new("ixS4top", 1:3)), error = TRUE)
+})
+
 test_that("the labeled shapes round-trip on a labeled peer", {
   p <- foreign_pair(caps = 130L) # ATTRS + LABELED
   on.exit(channel_end(p))

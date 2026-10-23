@@ -14,6 +14,140 @@
       Error:
       ! mizu: value is not portable to the peer (an attribute set outside the portable whitelist at x)
 
+# the decline diagnoses a frame's failing column
+
+    Code
+      mizu_send(p$host, data.frame(agegp = ordered(c("25-34", "35-44")), ncases = 0:1))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an ordered factor has no portable home at x$agegp)
+
+---
+
+    Code
+      mizu_send(p$host, structure(list(y = ts(1:4, frequency = 4, start = c(2020, 1)),
+      x = 1:4), class = "data.frame", row.names = c(NA_integer_, -4L)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an attribute set (tsp) outside the portable whitelist at x$y)
+
+---
+
+    Code
+      mizu_send(p$host, structure(list(a = 1:2, t = as.POSIXlt(.POSIXct(c(0, 86400),
+      tz = "UTC"))), class = "data.frame", row.names = c(NA_integer_, -2L)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a POSIXlt column has no portable home at x$t)
+
+---
+
+    Code
+      mizu_send(p$host, structure(list(a = 1:2, l = list(1, 2)), class = "data.frame",
+      row.names = c(NA_integer_, -2L)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a list column has no portable home at x$l)
+
+---
+
+    Code
+      mizu_send(p$host, structure(list(a = 1:2, s = methods::new("ixS4col", 3:4)),
+      class = "data.frame", row.names = c(NA_integer_, -2L)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an S4 object has no portable home at x$s)
+
+---
+
+    Code
+      mizu_send(p$host, structure(list(v = 1:4, m = matrix(letters[1:4], 2)), class = "data.frame",
+      row.names = c(NA_integer_, -4L)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a character matrix has no portable home at x$m)
+
+---
+
+    Code
+      mizu_send(p$host, bad)
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a named atomic vector has no portable home at x$v)
+
+---
+
+    Code
+      mizu_send(p$host, structure(data.frame(grp = ordered(c("a", "b"))), class = c(
+        "tbl_df", "tbl", "data.frame")))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an ordered factor has no portable home at x$grp)
+
+# the decline diagnoses the frame's own shape and keeps prior text
+
+    Code
+      mizu_send(p$host, matrix(letters[1:4], 2))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a character matrix has no portable home at x)
+
+---
+
+    Code
+      mizu_send(p$host, structure(data.frame(x = 1:2), class = c("data.frame", "foo")))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a data frame's class vector must end in "data.frame" at x)
+
+---
+
+    Code
+      mizu_send(p$host, dfd)
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (frame names must be unique, non-NA and UTF-8-writable at x)
+
+---
+
+    Code
+      mizu_send(p$host, df)
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (row.names must be an integer or character vector of the frame's length with no NA at x)
+
+---
+
+    Code
+      mizu_send(p$host, c(a = "x"))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (a named atomic vector has no portable home at x)
+
+---
+
+    Code
+      mizu_send(p$host, ordered(c("a", "b")))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an ordered factor has no portable home at x)
+
+---
+
+    Code
+      mizu_send(p$host, gd)
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an attribute set (formula) outside the portable whitelist at x)
+
+---
+
+    Code
+      mizu_send(p$host, methods::new("ixS4top", 1:3))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an S4 object has no portable home at x)
+
 # corrupt and unknown streams raise informatively
 
     Code

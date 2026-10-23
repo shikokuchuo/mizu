@@ -41,8 +41,9 @@ SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env);
 #endif
 
 static SEXP ix_tzone_sym, ix_units_sym;
-static SEXP ix_date_class, ix_posixct_class, ix_factor_class,
-  ix_frame_class, ix_ordered_class, ix_ref_marker_class, ix_difftime_class;
+static SEXP ix_date_class, ix_posixct_class, ix_posixlt_class,
+  ix_factor_class, ix_frame_class, ix_ordered_class, ix_ref_marker_class,
+  ix_difftime_class;
 
 /* The attr vocabulary single-sources through the core's MIZU_IX_ATTR_* /
    MIZU_IX_CLASS_* / MIZU_IX_UNIT_* macros (the byte-shape helper
@@ -503,32 +504,38 @@ static int ix_qualify_dimnames(SEXP x) {
   return ok;
 }
 
-/* The frame shape's column half: one or more columns, each an
-   attribute-free atomic vector, a class-only integer64, a plain factor,
-   a Date, a POSIXct, or a difftime, all of one length (*n_out). */
+/* One frame column: an attribute-free atomic vector, a class-only
+   integer64, a plain factor, a Date, a POSIXct, or a difftime. */
+static int ix_frame_col_ok(SEXP col) {
+  switch (TYPEOF(col)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+  case STRSXP:
+    break;
+  default:
+    return 0;
+  }
+  if (ANY_ATTRIB(col)) {
+    if (mizu_view_is_int64_any(col)) {
+      if (ix_attr_count(col) != 1) return 0;
+    } else {
+      const int q = mizu_interop_attrs_qualify(col);
+      if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
+          q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
+        return 0;
+    }
+  }
+  return 1;
+}
+
+/* The frame shape's column half: one or more columns, each
+   ix_frame_col_ok, all of one length (*n_out). */
 static int ix_frame_cols_ok(SEXP x, R_xlen_t *n_out) {
   const R_xlen_t ncols = XLENGTH(x);
   if (ncols < 1) return 0;
   R_xlen_t n = -1;
   for (R_xlen_t j = 0; j < ncols; j++) {
     SEXP col = VECTOR_ELT(x, j);
-    switch (TYPEOF(col)) {
-    case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
-    case STRSXP:
-      break;
-    default:
-      return 0;
-    }
-    if (ANY_ATTRIB(col)) {
-      if (mizu_view_is_int64_any(col)) {
-        if (ix_attr_count(col) != 1) return 0;
-      } else {
-        const int q = mizu_interop_attrs_qualify(col);
-        if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
-            q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
-          return 0;
-      }
-    }
+    if (!ix_frame_col_ok(col)) return 0;
     if (n < 0) {
       n = XLENGTH(col);
     } else if (XLENGTH(col) != n) {
@@ -1370,6 +1377,102 @@ static void ixw_decline_attrs(mizu_ixw *w, SEXP x) {
   ixw_decline(w, reason, NULL);
 }
 
+/* One failing frame column's cause (the caller pushed the column's path
+   key): the ix_frame_col_ok checklist read as messages. The named atomic
+   names no remedy — as.list(x) is the top-level advice, wrong at a
+   column. An attr-set failure names the offenders at the column. */
+static void ixw_diagnose_col(mizu_ixw *w, SEXP col) {
+  switch (TYPEOF(col)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+  case STRSXP: {
+    SEXP names = Rf_getAttrib(col, R_NamesSymbol);
+    if (ix_class_is(col, ix_ordered_class)) {
+      ixw_decline(w, "an ordered factor has no portable home", NULL);
+    } else if (TYPEOF(col) == STRSXP &&
+               Rf_getAttrib(col, R_DimSymbol) != R_NilValue) {
+      ixw_decline(w, "a character matrix has no portable home", NULL);
+    } else if (names != R_NilValue && TYPEOF(names) == STRSXP &&
+               ix_attr_count(col) == 1) {
+      ixw_decline(w, "a named atomic vector has no portable home", NULL);
+    } else if (Rf_isS4(col)) {
+      ixw_decline(w, "an S4 object has no portable home", NULL);
+    } else {
+      ixw_decline_attrs(w, col);
+    }
+    return;
+  }
+  default:
+    break;
+  }
+  if (Rf_isS4(col)) {
+    ixw_decline(w, "an S4 object has no portable home", NULL);
+    return;
+  }
+  if (ix_class_is(col, ix_posixlt_class)) {
+    ixw_decline(w, "a POSIXlt column has no portable home", NULL);
+    return;
+  }
+  char reason[96];
+  snprintf(reason, sizeof reason, "a %s column has no portable home",
+           Rf_type2char(TYPEOF(col)));
+  ixw_decline(w, reason, NULL);
+}
+
+/* The cold half of a NONE/ENCODABLE decline: name the cause the bare
+   attr-set generic hides, reusing the qualification gates — the frame
+   rules mirror ix_qualify_frame's class → names → columns → row.names
+   order — so diagnosis cannot drift from qualification. A frame-classed
+   value is one whose class vector ends in "data.frame"; a data.frame
+   anywhere else in the vector is the misordered shape, anything else
+   keeps the attr-set naming. Returns 1 when it declined. */
+static int ixw_diagnose(mizu_ixw *w, SEXP x) {
+  if (TYPEOF(x) == STRSXP && Rf_getAttrib(x, R_DimSymbol) != R_NilValue) {
+    ixw_decline(w, "a character matrix has no portable home", NULL);
+    return 1;
+  }
+  if (TYPEOF(x) != VECSXP) return 0;
+  SEXP klass = Rf_getAttrib(x, R_ClassSymbol);
+  if (TYPEOF(klass) != STRSXP || XLENGTH(klass) < 1) return 0;
+  SEXP last = STRING_ELT(klass, XLENGTH(klass) - 1);
+  if (last == NA_STRING ||
+      strcmp(CHAR(last), MIZU_IX_CLASS_DATAFRAME) != 0) {
+    for (R_xlen_t i = 0; i < XLENGTH(klass); i++) {
+      SEXP cl = STRING_ELT(klass, i);
+      if (cl != NA_STRING &&
+          strcmp(CHAR(cl), MIZU_IX_CLASS_DATAFRAME) == 0) {
+        ixw_decline(w, "a data frame's class vector must end in "
+                       "\"data.frame\"", NULL);
+        return 1;
+      }
+    }
+    return 0;
+  }
+  if (!ix_frame_names_ok(x)) {
+    ixw_decline(w, "frame names must be unique, non-NA and UTF-8-writable",
+                NULL);
+    return 1;
+  }
+  SEXP names = Rf_getAttrib(x, R_NamesSymbol);
+  R_xlen_t n = -1;
+  for (R_xlen_t j = 0; j < XLENGTH(x); j++) {
+    SEXP col = VECTOR_ELT(x, j);
+    if (!ix_frame_col_ok(col)) {
+      size_t saved = w->path_len;
+      ixw_path_key(w, CHAR(STRING_ELT(names, j)));
+      ixw_diagnose_col(w, col);
+      ixw_path_pop(w, saved);
+      return 1;
+    }
+    if (n < 0) n = XLENGTH(col);
+  }
+  if (n >= 0 && !ix_frame_rn_ok(Rf_getAttrib(x, R_RowNamesSymbol), n)) {
+    ixw_decline(w, "row.names must be an integer or character vector of "
+                   "the frame's length with no NA", NULL);
+    return 1;
+  }
+  return 0;
+}
+
 static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
   /* the ref gate never fires inside an attr shape: the whitelisted
      shapes are value-exact byte contracts (a frame's columns, a factor's
@@ -1386,7 +1489,7 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
                   "as.list(x)");
     } else if (ix_class_is(x, ix_ordered_class)) {
       ixw_decline(w, "an ordered factor has no portable home", NULL);
-    } else {
+    } else if (!ixw_diagnose(w, x)) {
       ixw_decline_attrs(w, x);
     }
     w->refs = saved_refs;
@@ -3475,6 +3578,7 @@ void mizu_interop_init(void) {
   ix_factor_class = ix_class_vec(MIZU_IX_CLASS_FACTOR, NULL);
   ix_frame_class = ix_class_vec(MIZU_IX_CLASS_DATAFRAME, NULL);
   ix_posixct_class = ix_class_vec(MIZU_IX_CLASS_POSIXCT, MIZU_IX_CLASS_POSIXT);
+  ix_posixlt_class = ix_class_vec("POSIXlt", "POSIXt");
   ix_ordered_class = ix_class_vec("ordered", "factor");
   ix_ref_marker_class = ix_class_vec("mizu_ix_ref", NULL);
   /* the view layer's attribute blobs are 'I' streams from here (mori
@@ -3488,6 +3592,7 @@ void mizu_interop_init(void) {
 void mizu_interop_fini(void) {
   R_ReleaseObject(ix_ref_marker_class);
   R_ReleaseObject(ix_ordered_class);
+  R_ReleaseObject(ix_posixlt_class);
   R_ReleaseObject(ix_posixct_class);
   R_ReleaseObject(ix_frame_class);
   R_ReleaseObject(ix_factor_class);
