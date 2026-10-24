@@ -7,7 +7,6 @@
 # and a re-streamed RecordBatchReader likewise (nanoarrow 0.9.0 behaviour)
 # — the bails hold the pulled batches or the unconsumed stream.
 
-# The requireNamespace gate + the cached namespace lookup.
 nano <- new.env(parent = emptyenv())
 
 arrow_ns <- function() {

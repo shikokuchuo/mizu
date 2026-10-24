@@ -3274,7 +3274,6 @@ SEXP mizu_interop_read_map_desc(const unsigned char *buf, size_t len,
   return out;
 }
 
-/* The builder entry: one value, then the cursor's finishing check. */
 /* The one stream read: refs as the mode requires; opaque marks the
    §3.5 blob's stream (an attr dict — its extras build apply-as-is, the
    mode the apply below runs anyway). */

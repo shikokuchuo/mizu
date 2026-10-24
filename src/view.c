@@ -99,8 +99,6 @@ typedef struct {
   int64_t length;
 } mizu_view_elem;
 
-// SHM eligibility: any atomic vector (attributes stored separately) ---------
-
 static inline int mizu_view_shm_eligible(int type) {
   return type == REALSXP || type == INTSXP || type == LGLSXP ||
          type == RAWSXP || type == CPLXSXP || type == STRSXP;
@@ -118,8 +116,6 @@ static inline void *mizu_view_data_ptr(SEXP x) {
   default:       return (void *) DATAPTR_RO(x);
   }
 }
-
-// Bounds check for a [offset, offset+size) chunk within a region -------------
 
 static inline int mizu_view_oob(int64_t offset, int64_t size, int64_t region_size) {
   return offset < 0 || size < 0 || offset > region_size - size;
@@ -1657,7 +1653,6 @@ static size_t mizu_view_nested_write(unsigned char *base, SEXP x, int foreign) {
     free(tab);
   }
 
-  /* Write header */
   uint32_t magic = MIZU_MAGIC_LIST;
   int32_t n32 = (int32_t) n;
   int64_t as64 = (int64_t) attrs_size;

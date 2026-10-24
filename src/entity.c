@@ -16,7 +16,6 @@ static _Atomic uint32_t *mizu_entity_epoch(mizu_shm *shm, int entity) {
 
 // Parker ------------------------------------------------------------------------
 
-/* Attach the entity's parker or raise. */
 static void mizu_parker_attach_checked(mizu_parker *pk, mizu_shm *shm,
                                        int entity, int create) {
   if (mizu_parker_attach(pk, mizu_entity_epoch(shm, entity), shm->name,

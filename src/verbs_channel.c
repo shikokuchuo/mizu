@@ -56,7 +56,6 @@ void mizu_channel_fini(void) {
 
 // Handle access -------------------------------------------------------------------
 
-/* NULL when the handle has already been released (closed / destroyed). */
 static mizu_r_handle *chan_peek(SEXP xp) {
   return mizu_r_handle_peek(xp, mizu_chan_tag, "channel");
 }

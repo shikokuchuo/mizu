@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="125adab6109e039e5ef44fbdf7dfbef513a9e2e5"  # libmizu: Single-source mizu_timeout_ms, dedupe duplicated helpers, name magic constants
+PIN="154effd328d8804910ddabedf34bd5a8ff530805"  # libmizu: Prune purely descriptive comments
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

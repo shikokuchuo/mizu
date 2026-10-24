@@ -890,8 +890,6 @@ SEXP mizu_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
   }
   double now = now_sexp == R_NilValue ? mizu_now() : Rf_asReal(now_sexp);
 
-  /* the core's batch transition: generation-fenced lane claim, cancel and
-     pool-signal checks, AIMD sizing, cursor issue */
   uint64_t m, k;
   int help;
   if (!mizu_morsel_next(mh->shm->addr, &mh->h, &mh->sizer, r, gen, s, pin_k,

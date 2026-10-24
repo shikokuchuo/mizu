@@ -26,7 +26,6 @@ map_chunk_ref <- str2lang("mizu:::map_chunk")
 map_runner_ref <- str2lang("mizu:::map_runner")
 map_stream_chunk_ref <- str2lang("mizu:::map_stream_chunk")
 
-# One blob-path chunk task's wire payload: map_chunk(r, b[, s]).
 map_payload <- function(st, r) {
   seeded <- !is.null(st[["seed_state"]])
   expr <- as.call(c(
@@ -1616,7 +1615,6 @@ map_workers_gone <- function(pool) {
 map_collect <- function(st, deadline = Inf, collect = "value") {
   out <- if (!st[["direct"]]) vector("list", st[["n"]])
   if (!is.null(st[["blob"]])) {
-    # blob path: in-order chunk collection, as ever
     for (k in seq_len(st[["C"]])) {
       # terminal outcomes come back mizu_caught-boxed (only C boxes, so an
       # OK result that is itself a condition stays bare) — no handler frame

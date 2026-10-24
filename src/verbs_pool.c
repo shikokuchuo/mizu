@@ -280,7 +280,6 @@ SEXP mizu_pool_ready_wait_call(SEXP xp, SEXP slots_sexp, SEXP timeout) {
   return Rf_ScalarLogical(st == MIZU_OK);
 }
 
-/* Controller only: ask one worker to exit cleanly. */
 SEXP mizu_pool_retire_call(SEXP xp, SEXP slot_sexp) {
   mizu_r_handle *h = pool_get(xp);
   if (h->role != MIZU_ROLE_CONTROLLER)
@@ -808,7 +807,6 @@ SEXP mizu_pool_collect_try(SEXP xp, SEXP deadline) {
   return out;
 }
 
-/* Extract a task list's handles and shared pool. */
 static mizu_pool *tasks_get(SEXP tasks, mizu_task **ts_out,
                             mizu_r_handle **h_out, R_xlen_t *n_out) {
   if (TYPEOF(tasks) != VECSXP || XLENGTH(tasks) == 0)
