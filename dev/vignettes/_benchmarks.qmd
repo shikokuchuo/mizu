@@ -71,7 +71,7 @@ winsum <- evalq(function(i) {
 
 tasks <- bench::mark(
   serial = lapply(1:2000, winsum),
-  mizu = mizu_map(p, 1:2000, winsum),
+  mizu = mizu_collect(mizu_map(p, 1:2000, winsum)),
   mirai = collect_mirai(mirai_map(1:2000, winsum))
 )
 tasks

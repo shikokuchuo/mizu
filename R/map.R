@@ -69,9 +69,13 @@ mono_time <- function() .Call(mizu_now_call)
 
 #' Parallel Map Over a Pool
 #'
-#' Maps `.f` over the elements of `.x` on a pool and returns the results in
-#' input order. The result is a list by default, or an atomic vector (or
-#' matrix) with [vapply()] semantics when `.template` is given. Unlike
+#' Maps `.f` over the elements of `.x` on a pool and returns a map handle
+#' immediately — as [mizu_submit()] returns a task. [mizu_collect()] on
+#' the handle waits for completion and returns the results in input
+#' order: a list by default, or an atomic vector (or matrix) with
+#' [vapply()] semantics when `.template` is given. [mizu_cancel()]
+#' stops it. `as.promise()` (or `then()` directly) collects it through
+#' the event loop instead — see [mizu_collect_all_async()]. Unlike
 #' mapping with per-element [mizu_submit()] calls, one `mizu_map()` call
 #' serializes `.f`, the constant arguments in `...`, and `.x` exactly once.
 #' It submits one *runner* task per live worker, and each worker
@@ -275,34 +279,43 @@ mono_time <- function() .Call(mizu_now_call)
 #'   vector of length 1 or 2 that derives reproducible per-element RNG
 #'   streams: `seed`, or `c(seed, offset)` to shift every element's
 #'   stream by `offset` positions. See the Reproducible RNG section.
-#' @param .timeout seconds after which the map gives up, cancels its
-#'   outstanding work, and returns the `mizu_timeout` sentinel (class
+#' @param .timeout seconds after which submission gives up, cancels the
+#'   tasks already in, and returns the `mizu_timeout` sentinel (class
 #'   `c("mizu_timeout", "mizu_sentinel")`). `Inf` (the default) waits
-#'   indefinitely. One deadline covers submission and collection.
+#'   indefinitely. Submission blocks only while an injection ring is full;
+#'   the collection deadline is [mizu_collect()]'s `timeout`.
 #' @param .collect `"value"` (the default) gathers template results into
-#'   an owning R vector. `"view"` instead returns an ALTREP view over the
-#'   map's shared output area — no gather copy — for pipelines that
-#'   immediately reduce. Requires an atomic `.template`. The view is
-#'   copy-on-write: the first write materializes a private copy. It keeps
-#'   the map region alive until released, and re-sending it through a
-#'   channel or pool crosses as a full copy, not by reference.
+#'   an owning R vector at [mizu_collect()]. `"view"` instead returns an
+#'   ALTREP view over the map's shared output area — no gather copy — for
+#'   pipelines that immediately reduce. Requires an atomic `.template`.
+#'   The view is copy-on-write: the first write materializes a private
+#'   copy. It keeps the map region alive until released, and re-sending
+#'   it through a channel or pool crosses as a full copy, not by
+#'   reference. The choice is stored on the handle.
 #' @param .stream `TRUE` streams slices of `.x` to workers under a
 #'   sliding window instead of staging `.x` into shared memory wholesale,
 #'   bounding shared-memory residency by the window times the slice size.
-#'   See the Streaming maps section.
+#'   See the Streaming maps section. A streaming map handle collects
+#'   with [mizu_collect()] only (it cannot be promise-armed).
 #'
-#' @return A list of the results of `.f` in the order of `.x`, with
+#' @return A map handle (class `"mizu_map"`). [mizu_collect()] on it
+#'   returns a list of the results of `.f` in the order of `.x`, with
 #'   `names(.x)` reapplied. With `.template`, an atomic vector of type
 #'   `typeof(.template)` (an `m * length(.x)` matrix when
 #'   `length(.template) > 1`) — an owning vector, or a copy-on-write view
 #'   over the shared output area with `.collect = "view"`. On `.timeout`
-#'   expiry, the `mizu_timeout` sentinel.
+#'   expiry mid-submission, `mizu_map()` itself returns the
+#'   `mizu_timeout` sentinel; [mizu_collect()] returns it on its own
+#'   `timeout` expiry. A length-0 `.x` returns a handle whose collect
+#'   yields the empty result, as [lapply()] — no region or tasks are
+#'   created.
 #'
 #' @examples
 #' p <- mizu_pool()
-#' mizu_map(p, 1:10, function(i) i * 2L)
-#' v <- mizu_map(p, rnorm(1e5), abs, .template = numeric(1))
-#' mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
+#' m <- mizu_map(p, 1:10, function(i) i * 2L)
+#' mizu_collect(m)
+#' v <- mizu_collect(mizu_map(p, rnorm(1e5), abs, .template = numeric(1)))
+#' mizu_collect(mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L))
 #' mizu_pool_stop(p)
 #'
 #' @export
@@ -331,37 +344,148 @@ mizu_map <- function(
     )
   }
   if (length(.x) == 0L) {
-    return(map_empty(.x, .template))
+    return(map_empty_handle(.pool, .x, .template, .collect))
   }
   st <- if (.stream) {
     map_stage_stream(.pool, .x, .f, dots, .template, .chunks, .seed, ident)
   } else {
     map_stage(.pool, .x, .f, dots, .template, .chunks, .seed, ident)
   }
-  map_run(.pool, st, .timeout, .collect)
+  map_submit_handle(.pool, st, .timeout, .collect)
 }
 
-# The one run path shared by mizu_map (stage + run on an anonymous state)
-# and mizu_map_run (a prepared state, re-armed by the caller): submit the
-# tasks, collect against the single deadline, and keep the interrupt
-# backstop armed — Ctrl-C in submit or collect cancels every outstanding
-# task and drops the references; after a clean collect all handles are
-# consumed and the backstop is a no-op.
-map_run <- function(pool, st, timeout, collect = "value") {
+# The length-0 map: a handle like any other (the return type never
+# varies), whose collect yields the lapply/vapply empty result. No
+# region, no tasks, no finalizer — nothing to cancel.
+map_empty_handle <- function(pool, x, template, collect) {
+  st <- new.env(parent = emptyenv())
+  st[["empty"]] <- TRUE
+  st[["stream"]] <- FALSE
+  st[["n"]] <- 0L
+  st[["nms"]] <- names(x)
+  st[["template"]] <- template
+  st[["blob"]] <- NULL
+  st[["name"]] <- "no region (empty map)"
+  m <- new.env(parent = emptyenv())
+  m[["st"]] <- st
+  m[["pool"]] <- pool
+  m[["collect"]] <- collect
+  m[["pm"]] <- NULL
+  m[["done"]] <- FALSE
+  m[["promised"]] <- FALSE
+  m[["cancelled"]] <- FALSE
+  class(m) <- "mizu_map"
+  m
+}
+
+map_empty_result <- function(st) {
+  map_empty(structure(list(), names = st[["nms"]]), st[["template"]])
+}
+
+# The one submit path shared by mizu_map (stage + submit on an anonymous
+# state) and mizu_map_run (a prepared state, re-armed by the caller):
+# submit the tasks against the submission deadline — the backstop cancels
+# the tasks already in when submission raises or the deadline expires —
+# then return the handle. The handle owns the map from here: blocking
+# collection through mizu_collect(), event-driven through as.promise(),
+# mizu_cancel() to stop it, and a GC finalizer cancels a dropped
+# uncollected map, so no run of .f is wasted.
+map_submit_handle <- function(pool, st, timeout, collect = "value") {
   # as mizu_r_timeout_arg: an NA/NaN would read as an indefinite wait
   if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
     stop("mizu: .timeout must be a number of seconds, not NA", call. = FALSE)
   }
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
-  on.exit(map_cancel(st))
+  ok <- FALSE
+  on.exit(if (!ok) map_cancel(st))
   if (isTRUE(st[["stream"]])) {
-    return(map_run_stream(pool, st, deadline, collect))
+    map_submit_stream(pool, st, deadline)
+  } else {
+    map_submit(pool, st, deadline)
   }
-  map_submit(pool, st, deadline)
   if (st[["timed_out"]]) {
     return(.Call(mizu_map_timeout_call))
   }
-  map_collect(st, deadline, collect)
+  m <- new.env(parent = emptyenv())
+  m[["st"]] <- st
+  m[["pool"]] <- pool
+  m[["collect"]] <- collect
+  m[["pm"]] <- NULL
+  m[["done"]] <- FALSE
+  m[["promised"]] <- FALSE
+  m[["cancelled"]] <- FALSE
+  class(m) <- "mizu_map"
+  # the finalizer mirrors the sync backstop for a dropped UNCOLLECTED
+  # handle: the cancel word stops executing runners within ~a batch, and
+  # the C entries no-op on closed handles. It must not fire after a
+  # collect — a prepared handle's state lives on for the next run (the
+  # closure receives the handle at call time, so nothing pins it).
+  reg.finalizer(
+    m,
+    function(e) {
+      if (!isTRUE(e[["done"]])) {
+        map_cancel(e[["st"]])
+      }
+    },
+    onexit = TRUE
+  )
+  ok <- TRUE
+  m
+}
+
+# The cancelled-map failure, raised by mizu_collect() and the promise
+# settle alike when the cancel word was set externally before any runner
+# published (mizu_cancel(), or a pool stop cancelling the queued runners).
+map_cond_cancelled <- function() {
+  errorCondition(
+    "mizu: map cancelled or pool stopped",
+    class = c("mizu_error_cancelled", "mizu_error")
+  )
+}
+
+# The blocking collect of a map handle (mizu_collect's map case): the
+# existing map_collect machinery one verb deeper — the gather (or the
+# "view" wrap), element-indexed errors, the lost-set scan — against the
+# collect deadline, with the sync backstop armed for interrupts. One
+# collection per handle, as for tasks.
+map_collect_handle <- function(m, timeout) {
+  if (isTRUE(m[["done"]])) {
+    stop("mizu: map handle is already collected", call. = FALSE)
+  }
+  if (isTRUE(m[["promised"]])) {
+    stop(
+      "mizu: map handle has a pending promise and refuses a blocking ",
+      "collect \u2014 one consumer per result",
+      call. = FALSE
+    )
+  }
+  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
+    stop("mizu: timeout must be a number of seconds, not NA", call. = FALSE)
+  }
+  if (isTRUE(m[["cancelled"]])) {
+    stop(map_cond_cancelled())
+  }
+  m[["done"]] <- TRUE
+  st <- m[["st"]]
+  if (isTRUE(st[["empty"]])) {
+    return(map_empty_result(st))
+  }
+  deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
+  on.exit(map_cancel(st))
+  r <- if (isTRUE(st[["stream"]])) {
+    map_collect_stream(st, deadline, m[["collect"]])
+  } else {
+    map_collect(st, deadline, m[["collect"]])
+  }
+  # a clean value collect hands the state back to a prepared handle (a
+  # view collect consumed its region); timeout and error leaves it stale
+  pm <- m[["pm"]]
+  if (
+    !is.null(pm) && !inherits(r, "mizu_timeout") && !isTRUE(st[["consumed"]])
+  ) {
+    pm[["st"]] <- st
+  }
+  r
 }
 
 #' Prepared Maps: Stage Once, Run Many
@@ -397,15 +521,16 @@ map_run <- function(pool, st, timeout, collect = "value") {
 #' @inheritParams mizu_map
 #'
 #' @return `mizu_map_prepare()`: a prepared-map handle. `mizu_map_run()`:
-#'   exactly what [mizu_map()] returns for the staged map — a list, a
-#'   templated atomic vector, or the `mizu_timeout` sentinel.
+#'   exactly what [mizu_map()] returns for the staged map — a map handle
+#'   whose [mizu_collect()] returns a list, a templated atomic vector,
+#'   or the `mizu_timeout` sentinel.
 #'
 #' @examples
 #' p <- mizu_pool()
 #' pm <- mizu_map_prepare(p, 1:1000, function(i, draws) {
 #'   mean(rnorm(draws)) * i
 #' }, draws = 100L)
-#' runs <- lapply(1:50, function(s) mizu_map_run(pm, .seed = s))
+#' runs <- lapply(1:50, function(s) mizu_collect(mizu_map_run(pm, .seed = s)))
 #' mizu_pool_stop(p)
 #'
 #' @export
@@ -482,7 +607,12 @@ mizu_map_run <- function(
     if (stream) map_swap_x_stream(pm, .x) else map_swap_x(pm, .x)
   }
   if (length(pm[["x"]]) == 0L) {
-    return(map_empty(pm[["x"]], pm[["template"]]))
+    return(map_empty_handle(
+      pm[["pool"]],
+      pm[["x"]],
+      pm[["template"]],
+      .collect
+    ))
   }
   st <- pm[["st"]]
   if (is.null(st)) {
@@ -521,14 +651,15 @@ mizu_map_run <- function(
     }
     pm[["st"]] <- NULL
   }
-  r <- map_run(pm[["pool"]], st, .timeout, .collect)
-  # a view collect consumes the region (the returned view pins it), so a
-  # prepared handle restages on its next run instead of re-arming pages a
-  # held view still reads
-  if (!inherits(r, "mizu_timeout") && !isTRUE(st[["consumed"]])) {
-    pm[["st"]] <- st
+  m <- map_submit_handle(pm[["pool"]], st, .timeout, .collect)
+  if (inherits(m, "mizu_timeout")) {
+    # the backstop cancelled the run; the state is dead — restage next run
+    return(m)
   }
-  r
+  # the prepared back-ref: a clean collect restores the state for re-arm
+  # (a view collect consumes the region, so the next run restages)
+  m[["pm"]] <- pm
+  m
 }
 
 # The integer64 gates: the bare form — the class is the entire attribute
@@ -1227,9 +1358,9 @@ map_stream_payload <- function(st, k) {
 # pool_step() between the window's turns, exactly as the blob path's
 # stages: prime submits up to W chunk tasks (unflagged, like blob chunks),
 # each turn collects one completion and refills one chunk, and
-# map_run_stream composes them against the map's one deadline. Expiry
-# marks the state timed out and surfaces as the sentinel; the on.exit
-# backstop in map_run cancels the outstanding window.
+# map_submit_stream / map_collect_stream compose them against the map's
+# one deadline. Expiry marks the state timed out and surfaces as the
+# sentinel; the callers' on.exit backstop cancels the outstanding window.
 
 # Refill the window up to W (or C). FALSE marks the state timed out — the
 # deadline expired before or inside a ring-space wait. The pre-check ahead
@@ -1477,10 +1608,19 @@ map_stream_turn <- function(pool, st, deadline) {
   invisible()
 }
 
-map_run_stream <- function(pool, st, deadline, collect = "value") {
+# The handle-first split of the streaming run: map_submit_stream primes
+# the window at mizu_map() / mizu_map_run() (work starts at the call),
+# map_collect_stream drives the turns at mizu_collect(). The on.exit
+# backstop of each caller cancels the outstanding window on unwind.
+map_submit_stream <- function(pool, st, deadline) {
+  st[["pool"]] <- pool
   map_stream_prime(pool, st, deadline)
+  invisible(st)
+}
+
+map_collect_stream <- function(st, deadline, collect = "value") {
   while (length(st[["oi"]]) && !st[["timed_out"]]) {
-    map_stream_turn(pool, st, deadline)
+    map_stream_turn(st[["pool"]], st, deadline)
   }
   if (st[["timed_out"]]) {
     return(.Call(mizu_map_timeout_call))
@@ -1612,7 +1752,15 @@ map_workers_gone <- function(pool) {
 # region's output area on the template path. Splicing by position and
 # minimum-element-index error selection are both collection-order
 # independent, so the region path's deferred order changes no semantics.
-map_collect <- function(st, deadline = Inf, collect = "value") {
+# doomed0 seeds the doomed flag for the promise settle: its watchdog
+# reads the registry verdict off-loop (the drain never reaches the
+# park-slice branch that would set it here).
+map_collect <- function(
+  st,
+  deadline = Inf,
+  collect = "value",
+  doomed0 = FALSE
+) {
   out <- if (!st[["direct"]]) vector("list", st[["n"]])
   if (!is.null(st[["blob"]])) {
     for (k in seq_len(st[["C"]])) {
@@ -1660,7 +1808,7 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
     # (the workers all died with the pending runners unclaimed — a queued
     # runner's slot has no reaper) is read off the registry instead,
     # polled at most once a second while the loop makes no progress
-    doomed <- FALSE
+    doomed <- doomed0
     last_live_scan <- -Inf
     # consume one runner handle: FALSE when the park slice (or the map
     # deadline) expired with the slot still pending
@@ -1764,6 +1912,20 @@ map_collect <- function(st, deadline = Inf, collect = "value") {
           pending <- pending[-1L]
         }
       }
+    }
+    if (
+      is.null(died) &&
+        !doomed &&
+        !length(runs) &&
+        !length(errs) &&
+        .Call(mizu_map_cancel_get, st[["wrap"]])
+    ) {
+      # every runner abandoned with nothing published AND the cancel word
+      # set: an external cancel (mizu_cancel(), or a pool stop) landed
+      # before any claim — cursor exhaustion alone cannot produce this
+      # (its finisher published or wrote the output area)
+      map_cancel(st)
+      stop(map_cond_cancelled())
     }
     if (!is.null(died) || doomed) {
       map_cancel(st)

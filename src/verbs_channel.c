@@ -84,9 +84,9 @@ static void chan_binding(mizu_r_handle *h, mizu_binding *b) {
 
 /* Build the extptr around a created/attached core handle: the prot chain
    ([0] the zc view cache's wrap table, [1] the pin chain, [2] the decline
-   record) and the finalizer. */
+   record, [3] the notify state env) and the finalizer. */
 static SEXP chan_wrap(mizu_r_handle *h) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 3));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 4));
   SET_VECTOR_ELT(prot, 0, Rf_allocVector(VECSXP, MIZU_OPEN_CACHE_MAX));
   h->zoc.wraps = VECTOR_ELT(prot, 0);
   h->prot = prot;
@@ -107,6 +107,8 @@ static void mizu_chan_finalizer(SEXP xp) {
      the destroy would set its close bit and unlink its regions; abandon
      releases only the child's own copies (mapping, heap) instead */
   if (h->core != NULL) {
+    /* the notify record's watch and state refs release ahead of the destroy */
+    mizu_r_notify_teardown(h);
     if (h->self_pid == mizu_self_pid()) {
       /* destroy signals close and runs the non-blocking rendezvous check —
          unlink only on the peer's bit or its confirmed death */
@@ -256,6 +258,7 @@ SEXP mizu_channel_ready_wait_call(SEXP xp, SEXP timeout) {
    parking against a host that gave up, then unlink everything. */
 SEXP mizu_channel_destroy_call(SEXP xp) {
   mizu_r_handle *h = chan_get(xp);
+  mizu_r_notify_teardown(h);
   mizu_channel_destroy((mizu_channel *) h->core);
   h->core = NULL;
   return R_NilValue;
@@ -440,6 +443,7 @@ SEXP mizu_channel_close_call(SEXP xp, SEXP timeout) {
   if (st == MIZU_ERR) chan_raise(c);
   if (st == MIZU_OK) {
     /* rendezvoused: the handle is dead — destroy releases it */
+    mizu_r_notify_teardown(h);
     mizu_channel_destroy(c);
     h->core = NULL;
     return Rf_ScalarLogical(TRUE);
@@ -477,7 +481,7 @@ SEXP mizu_channel_stat(SEXP xp) {
                          "tx_consumed", "rx_consumed", "rx_published",
                          "fl_entries", "fl_hits", "open_hits",
                          "open_misses", "ledger_entries", "zc_open_hits",
-                         "zc_open_misses", ""};
+                         "zc_open_misses", "notify_sends", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
   SET_VECTOR_ELT(out, 0, Rf_mkString(info.name));
   SET_VECTOR_ELT(out, 1, Rf_mkString(info.side == MIZU_ENTITY_HOST ?
@@ -504,6 +508,7 @@ SEXP mizu_channel_stat(SEXP xp) {
      patches its own counters */
   SET_VECTOR_ELT(out, 20, Rf_ScalarReal((double) h->zoc.hits));
   SET_VECTOR_ELT(out, 21, Rf_ScalarReal((double) h->zoc.misses));
+  SET_VECTOR_ELT(out, 22, Rf_ScalarReal((double) info.notify_sends));
   UNPROTECT(1);
   return out;
 }

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="154effd328d8804910ddabedf34bd5a8ff530805"  # libmizu: Prune purely descriptive comments
+PIN="9b1261bc6899f50d2bafb88f6fcdcc05124af570"  # libmizu: Add notify endpoints: edge-triggered named wakes for event-driven consumers
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

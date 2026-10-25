@@ -261,7 +261,7 @@ test_that("a view x crosses to foreign map workers as a ref (D6)", {
   mizu_send(ch$host, big)
   xv <- mizu_recv(ch$peer, Inf)
   rc0 <- .Call(mizu:::mizu_zc_refcount, xv)
-  res <- mizu_map(p, xv, mizu_call("numpy.square"))
+  res <- mizu_collect(mizu_map(p, xv, mizu_call("numpy.square")))
   expect_equal(unlist(res), big^2)
   rc1 <- .Call(mizu:::mizu_zc_refcount, xv)
   expect_identical(rc1[2L], 1L) # REFHELD

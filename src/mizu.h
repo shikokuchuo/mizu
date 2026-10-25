@@ -75,8 +75,11 @@ typedef struct mizu_zc_cache_s {
    (a mizu_channel or mizu_pool) is opaque; everything R-side rides here: the
    prot chain (GC-visible slots) and the zc view cache — keyed on SEXP views,
    so it cannot live in the R-free core. Channel prot: [0] zoc wraps,
-   [1] pin chain, [2] decline record. Pool prot: [0] eval env, [1] trace fn,
-   [2] map cache, [3] zoc wraps, [4] pin chain, [5] decline record. */
+   [1] pin chain, [2] decline record, [3] notify state env. Pool prot:
+   [0] eval env, [1] trace fn, [2] map cache, [3] zoc wraps, [4] pin chain,
+   [5] decline record, [6] notify state env. */
+#define MIZU_CHAN_NTFY_SLOT 3
+#define MIZU_POOL_NTFY_SLOT 6
 typedef struct mizu_r_handle_s {
   mizu_handle *core;         /* the core handle; NULL after destroy */
   SEXP prot;                /* the extptr's prot chain */
@@ -115,6 +118,9 @@ typedef struct mizu_r_handle_s {
   uint64_t spec_ident;      /* the submitter identity stamped on the spec's
                                task stream (this build's word, or the submit
                                veneer's test-only trailing override) */
+  struct mizu_r_notify_s *notify;  /* the notify record (notify_r.c), NULL
+                               until the first arm; teardown stops its watch
+                               and drops its refs */
   mizu_zc_cache zoc;        /* the R-side zc view cache */
 } mizu_r_handle;
 
@@ -673,6 +679,14 @@ static inline void mizu_priv_set(int slot, SEXP x) {
 
 // init / fini hooks -----------------------------------------------------------------
 
+/* The notify bridge (notify_r.c): init installs its tags/symbols, fini
+   (before the death-listener teardown the watches ride on) stops every
+   live watch, and the handle teardown is called by the handle finalizers
+   and the destroy/close veneers ahead of the core destroy. */
+void mizu_notify_init(void);
+void mizu_notify_fini(void);
+void mizu_r_notify_teardown(mizu_r_handle *h);
+
 void mizu_cond_init(void);
 void mizu_wrap_init(void);
 void mizu_payload_init(void);
@@ -799,6 +813,19 @@ SEXP mizu_pool_map_cache(SEXP);
 SEXP mizu_pool_signals_call(SEXP);
 SEXP mizu_pool_help_once_call(SEXP);
 SEXP mizu_pool_zc_info(SEXP);
+/* notify_r.c */
+SEXP mizu_chan_notify_peek(SEXP);
+SEXP mizu_chan_notify_set(SEXP, SEXP);
+SEXP mizu_pool_notify_peek(SEXP);
+SEXP mizu_pool_notify_set(SEXP, SEXP);
+SEXP mizu_task_pool_call(SEXP);
+SEXP mizu_task_notify_state(SEXP);
+SEXP mizu_chan_notify_arm_call(SEXP, SEXP);
+SEXP mizu_chan_notify_disarm_call(SEXP);
+SEXP mizu_pool_notify_arm_call(SEXP, SEXP);
+SEXP mizu_pool_notify_disarm_call(SEXP);
+SEXP mizu_pool_task_notify_call(SEXP, SEXP);
+SEXP mizu_pool_tasks_terminal(SEXP);
 /* map.c */
 SEXP mizu_map_eligible(SEXP);
 SEXP mizu_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -827,6 +854,7 @@ SEXP mizu_map_reset(SEXP);
 SEXP mizu_map_swap_x(SEXP, SEXP);
 SEXP mizu_map_info(SEXP);
 SEXP mizu_map_claim_state(SEXP, SEXP);
+SEXP mizu_map_runners_terminal(SEXP, SEXP);
 SEXP mizu_map_timeout_call(void);
 /* rng.c */
 SEXP mizu_map_rng_base(SEXP);

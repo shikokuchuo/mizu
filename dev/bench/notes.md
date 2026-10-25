@@ -1721,3 +1721,31 @@ stand; the build is within ~3% of the pre-regression code path.
 
 Status: full suite green (4978 pass, 0 fail, 5 skips — the pymizu
 venv on PATH, so the cross-language legs ran).
+
+## 2026-10-25 — notify endpoints land: the event-driven surface [(libmizu 65ed8c2 + R binding, working tree)]
+
+Phase 1+2 of the event-driven promises plan: the vendored core gains the
+edge-triggered notify endpoints (the bit rides the word the publish
+already loads), and the R binding grows the later/promises surface
+(mizu_recv_async, mizu_recv_handler, as.promise methods,
+mizu_collect_all/any_async, the handle-first mizu_map). The bench gate:
+the unarmed publish path must be flat, the armed-promise row within
+band, and the batch-handler / collect_all_async rows against their sync
+anchors. The handler row sizes the drain quantum (2048 messages or 1 ms
+per callback; 256 was 2.2x off the sync batch row, 2048 lands it).
+
+Results (A/B against the previous build, HEAD worktree in a temp lib):
+sequential rt 1.0 us/rt channel, 1.8 us/task pool — both flat;
+pipelined channel 943k -> 955k-981k rt/s (3 runs) — flat; channel batch
+18.4M -> 18.3M — flat; pipelined pool 398k -> 320k and pool batch 2.25M
+-> 1.80M bench medians, but the one-shot spread (HEAD 411k-924k and
+1.7M-4.4M over 3 reps; new 571k-632k and 1.3M-1.8M) overlaps fully —
+load noise, not a regression. New rows: armed channel (a recv promise
+pending the whole run) 1.16M rt/s — at/above the unarmed band, one
+endpoint signal total as designed; channel batch handler 16.0M msg/s =
+0.87x the sync batch row (18.3M) — inside the ~1.2x target;
+mizu_collect_all_async 2.54M tasks/s vs the sync collect_all row at
+1.80M — within band. All other rows in band (payloads, fan-out,
+streaming, map, serialize, plan).
+
+Status: full suite green (5200 pass, 0 fail, 6 skips).

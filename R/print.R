@@ -82,6 +82,29 @@ print.mizu_task <- function(x, ...) {
 
 #' @rdname print.mizu_channel
 #' @export
+print.mizu_map <- function(x, ...) {
+  st <- x[["st"]]
+  cat(sprintf(
+    "<mizu_map: %.0f elements, %s>\n",
+    st[["n"]],
+    if (isTRUE(x[["done"]])) {
+      "collected"
+    } else if (isTRUE(x[["promised"]])) {
+      "promise pending"
+    } else if (isTRUE(st[["stream"]])) {
+      "streaming, submitted"
+    } else {
+      sprintf(
+        "%s, submitted",
+        if (is.null(st[["blob"]])) st[["name"]] else "inline blob"
+      )
+    }
+  ))
+  invisible(x)
+}
+
+#' @rdname print.mizu_channel
+#' @export
 print.mizu_map_prepared <- function(x, ...) {
   cat(sprintf(
     "<mizu_map_prepared: %.0f elements, %s>\n",

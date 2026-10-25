@@ -24,8 +24,10 @@ Depends:
 Suggests:
     arrow,
     bit64,
+    later,
     mori,
     nanoarrow,
+    promises,
     quarto,
     testthat (>= 3.0.0)
 VignetteBuilder:

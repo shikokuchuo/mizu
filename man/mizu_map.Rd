@@ -46,36 +46,48 @@ vector of length 1 or 2 that derives reproducible per-element RNG
 streams: \code{seed}, or \code{c(seed, offset)} to shift every element's
 stream by \code{offset} positions. See the Reproducible RNG section.}
 
-\item{.timeout}{seconds after which the map gives up, cancels its
-outstanding work, and returns the \code{mizu_timeout} sentinel (class
+\item{.timeout}{seconds after which submission gives up, cancels the
+tasks already in, and returns the \code{mizu_timeout} sentinel (class
 \code{c("mizu_timeout", "mizu_sentinel")}). \code{Inf} (the default) waits
-indefinitely. One deadline covers submission and collection.}
+indefinitely. Submission blocks only while an injection ring is full;
+the collection deadline is \code{\link[=mizu_collect]{mizu_collect()}}'s \code{timeout}.}
 
 \item{.collect}{\code{"value"} (the default) gathers template results into
-an owning R vector. \code{"view"} instead returns an ALTREP view over the
-map's shared output area — no gather copy — for pipelines that
-immediately reduce. Requires an atomic \code{.template}. The view is
-copy-on-write: the first write materializes a private copy. It keeps
-the map region alive until released, and re-sending it through a
-channel or pool crosses as a full copy, not by reference.}
+an owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an
+ALTREP view over the map's shared output area — no gather copy — for
+pipelines that immediately reduce. Requires an atomic \code{.template}.
+The view is copy-on-write: the first write materializes a private
+copy. It keeps the map region alive until released, and re-sending
+it through a channel or pool crosses as a full copy, not by
+reference. The choice is stored on the handle.}
 
 \item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a
 sliding window instead of staging \code{.x} into shared memory wholesale,
 bounding shared-memory residency by the window times the slice size.
-See the Streaming maps section.}
+See the Streaming maps section. A streaming map handle collects
+with \code{\link[=mizu_collect]{mizu_collect()}} only (it cannot be promise-armed).}
 }
 \value{
-A list of the results of \code{.f} in the order of \code{.x}, with
+A map handle (class \code{"mizu_map"}). \code{\link[=mizu_collect]{mizu_collect()}} on it
+returns a list of the results of \code{.f} in the order of \code{.x}, with
 \code{names(.x)} reapplied. With \code{.template}, an atomic vector of type
 \code{typeof(.template)} (an \code{m * length(.x)} matrix when
 \code{length(.template) > 1}) — an owning vector, or a copy-on-write view
 over the shared output area with \code{.collect = "view"}. On \code{.timeout}
-expiry, the \code{mizu_timeout} sentinel.
+expiry mid-submission, \code{mizu_map()} itself returns the
+\code{mizu_timeout} sentinel; \code{\link[=mizu_collect]{mizu_collect()}} returns it on its own
+\code{timeout} expiry. A length-0 \code{.x} returns a handle whose collect
+yields the empty result, as \code{\link[=lapply]{lapply()}} — no region or tasks are
+created.
 }
 \description{
-Maps \code{.f} over the elements of \code{.x} on a pool and returns the results in
-input order. The result is a list by default, or an atomic vector (or
-matrix) with \code{\link[=vapply]{vapply()}} semantics when \code{.template} is given. Unlike
+Maps \code{.f} over the elements of \code{.x} on a pool and returns a map handle
+immediately — as \code{\link[=mizu_submit]{mizu_submit()}} returns a task. \code{\link[=mizu_collect]{mizu_collect()}} on
+the handle waits for completion and returns the results in input
+order: a list by default, or an atomic vector (or matrix) with
+\code{\link[=vapply]{vapply()}} semantics when \code{.template} is given. \code{\link[=mizu_cancel]{mizu_cancel()}}
+stops it. \code{as.promise()} (or \code{then()} directly) collects it through
+the event loop instead — see \code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}}. Unlike
 mapping with per-element \code{\link[=mizu_submit]{mizu_submit()}} calls, one \code{mizu_map()} call
 serializes \code{.f}, the constant arguments in \code{...}, and \code{.x} exactly once.
 It submits one \emph{runner} task per live worker, and each worker
@@ -279,9 +291,10 @@ data.frame maps over its columns, and a factor over its elements.
 
 \examples{
 p <- mizu_pool()
-mizu_map(p, 1:10, function(i) i * 2L)
-v <- mizu_map(p, rnorm(1e5), abs, .template = numeric(1))
-mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
+m <- mizu_map(p, 1:10, function(i) i * 2L)
+mizu_collect(m)
+v <- mizu_collect(mizu_map(p, rnorm(1e5), abs, .template = numeric(1)))
+mizu_collect(mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L))
 mizu_pool_stop(p)
 
 }

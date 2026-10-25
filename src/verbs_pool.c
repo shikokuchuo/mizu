@@ -75,9 +75,10 @@ static void pool_binding(mizu_r_handle *h, mizu_binding *b, int worker) {
 
 /* Build the extptr around a created/joined/attached core handle: the prot
    chain ([0] eval env, [1] trace fn, [2] map cache, [3] the zc view cache's
-   wrap table, [4] the pin chain, [5] the decline record) and the finalizer. */
+   wrap table, [4] the pin chain, [5] the decline record, [6] the notify
+   state env) and the finalizer. */
 static SEXP pool_wrap(mizu_r_handle *h) {
-  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 6));
+  SEXP prot = PROTECT(Rf_allocVector(VECSXP, 7));
   SET_VECTOR_ELT(prot, 3, Rf_allocVector(VECSXP, MIZU_OPEN_CACHE_MAX));
   h->zoc.wraps = VECTOR_ELT(prot, 3);
   h->prot = prot;
@@ -99,6 +100,8 @@ static void mizu_pool_finalizer(SEXP xp) {
      the destroy would broadcast shutdown and unlink its regions; abandon
      releases only the child's own copies (mapping, heap) instead */
   if (h->core != NULL) {
+    /* the notify record's watch and state refs release ahead of the destroy */
+    mizu_r_notify_teardown(h);
     if (h->self_pid == mizu_self_pid()) {
       /* a controller destroy broadcasts shutdown (no wait); a participant
          releases its slot */
@@ -294,6 +297,7 @@ SEXP mizu_pool_destroy_call(SEXP xp) {
   mizu_r_handle *h = pool_get(xp);
   if (h->role != MIZU_ROLE_CONTROLLER)
     Rf_error("mizu: only the controller can destroy a pool");
+  mizu_r_notify_teardown(h);
   mizu_pool_destroy((mizu_pool *) h->core);
   h->core = NULL;
   return R_NilValue;
@@ -1113,7 +1117,7 @@ SEXP mizu_pool_dump_call(SEXP xp) {
      cross-process stats */
   const char *lnames[] = {"fl_entries", "fl_bytes", "fl_hits", "open_hits",
                           "open_misses", "collect_parks", "ledger_entries",
-                          ""};
+                          "notify_sends", ""};
   SEXP lo = Rf_mkNamed(VECSXP, lnames);
   SET_VECTOR_ELT(out, 5, lo);
   SET_VECTOR_ELT(lo, 0, Rf_ScalarInteger((int) d.fl_entries));
@@ -1123,6 +1127,7 @@ SEXP mizu_pool_dump_call(SEXP xp) {
   SET_VECTOR_ELT(lo, 4, Rf_ScalarReal((double) d.open_misses));
   SET_VECTOR_ELT(lo, 5, Rf_ScalarReal((double) d.collect_parks));
   SET_VECTOR_ELT(lo, 6, Rf_ScalarInteger((int) d.ledger_entries));
+  SET_VECTOR_ELT(lo, 7, Rf_ScalarReal((double) d.notify_sends));
 
   const char *wnames[] = {"status", "pid", "park_state", "parked", "top",
                           "bottom", "in_flight", ""};

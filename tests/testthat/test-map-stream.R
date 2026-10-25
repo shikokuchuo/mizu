@@ -166,14 +166,14 @@ test_that("a spec stream declines a seed offset escaping exact arithmetic (L33)"
 test_that("view collect errors on a streaming spec map, informatively", {
   p <- pool_pair()
   expect_snapshot(
-    mizu_map(
+    mizu_collect(mizu_map(
       p[["ctrl"]],
       1:4,
       mizu_call("base::abs"),
       .template = numeric(1),
       .collect = "view",
       .stream = TRUE
-    ),
+    )),
     error = TRUE
   )
   expect_snapshot(
@@ -627,7 +627,8 @@ test_that(".chunks validates on the streaming path", {
 test_that("a deadline expired at prime marks the run timed out, nothing submitted", {
   p <- pool_pair()
   st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
-  r <- mizu:::map_run_stream(p[["ctrl"]], st, mizu:::mono_time() - 1)
+  mizu:::map_submit_stream(p[["ctrl"]], st, mizu:::mono_time() - 1)
+  r <- mizu:::map_collect_stream(st, mizu:::mono_time() - 1)
   expect_s3_class(r, "mizu_timeout")
   expect_true(st[["timed_out"]])
   expect_length(st[["oi"]], 0L)
@@ -649,7 +650,8 @@ test_that("a ring-full submit past the deadline marks the run timed out", {
   st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
   # W = 4 but the two-slot ring: chunk 3's submit blocks with the workers
   # never stepped
-  r <- mizu:::map_run_stream(p[["ctrl"]], st, mizu:::mono_time() + 0.05)
+  mizu:::map_submit_stream(p[["ctrl"]], st, mizu:::mono_time() + 0.05)
+  r <- mizu:::map_collect_stream(st, mizu:::mono_time() + 0.05)
   expect_s3_class(r, "mizu_timeout")
   expect_true(st[["timed_out"]])
   mizu:::map_cancel(st)
@@ -675,7 +677,8 @@ test_that("an unannotated chunk outcome stays fatal", {
 test_that("a deadline expiring mid-run cancels the window, sentinel returned", {
   p <- pool_pair()
   st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
-  r <- mizu:::map_run_stream(p[["ctrl"]], st, mizu:::mono_time() + 0.05)
+  mizu:::map_submit_stream(p[["ctrl"]], st, mizu:::mono_time() + 0.05)
+  r <- mizu:::map_collect_stream(st, mizu:::mono_time() + 0.05)
   expect_s3_class(r, "mizu_timeout")
   expect_true(st[["timed_out"]])
   mizu:::map_cancel(st)
@@ -703,30 +706,41 @@ test_that("mizu_map(.stream) end-to-end and out-of-order completion", {
     }
     i * 2L
   }
-  r <- mizu_map(p, 1:32, f, .stream = TRUE, .chunks = 8L)
+  r <- mizu_collect(mizu_map(p, 1:32, f, .stream = TRUE, .chunks = 8L))
   expect_identical(r, as.list((1:32) * 2L))
   # identical to the non-streaming map on the same inputs
-  expect_identical(r, mizu_map(p, 1:32, f, .chunks = 8L))
-  v <- mizu_map(
+  expect_identical(r, mizu_collect(mizu_map(p, 1:32, f, .chunks = 8L)))
+  v <- mizu_collect(mizu_map(
     p,
     1:32 + 0,
     function(i) i * 2,
     .template = numeric(1),
     .stream = TRUE
-  )
+  ))
   expect_identical(v, (1:32 + 0) * 2)
-  s <- mizu_map(p, 1:32, function(i) rnorm(1), .seed = 7L, .stream = TRUE)
-  expect_identical(s, mizu_map(p, 1:32, function(i) rnorm(1), .seed = 7L))
-  # timeout surfaces the sentinel, never raises
-  t <- mizu_map(
+  s <- mizu_collect(mizu_map(
     p,
-    1:8,
-    function(i) {
-      Sys.sleep(2)
-      i
-    },
-    .stream = TRUE,
-    .timeout = 0.3
+    1:32,
+    function(i) rnorm(1),
+    .seed = 7L,
+    .stream = TRUE
+  ))
+  expect_identical(
+    s,
+    mizu_collect(mizu_map(p, 1:32, function(i) rnorm(1), .seed = 7L))
+  )
+  # timeout surfaces the sentinel, never raises
+  t <- mizu_collect(
+    mizu_map(
+      p,
+      1:8,
+      function(i) {
+        Sys.sleep(2)
+        i
+      },
+      .stream = TRUE
+    ),
+    timeout = 0.3
   )
   expect_s3_class(t, "mizu_timeout")
   expect_true(mizu_pool_stop(p))
@@ -735,7 +749,10 @@ test_that("mizu_map(.stream) end-to-end and out-of-order completion", {
 test_that("mizu_map(.stream) needs no pool round-trip for empty x", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
-  expect_identical(mizu_map(p, integer(0), identity, .stream = TRUE), list())
+  expect_identical(
+    mizu_collect(mizu_map(p, integer(0), identity, .stream = TRUE)),
+    list()
+  )
   expect_true(mizu_pool_stop(p))
 })
 
@@ -793,7 +810,13 @@ test_that("worker death fails a streaming map with the chunk's exact range", {
   expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
   # the pool remains serviceable on the survivor
   expect_identical(
-    mizu_map(p, 1:4, function(i) i + 1L, .stream = TRUE, .timeout = 30),
+    mizu_collect(mizu_map(
+      p,
+      1:4,
+      function(i) i + 1L,
+      .stream = TRUE,
+      .timeout = 30
+    )),
     as.list(2:5)
   )
   expect_true(mizu_pool_stop(p))
@@ -908,13 +931,19 @@ test_that("prepared streaming re-arms and matches mizu_map exactly", {
   x <- 1:16 + 0
   pm <- mizu_map_prepare(p, x, function(i) rnorm(2L), .stream = TRUE)
   name1 <- pm[["st"]][["name"]]
-  r1 <- mizu_map_run(pm, .seed = 7L)
-  r2 <- mizu_map_run(pm, .seed = 7L)
+  r1 <- mizu_collect(mizu_map_run(pm, .seed = 7L))
+  r2 <- mizu_collect(mizu_map_run(pm, .seed = 7L))
   expect_identical(r1, r2) # invariance across re-runs
   expect_identical(pm[["st"]][["name"]], name1) # one region throughout
   expect_identical(
     r1,
-    mizu_map(p, x, function(i) rnorm(2L), .seed = 7L, .stream = TRUE)
+    mizu_collect(mizu_map(
+      p,
+      x,
+      function(i) rnorm(2L),
+      .seed = 7L,
+      .stream = TRUE
+    ))
   )
   expect_true(mizu_pool_stop(p))
 })
@@ -932,10 +961,10 @@ test_that("an unclean prepared run restages into a fresh region", {
     .stream = TRUE
   )
   name1 <- pm[["st"]][["name"]]
-  r <- mizu_map_run(pm, .timeout = 0.05)
+  r <- mizu_collect(mizu_map_run(pm), timeout = 0.05)
   expect_s3_class(r, "mizu_timeout")
   expect_null(pm[["st"]]) # stale: the next run restages
-  r <- mizu_map_run(pm, .timeout = 60)
+  r <- mizu_collect(mizu_map_run(pm), timeout = 60)
   expect_identical(r, as.list(1:4 + 0))
   expect_false(identical(pm[["st"]][["name"]], name1))
   # an error in f is unclean too — and restaging reproduces it cleanly
@@ -947,9 +976,9 @@ test_that("an unclean prepared run restages into a fresh region", {
     },
     .stream = TRUE
   )
-  expect_error(mizu_map_run(pm2), "bad")
+  expect_error(mizu_collect(mizu_map_run(pm2)), "bad")
   expect_null(pm2[["st"]])
-  expect_error(mizu_map_run(pm2), "bad")
+  expect_error(mizu_collect(mizu_map_run(pm2)), "bad")
   expect_true(mizu_pool_stop(p))
 })
 
@@ -1000,7 +1029,7 @@ test_that("mizu_map_run swaps x on the streaming path ahead of the run", {
   p <- pool_pair()
   pm <- mizu_map_prepare(p[["ctrl"]], 1:10, function(i) i * 2L, .stream = TRUE)
   # the swap lands before the run starts: even a timed-out run keeps it
-  r <- mizu_map_run(pm, .x = 1:4, .timeout = 0.001)
+  r <- mizu_collect(mizu_map_run(pm, .x = 1:4), timeout = 0.001)
   expect_s3_class(r, "mizu_timeout")
   expect_identical(pm[["x"]], 1:4)
   expect_null(pm[["st"]]) # the unclean run's state is not re-attached

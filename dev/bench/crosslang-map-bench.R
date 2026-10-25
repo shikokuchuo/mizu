@@ -121,14 +121,14 @@ note_us(
 daemons(0L)
 
 with_pool(4L, function(p) {
-  invisible(mizu_map(p, x, f))
+  invisible(mizu_collect(mizu_map(p, x, f)))
   note_us(
     "map trivial f",
     "mizu_map",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, f)
+        mizu_collect(mizu_map(p, x, f))
       }
     },
     "us/elt"
@@ -136,14 +136,14 @@ with_pool(4L, function(p) {
 })
 
 with_pool(4L, function(p) {
-  invisible(mizu_map(p, x, spec))
+  invisible(mizu_collect(mizu_map(p, x, spec)))
   note_us(
     "map trivial f",
     "mizu_map spec",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, spec)
+        mizu_collect(mizu_map(p, x, spec))
       }
     },
     "us/elt"
@@ -156,7 +156,7 @@ with_pool(4L, function(p) {
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, spec, .template = numeric(1))
+        mizu_collect(mizu_map(p, x, spec, .template = numeric(1)))
       }
     },
     "us/elt"
@@ -169,7 +169,7 @@ with_pool(4L, function(p) {
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, mizu_call(.source = "x"), .seed = 42L)
+        mizu_collect(mizu_map(p, x, mizu_call(.source = "x"), .seed = 42L))
       }
     },
     "us/elt"
@@ -177,14 +177,14 @@ with_pool(4L, function(p) {
   # prepared: stage once, run many — per-run cost is the kind-2 runner
   # submit + collect, the workers' contexts cached
   pmap <- mizu_map_prepare(p, x, spec)
-  invisible(mizu_map_run(pmap))
+  invisible(mizu_collect(mizu_map_run(pmap)))
   note_us(
     "map trivial f",
     "mizu_map_run spec",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map_run(pmap)
+        mizu_collect(mizu_map_run(pmap))
       }
     },
     "us/elt"
@@ -207,21 +207,21 @@ note(
 )
 
 with_pool(4L, function(p) {
-  invisible(mizu_map(p, seq_len(n), g))
+  invisible(mizu_collect(mizu_map(p, seq_len(n), g)))
   note(
     "map ~10us tasks",
     "mizu_map",
-    mark_ms(function() invisible(mizu_map(p, seq_len(n), g))),
+    mark_ms(function() invisible(mizu_collect(mizu_map(p, seq_len(n), g)))),
     "ms wall"
   )
 })
 
 with_pool(4L, function(p) {
-  invisible(mizu_map(p, seq_len(n), gspec))
+  invisible(mizu_collect(mizu_map(p, seq_len(n), gspec)))
   note(
     "map ~10us tasks",
     "mizu_map spec",
-    mark_ms(function() invisible(mizu_map(p, seq_len(n), gspec))),
+    mark_ms(function() invisible(mizu_collect(mizu_map(p, seq_len(n), gspec)))),
     "ms wall"
   )
 }, launcher = mizu_py_pool_launcher())

@@ -19,3 +19,4 @@
 ^docs$
 ^pkgdown$
 ^vignettes/\.quarto$
+^\.ruff_cache$

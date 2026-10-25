@@ -78,8 +78,8 @@ test_that("a pool no worker has joined: spec and map error, plain submit queues"
   spec <- mizu_call("base::sqrt", 2)
   expect_error(mizu_submit_call(ctrl, spec), "no worker has joined")
   expect_error(mizu_submit_call(att, spec), "no worker has joined")
-  expect_error(mizu_map(ctrl, 1:3, identity), "no worker has joined")
-  expect_error(mizu_map(ctrl, 1:3, spec), "no worker has joined")
+  expect_error(mizu_collect(mizu_map(ctrl, 1:3, identity)), "no worker has joined")
+  expect_error(mizu_collect(mizu_map(ctrl, 1:3, spec)), "no worker has joined")
   expect_error(mizu_map_prepare(ctrl, 1:3, identity), "no worker has joined")
   t <- mizu_submit(ctrl, 1 + 1)
   wk <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
@@ -103,7 +103,7 @@ test_that("private verbs fail fast on a foreign pool", {
     mizu_submit_batch(p$ctrl, list(quote(1 + 1))),
     "mizu_submit_call"
   )
-  expect_error(mizu_map(p$ctrl, 1:3, identity), "mizu_call")
+  expect_error(mizu_collect(mizu_map(p$ctrl, 1:3, identity)), "mizu_call")
   expect_error(mizu_map_prepare(p$ctrl, 1:3, identity), "mizu_call")
   d <- mizu_pool_dump(p$ctrl)
   expect_identical(d[["language"]], "Python")

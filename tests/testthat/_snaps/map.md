@@ -17,7 +17,7 @@
 # .collect validates against the template
 
     Code
-      mizu_map(p[["ctrl"]], 1:4, identity, .collect = "view")
+      mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .collect = "view"))
     Condition
       Error:
       ! mizu: .collect = "view" requires an atomic .template (logical, integer, double, complex or raw)
@@ -25,7 +25,8 @@
 ---
 
     Code
-      mizu_map(p[["ctrl"]], 1:4, identity, .template = character(1), .collect = "view")
+      mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .template = character(1),
+      .collect = "view"))
     Condition
       Error:
       ! mizu: .collect = "view" requires an atomic .template (logical, integer, double, complex or raw)
@@ -33,7 +34,7 @@
 ---
 
     Code
-      mizu_map(p[["ctrl"]], 1:4, identity, .collect = "all")
+      mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .collect = "all"))
     Condition
       Error:
       ! mizu: .collect must be "value" or "view"
@@ -41,7 +42,7 @@
 ---
 
     Code
-      mizu_map_run(pm, .collect = "view")
+      mizu_collect(mizu_map_run(pm, .collect = "view"))
     Condition
       Error:
       ! mizu: .collect = "view" requires an atomic .template (logical, integer, double, complex or raw)
@@ -102,10 +103,10 @@
       Error:
       ! mizu: .seed[1] must be an integer
 
-# map_run rejects an NA .timeout instead of waiting forever (L31)
+# map_submit_handle rejects an NA .timeout instead of waiting forever (L31)
 
     Code
-      mizu:::map_run(p[["ctrl"]], st, NA_real_)
+      mizu:::map_submit_handle(p[["ctrl"]], st, NA_real_)
     Condition
       Error:
       ! mizu: .timeout must be a number of seconds, not NA
@@ -113,7 +114,7 @@
 ---
 
     Code
-      mizu:::map_run(p[["ctrl"]], st, NaN)
+      mizu:::map_submit_handle(p[["ctrl"]], st, NaN)
     Condition
       Error:
       ! mizu: .timeout must be a number of seconds, not NA
@@ -121,7 +122,7 @@
 ---
 
     Code
-      mizu:::map_run(p[["ctrl"]], st, "30")
+      mizu:::map_submit_handle(p[["ctrl"]], st, "30")
     Condition
       Error:
       ! mizu: .timeout must be a number of seconds, not NA

@@ -29,7 +29,15 @@ call raises \code{mizu_error_submit_timeout}. Submission blocks only
 when the ring is full (back-pressure) and returns immediately
 otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
 
-\item{task}{a task handle from \code{mizu_submit()}.}
+\item{task}{a task handle from \code{mizu_submit()}, or a map handle from
+\code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}. A map handle collects the whole
+map: the gathered list (or templated vector), an element error
+re-signalled with its \code{mizu_map_index}, or a worker death as
+\code{mizu_error_worker_died} with the lost element ranges — exactly the
+semantics of \code{\link[=mizu_map]{mizu_map()}}'s Errors section. A task or map handle
+with a pending promise (or enrolled in a pending
+\code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}} / \code{\link[=mizu_collect_any_async]{mizu_collect_any_async()}} collection)
+refuses a blocking collect: one consumer per result.}
 
 \item{timeout}{seconds to wait for the result before the call returns
 the \code{mizu_timeout} sentinel. \code{Inf} (the default) waits indefinitely;
