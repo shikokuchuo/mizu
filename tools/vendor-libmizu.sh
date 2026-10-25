@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="9b1261bc6899f50d2bafb88f6fcdcc05124af570"  # libmizu: Add notify endpoints: edge-triggered named wakes for event-driven consumers
+PIN="83e50f8282b581039e1c36d4a077854a002e8024"  # libmizu: Consume pending notify signals on Windows; fix build-win.bat exit-code loss
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
