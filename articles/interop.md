@@ -1,17 +1,17 @@
 # Python interop
 
-The channel speaks a language-agnostic wire protocol, so the process at
-the other end does not have to be R.
-[pymizu](https://github.com/shikokuchuo/pymizu) is the Python binding of
-the same shared-memory core, and a channel connects the two languages as
-directly as two R sessions. Pass the peer program as a source string
-(instead of a quoted expression) and set the launcher to
-[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
-— it checks for the interpreter and pymizu before the channel is
-created, then spawns `python3 -m pymizu.child`. Here a Python echo loop,
-mirroring the R one in
-[Channels](https://shikokuchuo.net/mizu/articles/channels.md) (runs when
-a `python3` with pymizu and NumPy installed is on the `PATH`):
+The process at the other end of a channel does not have to be R.
+[pymizu](https://github.com/shikokuchuo/pymizu) is the Python
+counterpart of mizu, built on the same shared-memory core. A channel
+connects the two languages as directly as two R sessions. Pass the peer
+program as a source string instead of a quoted expression, and set the
+launcher to
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md).
+The launcher checks for the interpreter and pymizu before the channel is
+created, then spawns `python3 -m pymizu.child`. In this example, a
+Python process doubles the Old Faithful eruption durations. (The Python
+examples in this vignette run when a `python3` with pymizu and NumPy
+installed is on the `PATH`.)
 
 ``` r
 
@@ -29,324 +29,222 @@ while True:
   launcher = mizu_py_launcher()
 )
 
-mizu_send(ch, c(1.5, 2.5, 3.5))
-mizu_recv(ch, timeout = 5)
-#> [1] 3 5 7
+mizu_send(ch, faithful$eruptions)
+head(mizu_recv(ch, timeout = 5))
+#> [1] 7.200 3.600 6.666 4.566 9.066 5.766
 mizu_close(ch)
 ```
 
-The exchange is easiest to take in tiers, from the everyday to the
-involved: most values cross as an ordinary copy and round-trip
-unchanged, past a size floor larger data crosses without copying at all,
-and a handful of types have no faithful home on the other side and stay
-put. A closing fine-print section collects the few round-trip
-normalizations and what your Python collaborator sees.
-
-## Everyday values round-trip
-
-Most R objects cross as an ordinary copy and come back
-[`identical()`](https://rdrr.io/r/base/identical.html). Python sees the
-natural equivalent — a NumPy array for a vector, a dict for a named list
-— and whatever Python sends back arrives as the natural R object:
-
-- Atomic vectors — `logical`, `integer`, `double`, `complex`,
-  `character`, and `raw`, plus `integer64` (bit64’s exact layout,
-  constructed without bit64) — cross both ways: `c(1.5, 2.5)` arrives in
-  Python as a `float64` array and returns as the same
-  [`numeric()`](https://rdrr.io/r/base/numeric.html).
-- Strings cross as strings: `NA_character_` reads as `None` in Python,
-  and Python `None` comes back as `NULL`.
-- Lists cross as Python lists, named lists as dicts with string keys,
-  and back.
-- A `Date`, `POSIXct`, or `difftime` keeps its meaning — Python works
-  with it as a `datetime64` or `timedelta64` array.
-- A matrix or array keeps its dimensions.
-- Labels ride along: a named vector keeps its names, and a matrix or
-  array keeps its `dimnames` — axis names included, so a `table` arrives
-  with its class and every axis label intact. An unmodified round trip
-  is [`identical()`](https://rdrr.io/r/base/identical.html). Names ride
-  on the plain atomic types; the exceptions are listed in what doesn’t
-  cross.
-- A data frame crosses to a Python frame and back — see the data frame
-  section below.
-
-The few cases where a round trip normalizes the container (never the
-values) are listed in the fine print.
-
 ## Large data crosses without copying
 
-Past a size floor, the data itself never moves: it is written to shared
-memory once, and both sides read it in place — no copy, no parsing.
-Everything you *receive* large arrives as an ALTREP view over the shared
-pages — exactly the zero-copy mechanism you get from another R process —
-and everything you *send* large arrives in Python backed by those same
-pages:
+Past a size floor, the data itself never moves. mizu writes it to shared
+memory once, and both sides read it in place: no serialization, no
+parsing, no further copies. A large value you receive arrives as an
+ALTREP view over the shared pages. This is the same zero-copy mechanism
+you get from another R process. A large value you send arrives in Python
+backed by those same pages. The peer below echoes back whatever it
+receives. This channel stays open for the next few examples:
 
-- A large `numeric`, `integer`, `raw`, `complex`, or `integer64` vector.
-- A large character vector (sent by Python as a `list[str | None]`,
-  `None` as `NA_character_`).
-- A large matrix or array — C order, Fortran order, or strided, the data
-  never transposed — and a large `datetime64` array, which arrives as a
-  `Date` or `POSIXct` view with `NaT` as `NA`.
-- A large nested Python tree of lists, dicts, arrays, and strings,
-  arriving as a list view over one shared region.
-- A large data frame, crossing as one shared-memory region in both
-  directions — see the data frame and Arrow sections below.
+``` r
 
-The floors: a flat vector on a channel crosses as a view from 256 KB —
-below that it takes one quick copy into the channel’s spill arena,
-cheaper than region machinery at that size. Everywhere else — pools,
-string vectors, frames, anything with `dim` — the floor is 32 KB.
+ch <- mizu_channel(
+  "
+import pymizu
+while True:
+    x = ch.recv(30)
+    if pymizu.is_sentinel(x):
+        break
+    ch.send(x)
+",
+  launcher = mizu_py_launcher()
+)
 
-Views compose: a received view sent back crosses as its region’s name
-alone — zero payload bytes — and the receiver resolves a view of the
-original region. The same holds for a data frame echoed unmodified, even
-through polars or pyarrow; modify some columns in between and only those
-columns cross as data, the rest still by reference.
+big <- rep(faithful$waiting, 5000) # 1.36 million waiting times, ten megabytes
+mizu_send(ch, big)
+back <- mizu_recv(ch, timeout = 5)
+identical(back, big)
+#> [1] TRUE
+```
+
+Apart from that one write into the shared region, nothing moved at all.
+Python’s echo came back as a reference with zero payload bytes. If you
+send a received view onward, it crosses the same way: as the region’s
+name alone. So does an unmodified data frame echoed back. The zero-copy
+tier covers every large layout: a flat vector, a matrix or array of any
+memory order, a character vector, or a nested Python tree of lists,
+dicts, and arrays. A large data frame crosses as one shared region in
+both directions. The floor is low: 256 KB for a flat vector on a
+channel, and 32 KB everywhere else.[^1]
+
+## What crosses
+
+R’s built-in datasets supply the proof: each form below comes back from
+Python [`identical()`](https://rdrr.io/r/base/identical.html) to what
+you sent, down to values, shape, class, and labels.
+
+``` r
+
+echo <- function(x) {
+  mizu_send(ch, x)
+  mizu_recv(ch, timeout = 5)
+}
+
+identical(echo(mtcars), mtcars)              # a data frame
+#> [1] TRUE
+identical(echo(iris), iris)                  # a factor column stays a factor
+#> [1] TRUE
+identical(echo(state.x77), state.x77)        # a matrix keeps its dimnames
+#> [1] TRUE
+identical(echo(HairEyeColor), HairEyeColor)  # a table keeps class and axis labels
+#> [1] TRUE
+identical(echo(islands), islands)            # a named vector keeps its names
+#> [1] TRUE
+
+days <- as.Date(paste(1973, airquality$Month, airquality$Day, sep = "-"))
+identical(echo(days), days)                  # a Date keeps its meaning
+#> [1] TRUE
+```
+
+Python sees the natural equivalent throughout: a NumPy array for a
+vector, a dict for a named list, a `datetime64` array for a `Date`, a
+`pymizu.Frame` for a data frame.
 
 ## What doesn’t cross
 
-A value with no faithful home on the other side is declined at
+Some values have no portable home on the other side.
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
-with a `mizu_error_not_portable` naming the path and reason. The channel
-stays usable.
+declines these with a `mizu_error_not_portable` that points at the
+offending value. The channel stays usable. Among the built-in datasets,
+`esoph`, `CO2`, and `ChickWeight` do not cross: each has an
+ordered-factor column, a type with no NumPy equivalent.
 
-- `POSIXlt`, a character matrix, and S4 objects stay on R’s side.
-- A named vector with a class or of character type — a named character
-  vector, factor, `Date`, or `POSIXct`, standalone or as a frame column
-  — declines: names ride only on the plain atomic vectors. A named list
-  of strings crosses fine, as a Python dict.
-- A data.table (its internal self-reference pointer is not portable), a
-  groupedData-style frame (a formula attribute is not either), an
-  ordered-factor column, and a column that is itself a labeled matrix.
-- From the Python side: Arrow nested, decimal, `date64`, `time`, and
-  `interval` columns, and ordered dictionaries — cast a polars `Enum` to
-  `pl.Categorical` first.
+``` r
 
-## The fine print
+tryCatch(mizu_send(ch, esoph), error = conditionMessage)
+#> [1] "mizu: value is not portable to the peer (an ordered factor has no portable home at x$agegp)"
+mizu_close(ch)
+```
 
-A round trip can normalize the container, never the values:
+[`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
+also declines a `POSIXlt` time, a character matrix, an S4 object, a
+data.table, and a named character vector or named factor (names ride on
+the plain atomic vectors only). From the Python side, the declined types
+are nested, decimal, `date64`, `time`, and `interval` Arrow columns.
 
-- A standalone factor comes back as character strings (inside a data
-  frame it stays a factor, crossing as a dictionary-encoded column).
-- A length-1 `NA` — `NA`, `NA_integer_`, `NA_character_` — comes back as
-  `NULL`, matching Python `None`.
-- A logical vector with missing values comes back as integer —
-  `c(TRUE, NA)` returns as `c(1L, NA)` — NumPy having no missing-aware
-  bool dtype.
-- A `POSIXct` timezone normalizes to `"UTC"` (the instant is exact), and
-  `difftime` units normalize to seconds — a minute crosses as 60
-  seconds.
-- A `uint64` value past 2^53 crosses as `NA` with a warning at send, and
-  `INT32_MIN` or `INT64_MIN` in an integer array reads as `NA` — those
-  bit patterns are R’s own `NA` sentinels.
+## Data frames and Arrow
 
-And for what your Python collaborator sees on their side:
+A data frame crosses as a `pymizu.Frame`, one `pl.from_arrow(f)` or
+`pa.table(f)` away from polars or pyarrow. A polars, pyarrow, or pandas
+frame arrives back as a `data.frame`. A tibble’s class and extra
+attributes cross unchanged. An unmodified round trip is
+[`identical()`](https://rdrr.io/r/base/identical.html): a tibble comes
+back a tibble.
 
-- A vector arrives as a NumPy array — `float64`, `int32`, `uint8`,
-  `complex128`, or `int64` to match. NumPy arrays of other numeric
-  dtypes convert at send time and cross as a copy at any size; the
-  [dtype
-  matrix](https://shikokuchuo.net/pymizu/user-guide/interop.html#the-dtype-matrix)
-  on the pymizu site has the exact per-dtype correspondence, widening
-  rows included.
-- Labels live on `pymizu.DimArray`, an `ndarray` subclass. NumPy
-  operations drop them rather than risk mislabeling reshaped data, so a
-  modified array comes back as a plain array — re-attach labels in
-  Python and they ride back as `names` or `dimnames`.
-- A data frame arrives as a `pymizu.Frame` — the next section has the
-  details.
-
-## Data frames
-
-A data frame crosses as a `pymizu.Frame` — a column dict on the Python
-side, one `pl.from_arrow(f)` or `pa.table(f)` away from polars or
-pyarrow — and a polars, pyarrow, or pandas frame arrives back as a
-`data.frame`. Past the zero-copy floor the frame travels as one
-shared-memory region in both directions: no copy, no parse, numeric
-columns read in place. The full dtype contract, with the NA-sentinel and
-widening rules per dtype, is the [dtype
-matrix](https://shikokuchuo.net/pymizu/user-guide/interop.html#the-dtype-matrix)
-on the pymizu site.
-
-Frame metadata rides along verbatim. The full class vector (a tibble’s
-`c("tbl_df", "tbl", "data.frame")`, any class ending in `"data.frame"`)
-and extra attributes such as a `reference` note or readr’s column
-specification cross opaquely: Python stashes them undecoded on the
-`pymizu.Frame`, and an unmodified echo restores them, so a pristine
-round trip is [`identical()`](https://rdrr.io/r/base/identical.html).
-The stash rides the pristine received frame only: a frame rebuilt
-through pyarrow, polars, pandas, or `from_arrow` arrives in R as a plain
-`data.frame`.
-
-## Arrow data
-
-The frame exchange extends to Arrow producers directly: an `arrow`
-Table, RecordBatch, or RecordBatchReader — and any struct-typed
-`nanoarrow_array_stream` or `nanoarrow_array`, which covers
-`DBI::dbGetQueryArrow()`, duckdb, adbc, and polars outputs — stages
-straight off the Arrow buffers, one layout write into the shared region
-rather than a conversion to R values first.
-
-The same path serves pools: an Arrow tabular returned from a task
-crosses as one frame region, and one nested in a payload — a list
-element, a task argument, the spliced task expression itself — crosses
-by reference, the received object holding a view in place of the table.
-
-The receiver gets an ordinary `data.frame`, each column a view over the
-region’s pages, and
+Any Arrow producer stages directly from its buffers: an `arrow` Table or
+RecordBatchReader, a struct-typed `nanoarrow_array_stream`,
+`DBI::dbGetQueryArrow()`, duckdb, or adbc. Staging is one layout write
+into the shared region, not a conversion to R values first.
 [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/reference/mizu_as_arrow.md)
-converts back to Arrow: a struct-typed `nanoarrow_array_stream` whose
-buffers point straight into the shared region for attribute-free double,
-integer, `integer64`, and character columns, the rest (factors, Date /
-POSIXct / difftime, logical, raw) converting per column.
-
-A subset frame, or a new data frame assembled from received columns,
-keeps the backing pages — the export borrows each column through its
-original region, and a column re-sent inside a new frame crosses by
-reference, not by copy. If a region’s producer exited, only that
-region’s columns fall back to the copy path.
+converts a received frame back to Arrow. Columns without attributes
+(double, integer, `integer64`, character) convert without copying:
 
 ``` r
 
 ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
-mizu_send(ch, arrow::arrow_table(data.frame(x = runif(1e5), s = rep(c("a", "b", NA), length.out = 1e5))))
+mizu_send(ch, arrow::arrow_table(data.frame(
+  eruptions = rep(faithful$eruptions, 500),
+  waiting = rep(faithful$waiting, 500)
+)))
 
 df <- mizu_recv(ch, timeout = 30)
-stream <- mizu_as_arrow(df)
-arrow::as_arrow_table(stream)
+arrow::as_arrow_table(mizu_as_arrow(df))
 #> Table
-#> 100000 rows x 2 columns
-#> $x <double>
-#> $s <large_string>
+#> 136000 rows x 2 columns
+#> $eruptions <double>
+#> $waiting <double>
 
-# a subset, or a new frame assembled from received columns, borrows the same pages
-sub <- df["x"]
-arrow::as_arrow_table(mizu_as_arrow(sub))
+# a subset keeps the same backing pages
+arrow::as_arrow_table(mizu_as_arrow(df["waiting"]))
 #> Table
-#> 100000 rows x 1 columns
-#> $x <double>
-mixed <- data.frame(x = df$x, y = runif(1e5))
-arrow::as_arrow_table(mizu_as_arrow(mixed))
-#> Table
-#> 100000 rows x 2 columns
-#> $x <double>
-#> $y <double>
+#> 136000 rows x 1 columns
+#> $waiting <double>
 mizu_close(ch)
 ```
 
-The same bytes reach a Python peer as a `pymizu.Frame`, where
-`pa.table(f)` / `pl.from_arrow(f)` consume them with no export step at
-all.
-
-Two things to know: sending a stream consumes it — a streaming
-RecordBatchReader is fully materialized at send, source bytes and region
-resident at once — and fidelity is frame-level, not Arrow-schema-exact
-(a dictionary returns as a factor, uints widen, an `int32` of
-`INT32_MIN` reads as `NA`, and a `uint64` past 2^53 crosses as `NA` with
-a warning at send — firing on the worker for a pool publish, invisible
-to the submitter).
-
-A `timestamp[ns]` or `duration[ns]` column arrives as a `POSIXct` or
-`difftime` in seconds: the nanosecond counts cross verbatim and convert
-to doubles with `count * 1e-9` — the same conversion the µs-rounded form
-uses, so the values are identical bit for bit, and only sub-microsecond
-resolution is lost.
+Sending a stream consumes it: a RecordBatchReader is fully materialized
+at send. The fidelity is frame-level, not Arrow-schema-exact: a
+dictionary returns as a factor, and unsigned integers widen. The [dtype
+matrix](https://shikokuchuo.net/pymizu/user-guide/interop.html#the-dtype-matrix)
+on the pymizu site has the exact per-dtype correspondence.
 
 ## Mixed-language pools
 
-Channels move values; pools move computation. A pool’s workers can be
-Python processes too, and you drive them with a language-neutral task
-description.
+Channels move values. Pools move computation, and a pool’s workers can
+be Python processes too.
 [`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
-spawns the workers (checking for the interpreter like the channel
-launcher),
+spawns the workers.
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-builds the task — a qualified `"mod.fn"` name or a `.source =` string,
-plus constant arguments — and
+builds a language-neutral task: a qualified `"mod.fn"` name or a
+`.source =` string, plus constant arguments.
 [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-submits it:
+submits it. Unnamed arguments become Python’s positional arguments, and
+named ones become its keyword arguments:
 
 ``` r
 
 p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
-t <- mizu_submit_call(p, mizu_call("numpy.quantile", runif(100), q = c(0.25, 0.5, 0.75)))
+
+t <- mizu_submit_call(p, mizu_call("numpy.quantile", faithful$eruptions, q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
-#> [1] 0.1872429 0.5569842 0.7464803
+#> [1] 2.16275 4.00000 4.45425
+quantile(faithful$eruptions, c(0.25, 0.5, 0.75)) # R's own answer, for comparison
+#>     25%     50%     75% 
+#> 2.16275 4.00000 4.45425
+
 s <- mizu_submit_call(p, mizu_call(.source = "y = x * 2\ny + 1", x = 20))
 mizu_collect(s)
 #> [1] 41
-mizu_pool_stop(p)
 ```
 
-Unnamed arguments map to the positional list and named ones to the named
-dict, matching Python’s `*args, **kwargs`; a `.source =` task evaluates
-in a fresh namespace with the named arguments bound as names and the
-result as the trailing expression’s value.
-
-The pool knows its workers’ language, so there is nothing to set: a
-plain
+A `.source =` task runs in a fresh namespace with the named arguments
+bound as names. The trailing expression’s value is the result. A plain
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-on a Python pool fails with an error pointing you to
-[`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md),
-an unqualified name fails at submit, and a non-portable argument raises
-`mizu_error_not_portable` at submit. Task errors cross as
-`mizu_error_remote` conditions with the remote type preserved, and a
-result without a portable home fails the task with one naming the type.
-
-Arguments follow the same rules as channel payloads: a fresh array past
-the 32 KB floor crosses as one shared-memory view rather than a copy,
-and an argument that is already a shared view (received from a channel,
-a pool result, or a
-[`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector)
-crosses as its identifier alone — zero payload bytes. If the workers are
-too old to read such references, the submit fails with an error naming
-the remedy.
-
-The reverse direction mirrors: `pymizu.Pool.create()` with
-`pymizu.r_pool_launcher()`, and `Pool.submit()` with `pymizu.call()`
-specs.
+on a Python pool fails locally, and the error points to
+[`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md).
+Task errors cross as `mizu_error_remote` conditions that keep the remote
+type. Arguments follow the same rules as channel payloads, zero-copy
+included. A large array crosses as one shared view, and a view already
+in shared memory crosses as its name alone. The reverse direction
+mirrors this: `pymizu.Pool.create()` with `pymizu.r_pool_launcher()`,
+and `Pool.submit()` with `pymizu.call()` specs.
 
 ## The cross-language map
 
-You can also pass a
+To map a Python function over an R vector, pass a
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 spec as
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)’s
-`.f` to map a Python function over an R vector — the cross-language map.
-Each element of `.x` becomes the spec’s first positional argument (a
-`"mod.fn"` spec) or binds as `x` (a `.source =` spec), and constant
-arguments stay in the spec itself, so `...` stays empty. `.template`,
-`.collect = "view"`, and `.seed` work as they do on a same-language map;
-each worker language derives its own random streams from the seed, so
-results are reproducible for a given worker language but not identical
-across languages:
+`.f`. Each element of `.x` becomes the spec’s first positional argument,
+or binds as `x` for a `.source =` spec. `.template`,
+`.collect = "view"`, and `.seed` work as they do on a same-language map:
 
 ``` r
 
-p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
-mizu_map(p, runif(6), mizu_call("numpy.quantile", q = c(0.25, 0.75)))
-#> [[1]]
-#> [1] 0.5051453 0.5051453
-#> 
-#> [[2]]
-#> [1] 0.2117105 0.2117105
-#> 
-#> [[3]]
-#> [1] 0.3709099 0.3709099
-#> 
-#> [[4]]
-#> [1] 0.8677452 0.8677452
-#> 
-#> [[5]]
-#> [1] 0.6673288 0.6673288
-#> 
-#> [[6]]
-#> [1] 0.5521507 0.5521507
-mizu_map(p, runif(6), mizu_call("numpy.log"), .template = numeric(1))
-#> [1] -0.2213433 -1.6208470 -0.8452594 -0.8991134 -0.1003950 -0.9736976
+mizu_map(p, faithful$waiting[1:6], mizu_call("numpy.log"), .template = numeric(1))
+#> [1] 4.369448 3.988984 4.304065 4.127134 4.442651 4.007333
 mizu_pool_stop(p)
 ```
 
-A labeled array as the map’s `x` drops its labels, as it would on a
-same-language map.
+[^1]: Below the floor a value crosses as one quick copy. At any size,
+    these types cross: atomic vectors (logical, integer, double,
+    complex, character, raw, and `integer64`, bit64’s exact layout
+    constructed without bit64), strings (`NA_character_` reads as Python
+    `None`, and `None` arrives as `NULL`), lists (a named list becomes a
+    dict), and `Date`, `POSIXct`, and `difftime`. A few round trips
+    change the container but never the values. A standalone factor
+    returns as character strings, a length-1 `NA` returns as `NULL`, and
+    a logical vector with missing values returns as integer. A `POSIXct`
+    timezone becomes `"UTC"`, and `difftime` units become seconds. The
+    bit patterns `INT32_MIN` and `INT64_MIN` collide with R’s own `NA`
+    sentinel and read as `NA`. A `uint64` past 2^53 crosses as `NA` with
+    a warning at send.
