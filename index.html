@@ -4,16 +4,16 @@
 <meta charset="UTF-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<title>Zero-Copy Shared-Memory Parallelism Across R and Python • mizu</title>
+<title>Zero-Copy Async and Parallel IPC Across R and Python • mizu</title>
 <script src="deps/jquery-3.6.0/jquery-3.6.0.min.js"></script><meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <link href="deps/bootstrap-5.3.8/bootstrap.min.css" rel="stylesheet">
 <script src="deps/bootstrap-5.3.8/bootstrap.bundle.min.js"></script><link href="deps/Source_Sans_Pro-0.4.10/font.css" rel="stylesheet">
 <link href="deps/Source_Code_Pro-0.4.10/font.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
-<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Zero-Copy Shared-Memory Parallelism Across R and Python">
-<meta name="description" content="Parallel computation and data exchange between R processes on the same machine: lock-free channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows), with the hot path entirely in user space. Inter-process communication cheap enough that work can be divided at granularities usually reserved for threads. A complement to mirai; payload contents interoperate transparently with mori shared objects.">
-<meta property="og:description" content="Parallel computation and data exchange between R processes on the same machine: lock-free channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows), with the hot path entirely in user space. Inter-process communication cheap enough that work can be divided at granularities usually reserved for threads. A complement to mirai; payload contents interoperate transparently with mori shared objects.">
+<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Zero-Copy Async and Parallel IPC Across R and Python">
+<meta name="description" content="Parallel computation and data exchange between R processes on the same machine: lock-free channels, work-stealing task pools, and a parallel map over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows), with the hot path entirely in user space. Inter-process communication cheap enough that work can be divided at granularities usually reserved for threads. Vectors and data frames transfer zero-copy, received as ALTREP views over the shared pages; Apache Arrow tables and record batches travel as a single frame, with zero-copy conversion in both directions. Receives and task results integrate with later and promises for non-blocking, event-driven applications such as shiny. Channels, pools, and maps interoperate with pymizu, so a peer or worker can equally be a Python process. A complement to mirai; its payload contents interoperate transparently with mori shared objects.">
+<meta property="og:description" content="Parallel computation and data exchange between R processes on the same machine: lock-free channels, work-stealing task pools, and a parallel map over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows), with the hot path entirely in user space. Inter-process communication cheap enough that work can be divided at granularities usually reserved for threads. Vectors and data frames transfer zero-copy, received as ALTREP views over the shared pages; Apache Arrow tables and record batches travel as a single frame, with zero-copy conversion in both directions. Receives and task results integrate with later and promises for non-blocking, event-driven applications such as shiny. Channels, pools, and maps interoperate with pymizu, so a peer or worker can equally be a Python process. A complement to mirai; its payload contents interoperate transparently with mori shared objects.">
 </head>
 <body>
     <a href="#container" class="visually-hidden-focusable">Skip to content</a>
@@ -75,13 +75,14 @@
 <span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="sc">/</span>  \  mizu \</span>
 <span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>\  <span class="sc">/</span>   水  <span class="sc">/</span></span>
 <span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a> \<span class="sc">/</span>_______<span class="sc">/</span></span></code></pre></div>
-<p>mizu makes communication between R processes fast enough to parallelize work at thread granularity.</p>
-<p>mizu uses shared memory as the fastest IPC transport. Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets. This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see <a href="#benchmarks">Benchmarks</a>).</p>
-<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows). The hot path stays in user space. Data moves through single-producer single-consumer rings with batched publication. Waiting is spin-then-park, and peer death arrives as an OS event.</p>
+<p>mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.</p>
+<p>Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>). The hot path never enters the kernel and data is never copied through a system socket.</p>
+<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting, and peer death delivered as an OS event.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <ul>
 <li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages</li>
-<li>Zero-copy Arrow interchange — <code>arrow</code> tables and record batches travel as one frame, and <code><a href="reference/mizu_as_arrow.html">mizu_as_arrow()</a></code> converts a received frame back to Arrow without copying</li>
+<li>Zero-copy Arrow interchange — <code>arrow</code> tables and record batches travel as one frame, converting back without copying</li>
+<li>Event-driven async — messages stream into a <code>later</code> event loop without polling, and channels, tasks, and maps plug into <code>promises</code> pipelines, ready for Shiny</li>
 <li>Reproducible parallel randomness (<code>.seed</code>), invariant for any worker count or steal order</li>
 <li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>
 </ul>

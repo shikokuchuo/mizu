@@ -17,11 +17,11 @@
 Source:
 [`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/main/DESCRIPTION)
 
-Gao C (2026). *mizu: Zero-Copy Shared-Memory Parallelism Across R and
+Gao C (2026). *mizu: Zero-Copy Async and Parallel IPC Across R and
 Python*. R package version 0.0.1.9000, <https://shikokuchuo.net/mizu/>.
 
     @Manual{,
-      title = {mizu: Zero-Copy Shared-Memory Parallelism Across R and Python},
+      title = {mizu: Zero-Copy Async and Parallel IPC Across R and Python},
       author = {Charlie Gao},
       year = {2026},
       note = {R package version 0.0.1.9000},
