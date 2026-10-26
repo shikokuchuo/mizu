@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="154effd328d8804910ddabedf34bd5a8ff530805"  # libmizu: Prune purely descriptive comments
+PIN="83e50f8282b581039e1c36d4a077854a002e8024"  # libmizu: Consume pending notify signals on Windows; fix build-win.bat exit-code loss
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

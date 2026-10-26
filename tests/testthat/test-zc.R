@@ -38,6 +38,8 @@ test_that("tier selection: big atomic vectors cross as views, others copy", {
 test_that("S4 objects cross as views with the bit intact", {
   methods::setClass("reiS4Int", contains = "integer")
   methods::setClass("reiS4Chr", contains = "character")
+  methods::setClass("reiS4Cplx", contains = "complex")
+  methods::setClass("reiS4Raw", contains = "raw")
   methods::setClass("reiS4List", contains = "list")
   p <- channel_pair(arena_size = 0)
 
@@ -59,6 +61,27 @@ test_that("S4 objects cross as views with the bit intact", {
   expect_true(isS4(ys))
   expect_identical(ys, xs)
   rm(ys)
+  invisible(gc())
+
+  xcp <- methods::new(
+    "reiS4Cplx",
+    complex(real = runif(30000), imaginary = runif(30000))
+  )
+  mizu_send(p[["host"]], xcp)
+  ycp <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(ycp))
+  expect_true(isS4(ycp))
+  expect_identical(ycp, xcp)
+  rm(ycp)
+  invisible(gc())
+
+  xrw <- methods::new("reiS4Raw", as.raw(runif(300000) * 255))
+  mizu_send(p[["host"]], xrw)
+  yrw <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(yrw))
+  expect_true(isS4(yrw))
+  expect_identical(yrw, xrw)
+  rm(yrw)
   invisible(gc())
 
   xl <- methods::new("reiS4List", list(a = runif(30000), b = runif(20000)))

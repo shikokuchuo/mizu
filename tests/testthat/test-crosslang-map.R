@@ -8,24 +8,24 @@ test_that("name and source kinds return elements in order", {
   on.exit(mizu_pool_stop(p))
 
   x <- c(1, 4, 9, 16)
-  expect_equal(unlist(mizu_map(p, x, mizu_call("numpy.sqrt"))), sqrt(x))
+  expect_equal(unlist(mizu_collect(mizu_map(p, x, mizu_call("numpy.sqrt")))), sqrt(x))
   expect_identical(
-    unlist(mizu_map(p, 1:5, mizu_call(.source = "x * 2"))),
+    unlist(mizu_collect(mizu_map(p, 1:5, mizu_call(.source = "x * 2")))),
     1:5 * 2L
   )
   # the element binds as x; named constants as names; positional as _1
   expect_identical(
-    unlist(mizu_map(p, as.list(1:5), mizu_call(.source = "x + k", k = 10L))),
+    unlist(mizu_collect(mizu_map(p, as.list(1:5), mizu_call(.source = "x + k", k = 10L)))),
     1:5 + 10L
   )
   expect_identical(
-    unlist(mizu_map(p, 1:3, mizu_call(.name = NULL, 10L, .source = "x * _1"))),
+    unlist(mizu_collect(mizu_map(p, 1:3, mizu_call(.name = NULL, 10L, .source = "x * _1")))),
     1:3 * 10L
   )
   # a statement prefix runs per element; the trailing expression's value
   src <- paste("import math", "math.floor(x)", sep = "\n")
   expect_equal(
-    unlist(mizu_map(p, c(1.7, 2.3), mizu_call(.source = src))),
+    unlist(mizu_collect(mizu_map(p, c(1.7, 2.3), mizu_call(.source = src)))),
     c(1, 2)
   )
 })
@@ -38,20 +38,20 @@ test_that("template and view collect work across languages", {
 
   x <- runif(8, 1, 10)
   expect_equal(
-    mizu_map(p, x, mizu_call("numpy.log"), .template = numeric(1)),
+    mizu_collect(mizu_map(p, x, mizu_call("numpy.log"), .template = numeric(1))),
     log(x)
   )
-  v <- mizu_map(
+  v <- mizu_collect(mizu_map(
     p,
     x,
     mizu_call("numpy.log"),
     .template = numeric(1),
     .collect = "view"
-  )
+  ))
   expect_equal(as.numeric(v), log(x))
   # an integer template across languages
   expect_identical(
-    mizu_map(p, 1:4, mizu_call("builtins.int"), .template = integer(1)),
+    mizu_collect(mizu_map(p, 1:4, mizu_call("builtins.int"), .template = integer(1))),
     1:4
   )
 })
@@ -64,7 +64,7 @@ test_that("a per-element error crosses with its element index", {
 
   src <- paste("if x == 5:", "    raise ValueError('boom')", "x", sep = "\n")
   cnd <- tryCatch(
-    mizu_map(p, 1:10, mizu_call(.source = src)),
+    mizu_collect(mizu_map(p, 1:10, mizu_call(.source = src))),
     mizu_error_remote = function(c) c
   )
   expect_s3_class(cnd, "mizu_error_remote")
@@ -79,14 +79,14 @@ test_that("seed invariance holds within a worker language", {
   on.exit(mizu_pool_stop(p))
 
   f <- mizu_call(.source = "import random\nrandom.random()")
-  a <- mizu_map(p, 1:30, f, .seed = 42)
-  b <- mizu_map(p, 1:30, f, .seed = 42, .chunks = 7)
+  a <- mizu_collect(mizu_map(p, 1:30, f, .seed = 42))
+  b <- mizu_collect(mizu_map(p, 1:30, f, .seed = 42, .chunks = 7))
   expect_identical(a, b)
   # the split-map contract across the neutral (seed, offset) pair
-  whole <- mizu_map(p, 1:40, f, .seed = 7)
+  whole <- mizu_collect(mizu_map(p, 1:40, f, .seed = 7))
   split <- c(
-    mizu_map(p, 1:20, f, .seed = 7),
-    mizu_map(p, 21:40, f, .seed = c(7, 20))
+    mizu_collect(mizu_map(p, 1:20, f, .seed = 7)),
+    mizu_collect(mizu_map(p, 21:40, f, .seed = c(7, 20)))
   )
   expect_identical(unlist(split), unlist(whole))
 })
@@ -103,12 +103,12 @@ test_that("a prepared spec map re-runs under fresh seeds without restaging", {
     mizu_call(.source = "import random\nrandom.random()")
   )
   name <- pm[["st"]][["name"]]
-  r1 <- mizu_map_run(pm, .seed = 1)
+  r1 <- mizu_collect(mizu_map_run(pm, .seed = 1))
   expect_identical(pm[["st"]][["name"]], name)
-  r2 <- mizu_map_run(pm, .seed = 2)
+  r2 <- mizu_collect(mizu_map_run(pm, .seed = 2))
   expect_identical(pm[["st"]][["name"]], name)
   expect_false(identical(unlist(r1), unlist(r2)))
-  expect_identical(mizu_map_run(pm, .seed = 1), r1)
+  expect_identical(mizu_collect(mizu_map_run(pm, .seed = 1)), r1)
 })
 
 test_that("a killed Python worker's lost-set scan reports the elements", {
@@ -145,18 +145,18 @@ test_that("a spec map streams over foreign workers", {
   on.exit(mizu_pool_stop(p))
 
   f <- mizu_call(.source = "x * 2")
-  want <- mizu_map(p, 1:60, f)
+  want <- mizu_collect(mizu_map(p, 1:60, f))
   for (chunks in list(NULL, 1, 7, 60)) {
     expect_identical(
-      mizu_map(p, 1:60, f, .stream = TRUE, .chunks = chunks),
+      mizu_collect(mizu_map(p, 1:60, f, .stream = TRUE, .chunks = chunks)),
       want
     )
   }
   # a bare atomic x slices through the per-chunk raw x sections
   x <- as.double(1:100)
-  wx <- mizu_map(p, x, f)
+  wx <- mizu_collect(mizu_map(p, x, f))
   for (chunks in list(NULL, 8)) {
-    expect_identical(mizu_map(p, x, f, .stream = TRUE, .chunks = chunks), wx)
+    expect_identical(mizu_collect(mizu_map(p, x, f, .stream = TRUE, .chunks = chunks)), wx)
   }
 })
 
@@ -167,10 +167,10 @@ test_that("a streaming spec map keeps seed invariance across chunkings", {
   on.exit(mizu_pool_stop(p))
 
   f <- mizu_call(.source = "import random\nrandom.random()")
-  want <- mizu_map(p, 1:40, f, .seed = 42)
+  want <- mizu_collect(mizu_map(p, 1:40, f, .seed = 42))
   for (chunks in list(NULL, 1, 7, 40)) {
     expect_identical(
-      mizu_map(p, 1:40, f, .seed = 42, .stream = TRUE, .chunks = chunks),
+      mizu_collect(mizu_map(p, 1:40, f, .seed = 42, .stream = TRUE, .chunks = chunks)),
       want
     )
   }
@@ -184,7 +184,7 @@ test_that("a streaming spec map reports the global element index", {
 
   src <- paste("if x == 3:", "    raise ValueError('boom')", "x", sep = "\n")
   cnd <- tryCatch(
-    mizu_map(p, 1:10, mizu_call(.source = src), .stream = TRUE, .chunks = 5),
+    mizu_collect(mizu_map(p, 1:10, mizu_call(.source = src), .stream = TRUE, .chunks = 5)),
     mizu_error_remote = function(c) c
   )
   expect_s3_class(cnd, "mizu_error_remote")
@@ -207,7 +207,7 @@ test_that("a streaming spec map raises the minimum element index", {
     sep = "\n"
   )
   cnd <- tryCatch(
-    mizu_map(p, 1:8, mizu_call(.source = src), .stream = TRUE, .chunks = 4),
+    mizu_collect(mizu_map(p, 1:8, mizu_call(.source = src), .stream = TRUE, .chunks = 4)),
     mizu_error_remote = function(c) c
   )
   # chunk 1 fails at 3 strictly before chunk 2 at 5; the drained sibling's
@@ -222,9 +222,9 @@ test_that("a streaming spec map gathers per-chunk output areas", {
   on.exit(mizu_pool_stop(p))
 
   f <- mizu_call(.source = "x * 2")
-  want <- mizu_map(p, 1:50, f, .template = numeric(1))
+  want <- mizu_collect(mizu_map(p, 1:50, f, .template = numeric(1)))
   expect_identical(
-    mizu_map(p, 1:50, f, .template = numeric(1), .stream = TRUE, .chunks = 7),
+    mizu_collect(mizu_map(p, 1:50, f, .template = numeric(1), .stream = TRUE, .chunks = 7)),
     want
   )
   src <- paste(
@@ -232,27 +232,27 @@ test_that("a streaming spec map gathers per-chunk output areas", {
     "np.array([x, x * 2], dtype=float)",
     sep = "\n"
   )
-  m <- mizu_map(
+  m <- mizu_collect(mizu_map(
     p,
     1:6,
     mizu_call(.source = src),
     .template = numeric(2),
     .stream = TRUE,
     .chunks = 3
-  )
+  ))
   expect_identical(dim(m), c(2L, 6L))
   expect_identical(m[1L, ], as.double(1:6))
   expect_identical(m[2L, ], as.double(1:6) * 2)
   # .collect = "view" stays a narrowed entry error
   expect_error(
-    mizu_map(
+    mizu_collect(mizu_map(
       p,
       1:4,
       f,
       .template = numeric(1),
       .collect = "view",
       .stream = TRUE
-    ),
+    )),
     "cannot compose"
   )
   # as does a prepared streaming spec map

@@ -4,6 +4,7 @@
 \alias{print.mizu_channel}
 \alias{print.mizu_pool}
 \alias{print.mizu_task}
+\alias{print.mizu_map}
 \alias{print.mizu_map_prepared}
 \alias{print.mizu_sentinel}
 \alias{print.mizu_error_remote}
@@ -14,6 +15,8 @@
 \method{print}{mizu_pool}(x, ...)
 
 \method{print}{mizu_task}(x, ...)
+
+\method{print}{mizu_map}(x, ...)
 
 \method{print}{mizu_map_prepared}(x, ...)
 

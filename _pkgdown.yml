@@ -29,6 +29,10 @@ reference:
     contents:
       - mizu_map
       - mizu_map_prepare
+  - title: Promises and handlers
+    contents:
+      - mizu_recv_async
+      - mizu_collect_all_async
   - title: Monitoring and debugging
     contents:
       - mizu_pool_status

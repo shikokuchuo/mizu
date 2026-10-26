@@ -58,8 +58,8 @@ test_that("an empty prepared map runs without a pool round-trip", {
   p <- pool_pair()
   pm <- mizu_map_prepare(p[["ctrl"]], list(), sqrt)
   expect_null(pm[["st"]])
-  expect_identical(mizu_map_run(pm), list())
-  expect_identical(mizu_map_run(pm), list())
+  expect_identical(mizu_collect(mizu_map_run(pm)), list())
+  expect_identical(mizu_collect(mizu_map_run(pm)), list())
   pool_end(p)
 })
 
@@ -70,7 +70,7 @@ test_that("prepared handles print their region and staleness", {
   expect_output(print(pm), pm[["st"]][["name"]], fixed = TRUE)
   pm[["st"]] <- NULL
   expect_output(print(pm), "stale")
-  expect_error(mizu_map_run(list()), "not a prepared-map handle")
+  expect_error(mizu_collect(mizu_map_run(list())), "not a prepared-map handle")
   pool_end(p)
 })
 
@@ -81,17 +81,17 @@ test_that("prepared runs reuse the region and match mizu_map exactly", {
   x <- 1:8 + 0
   pm <- mizu_map_prepare(p, x, f)
   name1 <- pm[["st"]][["name"]]
-  r1 <- mizu_map_run(pm, .seed = 7L)
-  r2 <- mizu_map_run(pm, .seed = 7L)
+  r1 <- mizu_collect(mizu_map_run(pm, .seed = 7L))
+  r2 <- mizu_collect(mizu_map_run(pm, .seed = 7L))
   expect_identical(r1, r2) # invariance across re-runs
   expect_identical(pm[["st"]][["name"]], name1) # one region throughout
-  expect_identical(r1, mizu_map(p, x, f, .seed = 7L))
-  expect_false(identical(mizu_map_run(pm, .seed = 8L), r1))
+  expect_identical(r1, mizu_collect(mizu_map(p, x, f, .seed = 7L)))
+  expect_false(identical(mizu_collect(mizu_map_run(pm, .seed = 8L)), r1))
   # the template path re-runs over the same output area, un-zeroed: a
   # clean prior run overwrote every element
   pm2 <- mizu_map_prepare(p, x, function(i) i + 1, .template = numeric(1))
-  expect_identical(mizu_map_run(pm2), x + 1)
-  expect_identical(mizu_map_run(pm2), x + 1)
+  expect_identical(mizu_collect(mizu_map_run(pm2)), x + 1)
+  expect_identical(mizu_collect(mizu_map_run(pm2)), x + 1)
   expect_true(mizu_pool_stop(p))
 })
 
@@ -103,19 +103,19 @@ test_that("an unclean run marks the handle stale; the next run restages", {
     i
   })
   name1 <- pm[["st"]][["name"]]
-  r <- mizu_map_run(pm, .timeout = 0.05)
+  r <- mizu_collect(mizu_map_run(pm), timeout = 0.05)
   expect_s3_class(r, "mizu_timeout")
   expect_null(pm[["st"]]) # stale: the next run restages
-  r <- mizu_map_run(pm, .timeout = 60)
+  r <- mizu_collect(mizu_map_run(pm), timeout = 60)
   expect_identical(r, as.list(1:4 + 0))
   expect_false(identical(pm[["st"]][["name"]], name1))
   # an error in f is unclean too — and restaging reproduces it cleanly
   pm3 <- mizu_map_prepare(p, 1:3 + 0, function(i) {
     if (i == 2) stop("bad") else i
   })
-  expect_error(mizu_map_run(pm3), "bad")
+  expect_error(mizu_collect(mizu_map_run(pm3)), "bad")
   expect_null(pm3[["st"]])
-  expect_error(mizu_map_run(pm3), "bad")
+  expect_error(mizu_collect(mizu_map_run(pm3)), "bad")
   expect_true(mizu_pool_stop(p))
 })
 
@@ -163,9 +163,12 @@ test_that("phase B: a same-shape x swaps in place; changes restage", {
 test_that("mizu_map_run validates .seed and surfaces rearm slot exhaustion", {
   p <- pool_pair(slot_size = 256L) # region path: st survives for the retry
   pm <- mizu_map_prepare(p[["ctrl"]], 1:4, identity)
-  expect_error(mizu_map_run(pm, .seed = "x"), ".seed must be")
+  expect_error(mizu_collect(mizu_map_run(pm, .seed = "x")), ".seed must be")
   held <- lapply(1:8, function(i) mizu_submit(p[["ctrl"]], v, v = i))
-  expect_error(mizu_map_run(pm), class = "mizu_error_slots_exhausted")
+  expect_error(
+    mizu_collect(mizu_map_run(pm)),
+    class = "mizu_error_slots_exhausted"
+  )
   # both raised before the reset touched anything: the staged state is
   # intact for a retry
   expect_false(is.null(pm[["st"]]))
@@ -184,19 +187,39 @@ test_that("mizu_map_run validates .seed and surfaces rearm slot exhaustion", {
   pool_end(p)
 })
 
+test_that("a prepared run whose submission times out returns the sentinel", {
+  p <- pool_pair(workers = 2L, injection_cap = 2L, slot_size = 256L)
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:4, identity)
+  filler <- mizu_submit(p[["ctrl"]], "filler") # ring holds 2: one slot left
+  m <- mizu_map_run(pm, .timeout = 0.2) # runner 2 blocks on the full ring
+  expect_s3_class(m, "mizu_timeout")
+  expect_s3_class(m, "mizu_sentinel")
+  expect_null(pm[["st"]]) # the state is dead: the next run restages
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(filler, timeout = 5), "filler")
+  m2 <- mizu_map_run(pm)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m2), as.list(1:4))
+  pool_end(p)
+})
+
 test_that("phase B: mizu_map_run(pm, .x =) round-trips end to end", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   x1 <- runif(64)
   pm <- mizu_map_prepare(p, x1, function(v) v + 1)
   name1 <- pm[["st"]][["name"]]
-  expect_identical(mizu_map_run(pm), as.list(x1 + 1))
+  expect_identical(mizu_collect(mizu_map_run(pm)), as.list(x1 + 1))
   x2 <- runif(64)
-  expect_identical(mizu_map_run(pm, .x = x2), as.list(x2 + 1))
+  expect_identical(mizu_collect(mizu_map_run(pm, .x = x2)), as.list(x2 + 1))
   expect_identical(pm[["st"]][["name"]], name1) # swapped, not restaged
   # a shape change restages transparently and still answers
   x3 <- runif(32)
-  expect_identical(mizu_map_run(pm, .x = x3), as.list(x3 + 1))
+  expect_identical(mizu_collect(mizu_map_run(pm, .x = x3)), as.list(x3 + 1))
   expect_false(identical(pm[["st"]][["name"]], name1))
   expect_true(mizu_pool_stop(p))
 })

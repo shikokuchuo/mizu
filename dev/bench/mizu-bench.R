@@ -289,6 +289,128 @@ with_pool(
   list(result_slots = 20480L)
 )
 
+# 2b. event-driven consumers (notify endpoints) ---------------------------------
+
+cat("\n== 2b. event-driven consumers (later/promises) ==\n")
+
+# the armed row: a recv promise pending the whole run. The publish path is
+# instruction-identical when unarmed, and an armed consumer costs the
+# producer one endpoint signal per idle->busy transition — exactly one
+# here (the edge-triggered bit is cleared by the first publish). The row
+# must sit within the band of the unarmed pipelined row above.
+with_channel(echo_expr, function(ch) {
+  warmup(function() {
+    mizu_send(ch, 1L)
+    mizu_recv(ch, 30)
+  })
+  note_rate(
+    "event-driven",
+    "mizu channel armed",
+    k * n,
+    function() {
+      pr <- mizu_recv_async(ch)
+      for (j in seq_len(k)) {
+        for (i in seq_len(n)) {
+          mizu_send(ch, 1L)
+        }
+        for (i in seq_len(n)) {
+          mizu_recv(ch, 30)
+        }
+      }
+      mizu_send(ch, 1L)
+      later::run_now(0) # settle the pending promise, disarming for the next rep
+    },
+    "rt/s"
+  )
+})
+
+# the handler row: a batch handler drains bursts under run_now() — one R
+# call per burst, per-message cost back to ~1x transport. The pump is part
+# of the form: resolution happens at the loop turn, not at the send.
+with_channel(
+  quote(
+    repeat {
+      xs <- mizu_recv_batch(ch, n = 4096L, timeout = 30)
+      if (inherits(xs, "mizu_sentinel")) {
+        break
+      }
+      mizu_send_batch(ch, xs)
+    }
+  ),
+  function(ch) {
+    got <- new.env()
+    got$n <- 0L
+    mizu_recv_handler(
+      ch,
+      function(xs) got$n <- got$n + length(xs),
+      batch = TRUE
+    )
+    batch <- as.list(rep(1L, 4096L))
+    warmup(
+      function() {
+        base <- got$n
+        mizu_send_batch(ch, batch[seq_len(100L)])
+        while (got$n - base < 100L) {
+          later::run_now(1)
+        }
+      },
+      2L
+    )
+    note_rate(
+      "event-driven",
+      "mizu channel handler",
+      k * n,
+      function() {
+        base <- got$n
+        for (j in seq_len(k)) {
+          sent <- 0L
+          want_all <- j * n
+          while (sent < n) {
+            want <- min(4096L, n - sent)
+            sent <- sent + mizu_send_batch(ch, batch[seq_len(want)])
+          }
+          while (got$n - base < want_all) {
+            later::run_now(1)
+          }
+        }
+      },
+      "rt/s"
+    )
+    mizu_recv_handler(ch, NULL)
+  }
+)
+
+# the collective row: one promise per collection — the async counterpart
+# of the sync collect_all row above, over the same 10k bursts
+with_pool(
+  1L,
+  function(p) {
+    exprs <- as.list(rep(1L, n))
+    v <- NULL
+    warmup(function() {
+      pr <- mizu_collect_all_async(
+        mizu_submit_batch(p, exprs[seq_len(100L)])
+      )
+      promises::then(pr, function(x) v <<- x)
+      while (is.null(v)) {
+        later::run_now(1)
+      }
+      v <<- NULL
+    })
+    note_rate("event-driven", "mizu collect_all_async", k * n, function() {
+      for (j in seq_len(k)) {
+        pr <- mizu_collect_all_async(mizu_submit_batch(p, exprs))
+        promises::then(pr, function(x) v <<- x)
+        while (is.null(v)) {
+          later::run_now(1)
+        }
+        v <- NULL
+      }
+    })
+  },
+  list(result_slots = 20480L)
+)
+
 # 3. payload round-trip --------------------------------------------------------
 
 cat("\n== 3. payload round-trip (identity task on a numeric vector) ==\n")
@@ -500,14 +622,14 @@ note_us(
 )
 
 with_pool(4L, function(p) {
-  invisible(mizu_map(p, x, f))
+  invisible(mizu_collect(mizu_map(p, x, f)))
   note_us(
     "map trivial f",
     "mizu_map",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, f)
+        mizu_collect(mizu_map(p, x, f))
       }
     },
     "us/elt"
@@ -518,7 +640,7 @@ with_pool(4L, function(p) {
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, f, .template = numeric(1))
+        mizu_collect(mizu_map(p, x, f, .template = numeric(1)))
       }
     },
     "us/elt"
@@ -530,7 +652,7 @@ with_pool(4L, function(p) {
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map(p, x, f, .seed = 42L)
+        mizu_collect(mizu_map(p, x, f, .seed = 42L))
       }
     },
     "us/elt"
@@ -538,14 +660,14 @@ with_pool(4L, function(p) {
   # prepared: stage once, run many — per-run cost is submit + collect,
   # and back-to-back runs hit the workers' cached map contexts
   pmap <- mizu_map_prepare(p, x, f)
-  invisible(mizu_map_run(pmap))
+  invisible(mizu_collect(mizu_map_run(pmap)))
   note_us(
     "map trivial f",
     "mizu_map_run prepared",
     k * n,
     function() {
       for (j in seq_len(k)) {
-        mizu_map_run(pmap)
+        mizu_collect(mizu_map_run(pmap))
       }
     },
     "us/elt"
@@ -566,11 +688,11 @@ note(
 )
 
 with_pool(4L, function(p) {
-  invisible(mizu_map(p, seq_len(n), g))
+  invisible(mizu_collect(mizu_map(p, seq_len(n), g)))
   note(
     "map ~10us tasks",
     "mizu_map",
-    mark_ms(function() invisible(mizu_map(p, seq_len(n), g))),
+    mark_ms(function() invisible(mizu_collect(mizu_map(p, seq_len(n), g)))),
     "ms wall"
   )
 })
@@ -583,11 +705,11 @@ xs <- seq_len(n) + 0
 h <- function(i) sum(runif(if (i <= 40) 2e5 else 200L))
 
 with_pool(4L, function(p) {
-  invisible(mizu_map(p, xs, h))
+  invisible(mizu_collect(mizu_map(p, xs, h)))
   note(
     "map skewed f",
     "mizu_map",
-    mark_ms(function() mizu_map(p, xs, h)),
+    mark_ms(function() mizu_collect(mizu_map(p, xs, h))),
     "ms wall"
   )
 })

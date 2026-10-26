@@ -243,6 +243,11 @@ mizu_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 #' @export
 mizu_close <- function(ch, timeout = 5) {
   ok <- .Call(mizu_channel_close, ch, timeout)
+  if (ok) {
+    # the rendezvous tears the handle down C-side; pending promises and a
+    # handler get their terminal delivery here, once, in order
+    notify_chan_flush_closed(ch)
+  }
   if (!ok) {
     warning(
       "mizu: close timed out waiting for the peer; resources release ",

@@ -25,26 +25,28 @@ test_that("a map's chunks spread across the workers", {
   # give-up marker, so a crippled pool fails below rather than hangs.
   rdv <- tfile()
   dir.create(rdv)
-  r <- mizu_map(
-    p,
-    1:32,
-    function(i, rdv) {
-      file.create(file.path(rdv, Sys.getpid()))
-      t0 <- Sys.time()
-      while (
-        length(list.files(rdv)) < 2L &&
-          difftime(Sys.time(), t0, units = "secs") < 10
-      ) {
-        Sys.sleep(0.05)
-      }
-      if (length(list.files(rdv)) < 2L) {
-        file.create(file.path(rdv, "gave-up"))
-      }
-      i * 2L
-    },
-    rdv = rdv,
-    .chunks = 16L,
-    .timeout = 60
+  r <- mizu_collect(
+    mizu_map(
+      p,
+      1:32,
+      function(i, rdv) {
+        file.create(file.path(rdv, Sys.getpid()))
+        t0 <- Sys.time()
+        while (
+          length(list.files(rdv)) < 2L &&
+            difftime(Sys.time(), t0, units = "secs") < 10
+        ) {
+          Sys.sleep(0.05)
+        }
+        if (length(list.files(rdv)) < 2L) {
+          file.create(file.path(rdv, "gave-up"))
+        }
+        i * 2L
+      },
+      rdv = rdv,
+      .chunks = 16L
+    ),
+    timeout = 60
   )
   expect_identical(r, as.list(1:32 * 2L))
   # counters mirror into the region at park: a row read mid-drain can lag
@@ -64,29 +66,31 @@ test_that("an imbalanced map still returns in order, work balanced", {
   # under the same rendezvous and stats gate as above
   rdv <- tfile()
   dir.create(rdv)
-  r <- mizu_map(
-    p,
-    1:16,
-    function(i, rdv) {
-      file.create(file.path(rdv, Sys.getpid()))
-      t0 <- Sys.time()
-      while (
-        length(list.files(rdv)) < 2L &&
-          difftime(Sys.time(), t0, units = "secs") < 10
-      ) {
-        Sys.sleep(0.05)
-      }
-      if (length(list.files(rdv)) < 2L) {
-        file.create(file.path(rdv, "gave-up"))
-      }
-      if (i <= 4L) {
-        Sys.sleep(0.1)
-      }
-      i
-    },
-    rdv = rdv,
-    .chunks = 16L,
-    .timeout = 60
+  r <- mizu_collect(
+    mizu_map(
+      p,
+      1:16,
+      function(i, rdv) {
+        file.create(file.path(rdv, Sys.getpid()))
+        t0 <- Sys.time()
+        while (
+          length(list.files(rdv)) < 2L &&
+            difftime(Sys.time(), t0, units = "secs") < 10
+        ) {
+          Sys.sleep(0.05)
+        }
+        if (length(list.files(rdv)) < 2L) {
+          file.create(file.path(rdv, "gave-up"))
+        }
+        if (i <= 4L) {
+          Sys.sleep(0.1)
+        }
+        i
+      },
+      rdv = rdv,
+      .chunks = 16L
+    ),
+    timeout = 60
   )
   expect_identical(r, as.list(1:16))
   expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
@@ -162,7 +166,7 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   expect_true(all(lost %in% 1:4))
   # the pool remains serviceable on the survivor
   expect_identical(
-    mizu_map(p, 1:4, function(i) i + 1L, .timeout = 30),
+    mizu_collect(mizu_map(p, 1:4, function(i) i + 1L, .timeout = 30)),
     as.list(2:5)
   )
   expect_true(mizu_pool_stop(p))
@@ -395,15 +399,17 @@ test_that("a runner's announce lost to a help beat still fails as died", {
 test_that(".timeout under executing chunks returns the sentinel, cleans up", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
-  r <- mizu_map(
-    p,
-    1:2,
-    function(i) {
-      Sys.sleep(1)
-      i
-    },
-    .chunks = 2L,
-    .timeout = 0.3
+  r <- mizu_collect(
+    mizu_map(
+      p,
+      1:2,
+      function(i) {
+        Sys.sleep(1)
+        i
+      },
+      .chunks = 2L
+    ),
+    timeout = 0.3
   )
   expect_s3_class(r, "mizu_timeout")
   # the executing chunk finishes, its publish CAS consumes the CANCEL; the
@@ -413,7 +419,7 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
     timeout = 10
   ))
   expect_identical(
-    mizu_map(p, 1:2, function(i) i + 1L, .timeout = 30),
+    mizu_collect(mizu_map(p, 1:2, function(i) i + 1L, .timeout = 30)),
     as.list(2:3)
   )
   expect_true(mizu_pool_stop(p))
@@ -429,7 +435,7 @@ test_that("a nested map fans out over the deque and peers steal it", {
   dir.create(rdv)
   t <- mizu_submit(
     p,
-    mizu_map(
+    mizu_collect(mizu_map(
       mizu_current_pool(),
       1:16,
       function(i, rdv) {
@@ -448,7 +454,7 @@ test_that("a nested map fans out over the deque and peers steal it", {
       },
       rdv = rdv,
       .chunks = 8L
-    ),
+    )),
     rdv = rdv
   )
   expect_identical(mizu_collect(t, timeout = 30), as.list(1:16 * 10L))
@@ -464,10 +470,17 @@ test_that(".seed maps are identical across worker counts and chunkings", {
   skip_if_no_child_mizu()
   f <- function(i) rnorm(2L)
   p1 <- mizu_pool(n_workers = 1L)
-  r1 <- mizu_map(p1, 1:8, f, .seed = 7L, .timeout = 60)
+  r1 <- mizu_collect(mizu_map(p1, 1:8, f, .seed = 7L, .timeout = 60))
   expect_true(mizu_pool_stop(p1))
   p2 <- mizu_pool(n_workers = 2L)
-  r2 <- mizu_map(p2, 1:8, f, .seed = 7L, .chunks = 8L, .timeout = 60)
+  r2 <- mizu_collect(mizu_map(
+    p2,
+    1:8,
+    f,
+    .seed = 7L,
+    .chunks = 8L,
+    .timeout = 60
+  ))
   expect_identical(r1, r2)
   # and the draws really are per-element streams: no two elements collide
   expect_identical(anyDuplicated(vapply(r1, paste, "", collapse = ",")), 0L)
@@ -482,7 +495,7 @@ test_that("a mori-shared x rides the descriptor as its identifier", {
   p <- mizu_pool(n_workers = 2L)
   st <- mizu:::map_stage(p, x, identity, list())
   expect_false(st[["xraw"]]) # ALTREP: reduces via the hooks, never memcpy'd
-  r <- mizu_map(p, x, function(v) v * 2, .timeout = 60)
+  r <- mizu_collect(mizu_map(p, x, function(v) v * 2, .timeout = 60))
   expect_identical(r, lapply(as.numeric(1:100) * 0.5, function(v) v * 2))
   expect_true(mizu_pool_stop(p))
 })
@@ -492,24 +505,35 @@ test_that("a pool-result view maps by reference; view collect across workers", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   v <- mizu_collect(mizu_submit(p, seq_len(100000) + 0.5), 60)
-  r <- mizu_map(p, v, function(i) i * 2, .template = numeric(1), .timeout = 60)
+  r <- mizu_collect(mizu_map(
+    p,
+    v,
+    function(i) i * 2,
+    .template = numeric(1),
+    .timeout = 60
+  ))
   expect_identical(r, (seq_len(100000) + 0.5) * 2)
 
-  rv <- mizu_map(
+  rv <- mizu_collect(mizu_map(
     p,
     1:1000,
     function(i) i * 2.5,
     .template = numeric(1),
     .collect = "view",
     .timeout = 60
-  )
+  ))
   expect_true(.Call(mizu:::mizu_zc_view_check, rv))
   expect_identical(as.numeric(rv), 1:1000 * 2.5)
 
   # a view-collected prepared run restages: v1's pages are never re-armed
   pm <- mizu_map_prepare(p, 1:100, function(i) i * 2.5, .template = numeric(1))
-  v1 <- mizu_map_run(pm, .collect = "view", .timeout = 60)
-  v2 <- mizu_map_run(pm, .x = (1:100) * 2, .collect = "view", .timeout = 60)
+  v1 <- mizu_collect(mizu_map_run(pm, .collect = "view", .timeout = 60))
+  v2 <- mizu_collect(mizu_map_run(
+    pm,
+    .x = (1:100) * 2,
+    .collect = "view",
+    .timeout = 60
+  ))
   expect_identical(as.numeric(v1), 1:100 * 2.5)
   expect_identical(as.numeric(v2), (1:100) * 2 * 2.5)
   expect_true(mizu_pool_stop(p))
@@ -679,7 +703,7 @@ test_that("a short map completes on free workers while a peer is pinned", {
   Sys.sleep(0.2) # the sleeper is claimed
   t0 <- mizu:::mono_time()
   expect_identical(
-    mizu_map(p, 1:100, function(i) i + 1L, .timeout = 30),
+    mizu_collect(mizu_map(p, 1:100, function(i) i + 1L, .timeout = 30)),
     as.list(2:101)
   )
   # bounded by the map's own work on the free worker: the second runner

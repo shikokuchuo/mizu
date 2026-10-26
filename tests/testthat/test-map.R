@@ -247,7 +247,7 @@ test_that("constant names never collide with the map formals ahead of ...", {
   p <- pool_pair()
   # an empty .x returns before the blocking run: mizu_map() itself matches
   expect_identical(
-    mizu_map(p[["ctrl"]], list(), function(i, x) i + x, x = 10L),
+    mizu_collect(mizu_map(p[["ctrl"]], list(), function(i, x) i + x, x = 10L)),
     list()
   )
   # values through mizu_map_prepare(), which shares the signature
@@ -560,33 +560,36 @@ test_that(".collect validates against the template", {
   p <- pool_pair()
   expect_snapshot(
     error = TRUE,
-    mizu_map(p[["ctrl"]], 1:4, identity, .collect = "view")
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .collect = "view"))
   )
   expect_snapshot(
     error = TRUE,
-    mizu_map(
+    mizu_collect(mizu_map(
       p[["ctrl"]],
       1:4,
       identity,
       .template = character(1),
       .collect = "view"
-    )
+    ))
   )
   expect_snapshot(
     error = TRUE,
-    mizu_map(p[["ctrl"]], 1:4, identity, .collect = "all")
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .collect = "all"))
   )
   pm <- mizu_map_prepare(p[["ctrl"]], 1:4, identity)
-  expect_snapshot(error = TRUE, mizu_map_run(pm, .collect = "view"))
+  expect_snapshot(
+    error = TRUE,
+    mizu_collect(mizu_map_run(pm, .collect = "view"))
+  )
   # an empty map short-circuits before any region exists
   expect_identical(
-    mizu_map(
+    mizu_collect(mizu_map(
       p[["ctrl"]],
       numeric(0),
       identity,
       .template = numeric(1),
       .collect = "view"
-    ),
+    )),
     numeric(0)
   )
   pool_end(p)
@@ -863,17 +866,27 @@ test_that("collect trims never-claimed runners once the cursor exhausts", {
 test_that("n = 0, n = 1, and n < chunks all behave", {
   p <- pool_pair(slot_size = 256L) # under the blob budget: the region path
   # empty maps return immediately: no region, no tasks
-  expect_identical(mizu_map(p[["ctrl"]], list(), sqrt), list())
+  expect_identical(mizu_collect(mizu_map(p[["ctrl"]], list(), sqrt)), list())
   expect_identical(
-    mizu_map(p[["ctrl"]], setNames(integer(), character()), sqrt),
+    mizu_collect(mizu_map(p[["ctrl"]], setNames(integer(), character()), sqrt)),
     setNames(list(), character())
   )
   expect_identical(
-    mizu_map(p[["ctrl"]], character(), identity, .template = character(1)),
+    mizu_collect(mizu_map(
+      p[["ctrl"]],
+      character(),
+      identity,
+      .template = character(1)
+    )),
     character()
   )
   expect_identical(
-    mizu_map(p[["ctrl"]], integer(), identity, .template = c(a = 0L, b = 0L)),
+    mizu_collect(mizu_map(
+      p[["ctrl"]],
+      integer(),
+      identity,
+      .template = c(a = 0L, b = 0L)
+    )),
     vapply(integer(), identity, c(a = 0L, b = 0L))
   )
   expect_identical(
@@ -914,7 +927,10 @@ test_that("the runner count clamps to live workers and free slots", {
 test_that("a fully occupied subrange errors before any region exists", {
   p <- pool_pair()
   held <- lapply(1:8, function(i) mizu_submit(p[["ctrl"]], v, v = i))
-  expect_error(mizu_map(p[["ctrl"]], 1:10, identity), "result slots exhausted")
+  expect_error(
+    mizu_collect(mizu_map(p[["ctrl"]], 1:10, identity)),
+    "result slots exhausted"
+  )
   while (pool_step(p) == 1L) {
     NULL
   }
@@ -1133,6 +1149,28 @@ test_that(".timeout expiring in a region map's collect cancels the runners", {
   pool_end(p)
 })
 
+test_that("mizu_collect on a map handle validates its timeout", {
+  p <- pool_pair()
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i)
+  expect_snapshot(error = TRUE, mizu_collect(m, NA))
+  expect_snapshot(error = TRUE, mizu_collect(m, "5"))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list(1:4)) # still collectible
+  pool_end(p)
+})
+
+test_that("an external cancel before any claim raises cancelled at collect", {
+  p <- pool_pair()
+  m <- mizu_map(p[["ctrl"]], runif(100000), identity) # region path
+  # the pool-stop shape: the cancel word set with no runner ever claimed —
+  # the collect abandons the queued runners and raises cancelled
+  .Call(mizu:::mizu_map_cancel_set, m[["st"]][["wrap"]])
+  expect_error(mizu_collect(m), class = "mizu_error_cancelled")
+  pool_end(p)
+})
+
 test_that("the jump kernel agrees with set.seed and parallel", {
   base <- .Call(mizu:::mizu_map_rng_base, 42L)
   old_seed <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
@@ -1299,7 +1337,12 @@ test_that("a nested map runs on the worker's own deque, help-collected", {
   p <- pool_pair()
   t <- mizu_submit(
     p[["ctrl"]],
-    mizu_map(mizu_current_pool(), 1:6, function(i) i + 1L, .chunks = 3L)
+    mizu_collect(mizu_map(
+      mizu_current_pool(),
+      1:6,
+      function(i) i + 1L,
+      .chunks = 3L
+    ))
   )
   expect_identical(pool_step(p), 1L) # one step: chunks push + help-collect
   expect_identical(mizu_collect(t, timeout = 5), as.list(2:7))
@@ -1336,12 +1379,15 @@ test_that("a deadline already expired at submit stages no tasks", {
   pool_end(p)
 })
 
-test_that("map_run rejects an NA .timeout instead of waiting forever (L31)", {
+test_that("map_submit_handle rejects an NA .timeout instead of waiting forever (L31)", {
   p <- pool_pair()
   st <- mizu:::map_stage(p[["ctrl"]], 1:4, identity, list())
-  expect_snapshot(error = TRUE, mizu:::map_run(p[["ctrl"]], st, NA_real_))
-  expect_snapshot(error = TRUE, mizu:::map_run(p[["ctrl"]], st, NaN))
-  expect_snapshot(error = TRUE, mizu:::map_run(p[["ctrl"]], st, "30"))
+  expect_snapshot(
+    error = TRUE,
+    mizu:::map_submit_handle(p[["ctrl"]], st, NA_real_)
+  )
+  expect_snapshot(error = TRUE, mizu:::map_submit_handle(p[["ctrl"]], st, NaN))
+  expect_snapshot(error = TRUE, mizu:::map_submit_handle(p[["ctrl"]], st, "30"))
   pool_end(p)
 })
 
@@ -1490,26 +1536,45 @@ test_that("RNG stream arguments are validated; an empty lost set labels", {
   )
 })
 
+test_that("rng_install installs the stream state and returns its jump", {
+  base <- .Call(mizu:::mizu_map_rng_base, 42L)
+  old_seed <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
+  on.exit(
+    if (!is.null(old_seed)) {
+      assign(".Random.seed", old_seed, envir = globalenv())
+    }
+  )
+  nxt <- .Call(mizu:::mizu_map_rng_install, base)
+  expect_identical(.Random.seed, c(10407L, base))
+  expect_identical(nxt, .Call(mizu:::mizu_map_rng_seek, base, 1L))
+})
+
 test_that("mizu_map validates its arguments", {
   p <- pool_pair()
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, identity, .template = list()),
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .template = list())),
     ".template must be"
   )
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, identity, .template = integer()),
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .template = integer())),
     ".template must be"
   )
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, identity, .chunks = NA),
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .chunks = NA)),
     ".chunks must be"
   )
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, identity, .seed = "x"),
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .seed = "x")),
     ".seed must be"
   )
-  expect_error(mizu_map(p[["ctrl"]], 1:4, "no such function"), "not found")
-  expect_error(mizu_map("not a pool", 1:4, identity), "not a pool handle")
+  expect_error(
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, "no such function")),
+    "not found"
+  )
+  expect_error(
+    mizu_collect(mizu_map("not a pool", 1:4, identity)),
+    "not a pool handle"
+  )
   pool_end(p)
 })
 
@@ -1632,7 +1697,12 @@ test_that("spec constant arguments ride the spec, named and positional", {
 test_that("a spec f rejects constant arguments in ...", {
   p <- pool_pair()
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, mizu_call("base::sqrt"), digits = 1L),
+    mizu_collect(mizu_map(
+      p[["ctrl"]],
+      1:4,
+      mizu_call("base::sqrt"),
+      digits = 1L
+    )),
     "must \\s*be empty with a spec",
     perl = TRUE
   )
@@ -1653,11 +1723,16 @@ test_that("a spec f held in a variable bypasses match.fun", {
 test_that("a native f on a foreign pool fails fast, a spec passes the guard", {
   p <- pool_pair(ident = c(3L, 7L))
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, identity),
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity)),
     "workers are not R"
   )
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, mizu_call("numpy.mean"), extra = 1),
+    mizu_collect(mizu_map(
+      p[["ctrl"]],
+      1:4,
+      mizu_call("numpy.mean"),
+      extra = 1
+    )),
     "be empty with a spec"
   )
   pool_end(p)
@@ -1674,7 +1749,7 @@ test_that("a spec map needs a joined worker", {
     512L
   )
   expect_error(
-    mizu_map(ctrl, 1:4, mizu_call("base::sqrt")),
+    mizu_collect(mizu_map(ctrl, 1:4, mizu_call("base::sqrt"))),
     "no worker has joined"
   )
   .Call(mizu:::mizu_pool_destroy, ctrl)
@@ -1722,7 +1797,7 @@ test_that("a spec map's seed matches the native derivation, chunk-invariant", {
   e <- run_map(p, 1:20, function(x) runif(1), seed = c(42, 20))
   expect_identical(unlist(d), unlist(e))
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, f, .seed = 2^31),
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, f, .seed = 2^31)),
     ".seed\\[1\\] must be an integer"
   )
   pool_end(p)
@@ -1801,7 +1876,11 @@ test_that("the pymap adapter splices element ranges and converts histories", {
 test_that("a spec map declines a non-portable constant at stage time", {
   p <- pool_pair()
   expect_error(
-    mizu_map(p[["ctrl"]], 1:4, mizu_call("base::identity", new.env())),
+    mizu_collect(mizu_map(
+      p[["ctrl"]],
+      1:4,
+      mizu_call("base::identity", new.env())
+    )),
     class = "mizu_error_not_portable"
   )
   pool_end(p)

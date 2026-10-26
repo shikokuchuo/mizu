@@ -111,6 +111,31 @@ stop_mizu <- function(subclass, message, ...) {
   stop(errorCondition(message, ..., class = c(subclass, "mizu_error")))
 }
 
+# The rejection constructors of the promise surface (R/promise.R): terminal
+# transport states cross as classed *errors* whose class names match the
+# sentinels, so inherits(x, "mizu_closed") works on either form. Sentinels
+# remain the sync API's values; these are never signalled by the sync verbs.
+cond_closed <- function() {
+  errorCondition(
+    "mizu: channel is closed",
+    class = c("mizu_closed", "mizu_error")
+  )
+}
+
+cond_peer_gone <- function() {
+  errorCondition(
+    "mizu: channel peer process died",
+    class = c("mizu_peer_gone", "mizu_error")
+  )
+}
+
+cond_timeout <- function() {
+  errorCondition(
+    "mizu: operation timed out",
+    class = c("mizu_timeout", "mizu_error")
+  )
+}
+
 # The startup-timeout failure shared by every constructor that spawns
 # children: `what` is "child" (a channel peer) or "workers" (a pool's).
 stop_startup <- function(what, timeout) {

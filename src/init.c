@@ -138,6 +138,18 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_pool_map_cache",         (DL_FUNC) &mizu_pool_map_cache,            1},
   {"mizu_pool_signals",           (DL_FUNC) &mizu_pool_signals_call,         1},
   {"mizu_pool_help_once",         (DL_FUNC) &mizu_pool_help_once_call,       1},
+  {"mizu_chan_notify_peek",       (DL_FUNC) &mizu_chan_notify_peek,          1},
+  {"mizu_chan_notify_set",        (DL_FUNC) &mizu_chan_notify_set,           2},
+  {"mizu_pool_notify_peek",       (DL_FUNC) &mizu_pool_notify_peek,          1},
+  {"mizu_pool_notify_set",        (DL_FUNC) &mizu_pool_notify_set,           2},
+  {"mizu_task_pool",              (DL_FUNC) &mizu_task_pool_call,            1},
+  {"mizu_task_notify_state",      (DL_FUNC) &mizu_task_notify_state,         1},
+  {"mizu_chan_notify_arm",        (DL_FUNC) &mizu_chan_notify_arm_call,      2},
+  {"mizu_chan_notify_disarm",     (DL_FUNC) &mizu_chan_notify_disarm_call,   1},
+  {"mizu_pool_notify_arm",        (DL_FUNC) &mizu_pool_notify_arm_call,      2},
+  {"mizu_pool_notify_disarm",     (DL_FUNC) &mizu_pool_notify_disarm_call,   1},
+  {"mizu_pool_task_notify",       (DL_FUNC) &mizu_pool_task_notify_call,     2},
+  {"mizu_pool_tasks_terminal",    (DL_FUNC) &mizu_pool_tasks_terminal,       1},
   {"mizu_map_eligible",           (DL_FUNC) &mizu_map_eligible,              1},
   {"mizu_map_stage",              (DL_FUNC) &mizu_map_stage,                 6},
   {"mizu_map_open",               (DL_FUNC) &mizu_map_open,                  2},
@@ -164,6 +176,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_map_swap_x",             (DL_FUNC) &mizu_map_swap_x,                2},
   {"mizu_map_info",               (DL_FUNC) &mizu_map_info,                  1},
   {"mizu_map_claim_state",        (DL_FUNC) &mizu_map_claim_state,           2},
+  {"mizu_map_runners_terminal",   (DL_FUNC) &mizu_map_runners_terminal,      2},
   {"mizu_map_timeout_call",       (DL_FUNC) &mizu_map_timeout_call,          0},
   {"mizu_map_rng_base",           (DL_FUNC) &mizu_map_rng_base,              1},
   {"mizu_map_rng_seek",           (DL_FUNC) &mizu_map_rng_seek,              2},
@@ -204,6 +217,7 @@ void R_init_mizu(DllInfo *dll) {
   mizu_live_init();
   mizu_channel_init();
   mizu_pool_init();
+  mizu_notify_init();
   mizu_map_init();
   mizu_zc_init();
   mizu_interop_init();
@@ -219,6 +233,8 @@ void R_init_mizu(DllInfo *dll) {
    order, then the precious root. The ALTREP class registrations stay — R
    has no unregister. */
 void R_unload_mizu(DllInfo *dll) {
+  /* the notify watches ride the death-listener machinery: stop them first */
+  mizu_notify_fini();
   mizu_death_listener_teardown();
   mizu_view_altrep_fini();
   mizu_interop_fini();

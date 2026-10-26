@@ -17,7 +17,7 @@ knitr::opts_chunk$set(
 )
 ```
 
-`mizu_map()` maps a function over a vector or list on the pool and returns the results in input order.
+`mizu_map()` maps a function over a vector or list on the pool and returns a map handle immediately — as `mizu_submit()` returns a task. `mizu_collect()` on the handle waits and returns the results in input order; `as.promise()` (or `then()` directly) collects through the event loop instead — see [Promises and handlers](pools.html#promises-and-handlers).
 It is not a loop over `mizu_submit()`.
 The function, its constant arguments, and the data are staged once in shared memory.
 A handful of chunk tasks divide the elements, and each worker sets up the map at most once.
@@ -27,7 +27,7 @@ The per-element cost approaches the cost of `lapply()`, while the work spreads a
 library(mizu)
 
 p <- mizu_pool(n_workers = 4L)
-mizu_map(p, 1:5, \(i) i * 2L)
+mizu_collect(mizu_map(p, 1:5, \(i) i * 2L))
 ```
 
 ## Templates
@@ -36,7 +36,7 @@ A `.template` (in the style of the `FUN.VALUE` argument of `vapply()`) returns a
 The workers write the results straight into shared memory: each result crosses the process boundary exactly once, unserialized:
 
 ```{r map-template}
-mizu_map(p, seq.int(-5, 5), abs, .template = numeric(1))
+mizu_collect(mizu_map(p, seq.int(-5, 5), abs, .template = numeric(1)))
 ```
 
 With `.collect = "view"`, the result is the shared output area itself, wrapped as a read-only ALTREP view: the gather copy is skipped, and the region's teardown defers to the view's garbage collection.
@@ -51,8 +51,8 @@ Pass `.seed` to give every element its own L'Ecuyer-CMRG stream.
 Then the results are identical for any chunking, worker count, or steal order:
 
 ```{r map-seed}
-identical(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L),
-          mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L))
+identical(mizu_collect(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L)),
+          mizu_collect(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L)))
 ```
 
 ## Prepared maps
@@ -63,7 +63,7 @@ Repeated stochastic simulation is the headline use: `.seed` rides each run rathe
 
 ```{r map-prepared}
 pm <- mizu_map_prepare(p, 1:1000, \(i, draws) mean(rnorm(draws)) * i, draws = 100L)
-runs <- lapply(1:4, \(s) mizu_map_run(pm, .seed = s))
+runs <- lapply(1:4, \(s) mizu_collect(mizu_map_run(pm, .seed = s)))
 vapply(runs, \(r) r[[1L]], numeric(1))
 ```
 
@@ -79,7 +79,7 @@ The runner submissions push straight onto the worker's own deque, and the blocke
 ```{r map-nested}
 t <- mizu_submit(
   p,
-  sum(unlist(mizu_map(mizu_current_pool(), parts, sum))),
+  sum(unlist(mizu_collect(mizu_map(mizu_current_pool(), parts, sum)))),
   parts = split(as.numeric(1:100000), rep(1:10, each = 1e4))
 )
 mizu_collect(t)

@@ -195,7 +195,7 @@ test_that("an integer64 template gathers classed results", {
   expect_identical(res, expected)
   # an empty map short-circuits before any region exists, still classed
   expect_identical(
-    mizu_map(p[["ctrl"]], integer(0), identity, .template = bit64::integer64(1)),
+    mizu_collect(mizu_map(p[["ctrl"]], integer(0), identity, .template = bit64::integer64(1))),
     bit64::integer64(0)
   )
   pool_end(p)

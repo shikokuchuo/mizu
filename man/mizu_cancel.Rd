@@ -2,12 +2,13 @@
 % Please edit documentation in R/pool.R
 \name{mizu_cancel}
 \alias{mizu_cancel}
-\title{Cancel a Task}
+\title{Cancel a Task or a Map}
 \usage{
 mizu_cancel(task)
 }
 \arguments{
-\item{task}{a task handle from \code{mizu_submit()}.}
+\item{task}{a task handle from \code{mizu_submit()}, or a map handle from
+\code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}.}
 }
 \value{
 Invisibly, \code{TRUE} if this call cancelled the task. \code{FALSE} if
@@ -19,6 +20,13 @@ Advisory and discard-only, never preemptive. The worker skips a task
 that is still queued. A task already executing runs to completion, and
 its result is dropped. Collecting a cancelled handle raises
 \code{mizu_error_cancelled} (see \link{mizu_error}).
+}
+\details{
+On a map handle from \code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}, the shared
+cancel word of the map is set: executing runners stop within about one
+batch of their next transition, and every outstanding runner task is
+cancelled as above. A blocking \code{\link[=mizu_collect]{mizu_collect()}} on the handle raises
+\code{mizu_error_cancelled}; a pending promise rejects with it.
 }
 \examples{
 p <- mizu_pool()

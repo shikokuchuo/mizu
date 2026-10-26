@@ -292,7 +292,15 @@ mizu_pool_attach <- function(name) {
 #'   call raises `mizu_error_submit_timeout`. Submission blocks only
 #'   when the ring is full (back-pressure) and returns immediately
 #'   otherwise. `Inf` (the default) waits indefinitely; `0` does not wait.
-#' @param task a task handle from `mizu_submit()`.
+#' @param task a task handle from `mizu_submit()`, or a map handle from
+#'   [mizu_map()] / [mizu_map_run()]. A map handle collects the whole
+#'   map: the gathered list (or templated vector), an element error
+#'   re-signalled with its `mizu_map_index`, or a worker death as
+#'   `mizu_error_worker_died` with the lost element ranges — exactly the
+#'   semantics of [mizu_map()]'s Errors section. A task or map handle
+#'   with a pending promise (or enrolled in a pending
+#'   [mizu_collect_all_async()] / [mizu_collect_any_async()] collection)
+#'   refuses a blocking collect: one consumer per result.
 #' @param timeout seconds to wait for the result before the call returns
 #'   the `mizu_timeout` sentinel. `Inf` (the default) waits indefinitely;
 #'   `0` does not wait.
@@ -322,6 +330,10 @@ mizu_submit <- function(.pool, .expr, ..., .timeout = Inf) {
 #' @rdname mizu_submit
 #' @export
 mizu_collect <- function(task, timeout = Inf) {
+  if (inherits(task, "mizu_map")) {
+    return(map_collect_handle(task, timeout))
+  }
+  notify_check_collectable(task)
   .Call(mizu_pool_collect, task, timeout)
 }
 
@@ -555,6 +567,12 @@ mizu_submit_batch <- function(.pool, .exprs, ..., .timeout = Inf) {
 #'
 #' @export
 mizu_collect_any <- function(tasks, timeout = Inf) {
+  if (!is.list(tasks) || !length(tasks)) {
+    stop("mizu: tasks must be a non-empty list of task handles", call. = FALSE)
+  }
+  for (task in tasks) {
+    notify_check_collectable(task)
+  }
   .Call(mizu_pool_collect_any, tasks, timeout)
 }
 
@@ -611,17 +629,30 @@ mizu_collect_any <- function(tasks, timeout = Inf) {
 #'
 #' @export
 mizu_collect_all <- function(tasks, timeout = Inf) {
+  if (!is.list(tasks) || !length(tasks)) {
+    stop("mizu: tasks must be a non-empty list of task handles", call. = FALSE)
+  }
+  for (task in tasks) {
+    notify_check_collectable(task)
+  }
   .Call(mizu_pool_collect_all, tasks, timeout)
 }
 
-#' Cancel a Task
+#' Cancel a Task or a Map
 #'
 #' Advisory and discard-only, never preemptive. The worker skips a task
 #' that is still queued. A task already executing runs to completion, and
 #' its result is dropped. Collecting a cancelled handle raises
 #' `mizu_error_cancelled` (see [mizu_error]).
 #'
-#' @param task a task handle from `mizu_submit()`.
+#' On a map handle from [mizu_map()] / [mizu_map_run()], the shared
+#' cancel word of the map is set: executing runners stop within about one
+#' batch of their next transition, and every outstanding runner task is
+#' cancelled as above. A blocking [mizu_collect()] on the handle raises
+#' `mizu_error_cancelled`; a pending promise rejects with it.
+#'
+#' @param task a task handle from `mizu_submit()`, or a map handle from
+#'   [mizu_map()] / [mizu_map_run()].
 #'
 #' @return Invisibly, `TRUE` if this call cancelled the task. `FALSE` if
 #'   the call was too late: the task completed, was already cancelled, or
@@ -634,7 +665,14 @@ mizu_collect_all <- function(tasks, timeout = Inf) {
 #' mizu_pool_stop(p)
 #'
 #' @export
-mizu_cancel <- function(task) invisible(.Call(mizu_pool_cancel, task))
+mizu_cancel <- function(task) {
+  if (inherits(task, "mizu_map")) {
+    task[["cancelled"]] <- TRUE
+    map_cancel(task[["st"]])
+    return(invisible(TRUE))
+  }
+  invisible(.Call(mizu_pool_cancel, task))
+}
 
 #' Stop a Pool
 #'

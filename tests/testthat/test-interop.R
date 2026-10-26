@@ -46,6 +46,12 @@ test_that("per-tag identical() round-trips over a foreign channel", {
   expect_identical(ix_rt(p, dfc), dfc)
   df0 <- data.frame(a = integer(0), b = character(0))
   expect_identical(ix_rt(p, df0), df0)
+  # repeated column classes: the second verdict rides the writer's cache
+  dfp <- data.frame(
+    a = .POSIXct(c(0, 86400), tz = "UTC"),
+    b = .POSIXct(c(5, 10), tz = "UTC")
+  )
+  expect_identical(ix_rt(p, dfp), dfp)
 
   # latin1 strings, names and levels included: translated to UTF-8, and
   # identical() is encoding-insensitive

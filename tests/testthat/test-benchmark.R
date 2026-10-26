@@ -134,7 +134,7 @@ test_that("mizu_map reports against serial lapply and per-task dispatch", {
   f <- function(i) i + 1L
   mp <- function() {
     t0 <- proc.time()[[3]]
-    r <- mizu_map(p, x, f, .template = numeric(1), .timeout = 60)
+    r <- mizu_collect(mizu_map(p, x, f, .template = numeric(1), .timeout = 60))
     us <- (proc.time()[[3]] - t0) / n * 1e6
     expect_identical(r, x + 1)
     us
@@ -159,7 +159,7 @@ test_that("mizu_map reports against serial lapply and per-task dispatch", {
     i
   }
   t0 <- proc.time()[[3]]
-  r <- mizu_map(p, 1:64, slow, .timeout = 60)
+  r <- mizu_collect(mizu_map(p, 1:64, slow, .timeout = 60))
   el <- proc.time()[[3]] - t0
   expect_identical(r, as.list(1:64))
   cat(sprintf("mizu_map 64 x 5ms on 2 workers: %.2fs (serial 0.32s)\n", el))
@@ -249,7 +249,7 @@ test_that("template mizu_map at large n reports the staging/gather memcpy regime
   f <- function(i) i + 1
   mp <- function() {
     t0 <- proc.time()[[3]]
-    r <- mizu_map(p, x, f, .template = numeric(1), .timeout = 60)
+    r <- mizu_collect(mizu_map(p, x, f, .template = numeric(1), .timeout = 60))
     el <- proc.time()[[3]] - t0
     expect_identical(r, x + 1)
     el
@@ -266,14 +266,14 @@ test_that("template mizu_map at large n reports the staging/gather memcpy regime
   # view over the output area); the full-sweep read faults pages
   mpv <- function() {
     t0 <- proc.time()[[3]]
-    r <- mizu_map(
+    r <- mizu_collect(mizu_map(
       p,
       x,
       f,
       .template = numeric(1),
       .collect = "view",
       .timeout = 60
-    )
+    ))
     el <- proc.time()[[3]] - t0
     expect_identical(sum(r), sum(x + 1))
     el
@@ -684,7 +684,7 @@ test_that("int64 reports the raw tiers against the legacy paths", {
   # the Linux workers
   environment(f) <- baseenv()
   t0 <- proc.time()[[3]]
-  r1 <- mizu_map(p, x, f, .timeout = 60)
+  r1 <- mizu_collect(mizu_map(p, x, f, .timeout = 60))
   raw_s <- proc.time()[[3]] - t0
   # the descriptor leg at a fifth of the elements: bit64's
   # as.list.integer64 protects per element, overflowing R < 4.6's fixed
@@ -692,7 +692,7 @@ test_that("int64 reports the raw tiers against the legacy paths", {
   nd <- 20000L
   xn <- setNames(x[seq_len(nd)], paste0("e", seq_len(nd)))
   t0 <- proc.time()[[3]]
-  r2 <- mizu_map(p, xn, f, .timeout = 60)
+  r2 <- mizu_collect(mizu_map(p, xn, f, .timeout = 60))
   desc_s <- proc.time()[[3]] - t0
   expect_identical(r1[seq_len(nd)], unname(r2))
   cat(sprintf(

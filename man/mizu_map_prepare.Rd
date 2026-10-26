@@ -44,7 +44,8 @@ granularity), or \code{NULL} for the default. See the Granularity section.}
 \item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a
 sliding window instead of staging \code{.x} into shared memory wholesale,
 bounding shared-memory residency by the window times the slice size.
-See the Streaming maps section.}
+See the Streaming maps section. A streaming map handle collects
+with \code{\link[=mizu_collect]{mizu_collect()}} only (it cannot be promise-armed).}
 
 \item{pm}{a prepared-map handle from \code{\link[=mizu_map_prepare]{mizu_map_prepare()}}.}
 
@@ -53,23 +54,26 @@ vector of length 1 or 2 that derives reproducible per-element RNG
 streams: \code{seed}, or \code{c(seed, offset)} to shift every element's
 stream by \code{offset} positions. See the Reproducible RNG section.}
 
-\item{.timeout}{seconds after which the map gives up, cancels its
-outstanding work, and returns the \code{mizu_timeout} sentinel (class
+\item{.timeout}{seconds after which submission gives up, cancels the
+tasks already in, and returns the \code{mizu_timeout} sentinel (class
 \code{c("mizu_timeout", "mizu_sentinel")}). \code{Inf} (the default) waits
-indefinitely. One deadline covers submission and collection.}
+indefinitely. Submission blocks only while an injection ring is full;
+the collection deadline is \code{\link[=mizu_collect]{mizu_collect()}}'s \code{timeout}.}
 
 \item{.collect}{\code{"value"} (the default) gathers template results into
-an owning R vector. \code{"view"} instead returns an ALTREP view over the
-map's shared output area — no gather copy — for pipelines that
-immediately reduce. Requires an atomic \code{.template}. The view is
-copy-on-write: the first write materializes a private copy. It keeps
-the map region alive until released, and re-sending it through a
-channel or pool crosses as a full copy, not by reference.}
+an owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an
+ALTREP view over the map's shared output area — no gather copy — for
+pipelines that immediately reduce. Requires an atomic \code{.template}.
+The view is copy-on-write: the first write materializes a private
+copy. It keeps the map region alive until released, and re-sending
+it through a channel or pool crosses as a full copy, not by
+reference. The choice is stored on the handle.}
 }
 \value{
 \code{mizu_map_prepare()}: a prepared-map handle. \code{mizu_map_run()}:
-exactly what \code{\link[=mizu_map]{mizu_map()}} returns for the staged map — a list, a
-templated atomic vector, or the \code{mizu_timeout} sentinel.
+exactly what \code{\link[=mizu_map]{mizu_map()}} returns for the staged map — a map handle
+whose \code{\link[=mizu_collect]{mizu_collect()}} returns a list, a templated atomic vector,
+or the \code{mizu_timeout} sentinel.
 }
 \description{
 \code{mizu_map_prepare()} stages a map — \code{.f}, the constant arguments in
@@ -122,7 +126,7 @@ p <- mizu_pool()
 pm <- mizu_map_prepare(p, 1:1000, function(i, draws) {
   mean(rnorm(draws)) * i
 }, draws = 100L)
-runs <- lapply(1:50, function(s) mizu_map_run(pm, .seed = s))
+runs <- lapply(1:50, function(s) mizu_collect(mizu_map_run(pm, .seed = s)))
 mizu_pool_stop(p)
 
 }
