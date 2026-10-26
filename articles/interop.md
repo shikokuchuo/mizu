@@ -99,6 +99,8 @@ identical(echo(HairEyeColor), HairEyeColor)  # a table keeps class and axis labe
 #> [1] TRUE
 identical(echo(islands), islands)            # a named vector keeps its names
 #> [1] TRUE
+identical(echo(esoph), esoph)                # ordered factors keep levels and order
+#> [1] TRUE
 
 days <- as.Date(paste(1973, airquality$Month, airquality$Day, sep = "-"))
 identical(echo(days), days)                  # a Date keeps its meaning
@@ -115,13 +117,15 @@ Some values have no portable home on the other side.
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
 declines these with a `mizu_error_not_portable` that points at the
 offending value. The channel stays usable. Among the built-in datasets,
-`esoph`, `CO2`, and `ChickWeight` do not cross: each has an
-ordered-factor column, a type with no NumPy equivalent.
+`CO2` and `ChickWeight` cross once their groupedData metadata is
+dropped: the `formula` attributes are language objects, and `units` is a
+reserved attribute name (the frames and their ordered-factor columns
+cross fine, and the `labels` extra rides along).
 
 ``` r
 
-tryCatch(mizu_send(ch, esoph), error = conditionMessage)
-#> [1] "mizu: value is not portable to the peer (an ordered factor has no portable home at x$agegp)"
+tryCatch(mizu_send(ch, CO2), error = conditionMessage)
+#> [1] "mizu: value is not portable to the peer (an attribute set (formula, outer, labels) outside the portable whitelist at x)"
 mizu_close(ch)
 ```
 
@@ -246,5 +250,6 @@ mizu_pool_stop(p)
     a logical vector with missing values returns as integer. A `POSIXct`
     timezone becomes `"UTC"`, and `difftime` units become seconds. The
     bit patterns `INT32_MIN` and `INT64_MIN` collide with R’s own `NA`
-    sentinel and read as `NA`. A `uint64` past 2^53 crosses as `NA` with
-    a warning at send.
+    sentinel and read as `NA`. A `uint64` past 2^63 - 1 crosses as `NA`
+    with a warning at send (in range, it converts exactly to
+    `integer64`).

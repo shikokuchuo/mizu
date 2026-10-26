@@ -31,9 +31,9 @@ payload (a list element, a task argument, the spliced task expression
 itself) crosses by reference as a frame leaf — the received object holds
 a view in place of the table. Collect a pool result and the view is what
 you get; convert explicitly with this function. One caveat on sends: the
-conversion counts (a uint64 past 2^53, an int32 or int64 minimum reading
-as `NA`) warn at send over a channel, but at a pool publish they fire on
-the worker and are not observable by the submitter.
+conversion counts (a uint64 past 2^63 - 1, an int32 or int64 minimum
+reading as `NA`) warn at send over a channel, but at a pool publish they
+fire on the worker and are not observable by the submitter.
 
 Columns still backed by their received shared-memory pages export
 zero-copy: the stream's buffers point straight into the shared region
