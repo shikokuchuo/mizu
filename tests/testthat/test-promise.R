@@ -142,8 +142,8 @@ test_that("the channel async verbs validate their arguments", {
 test_that("the async verbs error informatively without later/promises installed", {
   skip_if_no_promises()
   skip_if_no_child_mizu()
-  # isolation needs later/promises out of .Library (the child's .libPaths
-  # override cannot hide the system library)
+  # isolation needs later/promises out of .Library (include.site = FALSE
+  # drops the site library; the system library cannot be hidden)
   syslib <- normalizePath(.Library)
   in_syslib <- vapply(
     c("later", "promises"),
@@ -166,13 +166,13 @@ test_that("the async verbs error informatively without later/promises installed"
   src <- tfile()
   writeLines(
     c(
-      sprintf('.libPaths("%s")', lib1),
+      sprintf('.libPaths("%s", include.site = FALSE)', lib1),
       'library(mizu)',
       'e1 <- tryCatch(mizu_recv_async(NULL), error = conditionMessage)',
       'e2 <- tryCatch(',
       '  mizu_recv_handler(NULL, function(x) NULL), error = conditionMessage',
       ')',
-      sprintf('.libPaths(c("%s", "%s"))', lib1, lib2),
+      sprintf('.libPaths(c("%s", "%s"), include.site = FALSE)', lib1, lib2),
       'e3 <- tryCatch(mizu_recv_async(NULL), error = conditionMessage)',
       'writeLines(c(e1, e2, e3))'
     ),
