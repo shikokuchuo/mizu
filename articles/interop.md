@@ -18,14 +18,14 @@ installed is on the `PATH`.)
 library(mizu)
 
 ch <- mizu_channel(
-  "
+  r"(
 import pymizu
 while True:
     x = ch.recv(30)
     if pymizu.is_sentinel(x):
         break
     ch.send(x * 2)
-",
+)",
   launcher = mizu_py_launcher()
 )
 
@@ -48,14 +48,14 @@ receives. This channel stays open for the next few examples:
 ``` r
 
 ch <- mizu_channel(
-  "
+  r"(
 import pymizu
 while True:
     x = ch.recv(30)
     if pymizu.is_sentinel(x):
         break
     ch.send(x)
-",
+)",
   launcher = mizu_py_launcher()
 )
 

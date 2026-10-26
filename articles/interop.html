@@ -86,14 +86,14 @@
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://shikokuchuo.net/mizu/">mizu</a></span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">ch</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_channel.html">mizu_channel</a></span><span class="op">(</span></span>
-<span>  <span class="st">"</span></span>
+<span>  <span class="st">r"(</span></span>
 <span><span class="st">import pymizu</span></span>
 <span><span class="st">while True:</span></span>
 <span><span class="st">    x = ch.recv(30)</span></span>
 <span><span class="st">    if pymizu.is_sentinel(x):</span></span>
 <span><span class="st">        break</span></span>
 <span><span class="st">    ch.send(x * 2)</span></span>
-<span><span class="st">"</span>,</span>
+<span><span class="st">)"</span>,</span>
 <span>  launcher <span class="op">=</span> <span class="fu"><a href="../reference/mizu_py_launcher.html">mizu_py_launcher</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="op">)</span></span>
 <span></span>
@@ -106,14 +106,14 @@
 <p>Past a size floor, the data itself never moves. mizu writes it to shared memory once, and both sides read it in place: no serialization, no parsing, no further copies. A large value you receive arrives as an ALTREP view over the shared pages. This is the same zero-copy mechanism you get from another R process. A large value you send arrives in Python backed by those same pages. The peer below echoes back whatever it receives. This channel stays open for the next few examples:</p>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">ch</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_channel.html">mizu_channel</a></span><span class="op">(</span></span>
-<span>  <span class="st">"</span></span>
+<span>  <span class="st">r"(</span></span>
 <span><span class="st">import pymizu</span></span>
 <span><span class="st">while True:</span></span>
 <span><span class="st">    x = ch.recv(30)</span></span>
 <span><span class="st">    if pymizu.is_sentinel(x):</span></span>
 <span><span class="st">        break</span></span>
 <span><span class="st">    ch.send(x)</span></span>
-<span><span class="st">"</span>,</span>
+<span><span class="st">)"</span>,</span>
 <span>  launcher <span class="op">=</span> <span class="fu"><a href="../reference/mizu_py_launcher.html">mizu_py_launcher</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="op">)</span></span>
 <span></span>

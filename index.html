@@ -189,8 +189,8 @@
 <span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_call.html">mizu_submit_call</a></span><span class="op">(</span></span>
 <span>  <span class="va">p</span>,</span>
 <span>  <span class="fu"><a href="reference/mizu_call.html">mizu_call</a></span><span class="op">(</span></span>
-<span>    .source <span class="op">=</span> <span class="st">"import polars as pl</span></span>
-<span><span class="st">pl.DataFrame(x).group_by('cyl').agg(pl.col('mpg').mean()).sort('cyl')"</span>,</span>
+<span>    .source <span class="op">=</span> <span class="st">r"(import polars as pl</span></span>
+<span><span class="st">pl.DataFrame(x).group_by('cyl').agg(pl.col('mpg').mean()).sort('cyl'))"</span>,</span>
 <span>    x <span class="op">=</span> <span class="va">mtcars</span></span>
 <span>  <span class="op">)</span></span>
 <span><span class="op">)</span></span>

@@ -101,14 +101,14 @@ cross (see <code><a href="mizu_send.html">mizu_send()</a></code>).</p>
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="kw">if</span> <span class="op">(</span><span class="cn">FALSE</span><span class="op">)</span> <span class="op">{</span> <span class="co"># \dontrun{</span></span></span>
 <span class="r-in"><span><span class="va">ch</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_channel.html">mizu_channel</a></span><span class="op">(</span></span></span>
-<span class="r-in"><span>  <span class="st">"</span></span></span>
+<span class="r-in"><span>  <span class="st">r"(</span></span></span>
 <span class="r-in"><span><span class="st">import pymizu</span></span></span>
 <span class="r-in"><span><span class="st">while True:</span></span></span>
 <span class="r-in"><span><span class="st">    x = ch.recv(30)</span></span></span>
 <span class="r-in"><span><span class="st">    if pymizu.is_sentinel(x):</span></span></span>
 <span class="r-in"><span><span class="st">        break</span></span></span>
 <span class="r-in"><span><span class="st">    ch.send(x * 2)</span></span></span>
-<span class="r-in"><span><span class="st">"</span>,</span></span>
+<span class="r-in"><span><span class="st">)"</span>,</span></span>
 <span class="r-in"><span>  launcher <span class="op">=</span> <span class="fu">mizu_py_launcher</span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="mizu_send.html">mizu_send</a></span><span class="op">(</span><span class="va">ch</span>, <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="fl">1.5</span>, <span class="fl">2.5</span>, <span class="fl">3.5</span><span class="op">)</span><span class="op">)</span></span></span>

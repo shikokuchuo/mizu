@@ -46,14 +46,14 @@ The payload rules for a non-R peer apply: only vectors and strings cross
 ``` r
 if (FALSE) { # \dontrun{
 ch <- mizu_channel(
-  "
+  r"(
 import pymizu
 while True:
     x = ch.recv(30)
     if pymizu.is_sentinel(x):
         break
     ch.send(x * 2)
-",
+)",
   launcher = mizu_py_launcher()
 )
 mizu_send(ch, c(1.5, 2.5, 3.5))
