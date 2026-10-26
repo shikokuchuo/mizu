@@ -63,6 +63,20 @@ test_that("a spec arg that is a large re-sendable view rewrites inline", {
   expect_identical(mizu_collect(t, 5), x)
 })
 
+test_that("a zc-sized arg tree with a non-portable leaf declines at submit", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  e <- tryCatch(
+    mizu_submit_call(
+      p[["ctrl"]],
+      mizu_call("base::identity", list(v = runif(30000), bad = function() 1))
+    ),
+    error = identity
+  )
+  expect_s3_class(e, "mizu_error_not_portable")
+  expect_identical(e$reason, "a closure has no portable home")
+})
+
 test_that("a pool no worker has joined: spec and map error, plain submit queues", {
   ctrl <- .Call(
     mizu:::mizu_pool_create,
@@ -78,7 +92,10 @@ test_that("a pool no worker has joined: spec and map error, plain submit queues"
   spec <- mizu_call("base::sqrt", 2)
   expect_error(mizu_submit_call(ctrl, spec), "no worker has joined")
   expect_error(mizu_submit_call(att, spec), "no worker has joined")
-  expect_error(mizu_collect(mizu_map(ctrl, 1:3, identity)), "no worker has joined")
+  expect_error(
+    mizu_collect(mizu_map(ctrl, 1:3, identity)),
+    "no worker has joined"
+  )
   expect_error(mizu_collect(mizu_map(ctrl, 1:3, spec)), "no worker has joined")
   expect_error(mizu_map_prepare(ctrl, 1:3, identity), "no worker has joined")
   t <- mizu_submit(ctrl, 1 + 1)

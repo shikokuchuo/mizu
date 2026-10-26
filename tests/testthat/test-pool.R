@@ -1062,6 +1062,19 @@ test_that("collect_any reports a cancellation with its index", {
   pool_end(p)
 })
 
+test_that("a blocking collect on a cancelled task raises mizu_error_cancelled", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], "never")
+  expect_true(mizu_cancel(t))
+  err <- tryCatch(mizu_collect(t, timeout = 5), error = identity)
+  expect_s3_class(err, "mizu_error_cancelled")
+  expect_identical(
+    conditionMessage(err),
+    "mizu: task cancelled or pool stopped"
+  )
+})
+
 test_that("collect_any validates its task list", {
   p <- pool_pair()
   expect_error(mizu_collect_any(list()), "non-empty")

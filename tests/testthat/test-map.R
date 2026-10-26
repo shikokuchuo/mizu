@@ -1536,6 +1536,19 @@ test_that("RNG stream arguments are validated; an empty lost set labels", {
   )
 })
 
+test_that("rng_install installs the stream state and returns its jump", {
+  base <- .Call(mizu:::mizu_map_rng_base, 42L)
+  old_seed <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
+  on.exit(
+    if (!is.null(old_seed)) {
+      assign(".Random.seed", old_seed, envir = globalenv())
+    }
+  )
+  nxt <- .Call(mizu:::mizu_map_rng_install, base)
+  expect_identical(.Random.seed, c(10407L, base))
+  expect_identical(nxt, .Call(mizu:::mizu_map_rng_seek, base, 1L))
+})
+
 test_that("mizu_map validates its arguments", {
   p <- pool_pair()
   expect_error(

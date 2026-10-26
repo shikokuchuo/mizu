@@ -631,6 +631,10 @@ test_that("the notify .Call entries validate their handles", {
     "non-empty list"
   )
   expect_error(
+    .Call(mizu:::mizu_pool_tasks_terminal, list()),
+    "non-empty list"
+  )
+  expect_error(
     .Call(mizu:::mizu_pool_tasks_terminal, list(1)),
     "not a task handle"
   )
