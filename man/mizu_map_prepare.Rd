@@ -126,7 +126,10 @@ p <- mizu_pool()
 pm <- mizu_map_prepare(p, 1:1000, function(i, draws) {
   mean(rnorm(draws)) * i
 }, draws = 100L)
-runs <- lapply(1:50, function(s) mizu_collect(mizu_map_run(pm, .seed = s)))
+runs <- lapply(1:50, function(s) {
+  m <- mizu_map_run(pm, .seed = s)
+  mizu_collect(m)
+})
 mizu_pool_stop(p)
 
 }

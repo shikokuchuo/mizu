@@ -86,13 +86,16 @@ A map also nests — the mapped function can map over its own pool with `mizu_ma
 ``` r
 p <- mizu_pool(n_workers = 4L)
 
-mizu_collect(mizu_map(p, 1:5, \(i) i * 2L, .template = integer(1)))
+m <- mizu_map(p, 1:5, \(i) i * 2L, .template = integer(1))
+mizu_collect(m)
 #> [1]  2  4  6  8 10
 
 parts <- split(as.numeric(1:100000), rep(1:4, each = 25000))
-mizu_collect(mizu_map(p, parts, \(part) {
-  sum(unlist(mizu_collect(mizu_map(mizu_current_pool(), part, sqrt))))
-}, .template = numeric(1)))
+m <- mizu_map(p, parts, \(part) {
+  nested <- mizu_map(mizu_current_pool(), part, sqrt, .template = numeric(1))
+  sum(mizu_collect(nested))
+}, .template = numeric(1))
+mizu_collect(m)
 #>       1       2       3       4 
 #> 2635310 4818361 6239529 7388808
 

@@ -293,8 +293,12 @@ data.frame maps over its columns, and a factor over its elements.
 p <- mizu_pool()
 m <- mizu_map(p, 1:10, function(i) i * 2L)
 mizu_collect(m)
-v <- mizu_collect(mizu_map(p, rnorm(1e5), abs, .template = numeric(1)))
-mizu_collect(mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L))
+
+m <- mizu_map(p, rnorm(1e5), abs, .template = numeric(1))
+v <- mizu_collect(m)
+
+m <- mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
+mizu_collect(m)
 mizu_pool_stop(p)
 
 }

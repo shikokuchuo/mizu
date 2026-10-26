@@ -201,6 +201,7 @@ Each element of `.x` becomes the spec's first positional argument, or binds as `
 
 ```{r python-map}
 #| eval: !expr nzchar(Sys.which("python3")) && system2("python3", c("-c", shQuote("import pymizu, numpy")), stdout = FALSE, stderr = FALSE) == 0L
-mizu_collect(mizu_map(p, faithful$waiting[1:6], mizu_call("numpy.log"), .template = numeric(1)))
+m <- mizu_map(p, faithful$waiting[1:6], mizu_call("numpy.log"), .template = numeric(1))
+mizu_collect(m)
 mizu_pool_stop(p)
 ```
