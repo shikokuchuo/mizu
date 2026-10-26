@@ -47,6 +47,22 @@
       Error:
       ! mizu: .collect = "view" requires an atomic .template (logical, integer, double, complex or raw)
 
+# mizu_collect on a map handle validates its timeout
+
+    Code
+      mizu_collect(m, NA)
+    Condition
+      Error:
+      ! mizu: timeout must be a number of seconds, not NA
+
+---
+
+    Code
+      mizu_collect(m, "5")
+    Condition
+      Error:
+      ! mizu: timeout must be a number of seconds, not NA
+
 # a vector .seed is validated
 
     Code

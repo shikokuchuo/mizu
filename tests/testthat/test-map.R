@@ -1149,6 +1149,28 @@ test_that(".timeout expiring in a region map's collect cancels the runners", {
   pool_end(p)
 })
 
+test_that("mizu_collect on a map handle validates its timeout", {
+  p <- pool_pair()
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i)
+  expect_snapshot(error = TRUE, mizu_collect(m, NA))
+  expect_snapshot(error = TRUE, mizu_collect(m, "5"))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list(1:4)) # still collectible
+  pool_end(p)
+})
+
+test_that("an external cancel before any claim raises cancelled at collect", {
+  p <- pool_pair()
+  m <- mizu_map(p[["ctrl"]], runif(100000), identity) # region path
+  # the pool-stop shape: the cancel word set with no runner ever claimed —
+  # the collect abandons the queued runners and raises cancelled
+  .Call(mizu:::mizu_map_cancel_set, m[["st"]][["wrap"]])
+  expect_error(mizu_collect(m), class = "mizu_error_cancelled")
+  pool_end(p)
+})
+
 test_that("the jump kernel agrees with set.seed and parallel", {
   base <- .Call(mizu:::mizu_map_rng_base, 42L)
   old_seed <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)

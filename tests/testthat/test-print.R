@@ -114,3 +114,36 @@ test_that("a remote error prints one line leading with type: message", {
     fixed = TRUE
   )
 })
+
+test_that("map handles print their submission state", {
+  p <- pool_pair()
+  m <- mizu_map(p[["ctrl"]], 1:4, identity)
+  expect_output(
+    print(m),
+    "<mizu_map: 4 elements, inline blob, submitted>",
+    fixed = TRUE
+  )
+  ms <- mizu_map(p[["ctrl"]], 1:4, function(i) i, .stream = TRUE)
+  expect_output(
+    print(ms),
+    "<mizu_map: 4 elements, streaming, submitted>",
+    fixed = TRUE
+  )
+  big <- mizu_map(p[["ctrl"]], runif(100000), identity)
+  expect_output(
+    print(big),
+    sprintf(
+      "<mizu_map: 100000 elements, %s, submitted>",
+      big[["st"]][["name"]]
+    ),
+    fixed = TRUE
+  )
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list(1:4))
+  expect_output(print(m), "<mizu_map: 4 elements, collected>", fixed = TRUE)
+  mizu_cancel(ms)
+  mizu_cancel(big)
+  pool_end(p)
+})

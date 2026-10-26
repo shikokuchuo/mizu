@@ -50,6 +50,49 @@ test_that("a timed-out promise leaves the FIFO; the next message goes to the nex
   expect_identical(o2$value, 7L)
 })
 
+test_that("a channel disarms when its last pending promise times out", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o <- observe(mizu_recv_async(p[["host"]], timeout = 0.05))
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_timeout")
+  # disarmed: this publish pays no signal — the message waits for the next arm
+  mizu_send(p[["peer"]], 9L)
+  later::run_now()
+  expect_identical(
+    .Call(mizu:::mizu_channel_stat, p[["peer"]])[["notify_sends"]],
+    0
+  )
+  o2 <- observe(mizu_recv_async(p[["host"]]))
+  expect_true(pump_until(function() settled(o2)))
+  expect_identical(o2$value, 9L) # resolved from the arm's synchronous drain
+})
+
+test_that("a drain queued behind a timeout disarm leaves the message in the ring", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o <- observe(mizu_recv_async(p[["host"]], timeout = 0.05))
+  Sys.sleep(0.1) # the timer is now due, but the loop has not run it
+  mizu_send(p[["peer"]], 3L) # the publish schedules a drain behind the timer
+  Sys.sleep(0.1) # let the watch's execLaterNative2 land in the queue
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_timeout")
+  expect_identical(mizu_recv(p[["host"]], 0), 3L)
+})
+
+test_that("a handler installed over queued messages drains them from the arm", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send(p[["peer"]], 5L)
+  got <- list()
+  mizu_recv_handler(p[["host"]], function(x) got[[length(got) + 1L]] <<- x)
+  expect_identical(got, list(5L)) # delivered by the arm's synchronous drain
+  mizu_recv_handler(p[["host"]], NULL)
+})
+
 test_that("the handler form delivers a burst and receives the terminal condition", {
   skip_if_no_promises()
   p <- channel_pair()
@@ -85,6 +128,35 @@ test_that("handler and promise on one channel are mutually exclusive", {
   )
   mizu_send(p[["peer"]], 1L)
   expect_true(pump_until(function() settled(o)))
+})
+
+test_that("the channel async verbs validate their arguments", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  expect_snapshot(error = TRUE, mizu_recv_async(p[["host"]], NA))
+  expect_snapshot(error = TRUE, mizu_recv_async(p[["host"]], "5"))
+  expect_snapshot(error = TRUE, mizu_recv_handler(p[["host"]], 1))
+})
+
+test_that("the S3 promise protocol methods dispatch on handles", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  expect_true(promises::is.promising(p[["host"]]))
+  o <- observe(promises::as.promise(p[["host"]]))
+  mizu_send(p[["peer"]], 1L)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, 1L)
+  q <- pool_pair()
+  on.exit(pool_end(q), add = TRUE)
+  t <- mizu_submit(q[["ctrl"]], 2L)
+  expect_true(promises::is.promising(t))
+  pool_step(q)
+  expect_identical(mizu_collect(t, 5), 2L)
+  m <- mizu_map(q[["ctrl"]], 1:2, function(i) i)
+  expect_true(promises::is.promising(m))
+  mizu_cancel(m)
 })
 
 test_that("arming a spin channel errors", {
@@ -381,6 +453,117 @@ test_that("enrollment conflicts are errors naming the pending consumer", {
   expect_true(pump_until(function() settled(o2)))
 })
 
+test_that("the collective async verbs validate their arguments", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1L)
+  expect_snapshot(error = TRUE, mizu_collect_all_async(list(t), NA))
+  expect_snapshot(error = TRUE, mizu_collect_all_async(list()))
+  expect_snapshot(error = TRUE, mizu_collect_any_async(list()))
+  mizu_cancel(t)
+})
+
+test_that("unrelated waiters block neither new enrollments nor blocking collects", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t1 <- mizu_submit(p[["ctrl"]], 1L)
+  o1 <- observe(promises::as.promise(t1))
+  t2 <- mizu_submit(p[["ctrl"]], 2L)
+  o2 <- observe(mizu_collect_all_async(list(t2))) # a second enrollment coexists
+  t3 <- mizu_submit(p[["ctrl"]], 3L)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(t3, 5), 3L) # not enrolled: collects fine
+  expect_true(pump_until(function() settled(o1) && settled(o2)))
+  expect_identical(o1$value, 1L)
+  expect_identical(o2$value, list(2L))
+})
+
+test_that("collect_all_async on a stale task raises the pool's recorded error", {
+  skip_if_no_promises()
+  p <- pool_pair(result_slots = 8L, injection_cap = 8L) # one slot per submitter
+  on.exit(pool_end(p))
+  t1 <- mizu_submit(p[["ctrl"]], 1L)
+  pool_step(p)
+  expect_identical(mizu_collect(t1, 5), 1L)
+  t2 <- mizu_submit(p[["ctrl"]], 2L) # reclaims the slot, invalidating t1
+  expect_error(
+    mizu_collect_all_async(list(t1)),
+    "collected or invalidated",
+    class = "mizu_error"
+  )
+  mizu_cancel(t2)
+})
+
+test_that("a pool drain over the quantum reschedules and settles every waiter", {
+  skip_if_no_promises()
+  p <- pool_pair(
+    max_submitters = 2L,
+    injection_cap = 4096L,
+    result_slots = 8192L
+  )
+  on.exit(pool_end(p))
+  n <- mizu:::notify_quantum_n + 10L
+  ts <- lapply(seq_len(n), function(i) mizu_submit(p[["ctrl"]], i, i = i))
+  os <- lapply(ts, function(t) observe(promises::as.promise(t)))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() all(vapply(os, settled, TRUE)), 60))
+  expect_identical(vapply(os, function(o) o$value, 1L), seq_len(n))
+})
+
+test_that("the notify .Call entries validate their handles", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t1 <- mizu_submit(p[["ctrl"]], 1L)
+  q <- pool_pair()
+  on.exit(pool_end(q), add = TRUE)
+  t2 <- mizu_submit(q[["ctrl"]], 2L)
+  expect_error(
+    .Call(mizu:::mizu_pool_task_notify, list(), TRUE),
+    "non-empty list"
+  )
+  expect_error(
+    .Call(mizu:::mizu_pool_tasks_terminal, list(1)),
+    "not a task handle"
+  )
+  expect_error(
+    .Call(mizu:::mizu_pool_tasks_terminal, list(t1, t2)),
+    "same pool handle"
+  )
+  expect_error(.Call(mizu:::mizu_task_pool, 1), "not a task handle")
+  expect_error(.Call(mizu:::mizu_chan_notify_peek, 1), "not a channel handle")
+  expect_error(
+    .Call(mizu:::mizu_chan_notify_set, 1, new.env()),
+    "not a channel handle"
+  )
+  expect_error(.Call(mizu:::mizu_pool_notify_peek, 1), "not a pool handle")
+  expect_error(
+    .Call(mizu:::mizu_pool_notify_set, 1, new.env()),
+    "not a pool handle"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_runners_terminal, NULL, list()),
+    "non-empty list"
+  )
+  mizu_cancel(t1)
+  mizu_cancel(t2)
+})
+
+test_that("a destroyed pool's task reads closed at the notify scan", {
+  p <- pool_pair()
+  t <- mizu_submit(p[["ctrl"]], 1L)
+  pool_end(p)
+  expect_error(
+    .Call(mizu:::mizu_pool_tasks_terminal, list(t)),
+    "pool handle is closed"
+  )
+})
+
 test_that("several workers publishing to one armed submitter send one signal", {
   skip_if_no_promises()
   p <- pool_pair(workers = 2L)
@@ -482,6 +665,80 @@ test_that("an empty map is a handle whose collect and promise resolve empty", {
   expect_identical(o$value, integer(0))
 })
 
+test_that("a map promise is cached; collected and streaming handles refuse one", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L)
+  expect_identical(promises::as.promise(m), promises::as.promise(m))
+  expect_output(print(m), "promise pending", fixed = TRUE)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  o <- observe(promises::as.promise(m))
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, as.list((1:4) * 2L))
+  m2 <- mizu_map(p[["ctrl"]], 1:4, function(i) i)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m2), as.list(1:4))
+  expect_error(promises::as.promise(m2), "already collected")
+  ms <- mizu_map(p[["ctrl"]], 1:4, function(i) i, .stream = TRUE)
+  expect_error(promises::as.promise(ms), "streaming map handle")
+  mizu_cancel(ms)
+})
+
+test_that("a prepared map's clean promise collect hands the state back for re-arm", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:4, function(i) i * 3L)
+  m <- mizu_map_run(pm)
+  expect_null(pm[["st"]]) # pessimistic while the run pends
+  o <- observe(promises::as.promise(m))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, as.list((1:4) * 3L))
+  expect_false(is.null(pm[["st"]])) # clean: the state is back for re-arm
+  m2 <- mizu_map_run(pm)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m2), as.list((1:4) * 3L))
+})
+
+test_that("a map promise scans mixed runner states before the full settle", {
+  skip_if_no_promises()
+  p <- pool_pair(workers = 2L)
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L, .chunks = 2L)
+  o <- observe(promises::as.promise(m))
+  pool_step(p, wk = p[["wks"]][[1L]])
+  later::run_now() # one runner terminal, one pending: the scan defers
+  expect_false(settled(o))
+  pool_step(p, wk = p[["wks"]][[2L]])
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, as.list((1:4) * 2L))
+})
+
+test_that("a map promise's watchdog re-arms while workers stay live", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i)
+  o <- observe(promises::as.promise(m))
+  # nothing stepped: the watchdog ticks once over live workers and re-arms
+  expect_false(pump_until(function() settled(o), 1.5))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, as.list(1:4))
+})
+
 # Cross-process ----------------------------------------------------------------
 
 test_that("a spawned echo peer drives a promise and its death rejects one", {
@@ -499,6 +756,51 @@ test_that("a spawned echo peer drives a promise and its death rejects one", {
   kill_hard(pid)
   expect_true(pump_until(function() settled(o2)))
   expect_s3_class(o2$error, "mizu_peer_gone")
+})
+
+test_that("a declined Python payload rejects the waiter, reaches the handler", {
+  skip_if_no_promises()
+  py <- skip_if_no_pymizu()
+  # a Python HOST that sends before any identity read stages same-language:
+  # a set crosses as a pickle, which the R read hook declines
+  token_file <- tempfile()
+  src_file <- tempfile(fileext = ".py")
+  writeLines(
+    c(
+      "from pymizu import _pymizu as pm",
+      "import sys",
+      "h = pm._channel_new(16384, 256, 4194304, False, b'Spass')",
+      "with open(sys.argv[1], 'w') as f:",
+      "    f.write(h.token + '\\n')",
+      "h.send({1, 2, 3})",
+      "h.send('ok')",
+      "h.send({4, 5})",
+      "h.send('ok2')",
+      "h.recv(30)",
+      "h.destroy()"
+    ),
+    src_file
+  )
+  system2(py, c(src_file, shQuote(token_file)), wait = FALSE)
+  expect_true(wait_for_file(token_file))
+  ch <- .Call(mizu:::mizu_channel_attach, readLines(token_file), NULL)[[1L]]
+  on.exit(.Call(mizu:::mizu_channel_destroy, ch), add = TRUE)
+  # promise mode: the decline rejects the head waiter, the channel flows
+  o <- observe(mizu_recv_async(ch))
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_error_python_payload")
+  o2 <- observe(mizu_recv_async(ch))
+  expect_true(pump_until(function() settled(o2)))
+  expect_identical(o2$value, "ok")
+  # handler mode: the decline is delivered as the condition, and the
+  # handler continues with the next message
+  got <- new.env(parent = emptyenv())
+  got$xs <- list()
+  mizu_recv_handler(ch, function(x) got$xs[[length(got$xs) + 1L]] <<- x)
+  expect_true(pump_until(function() length(got$xs) == 2L))
+  expect_s3_class(got$xs[[1L]], "mizu_error_python_payload")
+  expect_identical(got$xs[[2L]], "ok2")
+  mizu_recv_handler(ch, NULL)
 })
 
 test_that("a batch handler fed by a real peer receives every message across quanta", {
@@ -566,6 +868,29 @@ test_that("a promise-armed mizu_map() over real workers resolves the full gather
     o$value,
     mizu_collect(mizu_map(p, 1:16, function(i) i * 2L, .seed = 42L))
   )
+})
+
+test_that("a map promise rejects when every worker dies before any claim", {
+  skip_if_no_promises()
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  on.exit(mizu_pool_stop(p), add = TRUE)
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  lapply(1:2, function(i) {
+    mizu_submit(p, {
+      Sys.sleep(10)
+      i
+    })
+  })
+  m <- mizu_map(p, runif(100000), identity)
+  expect_null(m[["st"]][["blob"]]) # region map: the cancel word rides the region
+  o <- observe(promises::as.promise(m))
+  d <- mizu_pool_dump(p)[["workers"]]
+  for (pid in d[d[["status"]] == "live", "pid"]) {
+    kill_hard(as.integer(pid))
+  }
+  expect_true(pump_until(function() settled(o), 30))
+  expect_s3_class(o$error, "mizu_error_worker_died")
 })
 
 test_that("a hard-killed armed consumer's .ntfy socket file survives mizu_prune()", {

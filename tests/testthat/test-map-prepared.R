@@ -187,6 +187,26 @@ test_that("mizu_map_run validates .seed and surfaces rearm slot exhaustion", {
   pool_end(p)
 })
 
+test_that("a prepared run whose submission times out returns the sentinel", {
+  p <- pool_pair(workers = 2L, injection_cap = 2L, slot_size = 256L)
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:4, identity)
+  filler <- mizu_submit(p[["ctrl"]], "filler") # ring holds 2: one slot left
+  m <- mizu_map_run(pm, .timeout = 0.2) # runner 2 blocks on the full ring
+  expect_s3_class(m, "mizu_timeout")
+  expect_s3_class(m, "mizu_sentinel")
+  expect_null(pm[["st"]]) # the state is dead: the next run restages
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(filler, timeout = 5), "filler")
+  m2 <- mizu_map_run(pm)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m2), as.list(1:4))
+  pool_end(p)
+})
+
 test_that("phase B: mizu_map_run(pm, .x =) round-trips end to end", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
