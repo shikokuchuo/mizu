@@ -86,3 +86,44 @@ takes `stdout` / `stderr`, so
 `launcher = mizu_launcher(stderr = "peer.log")` collects the epilogue in
 a file instead — the same factory launches the R workers of
 [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md).
+
+## Promises and handlers
+
+For event-driven consumers — a Shiny app, an `httpuv` server, any
+program organized around an event loop — the channel arms a notify
+endpoint instead of parking a thread: a publish signals it at the same
+already-synchronized checkpoint where a blocking receive is woken, and
+the signal schedules the resolution on the main thread through `later`.
+There is no polling and no extra thread. Requires the `later` package,
+and `promises` for the promise forms.
+
+[`mizu_recv_async()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
+returns a promise (never blocks) that resolves with the next message —
+the identical object a blocking
+[`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
+would have returned — and rejects on close, peer death, or its own
+`timeout`, as classed error conditions carrying the sentinel class
+names.
+[`mizu_recv_handler()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
+is the stream form: it installs a function and each burst is delivered
+to it from the event loop, with `batch = TRUE` collecting the burst into
+one list per call. Resolution is per-burst, never per-item: a promise
+costs tens of microseconds of R machinery against about a microsecond of
+transport, so volume belongs on the batch handler, and every main-thread
+drain is bounded per event-loop quantum and re-scheduled — a saturated
+ring cannot starve the loop.
+
+``` r
+
+library(promises)
+ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
+mizu_recv_async(ch) %...>% print()
+mizu_send(ch, 42L)
+for (i in 1:4) later::run_now(1) # pump the loop until the resolution lands
+#> [1] 42
+mizu_close(ch)
+```
+
+A channel holds at most one of the two consumer forms at a time:
+installing a handler with promises pending, or requesting a promise with
+a handler installed, is an error.

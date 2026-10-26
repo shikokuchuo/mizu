@@ -1,9 +1,21 @@
 # Parallel Map Over a Pool
 
-Maps `.f` over the elements of `.x` on a pool and returns the results in
-input order. The result is a list by default, or an atomic vector (or
-matrix) with [`vapply()`](https://rdrr.io/r/base/lapply.html) semantics
-when `.template` is given. Unlike mapping with per-element
+Maps `.f` over the elements of `.x` on a pool and returns a map handle
+immediately — as
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+returns a task.
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+on the handle waits for completion and returns the results in input
+order: a list by default, or an atomic vector (or matrix) with
+[`vapply()`](https://rdrr.io/r/base/lapply.html) semantics when
+`.template` is given.
+[`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
+stops it.
+[`as.promise()`](https://rstudio.github.io/promises/reference/is.promise.html)
+(or [`then()`](https://rstudio.github.io/promises/reference/then.html)
+directly) collects it through the event loop instead — see
+[`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md).
+Unlike mapping with per-element
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 calls, one `mizu_map()` call serializes `.f`, the constant arguments in
 `...`, and `.x` exactly once. It submits one *runner* task per live
@@ -91,36 +103,51 @@ mizu_map(
 
 - .timeout:
 
-  seconds after which the map gives up, cancels its outstanding work,
+  seconds after which submission gives up, cancels the tasks already in,
   and returns the `mizu_timeout` sentinel (class
   `c("mizu_timeout", "mizu_sentinel")`). `Inf` (the default) waits
-  indefinitely. One deadline covers submission and collection.
+  indefinitely. Submission blocks only while an injection ring is full;
+  the collection deadline is
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)'s
+  `timeout`.
 
 - .collect:
 
   `"value"` (the default) gathers template results into an owning R
-  vector. `"view"` instead returns an ALTREP view over the map's shared
-  output area — no gather copy — for pipelines that immediately reduce.
+  vector at
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
+  `"view"` instead returns an ALTREP view over the map's shared output
+  area — no gather copy — for pipelines that immediately reduce.
   Requires an atomic `.template`. The view is copy-on-write: the first
   write materializes a private copy. It keeps the map region alive until
   released, and re-sending it through a channel or pool crosses as a
-  full copy, not by reference.
+  full copy, not by reference. The choice is stored on the handle.
 
 - .stream:
 
   `TRUE` streams slices of `.x` to workers under a sliding window
   instead of staging `.x` into shared memory wholesale, bounding
   shared-memory residency by the window times the slice size. See the
-  Streaming maps section.
+  Streaming maps section. A streaming map handle collects with
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+  only (it cannot be promise-armed).
 
 ## Value
 
-A list of the results of `.f` in the order of `.x`, with `names(.x)`
-reapplied. With `.template`, an atomic vector of type
+A map handle (class `"mizu_map"`).
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+on it returns a list of the results of `.f` in the order of `.x`, with
+`names(.x)` reapplied. With `.template`, an atomic vector of type
 `typeof(.template)` (an `m * length(.x)` matrix when
 `length(.template) > 1`) — an owning vector, or a copy-on-write view
 over the shared output area with `.collect = "view"`. On `.timeout`
-expiry, the `mizu_timeout` sentinel.
+expiry mid-submission, `mizu_map()` itself returns the `mizu_timeout`
+sentinel;
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+returns it on its own `timeout` expiry. A length-0 `.x` returns a handle
+whose collect yields the empty result, as
+[`lapply()`](https://rdrr.io/r/base/lapply.html) — no region or tasks
+are created.
 
 ## Details
 
@@ -315,7 +342,8 @@ factor over its elements.
 
 ``` r
 p <- mizu_pool()
-mizu_map(p, 1:10, function(i) i * 2L)
+m <- mizu_map(p, 1:10, function(i) i * 2L)
+mizu_collect(m)
 #> [[1]]
 #> [1] 2
 #> 
@@ -346,8 +374,8 @@ mizu_map(p, 1:10, function(i) i * 2L)
 #> [[10]]
 #> [1] 20
 #> 
-v <- mizu_map(p, rnorm(1e5), abs, .template = numeric(1))
-mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
+v <- mizu_collect(mizu_map(p, rnorm(1e5), abs, .template = numeric(1)))
+mizu_collect(mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L))
 #> [[1]]
 #> [1]  1.11932846 -0.07617141
 #> 

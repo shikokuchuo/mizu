@@ -54,7 +54,20 @@ mizu_collect(task, timeout = Inf)
 
 - task:
 
-  a task handle from `mizu_submit()`.
+  a task handle from `mizu_submit()`, or a map handle from
+  [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) /
+  [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md).
+  A map handle collects the whole map: the gathered list (or templated
+  vector), an element error re-signalled with its `mizu_map_index`, or a
+  worker death as `mizu_error_worker_died` with the lost element ranges
+  — exactly the semantics of
+  [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)'s
+  Errors section. A task or map handle with a pending promise (or
+  enrolled in a pending
+  [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  /
+  [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  collection) refuses a blocking collect: one consumer per result.
 
 - timeout:
 

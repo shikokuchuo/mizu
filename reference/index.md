@@ -31,7 +31,7 @@
 - [`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
   : Collect the Results of Several Tasks, in Order
 - [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
-  : Cancel a Task
+  : Cancel a Task or a Map
 - [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
   : The Evaluating Worker's Own Pool Handle
 - [`mizu_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
@@ -52,6 +52,21 @@
 - [`mizu_map_prepare()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
   [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
   : Prepared Maps: Stage Once, Run Many
+
+## Promises and handlers
+
+- [`mizu_recv_async()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
+  [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
+  [`as.promise(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
+  [`is.promising(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
+  : Receive Channel Messages as a Promise or a Stream
+- [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  [`as.promise(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  [`is.promising(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  [`as.promise(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  [`is.promising(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  : Collect Pool Results as Promises
 
 ## Monitoring and debugging
 
@@ -105,6 +120,7 @@
 - [`print(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_pool>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_map_prepared>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_sentinel>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_error_remote>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)

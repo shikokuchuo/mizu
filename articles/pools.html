@@ -143,7 +143,7 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; $total</span></span>
-<span><span class="co">#&gt; [1] 6.284994</span></span>
+<span><span class="co">#&gt; [1] 3.405365</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; $label</span></span>
 <span><span class="co">#&gt; [1] "done"</span></span></code></pre></div>
@@ -156,23 +156,39 @@
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; [[2]]</span></span>
 <span><span class="co">#&gt; [1] 4</span></span></code></pre></div>
+</section><section class="level2"><h2 id="promises-and-handlers">Promises and handlers<a class="anchor" aria-label="anchor" href="#promises-and-handlers"></a>
+</h2>
+<p>For event-driven consumers, task handles thenable directly: <code>then(task, fn)</code> (or <code>as.promise(task)</code>) resolves with the task’s value and rejects with the classed condition <code><a href="../reference/mizu_submit.html">mizu_collect()</a></code> would raise — worker death included. <code><a href="../reference/mizu_collect_all_async.html">mizu_collect_all_async()</a></code> and <code><a href="../reference/mizu_collect_all_async.html">mizu_collect_any_async()</a></code> ship the collective forms with exactly one promise per collection, mirroring the sync verbs: collect-all resolves in input order with names carried, the first erroring handle by position rejecting with <code>index</code>; collect-any resolves <code>list(index, value)</code>. <code><a href="../reference/mizu_map.html">mizu_map()</a></code> returns a handle with the same treatment — <code>then(map_handle, fn)</code> resolves with the whole gathered result. Requires the <code>later</code> and <code>promises</code> packages.</p>
+<p>Resolution is per-collection, never per-task: a promise costs tens of microseconds of R machinery against about a microsecond of transport, so a map of ten thousand elements resolves one promise rather than allocating ten thousand. A result publishes once per burst no matter how many workers publish to an armed submitter, and every main-thread drain is bounded per event-loop quantum and re-scheduled.</p>
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://rstudio.github.io/promises/" class="external-link">promises</a></span><span class="op">)</span></span>
+<span><span class="va">slow</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="op">{</span> <span class="fu"><a href="https://rdrr.io/r/base/Sys.sleep.html" class="external-link">Sys.sleep</a></span><span class="op">(</span><span class="fl">0.2</span><span class="op">)</span>; <span class="st">"slow"</span> <span class="op">}</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rstudio.github.io/promises/reference/then.html" class="external-link">then</a></span><span class="op">(</span><span class="va">slow</span>, <span class="va">print</span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">m</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_map.html">mizu_map</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span><span class="op">:</span><span class="fl">100</span>, \<span class="op">(</span><span class="va">i</span><span class="op">)</span> <span class="va">i</span> <span class="op">*</span> <span class="va">i</span>, .template <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/integer.html" class="external-link">integer</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span>
+<span><span class="fu"><a href="https://rstudio.github.io/promises/reference/then.html" class="external-link">then</a></span><span class="op">(</span><span class="va">m</span>, \<span class="op">(</span><span class="va">v</span><span class="op">)</span> <span class="fu"><a href="https://rdrr.io/r/base/print.html" class="external-link">print</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum</a></span><span class="op">(</span><span class="va">v</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
+<span></span>
+<span><span class="kw">for</span> <span class="op">(</span><span class="va">i</span> <span class="kw">in</span> <span class="fl">1</span><span class="op">:</span><span class="fl">8</span><span class="op">)</span> <span class="fu">later</span><span class="fu">::</span><span class="fu"><a href="https://later.r-lib.org/reference/run_now.html" class="external-link">run_now</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span> <span class="co"># pump the loop until the resolutions land</span></span>
+<span><span class="co">#&gt; [1] 338350</span></span>
+<span><span class="co">#&gt; [1] "slow"</span></span></code></pre></div>
+<p>A task with a promise attached — or enrolled in a pending collection — refuses a blocking <code><a href="../reference/mizu_submit.html">mizu_collect()</a></code> and a second enrollment: one consumer per result. <code><a href="../reference/mizu_cancel.html">mizu_cancel()</a></code> stays allowed throughout; the cancel publishes, and the drain rejects.</p>
 </section><section class="level2"><h2 id="sizing-sharing-and-watching-a-pool">Sizing, sharing and watching a pool<a class="anchor" aria-label="anchor" href="#sizing-sharing-and-watching-a-pool"></a>
 </h2>
 <p>A pool can grow and shrink while it runs. Retirement is graceful: the worker finishes its current task, and the remaining workers consume anything still queued to it. Other R processes can join a running pool as submitters — the name of the pool is the only thing they need:</p>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_spawn_workers</a></span><span class="op">(</span><span class="va">p</span>, n <span class="op">=</span> <span class="fl">2L</span><span class="op">)</span>     <span class="co"># two more workers join the pool</span></span>
 <span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_retire_worker</a></span><span class="op">(</span><span class="va">p</span>, slot <span class="op">=</span> <span class="fl">0L</span><span class="op">)</span>  <span class="co"># worker 0 exits after its current task</span></span>
 <span></span>
 <span><span class="co"># in another R process — submit and collect exactly as the creator does:</span></span>
 <span><span class="va">p2</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_pool_attach.html">mizu_pool_attach</a></span><span class="op">(</span><span class="va">name</span><span class="op">)</span>      <span class="co"># name: mizu_pool_status(p)$name on the creator</span></span></code></pre></div>
 <p>Four read-only tools observe a running pool without disturbing it:</p>
-<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_pool_status.html">mizu_pool_status</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>  <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_stats.html">mizu_pool_stats</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>   <span class="co"># cumulative counters: tasks run, steals, parks per worker</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_dump.html">mizu_pool_dump</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>    <span class="co"># every slot in full detail — the first tool when a pool hangs</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_trace.html">mizu_pool_trace</a></span><span class="op">(</span><span class="va">p</span>, \<span class="op">(</span><span class="va">event</span>, <span class="va">id</span><span class="op">)</span> <span class="fu"><a href="https://rdrr.io/r/base/message.html" class="external-link">message</a></span><span class="op">(</span><span class="va">event</span>, <span class="st">" "</span>, <span class="va">id</span><span class="op">)</span><span class="op">)</span>  <span class="co"># task lifecycle hook</span></span></code></pre></div>
 <p>When you are done, <code><a href="../reference/mizu_pool_stop.html">mizu_pool_stop()</a></code> cancels the pending tasks, waits for the workers to exit cleanly, and releases the shared region:</p>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></code></pre></div>
 </section><script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {

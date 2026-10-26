@@ -77,7 +77,9 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
   `TRUE` streams slices of `.x` to workers under a sliding window
   instead of staging `.x` into shared memory wholesale, bounding
   shared-memory residency by the window times the slice size. See the
-  Streaming maps section.
+  Streaming maps section. A streaming map handle collects with
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+  only (it cannot be promise-armed).
 
 - pm:
 
@@ -92,27 +94,34 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 
 - .timeout:
 
-  seconds after which the map gives up, cancels its outstanding work,
+  seconds after which submission gives up, cancels the tasks already in,
   and returns the `mizu_timeout` sentinel (class
   `c("mizu_timeout", "mizu_sentinel")`). `Inf` (the default) waits
-  indefinitely. One deadline covers submission and collection.
+  indefinitely. Submission blocks only while an injection ring is full;
+  the collection deadline is
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)'s
+  `timeout`.
 
 - .collect:
 
   `"value"` (the default) gathers template results into an owning R
-  vector. `"view"` instead returns an ALTREP view over the map's shared
-  output area — no gather copy — for pipelines that immediately reduce.
+  vector at
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
+  `"view"` instead returns an ALTREP view over the map's shared output
+  area — no gather copy — for pipelines that immediately reduce.
   Requires an atomic `.template`. The view is copy-on-write: the first
   write materializes a private copy. It keeps the map region alive until
   released, and re-sending it through a channel or pool crosses as a
-  full copy, not by reference.
+  full copy, not by reference. The choice is stored on the handle.
 
 ## Value
 
 `mizu_map_prepare()`: a prepared-map handle. `mizu_map_run()`: exactly
 what [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
-returns for the staged map — a list, a templated atomic vector, or the
-`mizu_timeout` sentinel.
+returns for the staged map — a map handle whose
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+returns a list, a templated atomic vector, or the `mizu_timeout`
+sentinel.
 
 ## Details
 
@@ -156,6 +165,6 @@ p <- mizu_pool()
 pm <- mizu_map_prepare(p, 1:1000, function(i, draws) {
   mean(rnorm(draws)) * i
 }, draws = 100L)
-runs <- lapply(1:50, function(s) mizu_map_run(pm, .seed = s))
+runs <- lapply(1:50, function(s) mizu_collect(mizu_map_run(pm, .seed = s)))
 mizu_pool_stop(p)
 ```

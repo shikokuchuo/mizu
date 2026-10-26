@@ -42,11 +42,11 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu       236.41µs 393.44µs     2174.  480.61KB     28.0
-#> 2 mirai        7.09ms   7.75ms      129.    3.81MB     21.4
+#> 1 mizu        501.1µs 564.43µs     1126.  494.87KB      0  
+#> 2 mirai        7.16ms   7.41ms      134.    3.88MB     21.1
 ```
 
-End to end, mizu is **20x** faster: every timed run stages the frame,
+End to end, mizu is **13x** faster: every timed run stages the frame,
 runs the task — computing the new column over all 53,940 rows — and
 returns the enriched frame (medians).
 
@@ -67,20 +67,20 @@ winsum <- evalq(function(i) {
 
 tasks <- bench::mark(
   serial = lapply(1:2000, winsum),
-  mizu = mizu_map(p, 1:2000, winsum),
+  mizu = mizu_collect(mizu_map(p, 1:2000, winsum)),
   mirai = collect_mirai(mirai_map(1:2000, winsum))
 )
 tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      18.42ms  18.42ms     54.3     30.8MB  1140.  
-#> 2 mizu         5.25ms   6.21ms    136.     433.3KB     0   
-#> 3 mirai      203.81ms 203.81ms      4.91      19MB     9.81
+#> 1 serial      17.96ms  17.96ms     55.7     30.8MB  1281.  
+#> 2 mizu         5.27ms   5.55ms    131.     542.5KB     0   
+#> 3 mirai      210.76ms 210.76ms      4.74    19.1MB     9.49
 ```
 
-mizu turns the four workers into a **3x** gain over the serial loop, and
-runs **33x** ahead of mirai (medians).
+mizu turns the four workers into a **3.2x** gain over the serial loop,
+and runs **38x** ahead of mirai (medians).
 
 ``` r
 

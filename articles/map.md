@@ -1,8 +1,17 @@
 # Parallel map
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) maps
-a function over a vector or list on the pool and returns the results in
-input order. It is not a loop over
+a function over a vector or list on the pool and returns a map handle
+immediately — as
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+returns a task.
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+on the handle waits and returns the results in input order;
+[`as.promise()`](https://rstudio.github.io/promises/reference/is.promise.html)
+(or [`then()`](https://rstudio.github.io/promises/reference/then.html)
+directly) collects through the event loop instead — see [Promises and
+handlers](https://shikokuchuo.net/mizu/articles/pools.html#promises-and-handlers).
+It is not a loop over
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
 The function, its constant arguments, and the data are staged once in
 shared memory. A handful of chunk tasks divide the elements, and each
@@ -15,7 +24,7 @@ spreads across workers and balances itself through stealing.
 library(mizu)
 
 p <- mizu_pool(n_workers = 4L)
-mizu_map(p, 1:5, \(i) i * 2L)
+mizu_collect(mizu_map(p, 1:5, \(i) i * 2L))
 #> [[1]]
 #> [1] 2
 #> 
@@ -42,7 +51,7 @@ exactly once, unserialized:
 
 ``` r
 
-mizu_map(p, seq.int(-5, 5), abs, .template = numeric(1))
+mizu_collect(mizu_map(p, seq.int(-5, 5), abs, .template = numeric(1)))
 #>  [1] 5 4 3 2 1 0 1 2 3 4 5
 ```
 
@@ -63,8 +72,8 @@ chunking, worker count, or steal order:
 
 ``` r
 
-identical(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L),
-          mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L))
+identical(mizu_collect(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L)),
+          mizu_collect(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L)))
 #> [1] TRUE
 ```
 
@@ -83,7 +92,7 @@ region, so the random streams vary per run for free:
 ``` r
 
 pm <- mizu_map_prepare(p, 1:1000, \(i, draws) mean(rnorm(draws)) * i, draws = 100L)
-runs <- lapply(1:4, \(s) mizu_map_run(pm, .seed = s))
+runs <- lapply(1:4, \(s) mizu_collect(mizu_map_run(pm, .seed = s)))
 vapply(runs, \(r) r[[1L]], numeric(1))
 #> [1] 0.13109678 0.08153219 0.17986914 0.17683176
 ```
@@ -107,7 +116,7 @@ maps never deadlock the pool.
 
 t <- mizu_submit(
   p,
-  sum(unlist(mizu_map(mizu_current_pool(), parts, sum))),
+  sum(unlist(mizu_collect(mizu_map(mizu_current_pool(), parts, sum)))),
   parts = split(as.numeric(1:100000), rep(1:10, each = 1e4))
 )
 mizu_collect(t)

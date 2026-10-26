@@ -20,7 +20,7 @@ p <- mizu_pool(n_workers = 4L)
 t <- mizu_submit(p, sum(x) + y, x = 1:10, y = 100)
 mizu_collect(t)
 #> [1] 155
-mizu_map(p, 1:5, \(i) i * 2L, .template = integer(1))
+mizu_collect(mizu_map(p, 1:5, \(i) i * 2L, .template = integer(1)))
 #> [1]  2  4  6  8 10
 mizu_pool_stop(p)
 ```

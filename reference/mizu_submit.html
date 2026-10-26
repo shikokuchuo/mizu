@@ -113,7 +113,15 @@ otherwise. <code>Inf</code> (the default) waits indefinitely; <code>0</code> doe
 
 
 <dt id="arg-task">task<a class="anchor" aria-label="anchor" href="#arg-task"></a></dt>
-<dd><p>a task handle from <code>mizu_submit()</code>.</p></dd>
+<dd><p>a task handle from <code>mizu_submit()</code>, or a map handle from
+<code><a href="mizu_map.html">mizu_map()</a></code> / <code><a href="mizu_map_prepare.html">mizu_map_run()</a></code>. A map handle collects the whole
+map: the gathered list (or templated vector), an element error
+re-signalled with its <code>mizu_map_index</code>, or a worker death as
+<code>mizu_error_worker_died</code> with the lost element ranges — exactly the
+semantics of <code><a href="mizu_map.html">mizu_map()</a></code>'s Errors section. A task or map handle
+with a pending promise (or enrolled in a pending
+<code><a href="mizu_collect_all_async.html">mizu_collect_all_async()</a></code> / <code><a href="mizu_collect_all_async.html">mizu_collect_any_async()</a></code> collection)
+refuses a blocking collect: one consumer per result.</p></dd>
 
 
 <dt id="arg-timeout">timeout<a class="anchor" aria-label="anchor" href="#arg-timeout"></a></dt>
