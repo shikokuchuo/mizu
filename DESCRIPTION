@@ -1,5 +1,5 @@
 Package: mizu
-Title: Zero-Copy Shared-Memory Parallelism Across R and Python
+Title: Zero-Copy Async and Parallel IPC Across R and Python
 Version: 0.0.1.9000
 Authors@R: c(
     person("Charlie", "Gao", , "charlie.gao@posit.co", role = c("aut", "cre"),
@@ -10,12 +10,19 @@ Authors@R: c(
            comment = "RngStreams library")
   )
 Description: Parallel computation and data exchange between R processes on
-    the same machine: lock-free channels and work-stealing task pools over
-    'POSIX' shared memory (Linux, macOS) or 'Win32' file mappings
-    (Windows), with the hot path entirely in user space. Inter-process
-    communication cheap enough that work can be divided at granularities
-    usually reserved for threads. A complement to 'mirai'; payload
-    contents interoperate transparently with 'mori' shared objects.
+    the same machine: lock-free channels, work-stealing task pools, and a
+    parallel map over 'POSIX' shared memory (Linux, macOS) or 'Win32' file
+    mappings (Windows), with the hot path entirely in user space.
+    Inter-process communication cheap enough that work can be divided at
+    granularities usually reserved for threads. Vectors and data frames
+    transfer zero-copy, received as 'ALTREP' views over the shared pages;
+    'Apache Arrow' tables and record batches travel as a single frame,
+    with zero-copy conversion in both directions. Receives and task
+    results integrate with 'later' and 'promises' for non-blocking,
+    event-driven applications such as 'shiny'. Channels, pools, and maps
+    interoperate with 'pymizu', so a peer or worker can equally be a
+    Python process. A complement to 'mirai'; its payload contents
+    interoperate transparently with 'mori' shared objects.
 License: MIT + file LICENSE
 URL: https://shikokuchuo.net/mizu/, https://github.com/shikokuchuo/mizu
 BugReports: https://github.com/shikokuchuo/mizu/issues

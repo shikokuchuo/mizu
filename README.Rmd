@@ -41,22 +41,19 @@ if (dir.exists(venv)) {
  \/_______/
 ```
 
-mizu makes communication between R processes fast enough to parallelize work at thread granularity.
+mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.
 
-mizu uses shared memory as the fastest IPC transport.
-Processes read and write into shared memory directly, with no kernel involvement and no data copies through system sockets.
-This means task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude improvement (see [Benchmarks](#benchmarks)).
+Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see [Benchmarks](#benchmarks)).
+The hot path never enters the kernel and data is never copied through a system socket.
 
-Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).
-The hot path stays in user space.
-Data moves through single-producer single-consumer rings with batched publication.
-Waiting is spin-then-park, and peer death arrives as an OS event.
+Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting, and peer death delivered as an OS event.
 
 mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 [pymizu](https://github.com/shikokuchuo/pymizu) binds the same core for Python, so R and Python can talk to each other.
 
 - Zero-copy vectors and data frames — received as ALTREP views over the shared pages
-- Zero-copy Arrow interchange — `arrow` tables and record batches travel as one frame, and `mizu_as_arrow()` converts a received frame back to Arrow without copying
+- Zero-copy Arrow interchange — `arrow` tables and record batches travel as one frame, converting back without copying
+- Event-driven async — messages stream into a `later` event loop without polling, and channels, tasks, and maps plug into `promises` pipelines, ready for Shiny
 - Reproducible parallel randomness (`.seed`), invariant for any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 
