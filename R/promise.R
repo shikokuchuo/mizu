@@ -163,11 +163,8 @@ chan_drain <- function(state) {
     }
     if (mizu_is_sentinel(x)) {
       if (inherits(x, "mizu_timeout")) {
-        # ring empty: disarm with nothing pending, else re-arm and re-check
-        if (identical(state[["mode"]], "promise") && !length(state[["fifo"]])) {
-          chan_disarm(state)
-          return(invisible())
-        }
+        # ring empty: re-arm and re-check (the loop head owns the
+        # nothing-pending disarm; no waiter can leave the FIFO mid-pass)
         avail <- .Call(mizu_chan_notify_arm, state[["ch"]], state)
         if (!avail) {
           return(invisible())

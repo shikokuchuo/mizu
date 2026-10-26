@@ -139,6 +139,64 @@ test_that("the channel async verbs validate their arguments", {
   expect_snapshot(error = TRUE, mizu_recv_handler(p[["host"]], 1))
 })
 
+test_that("the async verbs error informatively without later/promises installed", {
+  skip_if_no_promises()
+  skip_if_no_child_mizu()
+  # isolation needs later/promises out of .Library (the child's .libPaths
+  # override cannot hide the system library)
+  syslib <- normalizePath(.Library)
+  in_syslib <- vapply(
+    c("later", "promises"),
+    function(pkg) identical(normalizePath(dirname(find.package(pkg))), syslib),
+    TRUE
+  )
+  skip_if(any(in_syslib), "later/promises installed in the system library")
+  # an installed mizu in a private library: later/promises stay invisible
+  mizu_home <- .libPaths()[file.exists(
+    file.path(.libPaths(), "mizu", "Meta", "package.rds")
+  )][1L]
+  lib1 <- gsub("\\\\", "/", tempfile("lib"))
+  dir.create(lib1)
+  file.copy(file.path(mizu_home, "mizu"), lib1, recursive = TRUE)
+  lib2 <- gsub("\\\\", "/", tempfile("lib"))
+  dir.create(lib2)
+  for (pkg in c("later", "Rcpp", "rlang")) {
+    file.copy(find.package(pkg), lib2, recursive = TRUE)
+  }
+  src <- tfile()
+  writeLines(
+    c(
+      sprintf('.libPaths("%s")', lib1),
+      'library(mizu)',
+      'e1 <- tryCatch(mizu_recv_async(NULL), error = conditionMessage)',
+      'e2 <- tryCatch(',
+      '  mizu_recv_handler(NULL, function(x) NULL), error = conditionMessage',
+      ')',
+      sprintf('.libPaths(c("%s", "%s"))', lib1, lib2),
+      'e3 <- tryCatch(mizu_recv_async(NULL), error = conditionMessage)',
+      'writeLines(c(e1, e2, e3))'
+    ),
+    src
+  )
+  out <- system2(file.path(R.home("bin"), "Rscript"), src, stdout = TRUE)
+  expect_length(out, 3L)
+  expect_match(
+    out[1L],
+    "the async verbs require the 'later' package",
+    fixed = TRUE
+  )
+  expect_match(
+    out[2L],
+    "mizu_recv_handler() requires the 'later' package",
+    fixed = TRUE
+  )
+  expect_match(
+    out[3L],
+    "the async verbs require the 'promises' package",
+    fixed = TRUE
+  )
+})
+
 test_that("the S3 promise protocol methods dispatch on handles", {
   skip_if_no_promises()
   p <- channel_pair()
@@ -217,6 +275,31 @@ test_that("close rejects a pending promise and delivers a handler's terminal", {
   expect_s3_class(o2$error, "mizu_closed")
 })
 
+test_that("a notify record freed mid-registry leaves the list intact", {
+  skip_if_no_promises()
+  p1 <- channel_pair()
+  p2 <- channel_pair()
+  p3 <- channel_pair()
+  on.exit(.Call(mizu:::mizu_channel_destroy, p1[["peer"]]))
+  on.exit(.Call(mizu:::mizu_channel_destroy, p2[["host"]]), add = TRUE)
+  on.exit(.Call(mizu:::mizu_channel_destroy, p2[["peer"]]), add = TRUE)
+  on.exit(.Call(mizu:::mizu_channel_destroy, p3[["host"]]), add = TRUE)
+  on.exit(.Call(mizu:::mizu_channel_destroy, p3[["peer"]]), add = TRUE)
+  got <- new.env(parent = emptyenv())
+  got$xs <- list()
+  mizu_recv_handler(p1[["host"]], function(x) invisible())
+  mizu_recv_handler(p2[["host"]], function(x) invisible())
+  mizu_recv_handler(
+    p3[["host"]],
+    function(x) got$xs[[length(got$xs) + 1L]] <- x
+  )
+  # freeing p1's record walks past p3's and p2's to splice it out
+  .Call(mizu:::mizu_channel_destroy, p1[["host"]])
+  mizu_send(p3[["peer"]], 5L)
+  expect_true(pump_until(function() length(got$xs) == 1L))
+  expect_identical(got$xs[[1L]], 5L)
+})
+
 test_that("batch handler: a burst over the quantum splits with order and no loss", {
   skip_if_no_promises()
   K <- mizu:::notify_quantum_n
@@ -246,6 +329,26 @@ test_that("batch handler: a burst over the quantum splits with order and no loss
   expect_identical(length(got$bursts[[1L]]), K)
   expect_identical(unlist(got$bursts), seq_len(n))
   mizu_recv_handler(p[["host"]], NULL)
+})
+
+test_that("a re-scheduled drain behind a handler removal exits cleanly", {
+  skip_if_no_promises()
+  n <- 5000L # > 2 quanta: two passes leave the ring non-empty, re-scheduling
+  p <- channel_pair(capacity = 8192L)
+  on.exit(channel_end(p))
+  got <- 0L
+  mizu_recv_handler(p[["host"]], function(x) got <<- got + 1L)
+  for (i in seq_len(n)) {
+    mizu_send(p[["peer"]], i)
+  }
+  expect_true(pump_until(function() got > 0L))
+  later::run_now() # a second quantum: re-schedules the drain once more
+  rest <- got
+  mizu_recv_handler(p[["host"]], NULL)
+  later::run_now() # the re-scheduled drain finds the consumer gone and exits
+  later::run_now()
+  expect_identical(got, rest)
+  expect_identical(mizu_recv(p[["host"]], 0), rest + 1L) # the rest is untouched
 })
 
 test_that("a promise FIFO larger than the quantum resolves in FIFO order", {
@@ -838,6 +941,12 @@ test_that("a killed worker rejects its promise-armed tasks; survivors unaffected
   })
   o1 <- observe(promises::as.promise(t1))
   o2 <- observe(promises::as.promise(t2))
+  # wait for the claims: one in-flight task per worker, so the kill below
+  # deterministically fails exactly one task (a worker holds one claim)
+  expect_true(wait_until(
+    mizu_pool_status(p)[["injection"]] == 0L &&
+      mizu_pool_status(p)[["parked"]] == 0L
+  ))
   d <- mizu_pool_dump(p)[["workers"]]
   victim <- as.integer(d[d[["status"]] == "live", "pid"][[1L]])
   kill_hard(victim)
