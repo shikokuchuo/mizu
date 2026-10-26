@@ -234,7 +234,8 @@ or binds as `x` for a `.source =` spec. `.template`,
 
 ``` r
 
-mizu_collect(mizu_map(p, faithful$waiting[1:6], mizu_call("numpy.log"), .template = numeric(1)))
+m <- mizu_map(p, faithful$waiting[1:6], mizu_call("numpy.log"), .template = numeric(1))
+mizu_collect(m)
 #> [1] 4.369448 3.988984 4.304065 4.127134 4.442651 4.007333
 mizu_pool_stop(p)
 ```

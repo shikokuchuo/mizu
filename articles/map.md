@@ -24,7 +24,8 @@ spreads across workers and balances itself through stealing.
 library(mizu)
 
 p <- mizu_pool(n_workers = 4L)
-mizu_collect(mizu_map(p, 1:5, \(i) i * 2L))
+m <- mizu_map(p, 1:5, \(i) i * 2L)
+mizu_collect(m)
 #> [[1]]
 #> [1] 2
 #> 
@@ -51,7 +52,8 @@ exactly once, unserialized:
 
 ``` r
 
-mizu_collect(mizu_map(p, seq.int(-5, 5), abs, .template = numeric(1)))
+m <- mizu_map(p, seq.int(-5, 5), abs, .template = numeric(1))
+mizu_collect(m)
 #>  [1] 5 4 3 2 1 0 1 2 3 4 5
 ```
 
@@ -72,8 +74,9 @@ chunking, worker count, or steal order:
 
 ``` r
 
-identical(mizu_collect(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L)),
-          mizu_collect(mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L)))
+m1 <- mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L)
+m2 <- mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L)
+identical(mizu_collect(m1), mizu_collect(m2))
 #> [1] TRUE
 ```
 
@@ -92,7 +95,10 @@ region, so the random streams vary per run for free:
 ``` r
 
 pm <- mizu_map_prepare(p, 1:1000, \(i, draws) mean(rnorm(draws)) * i, draws = 100L)
-runs <- lapply(1:4, \(s) mizu_collect(mizu_map_run(pm, .seed = s)))
+runs <- lapply(1:4, \(s) {
+  m <- mizu_map_run(pm, .seed = s)
+  mizu_collect(m)
+})
 vapply(runs, \(r) r[[1L]], numeric(1))
 #> [1] 0.13109678 0.08153219 0.17986914 0.17683176
 ```
@@ -110,13 +116,18 @@ A map can nest: `mizu_map(mizu_current_pool(), ...)` inside a task
 expression uses the evaluating worker’s own handle. The runner
 submissions push straight onto the worker’s own deque, and the blocked
 collect executes its own runners while idle peers steal the rest: nested
-maps never deadlock the pool.
+maps never deadlock the pool. A `.template` on the nested map returns
+the collect as an atomic vector the task reduces directly — no list
+assembly, no [`unlist()`](https://rdrr.io/r/base/unlist.html):
 
 ``` r
 
 t <- mizu_submit(
   p,
-  sum(unlist(mizu_collect(mizu_map(mizu_current_pool(), parts, sum)))),
+  {
+    m <- mizu_map(mizu_current_pool(), parts, sum, .template = numeric(1))
+    sum(mizu_collect(m))
+  },
   parts = split(as.numeric(1:100000), rep(1:10, each = 1e4))
 )
 mizu_collect(t)

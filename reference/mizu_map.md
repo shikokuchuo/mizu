@@ -374,8 +374,12 @@ mizu_collect(m)
 #> [[10]]
 #> [1] 20
 #> 
-v <- mizu_collect(mizu_map(p, rnorm(1e5), abs, .template = numeric(1)))
-mizu_collect(mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L))
+
+m <- mizu_map(p, rnorm(1e5), abs, .template = numeric(1))
+v <- mizu_collect(m)
+
+m <- mizu_map(p, 1:4, function(i) rnorm(2), .seed = 42L)
+mizu_collect(m)
 #> [[1]]
 #> [1]  1.11932846 -0.07617141
 #> 
