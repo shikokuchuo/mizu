@@ -84,14 +84,14 @@ skip_if_no_py_r_host <- function(py) {
 }
 
 # The Python echo peer: the mirror of echo_expr.
-py_echo <- "
+py_echo <- r"(
 import pymizu
 while True:
     x = ch.recv(30)
     if pymizu.is_sentinel(x):
         break
     ch.send(x)
-"
+)"
 
 # The Python pool host: drives R workers through pymizu.r_pool_launcher and
 # checks the nested-submit identity discipline — a nested help-collect must

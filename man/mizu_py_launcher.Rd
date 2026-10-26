@@ -33,14 +33,14 @@ cross (see \code{\link[=mizu_send]{mizu_send()}}).
 \examples{
 \dontrun{
 ch <- mizu_channel(
-  "
+  r"(
 import pymizu
 while True:
     x = ch.recv(30)
     if pymizu.is_sentinel(x):
         break
     ch.send(x * 2)
-",
+)",
   launcher = mizu_py_launcher()
 )
 mizu_send(ch, c(1.5, 2.5, 3.5))

@@ -30,14 +30,14 @@ In this example, a Python process doubles the Old Faithful eruption durations.
 library(mizu)
 
 ch <- mizu_channel(
-  "
+  r"(
 import pymizu
 while True:
     x = ch.recv(30)
     if pymizu.is_sentinel(x):
         break
     ch.send(x * 2)
-",
+)",
   launcher = mizu_py_launcher()
 )
 
@@ -59,14 +59,14 @@ This channel stays open for the next few examples:
 ```{r zero-copy}
 #| eval: !expr nzchar(Sys.which("python3")) && system2("python3", c("-c", shQuote("import pymizu, numpy")), stdout = FALSE, stderr = FALSE) == 0L
 ch <- mizu_channel(
-  "
+  r"(
 import pymizu
 while True:
     x = ch.recv(30)
     if pymizu.is_sentinel(x):
         break
     ch.send(x)
-",
+)",
   launcher = mizu_py_launcher()
 )
 

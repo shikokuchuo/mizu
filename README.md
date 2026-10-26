@@ -113,8 +113,8 @@ p <- mizu_pool(n_workers = 4L, launcher = mizu_py_pool_launcher())
 t <- mizu_submit_call(
   p,
   mizu_call(
-    .source = "import polars as pl
-pl.DataFrame(x).group_by('cyl').agg(pl.col('mpg').mean()).sort('cyl')",
+    .source = r"(import polars as pl
+pl.DataFrame(x).group_by('cyl').agg(pl.col('mpg').mean()).sort('cyl'))",
     x = mtcars
   )
 )
