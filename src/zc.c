@@ -561,6 +561,10 @@ int mizu_zc_eligible_foreign(SEXP x, uint32_t inline_max, size_t *out_total,
     for (R_xlen_t i = 0; i < XLENGTH(x); i++) {
       SEXP col = VECTOR_ELT(x, i);
       if (TYPEOF(col) == STRSXP) need |= MIZU_CAP_MIZS;
+      /* an ordered factor column's bit (the verdict is the stage's own —
+         cached): the blob writer has no caps word, the filter is it */
+      if (mizu_interop_attrs_qualify(col) == MIZU_IXQ_ORDERED)
+        need |= MIZU_CAP_ORDERED;
       if (!has_ref && mizu_view_refable(col)) has_ref = 1;
     }
     /* a view column crosses as a remote leaf (F2.5): the conditional

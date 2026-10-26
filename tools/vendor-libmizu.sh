@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="83e50f8282b581039e1c36d4a077854a002e8024"  # libmizu: Consume pending notify signals on Windows; fix build-win.bat exit-code loss
+PIN="9f70cb9a7806471709b15ff35f7f1b8a38008522"  # libmizu: Add MIZU_CAP_ORDERED for ordered factors; uint64 converts to integer64 in range
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

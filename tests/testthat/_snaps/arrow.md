@@ -9,14 +9,6 @@
 ---
 
     Code
-      mizu_send(p$host, ord)
-    Condition
-      Error:
-      ! mizu: value is not portable to the peer (column 'o': an ordered dictionary column has no portable home (polars Enum: cast to pl.Categorical) at the Arrow frame)
-
----
-
-    Code
       mizu_send(p$host, u8)
     Condition
       Error:

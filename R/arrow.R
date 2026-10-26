@@ -105,9 +105,22 @@ arrow_to_value <- function(stream) {
 # columns convert flat, then rebuild as the factor they encode off the
 # union of the per-batch dictionaries (Arrow permits dictionary deltas;
 # a zero-batch export carries none — the stream then holds no levels at
-# all).
+# all). nanoarrow 0.9.0's validation rejects ARROW_FLAG_DICTIONARY_ORDERED
+# outright (its "only relevant for dictionaries" error, on a dictionary),
+# so an ordered dictionary's bit strips for the conversion and the rebuilt
+# factor re-marks ordered — fidelity kept when a *different* column
+# declines the frame.
 arrow_batches_to_value <- function(schema, batches) {
   ns <- arrow_ns()
+  ch <- schema$children
+  ord <- vapply(
+    ch,
+    function(s) !is.null(s$dictionary) && bitwAnd(s$flags, 1L) != 0L,
+    logical(1)
+  )
+  for (i in which(ord)) {
+    schema$children[[i]]$flags <- bitwAnd(schema$children[[i]]$flags, -2L)
+  }
   for (i in seq_along(batches)) {
     ns$nanoarrow_array_set_schema(batches[[i]], schema, validate = FALSE)
   }
@@ -115,7 +128,6 @@ arrow_batches_to_value <- function(schema, batches) {
     ns$basic_array_stream(batches, schema = schema),
     to = arrow_ptype(schema, FALSE)
   )
-  ch <- schema$children
   for (i in seq_along(ch)) {
     if (!is.null(ch[[i]]$dictionary)) {
       lvls <- character(0)
@@ -126,6 +138,9 @@ arrow_batches_to_value <- function(schema, batches) {
         }
       }
       out[[i]] <- factor(out[[i]], levels = lvls)
+      if (ord[[i]]) {
+        class(out[[i]]) <- c("ordered", "factor")
+      }
     }
   }
   out
@@ -145,10 +160,10 @@ arrow_batches_to_value <- function(schema, batches) {
 #' itself) crosses by reference as a frame leaf — the received object
 #' holds a view in place of the table. Collect a pool result and the
 #' view is what you get; convert explicitly with this function. One
-#' caveat on sends: the conversion counts (a uint64 past 2^53, an int32
-#' or int64 minimum reading as `NA`) warn at send over a channel, but at
-#' a pool publish they fire on the worker and are not observable by the
-#' submitter.
+#' caveat on sends: the conversion counts (a uint64 past 2^63 - 1, an
+#' int32 or int64 minimum reading as `NA`) warn at send over a channel,
+#' but at a pool publish they fire on the worker and are not observable
+#' by the submitter.
 #'
 #' Columns still backed by their received shared-memory pages export
 #' zero-copy: the stream's buffers point straight into the shared region
@@ -203,8 +218,17 @@ mizu_as_arrow <- function(x) {
     ns$nanoarrow_array_set_schema(arrays[[i]], schemas[[i]])
   }
   for (i in setdiff(seq_len(n), borrowed)) {
+    col <- x[[i]]
+    ord <- is.ordered(col)
+    if (ord) {
+      # nanoarrow 0.9.0 cannot export an ordered factor (its validation
+      # rejects ARROW_FLAG_DICTIONARY_ORDERED): export the plain factor
+      # and stamp the bit on the schema by hand — validate = FALSE at the
+      # stream build keeps the flagged schema out of the validator
+      col <- factor(col, ordered = FALSE)
+    }
     arrays[[i]] <- tryCatch(
-      ns$as_nanoarrow_array(x[[i]]),
+      ns$as_nanoarrow_array(col),
       error = function(e) {
         stop(
           sprintf(
@@ -216,7 +240,10 @@ mizu_as_arrow <- function(x) {
         )
       }
     )
-    schemas[[i]] <- ns$infer_nanoarrow_schema(x[[i]])
+    schemas[[i]] <- ns$infer_nanoarrow_schema(col)
+    if (ord) {
+      schemas[[i]]$flags <- bitwOr(schemas[[i]]$flags, 1L)
+    }
   }
   names(schemas) <- names(x)
   struct_sch <- ns$na_struct(schemas)

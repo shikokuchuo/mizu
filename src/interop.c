@@ -284,6 +284,8 @@ uint32_t ix_q_caps(int q) {
   case MIZU_IXQ_DIMNAMES:
   case MIZU_IXQ_FRAME_EXT:
     return MIZU_CAP_ATTRS | MIZU_CAP_LABELED;
+  case MIZU_IXQ_ORDERED:
+    return MIZU_CAP_ATTRS | MIZU_CAP_ORDERED;
   default:   /* NONE / ENCODABLE / FRAME (the frame branch adds MIZL) */
     return q == MIZU_IXQ_FRAME ? MIZU_CAP_ATTRS : 0;
   }
@@ -344,14 +346,22 @@ static int ix_dimnames_ok(SEXP dn, SEXP dim) {
 }
 
 /* A plain factor: class exactly "factor", attributes exactly levels and
-   class, levels unique, non-NA, UTF-8-writable. */
+   class, levels unique, non-NA, UTF-8-writable. An ordered factor: the
+   same rules with class exactly c("ordered", "factor") — the verdict the
+   MIZU_CAP_ORDERED tier gates. */
 static int ix_qualify_factor(SEXP x) {
   SEXP levels = PROTECT(Rf_getAttrib(x, R_LevelsSymbol));
-  int ok = TYPEOF(x) == INTSXP && ix_class_is(x, ix_factor_class) &&
-    ix_attr_count(x) == 2 && TYPEOF(levels) == STRSXP &&
-    mizu_interop_names_ok(levels);
+  int q = 0;
+  if (TYPEOF(x) == INTSXP && ix_attr_count(x) == 2 &&
+      TYPEOF(levels) == STRSXP && mizu_interop_names_ok(levels)) {
+    if (ix_class_is(x, ix_factor_class)) {
+      q = MIZU_IXQ_FACTOR;
+    } else if (ix_class_is(x, ix_ordered_class)) {
+      q = MIZU_IXQ_ORDERED;
+    }
+  }
   UNPROTECT(1);
-  return ok;
+  return q;
 }
 
 /* A plain Date: class exactly "Date", attributes exactly class, every
@@ -495,7 +505,8 @@ static int ix_qualify_dimnames(SEXP x) {
 }
 
 /* One frame column: an attribute-free atomic vector, a class-only
-   integer64, a plain factor, a Date, a POSIXct, or a difftime. */
+   integer64, a plain or ordered factor, a Date, a POSIXct, or a
+   difftime. */
 static int ix_frame_col_ok(SEXP col) {
   switch (TYPEOF(col)) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
@@ -509,8 +520,9 @@ static int ix_frame_col_ok(SEXP col) {
       if (ix_attr_count(col) != 1) return 0;
     } else {
       const int q = mizu_interop_attrs_qualify(col);
-      if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
-          q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
+      if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_ORDERED &&
+          q != MIZU_IXQ_DATE && q != MIZU_IXQ_POSIXCT &&
+          q != MIZU_IXQ_DIFFTIME)
         return 0;
     }
   }
@@ -676,7 +688,8 @@ static int ix_qualify_frame_ext(SEXP x) {
    labeled shapes try after their plain counterparts. */
 static int ix_qualify_full(SEXP x) {
   if (Rf_isS4(x) || !ANY_ATTRIB(x)) return MIZU_IXQ_NONE;
-  if (ix_qualify_factor(x)) return MIZU_IXQ_FACTOR;
+  const int fq = ix_qualify_factor(x);
+  if (fq) return fq;
   if (ix_qualify_frame(x)) return MIZU_IXQ_FRAME;
   if (ix_qualify_dim(x)) return MIZU_IXQ_DIM;
   if (ix_qualify_date(x)) return MIZU_IXQ_DATE;
@@ -1376,10 +1389,8 @@ static void ixw_diagnose_col(mizu_ixw *w, SEXP col) {
   case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
   case STRSXP: {
     SEXP names = PROTECT(Rf_getAttrib(col, R_NamesSymbol));
-    if (ix_class_is(col, ix_ordered_class)) {
-      ixw_decline(w, "an ordered factor has no portable home", NULL);
-    } else if (TYPEOF(col) == STRSXP &&
-               Rf_getAttrib(col, R_DimSymbol) != R_NilValue) {
+    if (TYPEOF(col) == STRSXP &&
+        Rf_getAttrib(col, R_DimSymbol) != R_NilValue) {
       ixw_decline(w, "a character matrix has no portable home", NULL);
     } else if (names != R_NilValue && TYPEOF(names) == STRSXP &&
                ix_attr_count(col) == 1) {
@@ -1484,27 +1495,29 @@ static void ixw_attr(mizu_ixw *w, SEXP x, int q) {
       /* the case data work hits most names its one-line rewrite */
       ixw_decline(w, "a named atomic vector has no portable home",
                   "as.list(x)");
-    } else if (ix_class_is(x, ix_ordered_class)) {
-      ixw_decline(w, "an ordered factor has no portable home", NULL);
     } else if (!ixw_diagnose(w, x)) {
       ixw_decline_attrs(w, x);
     }
     w->refs = saved_refs;
     return;
   }
-  /* the labeled shapes' send gate: the peer's mask must carry the bit —
+  /* the gated shapes' send gate: the peer's mask must carry the bit —
      decline, never strip (metadata is data). The zero-copy filters gate
      the same verdicts for the layout tiers; the blob path routes around
      this function, its admission the filter's upstream. */
-  if (ix_q_caps(q) & MIZU_CAP_LABELED & ~w->caps) {
-    ixw_decline(w, "the peer predates the labeled attribute capability",
-                NULL);
+  const uint32_t need =
+    ix_q_caps(q) & (MIZU_CAP_LABELED | MIZU_CAP_ORDERED) & ~w->caps;
+  if (need) {
+    ixw_decline(w, need & MIZU_CAP_ORDERED ?
+                "the peer predates the ordered factor capability" :
+                "the peer predates the labeled attribute capability", NULL);
     w->refs = saved_refs;
     return;
   }
   IXW_PUT0(w, mizu_ix_put_attr);
   switch (q) {
   case MIZU_IXQ_FACTOR:
+  case MIZU_IXQ_ORDERED:
     ixw_atomic_put(w, MIZU_TYPE_INT, x);
     ixw_attr_dict(w, x, q, 0);
     break;
@@ -2460,8 +2473,9 @@ static void ixr_frame_body_check(SEXP value, SEXP attrs) {
         if (ix_attr_count(col) != 1) ixr_stop_no_home(attrs);
       } else {
         const int q = mizu_interop_attrs_qualify(col);
-        if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_DATE &&
-            q != MIZU_IXQ_POSIXCT && q != MIZU_IXQ_DIFFTIME)
+        if (q != MIZU_IXQ_FACTOR && q != MIZU_IXQ_ORDERED &&
+            q != MIZU_IXQ_DATE && q != MIZU_IXQ_POSIXCT &&
+            q != MIZU_IXQ_DIFFTIME)
           ixr_stop_no_home(attrs);
       }
     }
@@ -2528,12 +2542,15 @@ static SEXP ixr_attrs_validated(SEXP value, SEXP attrs) {
   SEXP units = ix_dict_get(attrs, MIZU_IX_ATTR_UNITS);
   const R_xlen_t na = XLENGTH(attrs);
 
-  /* factor: value intv; attrs exactly levels, class. The writer's
-     contract the cursor does not cover — levels unique and non-NA, codes
-     1..k or NA — enforced here: a malformed factor gets the no-home
-     decline like every other out-of-whitelist shape. */
+  /* factor: value intv; attrs exactly levels, class — the plain scalar
+     class or the ordered tier's two-element form (apply-as-is constructs
+     the ordered factor off the class vector). The writer's contract the
+     cursor does not cover — levels unique and non-NA, codes 1..k or NA —
+     enforced here: a malformed factor gets the no-home decline like every
+     other out-of-whitelist shape. */
   if (TYPEOF(value) == INTSXP && na == 2 && TYPEOF(levels) == STRSXP &&
-      ix_strv_is(klass, MIZU_IX_CLASS_FACTOR)) {
+      (ix_strv_is(klass, MIZU_IX_CLASS_FACTOR) ||
+       ix_strv_is2(klass, MIZU_IX_CLASS_ORDERED, MIZU_IX_CLASS_FACTOR))) {
     if (!mizu_interop_names_ok(levels)) ixr_stop_no_home(attrs);
     const R_xlen_t nl = XLENGTH(levels);
     for (R_xlen_t i = 0; i < nl; i++)

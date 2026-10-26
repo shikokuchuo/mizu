@@ -308,14 +308,6 @@ test_that("the decline diagnoses a frame's failing column", {
   p <- foreign_pair()
   on.exit(channel_end(p))
 
-  # esoph-shaped: an ordered-factor column names itself
-  expect_snapshot(
-    mizu_send(
-      p$host,
-      data.frame(agegp = ordered(c("25-34", "35-44")), ncases = 0:1)
-    ),
-    error = TRUE
-  )
   # freeny-shaped: a ts column names its attributes at the column
   expect_snapshot(
     mizu_send(
@@ -383,17 +375,6 @@ test_that("the decline diagnoses a frame's failing column", {
   e <- tryCatch(mizu_send(p$host, bad), error = function(e) e)
   expect_identical(e$reason, "a named atomic vector has no portable home")
   expect_identical(e$remedy, character(0))
-  # the extended frame's failure path rides the same column walk
-  expect_snapshot(
-    mizu_send(
-      p$host,
-      structure(
-        data.frame(grp = ordered(c("a", "b"))),
-        class = c("tbl_df", "tbl", "data.frame")
-      )
-    ),
-    error = TRUE
-  )
 })
 
 test_that("the decline diagnoses the frame's own shape and keeps prior text", {
@@ -457,6 +438,59 @@ test_that("the labeled shapes round-trip on a labeled peer", {
     ix_rt(p, array(1, 1L, list(NA_character_))),
     array(1, 1L, list(NA_character_))
   )
+})
+
+test_that("ordered factors round-trip on an ordered-capable peer", {
+  p <- foreign_pair(caps = 258L) # ATTRS + ORDERED
+  on.exit(channel_end(p))
+
+  of <- ordered(c("b", "a", "b"), levels = c("a", "b"))
+  expect_identical(ix_rt(p, of), of)
+  ofna <- ordered(c("x", NA, "y"), levels = c("x", "y"))
+  expect_identical(ix_rt(p, ofna), ofna)
+  # an ordered factor column inside a frame (esoph-shaped)
+  df <- data.frame(
+    agegp = ordered(rep(c("25-34", "35-44"), 3)),
+    ncases = 1:6
+  )
+  expect_identical(ix_rt(p, df), df)
+  # an extended frame with an ordered column: the prefix classes ride along
+  ext <- structure(
+    data.frame(grp = ordered(c("a", "b"))),
+    class = c("tbl_df", "tbl", "data.frame")
+  )
+  p2 <- foreign_pair(caps = 386L) # ATTRS + LABELED + ORDERED
+  on.exit(channel_end(p2), add = TRUE)
+  expect_identical(ix_rt(p2, ext), ext)
+  # the gate declines past it, never a stripped plain factor
+  p3 <- foreign_pair(caps = 2L) # ATTRS only
+  on.exit(channel_end(p3), add = TRUE)
+  expect_error(mizu_send(p3$host, of), class = "mizu_error_not_portable")
+  e <- tryCatch(mizu_send(p3$host, of), error = function(e) e)
+  expect_identical(e$reason, "the peer predates the ordered factor capability")
+  expect_error(mizu_send(p3$host, df), class = "mizu_error_not_portable")
+})
+
+test_that("ordered factors cross the zero-copy tiers gated on the bit", {
+  # a large ordered factor: the MIZH root form
+  of <- ordered(rep(c("a", "b"), 20000), levels = c("a", "b"))
+  p <- foreign_pair(caps = 258L) # ATTRS + ORDERED
+  got <- ix_rt(p, of)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(got[], of)
+  channel_end(p)
+  # a frame with an ordered column: the MIZL region form
+  df <- data.frame(o = ordered(rep(c("x", "y"), 20000)), u = runif(40000))
+  p <- foreign_pair(caps = 263L) # MIZS + ATTRS + MIZL + ORDERED
+  got <- ix_rt(p, df)
+  expect_true(.Call(mizu:::mizu_zc_view_check, got))
+  expect_identical(as.data.frame(got[]), df)
+  channel_end(p)
+  # without the bit the frame's zc filter rejects: the 'I' copy tier's
+  # caps gate is the decline
+  p <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL
+  expect_error(mizu_send(p$host, df), class = "mizu_error_not_portable")
+  channel_end(p)
 })
 
 test_that("the depth cap declines", {

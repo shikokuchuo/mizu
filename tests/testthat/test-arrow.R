@@ -228,12 +228,30 @@ test_that("the conversion counts warn at send", {
   # copy tiers
   rm(out)
   invisible(gc())
-  # an older-version peer (bits 0-5) gets the conversion — and the send warning
+  # an older-version peer (bits 0-5) gets the conversion: exact integer64
+  # in range, the sentinel and the send warning past INT64_MAX
   fp <- foreign_pair(caps = 63L)
   on.exit(channel_end(fp), add = TRUE)
-  ws <- grab_warnings(mizu_send(fp$host, tab))
-  expect_match(ws, "beyond ...2\\^53 convert to NA", all = FALSE)
-  expect_identical(mizu_recv(fp$peer, 5)$u[1:3], c(1, NA_real_, 1))
+  expect_identical(
+    grab_warnings(mizu_send(fp$host, tab)),
+    character()
+  )
+  expect_identical(
+    mizu_recv(fp$peer, 5)$u[1:3],
+    bit64::as.integer64(c(1, "9223372036854775807", 1))
+  )
+  tab_u63 <- arrow::arrow_table(
+    u = arrow::Array$create(
+      rep(c(1, 2^63, 1), 2000),
+      type = arrow::float64()
+    )$cast(arrow::uint64(), safe = FALSE)
+  )
+  ws <- grab_warnings(mizu_send(fp$host, tab_u63))
+  expect_match(ws, "beyond 2\\^63", all = FALSE)
+  expect_identical(
+    mizu_recv(fp$peer, 5)$u[1:3],
+    bit64::as.integer64(c(1, NA, 1))
+  )
   iv <- rep(1, 6000)
   iv[2] <- -2147483648
   iv[3] <- NA_real_
@@ -314,8 +332,6 @@ test_that("declines name the column", {
     d = arrow::Array$create(1.25, type = arrow::decimal(5, 2))
   )
   expect_snapshot(mizu_send(p$host, dec), error = TRUE)
-  ord <- arrow::arrow_table(data.frame(o = ordered(c("a", "b"))))
-  expect_snapshot(mizu_send(p$host, ord), error = TRUE)
   u8 <- arrow::arrow_table(
     u = arrow::Array$create(c(1L, NA))$cast(arrow::uint8())
   )
@@ -324,6 +340,49 @@ test_that("declines name the column", {
     class = "mizu_error_not_portable"
   )
   expect_snapshot(mizu_send(p$host, u8), error = TRUE)
+})
+
+test_that("an ordered arrow table crosses; the caps gate declines loudly", {
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  ord <- arrow::arrow_table(data.frame(o = ordered(c("b", "a")), n = 1:2))
+  mizu_send(p$host, ord)
+  expect_identical(
+    mizu_recv(p$peer, 5),
+    data.frame(o = ordered(c("b", "a")), n = 1:2)
+  )
+  # a peer without the ordered capability: the frame gate declines, never
+  # a stripped plain factor
+  p2 <- foreign_pair(caps = 6L) # ATTRS + MIZL
+  on.exit(channel_end(p2), add = TRUE)
+  expect_error(mizu_send(p2$host, ord), class = "mizu_error_not_portable")
+})
+
+test_that("the conversion bail keeps the ordered class", {
+  skip_if_not_installed("arrow")
+  # a peer with the ordered bit but short of the frame conjunction bails
+  # to the value conversion: the rebuilt factor column re-marks ordered
+  p <- foreign_pair(caps = 258L) # ATTRS + ORDERED, no MIZL
+  on.exit(channel_end(p))
+  df <- data.frame(o = ordered(c("b", "a")), n = 1:2)
+  mizu_send(p$host, arrow::arrow_table(df))
+  expect_identical(mizu_recv(p$peer, 5), df)
+})
+
+test_that("mizu_as_arrow exports an ordered factor with the flag", {
+  skip_if_not_installed(c("arrow", "nanoarrow"))
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(o = ordered(c("b", "a", "b")), n = 1:3)
+  mizu_send(p$host, arrow::arrow_table(df))
+  got <- mizu_recv(p$peer, 5)
+  st <- mizu_as_arrow(got)
+  sch <- st$get_schema()
+  expect_identical(sch$children$o$flags, 3L)
+  out <- arrow::as_arrow_table(st)
+  expect_true(out$schema$o$type$ordered)
+  expect_identical(out$o$as_vector(), df$o)
 })
 
 test_that("a decline leaves the handle consistent", {

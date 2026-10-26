@@ -17,14 +17,6 @@
 # the decline diagnoses a frame's failing column
 
     Code
-      mizu_send(p$host, data.frame(agegp = ordered(c("25-34", "35-44")), ncases = 0:1))
-    Condition
-      Error:
-      ! mizu: value is not portable to the peer (an ordered factor has no portable home at x$agegp)
-
----
-
-    Code
       mizu_send(p$host, structure(list(y = ts(1:4, frequency = 4, start = c(2020, 1)),
       x = 1:4), class = "data.frame", row.names = c(NA_integer_, -4L)))
     Condition
@@ -75,15 +67,6 @@
       Error:
       ! mizu: value is not portable to the peer (a named atomic vector has no portable home at x$v)
 
----
-
-    Code
-      mizu_send(p$host, structure(data.frame(grp = ordered(c("a", "b"))), class = c(
-        "tbl_df", "tbl", "data.frame")))
-    Condition
-      Error:
-      ! mizu: value is not portable to the peer (an ordered factor has no portable home at x$grp)
-
 # the decline diagnoses the frame's own shape and keeps prior text
 
     Code
@@ -130,7 +113,7 @@
       mizu_send(p$host, ordered(c("a", "b")))
     Condition
       Error:
-      ! mizu: value is not portable to the peer (an ordered factor has no portable home at x)
+      ! mizu: value is not portable to the peer (the peer predates the ordered factor capability at x)
 
 ---
 

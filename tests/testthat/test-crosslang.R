@@ -401,7 +401,7 @@ test_that("the identity exchange: both ends report foreign", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     "
-assert ch._h._peer_ident() == (2, 223)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF | MIZL_REF | MIZL_U64V | LABELED
+assert ch._h._peer_ident() == (2, 479)   # MIZU_LANG_R, MIZS | ATTRS | MIZL | TASKREF | MIZL_REF | MIZL_U64V | LABELED | ORDERED
 ch.send('ok')
 ",
     launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
@@ -471,6 +471,72 @@ ch.send(t)
   mizu_send(ch, arrow::arrow_table(df))
   expect_true(mizu_recv(ch, 30))
   expect_identical(mizu_recv(ch, 30), df)
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("the built-in ordered-factor datasets echo exactly via Python", {
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    py_echo,
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  mizu_send(ch, esoph)
+  expect_identical(mizu_recv(ch, 30), esoph)
+  # the groupedData frames: the language and reserved extras stay declined
+  # (formula/outer language, units reserved); the labels extra rides along
+  plain <- function(x) {
+    attr(x, "formula") <- NULL
+    attr(x, "outer") <- NULL
+    attr(x, "units") <- NULL
+    x
+  }
+  mizu_send(ch, plain(CO2))
+  expect_identical(mizu_recv(ch, 30), plain(CO2))
+  mizu_send(ch, plain(ChickWeight))
+  expect_identical(mizu_recv(ch, 30), plain(ChickWeight))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a logical-with-NA frame column is exact both directions", {
+  py <- skip_if_no_pymizu()
+  skip_if_no_pyarrow(py)
+  skip_if_not_installed("arrow")
+  ch <- mizu_channel(
+    "
+import pyarrow as pa
+t = pa.table({'x': pa.array([True, None, False] * 6667),
+              'p': pa.array(range(20001))})
+ch.send(t)
+df = ch.recv(30)
+t2 = pa.table(df)
+ch.send(t2.column('x').type == pa.bool_() and t2.column('x').null_count == 6667)
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  df <- mizu_recv(ch, 30)
+  expect_identical(df$x, rep(c(TRUE, NA, FALSE), length.out = 20001L))
+  x <- rep(c(TRUE, NA, FALSE), length.out = 20001L)
+  mizu_send(ch, arrow::arrow_table(data.frame(x = x, p = seq_len(20001L))))
+  expect_true(mizu_recv(ch, 30))
+  expect_true(mizu_close(ch, timeout = 10))
+})
+
+test_that("a numpy uint64 array converts to integer64 exactly in range", {
+  skip_if_not_installed("bit64")
+  py <- skip_if_no_pymizu()
+  ch <- mizu_channel(
+    "
+import numpy as np
+ch.send(np.array([9007199254740993, 9223372036854775807], dtype=np.uint64))
+ch.send(np.array([9223372036854775808], dtype=np.uint64))
+",
+    launcher = mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  )
+  expect_identical(
+    mizu_recv(ch, 30),
+    bit64::as.integer64(c("9007199254740993", "9223372036854775807"))
+  )
+  expect_identical(mizu_recv(ch, 30), bit64::as.integer64(NA))
   expect_true(mizu_close(ch, timeout = 10))
 })
 
@@ -1050,7 +1116,7 @@ for h in ('%s', '%s'):
   expect_true(mizu_close(ch, timeout = 10))
 })
 
-test_that("groupedData-style and ordered-factor frames still decline", {
+test_that("groupedData-style frames still decline; ordered-factor frames cross", {
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     py_echo,
@@ -1060,7 +1126,8 @@ test_that("groupedData-style and ordered-factor frames still decline", {
   attr(gd, "formula") <- y ~ x
   expect_error(mizu_send(ch, gd), class = "mizu_error_not_portable")
   df <- data.frame(f = ordered(c("a", "b")))
-  expect_error(mizu_send(ch, df), class = "mizu_error_not_portable")
+  mizu_send(ch, df)
+  expect_identical(mizu_recv(ch, 30), df)
   expect_true(mizu_close(ch, timeout = 10))
 })
 

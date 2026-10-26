@@ -407,7 +407,7 @@ int mizu_arrow_stage_held(SEXP xp, mizu_handle *h, unsigned char *name,
 void mizu_arrow_warn_raise(const mizu_arrow_warn *warn) {
   if (warn->n_range != 0)
     Rf_warning(
-      "mizu: %llu uint64 value(s) beyond +/-2^53 convert to NA_real_",
+      "mizu: %llu uint64 value(s) beyond 2^63 - 1 convert to NA",
       (unsigned long long) warn->n_range
     );
   if (warn->n_intmin != 0)

@@ -131,7 +131,7 @@ typedef struct mizu_r_handle_s {
 #define MIZU_R_IDENT \
   MIZU_IDENT(MIZU_LANG_R, MIZU_CAP_MIZS | MIZU_CAP_MIZL | MIZU_CAP_ATTRS | \
              MIZU_CAP_TASKREF | MIZU_CAP_MIZL_REF | MIZU_CAP_MIZL_U64V | \
-             MIZU_CAP_LABELED)
+             MIZU_CAP_LABELED | MIZU_CAP_ORDERED)
 
 /* A same-language stage's own capability word (pymizu's precedent: a task
    frame is same-language by construction, so this build's caps is the
@@ -234,13 +234,15 @@ enum {
   MIZU_IXQ_ENCODABLE,
   MIZU_IXQ_NAMES,    /* attrs exactly {names} on an atomic non-character */
   MIZU_IXQ_DIMNAMES, /* {dim, dimnames[, class = "table"]} */
-  MIZU_IXQ_FRAME_EXT /* the extended frame: class suffix + extras */
+  MIZU_IXQ_FRAME_EXT, /* the extended frame: class suffix + extras */
+  MIZU_IXQ_ORDERED   /* a factor classed exactly c("ordered", "factor")
+                        (MIZU_CAP_ORDERED) */
 };
 
 /* The capability bits a verdict needs: MIZU_CAP_ATTRS for the baseline
-   shapes, plus MIZU_CAP_LABELED for the three labeled ones (zc.c's
-   foreign filters key on it so a labeled shape never stages to a peer
-   that cannot read it). */
+   shapes, plus MIZU_CAP_LABELED for the three labeled ones and
+   MIZU_CAP_ORDERED for the ordered factor (zc.c's foreign filters key on
+   it so a gated shape never stages to a peer that cannot read it). */
 uint32_t ix_q_caps(int q);
 
 size_t mizu_interop_write(unsigned char *dst, size_t limit, SEXP x,
