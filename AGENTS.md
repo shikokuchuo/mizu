@@ -589,20 +589,37 @@ call; the two consumer forms are exclusive), `as.promise.mizu_task` /
 [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
 /
 [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
-(exactly one promise per collection — the per-wake C scan
-`mizu_pool_tasks_terminal` / `mizu_map_runners_terminal`, then the sync
-verb’s own gather once; settle withdraws every enrolled announce so
-losers return to blocking-collectible). Discipline: announce + arm run
-ahead of `promise()`’s action (it converts action errors into
-rejections, but a spin channel or stale task is a call-site error);
+(exactly one promise per collection, the sync verb’s own gather once at
+settle). The pool waiter registry is C-side (`notify_r.c`, hung off the
+handle’s `mizu_r_notify` record): one entry per enrolled consumer
+caching its task words (the scan never re-reads the extptrs —
+`mizu_pool_task_state` is total on a stale word), the waiter envs in a
+parallel preserved VECSXP, four verbs — `mizu_pool_notify_enroll` fuses
+the conflict check (linear, or a throwaway open-addressing table past
+the T×W crossover), the per-slot announces, the endpoint arm and the
+terminal probe, probing terminal FIRST so a task that already published
+settles from the call site without ever arming (returns TRUE, nothing
+registered; the post-arm re-check is the parker transplant);
+`mizu_pool_notify_scan` is the per-wake drain step (re-arm the edge the
+waking publish cleared, then up to `max` settled waiters in registry
+order, unlinked with announces withdrawn, disarming when the registry
+empties — the R drain loops scan → settle → scan until an empty scan
+proves the re-armed word saw nothing); `mizu_pool_notify_remove` (a
+timeout) and `mizu_pool_notify_find` (as.promise’s cached-promise
+lookup). The map kind’s verdict is `mizu_map_runners_done` (map.c:
+terminal or abandonable per runner). The blocking collect verbs’ refusal
+(“one consumer per result”) is `mizu_r_notify_refuse` inside the C
+veneers — one pointer test when nothing is enrolled, so the sync rows
+pay nothing. The task kind settles through `mizu_pool_collect_settle`
+(every failure boxed `mizu_caught`, no handler frame per task); the
+collective forms keep one tryCatch per collection. Discipline: the
+enroll runs ahead of `promise()`’s action (it converts action errors
+into rejections, but a conflict, a spin channel or a stale task is a
+call-site error), the settle of an already-terminal waiter inside it;
 every drain is bounded per callback (`notify_quantum_n` = 2048 items or
 ~1 ms, whichever first — 256 left the batch handler 2.2x off the sync
-row) and re-scheduled with `later(secs = 0)`; the pool drain re-arms the
-edge-triggered submitter word per pass and re-checks (a publish clears
-it, so a settle that left waiters pending would otherwise never wake
-again); a task with a pending promise or collection enrollment refuses
-blocking collect and a second enrollment (“one consumer per result”, the
-flag is the enrollment itself and clears at settle);
+row; the pool drain scans in batches of 64 so the clock check between
+batches is honest) and re-scheduled with `later(secs = 0)`;
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
 stays allowed throughout (the cancel publishes, the drain rejects).
 later and promises sit in Suggests, guarded with informative errors; the
