@@ -77,7 +77,7 @@ probes and A/B isolations stay in the log.
 | submit plan k = 1 (W2 row) | 39.5 us/task | 2026-10-22 |
 | submit plan k = 4 (W2 row) | 43.7 us/task | 2026-10-22 |
 | submit plan k = 16 (W2 row) | 61.0 us/task | 2026-10-22 |
-| crosslang channel rt, 100k difftime | 159.8 us/rt | 2026-10-04 |
+| crosslang channel rt, 100k difftime | 131.5 us/rt | 2026-10-27 |
 
 ## Incumbent baselines (2026-07)
 
@@ -1857,3 +1857,27 @@ pipelined 1.0M, collect_all 2.0M, collect_all_async 2.78M, many waiters
 Status: full suite green (5382 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs); rchk clean on a tree copy (the one
 report is the pre-existing [UP] note on mizu_channel_recv_call).
+
+## 2026-10-27 — crosslang difftime row: re-baseline + decomposition (phase 4 probe)
+
+Re-baseline (echo peer): 800 KB double 51.0 -> 12.4 us/rt (the
+2026-10-22 recycling work); 100k difftime 159.8 -> 131.5. The recorded
+3x is 10.6x now.
+
+Decomposition of the 131.5 (acking sink, a Python source peer,
+in-process halves both bindings, an equal-bytes matrix control): R send
+~33 us (layout write ~9 + the foreign attributed-root NA scan ~24 +
+blob ~1), Python read ~48 (the seconds -> us conversion + the fresh
+array), Python send ~35 (the us -> seconds loop + region write ~9),
+R read ~3. The matrix control proves the blob itself ~free.
+
+Verdict: expected cost of the timedelta64[us] home — both Python halves
+convert per element (no zero-copy home exists), the echo loses the REF
+relay, and all three per-element passes run at vector speed
+(0.24-0.48 ns/elt). The one discretionary share is the R NA scan
+(~18%): redundant for REAL-typed roots (NA crosses in-band both
+directions; neither temporal home consults the bitmap) — gating it is a
+validity-claim wire-policy change, its own plan if pursued. The table's
+difftime row swaps to the new best.
+
+Status: no code changed.
