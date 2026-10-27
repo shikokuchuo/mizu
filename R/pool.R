@@ -333,7 +333,6 @@ mizu_collect <- function(task, timeout = Inf) {
   if (inherits(task, "mizu_map")) {
     return(map_collect_handle(task, timeout))
   }
-  notify_check_collectable(task)
   .Call(mizu_pool_collect, task, timeout)
 }
 
@@ -570,9 +569,6 @@ mizu_collect_any <- function(tasks, timeout = Inf) {
   if (!is.list(tasks) || !length(tasks)) {
     stop("mizu: tasks must be a non-empty list of task handles", call. = FALSE)
   }
-  for (task in tasks) {
-    notify_check_collectable(task)
-  }
   .Call(mizu_pool_collect_any, tasks, timeout)
 }
 
@@ -631,9 +627,6 @@ mizu_collect_any <- function(tasks, timeout = Inf) {
 mizu_collect_all <- function(tasks, timeout = Inf) {
   if (!is.list(tasks) || !length(tasks)) {
     stop("mizu: tasks must be a non-empty list of task handles", call. = FALSE)
-  }
-  for (task in tasks) {
-    notify_check_collectable(task)
   }
   .Call(mizu_pool_collect_all, tasks, timeout)
 }

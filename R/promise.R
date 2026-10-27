@@ -446,121 +446,75 @@ notify_chan_flush_closed <- function(ch) {
 
 # Pool state ------------------------------------------------------------------
 
-# The per-pool-submitter notify state env (prot slot [6]): the waiter
-# registry and the .drain closure. One coalescing notify word serves
-# every outstanding waiter of the submitter — each enrolled task carries
-# the NOTIFY announce on its own result slot, and a publish to any of
-# them signals the endpoint once per burst. The registry is the same env
-# linked list as the channel FIFO: enrollment pushes at the tail, the
-# drain unlinks settled waiters, both O(1).
+# The per-pool-submitter notify state env (prot slot [6]): the pool
+# handle and the .drain closure the C bridge calls. The waiter registry
+# itself lives in C (src/notify_r.c, hung off the handle's notify
+# record): enrollment is one .Call that fuses the conflict check, the
+# per-slot NOTIFY announces, the endpoint arm, and the terminal probe —
+# probing terminal FIRST, so a task that already published settles from
+# the call site without ever arming — and the per-wake scan is one .Call
+# returning the settled waiters in registry order, unlinked with their
+# announces withdrawn. One coalescing notify word serves every
+# outstanding waiter of the submitter: each enrolled task carries the
+# announce on its own result slot, and a publish to any of them signals
+# the endpoint once per burst.
 notify_pool_state <- function(pool) {
   st <- .Call(mizu_pool_notify_peek, pool)
   if (is.null(st)) {
     st <- new.env(parent = emptyenv())
     st[["pool"]] <- pool
-    st[["w_head"]] <- NULL
-    st[["w_tail"]] <- NULL
     st[[".drain"]] <- function() pool_drain(st)
     .Call(mizu_pool_notify_set, pool, st)
   }
   st
 }
 
-pool_disarm <- function(state) {
-  .Call(mizu_pool_notify_disarm, state[["pool"]])
-  invisible()
-}
+# Waiter modes: the C registry's settle verdicts.
+waiter_mode <- c(task = 0L, any = 1L, all = 2L, map = 3L)
 
-pool_waiter_push <- function(state, w) {
-  w[["next"]] <- NULL
-  if (is.null(state[["w_head"]])) {
-    state[["w_head"]] <- w
-  } else {
-    state[["w_tail"]][["next"]] <- w
-  }
-  state[["w_tail"]] <- w
-  invisible()
-}
-
-# Unlink a waiter by identity (a timeout fires); FALSE when absent.
-pool_waiter_remove <- function(state, w) {
-  prev <- NULL
-  cur <- state[["w_head"]]
-  while (!is.null(cur)) {
-    if (identical(cur, w)) {
-      nxt <- cur[["next"]]
-      if (is.null(prev)) {
-        state[["w_head"]] <- nxt
-      } else {
-        prev[["next"]] <- nxt
-      }
-      if (identical(state[["w_tail"]], cur)) {
-        state[["w_tail"]] <- prev
-      }
-      cur[["next"]] <- NULL
-      return(TRUE)
-    }
-    prev <- cur
-    cur <- cur[["next"]]
-  }
-  FALSE
-}
-
-# The completion probe per waiter: the C verdicts (atomic loads only, no
-# per-task vector) — per task for the single form, any/all for the
-# collectives, and the terminal-or-abandoned runner verdicts for a map.
-waiter_done <- function(w) {
-  switch(
-    w[["kind"]],
-    task = .Call(mizu_pool_waiter_terminal, w[["tasks"]], 0L),
-    any = .Call(mizu_pool_waiter_terminal, w[["tasks"]], 1L),
-    all = .Call(mizu_pool_waiter_terminal, w[["tasks"]], 2L),
-    map = {
-      hs <- w[["map"]][["st"]][["handles"]]
-      hs <- hs[!vapply(hs, is.null, TRUE)]
-      !length(hs) ||
-        .Call(mizu_map_runners_terminal, w[["map"]][["st"]][["wrap"]], hs)
-    },
-    stop("mizu: unknown waiter kind", call. = FALSE)
+# Enroll one waiter (a stale task, a conflict, a submitter-less handle
+# are call-site errors — this runs ahead of the promise action). TRUE
+# when the waiter is terminal already and was not registered: the caller
+# settles it inside the action, where resolve/reject exist.
+pool_enroll <- function(state, w, tasks, wrap = NULL) {
+  .Call(
+    mizu_pool_notify_enroll,
+    state[["pool"]],
+    state,
+    w,
+    tasks,
+    waiter_mode[[w[["kind"]]]],
+    wrap
   )
 }
 
-# Resolve or reject a settled waiter. The announce withdraw runs ahead of
-# the collect for the collective forms (the losers return to
-# blocking-collectible; a racing publisher at worst sends one absorbed
-# signal). The collects run non-blocking (the scan proved terminal), and
-# a raised condition becomes the rejection — the same classed condition
-# the sync verb raises, index fields included.
-settle_waiter <- function(state, w) {
+# Resolve or reject a settled waiter (unlinked by the scan, its announces
+# withdrawn). The collects run non-blocking — the scan proved terminal —
+# and a raised condition becomes the rejection: the same classed
+# condition the sync verb raises, index fields included. The task kind's
+# settle collect boxes every failure (no handler frame per task); the
+# collective forms keep the one tryCatch per collection.
+settle_waiter <- function(w) {
   cancel_timer(w)
   kind <- w[["kind"]]
   if (kind == "task") {
-    v <- tryCatch(
-      .Call(mizu_pool_collect, w[["tasks"]][[1L]], 0),
-      error = identity
-    )
-  } else if (kind == "any") {
-    .Call(mizu_pool_task_notify, w[["tasks"]], FALSE)
-    v <- tryCatch(
-      .Call(mizu_pool_collect_any, w[["tasks"]], 0),
-      error = identity
-    )
+    v <- .Call(mizu_pool_collect_settle, w[["tasks"]][[1L]])
+    if (inherits(v, "mizu_caught")) {
+      w[["reject"]](v[[1L]])
+    } else {
+      w[["resolve"]](v)
+    }
+    return(invisible())
+  }
+  v <- if (kind == "any") {
+    tryCatch(.Call(mizu_pool_collect_any, w[["tasks"]], 0), error = identity)
   } else if (kind == "all") {
-    .Call(mizu_pool_task_notify, w[["tasks"]], FALSE)
-    v <- tryCatch(
-      .Call(mizu_pool_collect_all, w[["tasks"]], 0),
-      error = identity
-    )
+    tryCatch(.Call(mizu_pool_collect_all, w[["tasks"]], 0), error = identity)
   } else {
-    # map: withdraw the runner announces, then the ordinary map gather —
-    # every runner terminal or abandoned, so map_collect never parks
+    # map: the ordinary gather — every runner terminal or abandoned, so
+    # map_collect never parks
     m <- w[["map"]]
     st <- m[["st"]]
-    hs <- st[["handles"]]
-    hs <- hs[!vapply(hs, is.null, TRUE)]
-    if (length(hs)) {
-      .Call(mizu_pool_task_notify, hs, FALSE)
-    }
     m[["done"]] <- TRUE
     v <- if (isTRUE(m[["cancelled"]])) {
       map_cond_cancelled()
@@ -576,6 +530,7 @@ settle_waiter <- function(state, w) {
         pm[["st"]] <- st
       }
     }
+    v
   }
   if (inherits(v, "error")) {
     w[["reject"]](v)
@@ -585,148 +540,32 @@ settle_waiter <- function(state, w) {
   invisible()
 }
 
-# The main-thread pool drain: one C verdict per waiter per pass, settling
-# the completed, bounded per callback. The edge-triggered submitter word
-# is cleared by the publish that woke the drain, so a pass that ends with
-# a non-empty pending set re-arms and re-checks — the announce/re-check
-# transplant: either the scan sees a publish or its publisher sees the
-# word. Disarms only when the registry empties.
+# The main-thread pool drain: scan, settle, scan again, until a scan comes
+# back empty — each scan re-arms the edge-triggered submitter word ahead
+# of its probe (the publish that woke the drain cleared it), so the empty
+# scan proves the re-armed word saw nothing: the announce/re-check
+# transplant. Bounded per callback: small scan batches keep the clock
+# check between them honest (a resolve is tens of microseconds), and a
+# spent quantum re-schedules with work left in the registry.
 pool_drain <- function(state) {
+  pool <- state[["pool"]]
   t0 <- mono_time()
   items <- 0L
   repeat {
-    prev <- NULL
-    w <- state[["w_head"]]
-    while (!is.null(w)) {
-      nxt <- w[["next"]]
-      if (!waiter_done(w)) {
-        prev <- w
-        w <- nxt
-        next
-      }
-      if (is.null(prev)) {
-        state[["w_head"]] <- nxt
-      } else {
-        prev[["next"]] <- nxt
-      }
-      if (identical(state[["w_tail"]], w)) {
-        state[["w_tail"]] <- prev
-      }
-      w[["next"]] <- NULL
-      settle_waiter(state, w)
-      items <- items + 1L
-      # the clock read strides (per settle it was a .Call each)
-      if (
-        items >= notify_quantum_n ||
-          (items %% 64L == 0L && mono_time() - t0 >= notify_quantum_secs)
-      ) {
-        later::later(state[[".drain"]], 0)
-        return(invisible())
-      }
-      w <- nxt
-    }
-    if (is.null(state[["w_head"]])) {
-      pool_disarm(state)
+    done <- .Call(mizu_pool_notify_scan, pool, 64L)
+    n <- length(done)
+    if (n == 0L) {
       return(invisible())
     }
-    .Call(mizu_pool_notify_arm, state[["pool"]], state)
-    # the re-check: a publish that landed between the last scan and the
-    # re-arm signals nothing (it saw the cleared word) — scan once more
-    if (!pool_any_done(state)) {
+    for (i in seq_len(n)) {
+      settle_waiter(done[[i]])
+    }
+    items <- items + n
+    if (items >= notify_quantum_n || mono_time() - t0 >= notify_quantum_secs) {
+      later::later(state[[".drain"]], 0)
       return(invisible())
     }
   }
-}
-
-pool_any_done <- function(state) {
-  w <- state[["w_head"]]
-  while (!is.null(w)) {
-    if (waiter_done(w)) {
-      return(TRUE)
-    }
-    w <- w[["next"]]
-  }
-  FALSE
-}
-
-# The enrollment conflict check shared by every async form: a task
-# already claimed by a pending waiter refuses another consumer, naming
-# it. Returns the matching waiter when `want` is the waiter's own kind
-# (as.promise's cached-promise lookup).
-notify_find_waiter <- function(state, task) {
-  w <- state[["w_head"]]
-  while (!is.null(w)) {
-    for (t in w[["tasks"]]) {
-      if (identical(t, task)) {
-        return(w)
-      }
-    }
-    w <- w[["next"]]
-  }
-  NULL
-}
-
-notify_check_unenrolled <- function(state, tasks, verb) {
-  if (is.null(state[["w_head"]])) {
-    return(invisible())
-  }
-  for (task in tasks) {
-    w <- notify_find_waiter(state, task)
-    if (!is.null(w)) {
-      stop(
-        sprintf(
-          "mizu: %s refuses a task with a pending consumer (%s) \u2014 ",
-          verb,
-          w[["label"]]
-        ),
-        "one consumer per result",
-        call. = FALSE
-      )
-    }
-  }
-  invisible()
-}
-
-# The collect verbs' refusal (called with the task or each task of a
-# blocking collective): a promise-armed or collection-enrolled task
-# refuses a blocking collect, so one writer owns each result slot's
-# announce. The flag is the enrollment itself — it clears at settle.
-notify_check_collectable <- function(task) {
-  st <- .Call(mizu_task_notify_state, task)
-  if (is.null(st) || is.null(st[["w_head"]])) {
-    return(invisible())
-  }
-  w <- notify_find_waiter(st, task)
-  if (!is.null(w)) {
-    stop(
-      sprintf(
-        "mizu: task has a pending consumer (%s) and refuses a blocking ",
-        w[["label"]]
-      ),
-      "collect \u2014 one consumer per result",
-      call. = FALSE
-    )
-  }
-  invisible()
-}
-
-# Enroll one waiter. The announce and the arm run OUTSIDE the promise
-# action (pool_announce_arm at the call sites): promise() converts an
-# action error into a rejection, but a stale task or a submitter-less
-# handle is a call-site error. The registration and the re-check scan
-# ride the action: the scan settles whatever was already published, so
-# arming is loss-free, and a signal landing between arm and registration
-# schedules a drain that runs after it (FIFO).
-pool_announce_arm <- function(state, tasks) {
-  .Call(mizu_pool_task_notify, tasks, TRUE)
-  .Call(mizu_pool_notify_arm, state[["pool"]], state)
-  invisible()
-}
-
-pool_enroll <- function(state, w) {
-  pool_waiter_push(state, w)
-  pool_drain(state)
-  invisible()
 }
 
 #' Collect Pool Results as Promises
@@ -792,31 +631,27 @@ mizu_collect_all_async <- function(tasks, timeout = Inf) {
   }
   pool <- .Call(mizu_task_pool, tasks[[1L]])
   state <- notify_pool_state(pool)
-  notify_check_unenrolled(state, tasks, "mizu_collect_all_async()")
-  pool_announce_arm(state, tasks)
   w <- new.env(parent = emptyenv())
   w[["kind"]] <- "all"
   w[["tasks"]] <- tasks
-  w[["label"]] <- "mizu_collect_all_async()"
+  ready <- pool_enroll(state, w, tasks)
   promises::promise(function(resolve, reject) {
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject
-    if (is.finite(timeout)) {
+    if (ready) {
+      settle_waiter(w)
+    } else if (is.finite(timeout)) {
+      # the removal withdraws the announces: the tasks return to
+      # blocking-collectible; FALSE means the drain settled it first
       w[["timer"]] <- later::later(
         function() {
-          if (!pool_waiter_remove(state, w)) {
-            return(invisible())
+          if (.Call(mizu_pool_notify_remove, pool, w)) {
+            reject(cond_timeout())
           }
-          .Call(mizu_pool_task_notify, tasks, FALSE)
-          if (is.null(state[["w_head"]])) {
-            pool_disarm(state)
-          }
-          reject(cond_timeout())
         },
         timeout
       )
     }
-    pool_enroll(state, w)
   })
 }
 
@@ -829,16 +664,16 @@ mizu_collect_any_async <- function(tasks) {
   }
   pool <- .Call(mizu_task_pool, tasks[[1L]])
   state <- notify_pool_state(pool)
-  notify_check_unenrolled(state, tasks, "mizu_collect_any_async()")
-  pool_announce_arm(state, tasks)
   w <- new.env(parent = emptyenv())
   w[["kind"]] <- "any"
   w[["tasks"]] <- tasks
-  w[["label"]] <- "mizu_collect_any_async()"
+  ready <- pool_enroll(state, w, tasks)
   promises::promise(function(resolve, reject) {
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject
-    pool_enroll(state, w)
+    if (ready) {
+      settle_waiter(w)
+    }
   })
 }
 
@@ -846,35 +681,27 @@ mizu_collect_any_async <- function(tasks) {
 #' @exportS3Method promises::as.promise
 as.promise.mizu_task <- function(x) {
   notify_requires()
-  pool <- .Call(mizu_task_pool, x)
-  state <- notify_pool_state(pool)
-  existing <- notify_find_waiter(state, x)
-  if (!is.null(existing)) {
-    if (existing[["kind"]] == "task") {
-      return(existing[["promise"]])
-    }
-    stop(
-      sprintf(
-        "mizu: task is enrolled in a pending %s and refuses a second ",
-        existing[["label"]]
-      ),
-      "promise \u2014 one consumer per result",
-      call. = FALSE
-    )
+  # the cached promise of an already-promised task; a task enrolled in a
+  # collection refuses at the enroll, naming it
+  existing <- .Call(mizu_pool_notify_find, x)
+  if (!is.null(existing) && existing[["kind"]] == "task") {
+    return(existing[["promise"]])
   }
   tstate <- .Call(mizu_pool_task_state, x)
   if (tstate == "collected" || tstate == "dropped") {
     stop("mizu: task handle is already collected", call. = FALSE)
   }
-  pool_announce_arm(state, list(x))
+  state <- notify_pool_state(.Call(mizu_task_pool, x))
   w <- new.env(parent = emptyenv())
   w[["kind"]] <- "task"
   w[["tasks"]] <- list(x)
-  w[["label"]] <- "as.promise()"
+  ready <- pool_enroll(state, w, w[["tasks"]])
   promise <- promises::promise(function(resolve, reject) {
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject
-    pool_enroll(state, w)
+    if (ready) {
+      settle_waiter(w)
+    }
   })
   w[["promise"]] <- promise
   promise
@@ -917,8 +744,6 @@ as.promise.mizu_map <- function(x) {
   w <- new.env(parent = emptyenv())
   w[["kind"]] <- "map"
   w[["map"]] <- x
-  w[["tasks"]] <- st[["handles"]]
-  w[["label"]] <- "a map promise"
   w[["doomed"]] <- FALSE
   # the death verdict no publish can carry: every worker live at submit
   # gone from the registry with the runners unclaimed. No signal fires
@@ -947,12 +772,15 @@ as.promise.mizu_map <- function(x) {
   }
   w[["timer"]] <- NULL
   x[["promised"]] <- TRUE
-  pool_announce_arm(state, st[["handles"]])
+  ready <- pool_enroll(state, w, st[["handles"]], st[["wrap"]])
   promise <- promises::promise(function(resolve, reject) {
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject
-    arm_watchdog()
-    pool_enroll(state, w)
+    if (ready) {
+      settle_waiter(w)
+    } else {
+      arm_watchdog()
+    }
   })
   w[["promise"]] <- promise
   x[["promise"]] <- promise

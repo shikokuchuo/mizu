@@ -619,29 +619,88 @@ test_that("a pool drain over the quantum reschedules and settles every waiter", 
   expect_identical(vapply(os, function(o) o$value, 1L), seq_len(n))
 })
 
+test_that("a timed-out collection releases its tasks for re-enrollment", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ts <- list(mizu_submit(p[["ctrl"]], 1L), mizu_submit(p[["ctrl"]], 2L))
+  o <- observe(mizu_collect_all_async(ts, timeout = 0.1))
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_timeout")
+  o2 <- observe(promises::as.promise(ts[[1L]]))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o2)))
+  expect_identical(o2$value, 1L)
+  expect_identical(mizu_collect(ts[[2L]], 5), 2L)
+})
+
+test_that("an already-terminal task settles from the call site, never enrolled", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ctrl <- p[["ctrl"]]
+  t1 <- mizu_submit(ctrl, 1L)
+  pool_step(p) # published before the enroll: the terminal-first probe
+  o1 <- observe(promises::as.promise(t1))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
+  expect_true(pump_until(function() settled(o1)))
+  expect_identical(o1$value, 1L)
+  t2 <- mizu_submit(ctrl, 2L)
+  t3 <- mizu_submit(ctrl, 3L)
+  o2 <- observe(promises::as.promise(t2))
+  o3 <- observe(mizu_collect_all_async(list(t3)))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 2L)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o2) && settled(o3)))
+  expect_identical(o2$value, 2L)
+  expect_identical(o3$value, list(3L))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
+})
+
+test_that("a pending task registers at the enroll and the drain unlinks it", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ctrl <- p[["ctrl"]]
+  # pending at the enroll: registered and armed; the publish wakes the
+  # drain, whose scan settles and unlinks it
+  t <- mizu_submit(ctrl, 7L)
+  o <- observe(promises::as.promise(t))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 1L)
+  pool_step(p)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, 7L)
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
+})
+
 test_that("the notify .Call entries validate their handles", {
   p <- pool_pair()
   on.exit(pool_end(p))
-  t1 <- mizu_submit(p[["ctrl"]], 1L)
+  ctrl <- p[["ctrl"]]
+  st <- mizu:::notify_pool_state(ctrl)
+  w <- new.env()
+  t1 <- mizu_submit(ctrl, 1L)
   q <- pool_pair()
   on.exit(pool_end(q), add = TRUE)
   t2 <- mizu_submit(q[["ctrl"]], 2L)
-  expect_error(
-    .Call(mizu:::mizu_pool_task_notify, list(), TRUE),
-    "non-empty list"
-  )
-  expect_error(
-    .Call(mizu:::mizu_pool_tasks_terminal, list()),
-    "non-empty list"
-  )
-  expect_error(
-    .Call(mizu:::mizu_pool_tasks_terminal, list(1)),
-    "not a task handle"
-  )
-  expect_error(
-    .Call(mizu:::mizu_pool_tasks_terminal, list(t1, t2)),
-    "same pool handle"
-  )
+  enroll <- function(...) .Call(mizu:::mizu_pool_notify_enroll, ...)
+  expect_error(enroll(1, st, w, list(t1), 0L, NULL), "not a pool handle")
+  expect_error(enroll(ctrl, 1, w, list(t1), 0L, NULL), "waiter env")
+  expect_error(enroll(ctrl, st, w, list(), 0L, NULL), "non-empty list")
+  expect_error(enroll(ctrl, st, w, list(1), 0L, NULL), "not a task handle")
+  expect_error(enroll(ctrl, st, w, list(t2), 0L, NULL), "same pool handle")
+  expect_error(enroll(ctrl, st, w, list(t1), 4L, NULL), "invalid waiter mode")
+  expect_error(.Call(mizu:::mizu_pool_notify_find, 1), "not a task handle")
+  expect_error(.Call(mizu:::mizu_pool_notify_scan, 1, 64L), "not a pool handle")
+  expect_error(.Call(mizu:::mizu_pool_notify_remove, 1, w), "not a pool handle")
+  expect_error(.Call(mizu:::mizu_pool_notify_count, 1), "not a pool handle")
+  expect_identical(.Call(mizu:::mizu_pool_notify_scan, ctrl, 64L), list())
+  expect_false(.Call(mizu:::mizu_pool_notify_remove, ctrl, w))
+  expect_null(.Call(mizu:::mizu_pool_notify_find, t1))
   expect_error(.Call(mizu:::mizu_task_pool, 1), "not a task handle")
   expect_error(.Call(mizu:::mizu_chan_notify_peek, 1), "not a channel handle")
   expect_error(
@@ -653,22 +712,27 @@ test_that("the notify .Call entries validate their handles", {
     .Call(mizu:::mizu_pool_notify_set, 1, new.env()),
     "not a pool handle"
   )
-  expect_error(
-    .Call(mizu:::mizu_map_runners_terminal, NULL, list()),
-    "non-empty list"
-  )
   mizu_cancel(t1)
   mizu_cancel(t2)
 })
 
-test_that("a destroyed pool's task reads closed at the notify scan", {
+test_that("a destroyed pool refuses an enroll and scans empty", {
+  skip_if_no_promises()
   p <- pool_pair()
-  t <- mizu_submit(p[["ctrl"]], 1L)
+  ctrl <- p[["ctrl"]]
+  st <- mizu:::notify_pool_state(ctrl)
+  t <- mizu_submit(ctrl, 1L)
+  o <- observe(promises::as.promise(t))
   pool_end(p)
+  w <- new.env()
   expect_error(
-    .Call(mizu:::mizu_pool_tasks_terminal, list(t)),
+    .Call(mizu:::mizu_pool_notify_enroll, ctrl, st, w, list(t), 0L, NULL),
     "pool handle is closed"
   )
+  expect_identical(.Call(mizu:::mizu_pool_notify_scan, ctrl, 64L), list())
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
+  expect_null(.Call(mizu:::mizu_pool_notify_find, t))
+  expect_false(settled(o))
 })
 
 test_that("several workers publishing to one armed submitter send one signal", {

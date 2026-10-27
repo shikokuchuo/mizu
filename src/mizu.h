@@ -803,6 +803,7 @@ SEXP mizu_pool_exec_fail_call(SEXP, SEXP);
 SEXP mizu_pool_dump_call(SEXP);
 SEXP mizu_pool_collect_call(SEXP, SEXP);
 SEXP mizu_pool_collect_try(SEXP, SEXP);
+SEXP mizu_pool_collect_settle(SEXP);
 SEXP mizu_pool_collect_any_call(SEXP, SEXP);
 SEXP mizu_pool_collect_all_call(SEXP, SEXP);
 SEXP mizu_pool_cancel_call(SEXP);
@@ -821,14 +822,14 @@ SEXP mizu_chan_notify_set(SEXP, SEXP);
 SEXP mizu_pool_notify_peek(SEXP);
 SEXP mizu_pool_notify_set(SEXP, SEXP);
 SEXP mizu_task_pool_call(SEXP);
-SEXP mizu_task_notify_state(SEXP);
 SEXP mizu_chan_notify_arm_call(SEXP, SEXP);
 SEXP mizu_chan_notify_disarm_call(SEXP);
-SEXP mizu_pool_notify_arm_call(SEXP, SEXP);
-SEXP mizu_pool_notify_disarm_call(SEXP);
-SEXP mizu_pool_task_notify_call(SEXP, SEXP);
-SEXP mizu_pool_tasks_terminal(SEXP);
-SEXP mizu_pool_waiter_terminal(SEXP, SEXP);
+SEXP mizu_pool_notify_enroll(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_pool_notify_scan(SEXP, SEXP);
+SEXP mizu_pool_notify_remove(SEXP, SEXP);
+SEXP mizu_pool_notify_find(SEXP);
+SEXP mizu_pool_notify_count(SEXP);
+void mizu_r_notify_refuse(mizu_r_handle *h, const mizu_task *ts, size_t n);
 /* map.c */
 SEXP mizu_map_eligible(SEXP);
 SEXP mizu_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -857,7 +858,8 @@ SEXP mizu_map_reset(SEXP);
 SEXP mizu_map_swap_x(SEXP, SEXP);
 SEXP mizu_map_info(SEXP);
 SEXP mizu_map_claim_state(SEXP, SEXP);
-SEXP mizu_map_runners_terminal(SEXP, SEXP);
+int mizu_map_runners_done(SEXP wrap, mizu_pool *p, const uint64_t *words,
+                          uint32_t n);
 SEXP mizu_map_timeout_call(void);
 /* rng.c */
 SEXP mizu_map_rng_base(SEXP);

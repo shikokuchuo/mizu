@@ -1797,3 +1797,63 @@ many waiters 99.2k -> 110-142k tasks/s; collect_all_async 2.44M ->
 Status: full suite green (5340 pass, 0 fail, 10 skips — fork/system-
 library/macOS skips; the pymizu venv on PATH ran the cross-language
 legs).
+
+## 2026-10-27 — pool waiter registry moved to C; blocking collects' refusal check moved into the veneers
+
+The phase-1 item of the weak-rows plan, re-cut after measuring the
+first (R-side) cut. Profiling the per-task promises row with the
+promises machinery factored out put mizu's own async cost at 22-31
+us/task against 1.5 us for sync submit+collect — and the cost was not
+the announce/arm (removing both entirely saved nothing; Rprof had
+attributed 72% to pool_announce_arm, an artifact of ITIMER_PROF
+counting the listener thread's CPU during the arm's concurrent
+publish/signal) but the R-level drain per settle: the per-pass snapshot
+vectors, the tryCatch around the collect, mono_time, the unlink
+bookkeeping, the env index (hex key per task), the disarm/arm pair.
+The registry became a single arm/disarm cycle per task because the
+worker publishes a 1L task before as.promise() runs, so the enrollment
+drain settled it and emptied the registry 1995 times in 2000 — the
+"arm on transition" never engaged.
+
+The re-cut: the waiter registry lives in C (notify_r.c, hung off the
+handle's mizu_r_notify record): entries cache their task words, the
+waiter envs ride a parallel preserved VECSXP, and four verbs replace the
+R linked list + index + snapshot builder + armed flag. Enrollment is one
+.Call fusing the conflict check (linear; a throwaway open-addressing
+table past the T*W crossover), the announces, the arm, and the terminal
+probe — probing terminal FIRST, so an already-published task settles
+from the call site with no announce-arm cycle at all. The per-wake scan
+is one .Call returning up to 64 settled waiters (unlinked, announces
+withdrawn, re-armed ahead of the probe), the drain loop ending on the
+empty scan. The task kind settles through mizu_pool_collect_settle
+(every failure boxed: no tryCatch per task). And the blocking collect
+verbs' "one consumer per result" refusal moved from an R-level .Call
+per task (notify_check_collectable: mizu_task_notify_state + is.null,
+~0.6 us of the pipelined row's 1.5 us/task; a 10k-task loop ahead of
+every collect_all / collect_any) into the C veneers (mizu_r_notify_refuse
+after the unpack: one pointer test when nothing is enrolled).
+mizu_pool_tasks_terminal / mizu_pool_waiter_terminal / mizu_task_key /
+mizu_pool_task_notify / mizu_pool_notify_arm|disarm / mizu_task_notify_state
+/ mizu_map_runners_terminal are gone from the .Call table.
+
+Results (A/B vs the committed baseline eb2628e, standalone harness,
+medians of 5-7 with best in parentheses; tight run_now(0.001) pump):
+pool rt (submit+collect, k=10) 694k -> 840k tasks/s (+21%; best 787k ->
+885k); pool collect_all (10k x 10) 1.79M -> 3.45M (+93%; best 2.27M ->
+4.55M) — the per-task refusal loop was half the row; pool collect_any
+(10k x 10) 1.18M -> 3.03M; collect_all_async 2.33M -> 2.86M (+23%; best
+2.78M -> 3.33M); many waiters (64 x 31) 248k -> 248k (best 248k ->
+283k); per-task promises (2000) 5.8k -> 6.3k tasks/s (+8%; best 7.6k ->
+9.1k) — the row's floor stays the promises package (promise() + resolve
+measures 52 us, R6 construction; later() itself is a flat 5 us at any
+queue depth); deep FIFO 160 -> 144 us/msg (noise; the channel path is
+untouched). Host is a laptop under load — ratios decide.
+
+Suite-row reads on the final build (taken while the rchk container ran
+alongside under amd64 emulation, so not comparable with the table):
+pipelined 1.0M, collect_all 2.0M, collect_all_async 2.78M, many waiters
+198k, per-task 3.8k, deep FIFO 354 us/msg.
+
+Status: full suite green (5382 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs); rchk clean on a tree copy (the one
+report is the pre-existing [UP] note on mizu_channel_recv_call).

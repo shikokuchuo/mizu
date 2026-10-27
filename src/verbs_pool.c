@@ -196,6 +196,12 @@ NORET static void pool_collect_raise(mizu_r_handle *h, mizu_pool *p) {
   pool_raise(p);
 }
 
+/* The same condition as a value (the settle box below). UNPROTECTED. */
+static SEXP pool_collect_cond(mizu_r_handle *h, mizu_pool *p) {
+  SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
+  return decline != R_NilValue ? decline : pool_cond(p);
+}
+
 // Create (controller) ---------------------------------------------------------------
 
 SEXP mizu_pool_create_call(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
@@ -777,19 +783,36 @@ SEXP mizu_pool_exec_fail_call(SEXP xp, SEXP on) {
 
 // Collect ----------------------------------------------------------------------------
 
-/* The shared collect entry. tryflag: a terminal non-OK outcome returns the
-   mizu_caught box instead of signalling, so the map collect loop branches
-   on class. */
+/* The shared collect entry. tryflag 1: a terminal non-OK outcome returns
+   the mizu_caught box instead of signalling, so the map collect loop
+   branches on class; 2 (the async settle): every failure comes back
+   boxed — the transport raise too, and the timeout sentinel as the
+   classed timeout — so the drain needs no handler frame. The async
+   refusal (notify_r.c) runs after the unpack: a task with an enrolled
+   consumer refuses the blocking collect. */
 static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   mizu_r_handle *h;
   mizu_task t = task_get(xp, &h);
+  mizu_r_notify_refuse(h, &t, 1);
   void *v = NULL;
   /* the submitter-side boundary collection and a fresh decline slot (verbs.c) */
   mizu_r_recv_begin(h);
   mizu_status st =
     mizu_pool_collect((mizu_pool *) h->core, &t, &v, mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
-  if (st == MIZU_TIMEOUT) return mizu_sent_timeout;
-  if (st == MIZU_ERR) pool_collect_raise(h, (mizu_pool *) h->core);
+  if (st == MIZU_TIMEOUT) {
+    if (tryflag != 2) return mizu_sent_timeout;
+    SEXP cond = PROTECT(mizu_cond_make("mizu_timeout", "mizu: operation timed out"));
+    SEXP box = mizu_caught(cond);
+    UNPROTECT(1);
+    return box;
+  }
+  if (st == MIZU_ERR) {
+    if (tryflag != 2) pool_collect_raise(h, (mizu_pool *) h->core);
+    SEXP cond = PROTECT(pool_collect_cond(h, (mizu_pool *) h->core));
+    SEXP box = mizu_caught(cond);
+    UNPROTECT(1);
+    return box;
+  }
   SEXP val = (SEXP) v;
   if (mizu_caught_check(val)) {
     if (tryflag) return val;
@@ -800,6 +823,16 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
 
 SEXP mizu_pool_collect_call(SEXP xp, SEXP timeout) {
   return pool_collect_impl(xp, timeout, 0);
+}
+
+/* The async drain's settle: non-blocking (the scan proved the slot
+   terminal), every failure boxed. */
+SEXP mizu_pool_collect_settle(SEXP xp) {
+  /* protected: pool_collect_impl's entry boundary collection allocates */
+  SEXP timeout = PROTECT(Rf_ScalarReal(0));
+  SEXP out = pool_collect_impl(xp, timeout, 2);
+  UNPROTECT(1);
+  return out;
 }
 
 /* absolute deadline, as mizu_pool_submit_try */
@@ -839,6 +872,7 @@ SEXP mizu_pool_collect_any_call(SEXP tasks, SEXP timeout) {
   mizu_r_handle *h;
   R_xlen_t n;
   mizu_pool *p = tasks_get(tasks, &ts, &h, &n);
+  mizu_r_notify_refuse(h, ts, (size_t) n);
   void *v = NULL;
   size_t idx = 0;
   /* the submitter-side boundary (pool_collect_impl) */
@@ -880,6 +914,7 @@ SEXP mizu_pool_collect_all_call(SEXP tasks, SEXP timeout) {
   mizu_r_handle *h;
   R_xlen_t n;
   mizu_pool *p = tasks_get(tasks, &ts, &h, &n);
+  mizu_r_notify_refuse(h, ts, (size_t) n);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
   size_t err_idx = 0, consumed = 0;
   /* the submitter-side boundary (pool_collect_impl) */

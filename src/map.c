@@ -929,41 +929,31 @@ SEXP mizu_map_abandon(SEXP xp, SEXP r_sexp) {
     mizu_morsel_abandon(mh->shm->addr, &mh->h, r, gen));
 }
 
-/* The async map waiter's per-wake completion scan (notify_r.c's
-   mizu_pool_tasks_terminal is the task counterpart): TRUE once every
-   runner handle is terminal or abandoned — exactly map_collect's own loop
-   verdicts, so its consume never parks when the scan reports done. The
-   abandon calls are the same benign CAS the collect loop runs. wrap is
-   R_NilValue on the blob path (no morsel state: terminal-only). */
-SEXP mizu_map_runners_terminal(SEXP wrap, SEXP tasks) {
+/* The map waiter's verdict for the notify scan (notify_r.c): every runner
+   terminal, or pending with its morsel claim abandonable (the abandon CAS
+   takes a runner no worker ever claimed — the death verdict no publish
+   carries). words is one word per runner slot, 0 for a never-submitted
+   one; a closed wrap (the map released) skips the abandon probe, its
+   runners reading terminal through the cancel anyway. Total: no raise. */
+int mizu_map_runners_done(SEXP wrap, mizu_pool *p, const uint64_t *words,
+                          uint32_t n) {
   mizu_map_h *mh = NULL;
   uint32_t gen = 0;
-  if (wrap != R_NilValue) {
-    mh = map_h_get(wrap);
-    gen = mizu_morsel_generation(mh->shm->addr, &mh->h);
+  if (TYPEOF(wrap) == EXTPTRSXP && R_ExternalPtrTag(wrap) == mizu_map_tag) {
+    mh = (mizu_map_h *) R_ExternalPtrAddr(wrap);
+    if (mh != NULL) gen = mizu_morsel_generation(mh->shm->addr, &mh->h);
   }
-  if (TYPEOF(tasks) != VECSXP || XLENGTH(tasks) == 0)
-    Rf_error("mizu: tasks must be a non-empty list of task handles");
-  R_xlen_t n = XLENGTH(tasks);
-  int done = 1;
-  for (R_xlen_t i = 0; i < n && done; i++) {
-    SEXP txp = VECTOR_ELT(tasks, i);
-    uintptr_t word = TYPEOF(txp) == EXTPTRSXP ?
-      (uintptr_t) R_ExternalPtrAddr(txp) : 0;
-    mizu_r_handle *h = TYPEOF(txp) == EXTPTRSXP ?
-      (mizu_r_handle *) R_ExternalPtrAddr(R_ExternalPtrProtected(txp)) : NULL;
-    if (word == 0 || h == NULL || h->core == NULL)
-      Rf_error("mizu: task handle is closed");
-    mizu_task t = { (uint64_t) word };
-    if (mizu_pool_task_state((mizu_pool *) h->core, &t) != MIZU_RS_PENDING)
-      continue;
+  for (uint32_t i = 0; i < n; i++) {
+    if (words[i] == 0) continue;
+    mizu_task t = { words[i] };
+    if (mizu_pool_task_state(p, &t) != MIZU_RS_PENDING) continue;
     if (mh != NULL &&
-        mizu_morsel_abandon(mh->shm->addr, &mh->h, (uint32_t) i, gen) ==
+        mizu_morsel_abandon(mh->shm->addr, &mh->h, i, gen) ==
           MIZU_MORSEL_ABANDONED)
       continue;
-    done = 0;
+    return 0;
   }
-  return Rf_ScalarLogical(done);
+  return 1;
 }
 
 /* The cancel word: set by the submitter on timeout / cancel / death, and
