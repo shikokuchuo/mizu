@@ -51,14 +51,18 @@ test_that("strip_srcref drops nested function literals' inline srcrefs", {
   ))
   z <- mizu:::strip_srcref(f)
   expect_length(body(f)[[2L]][[3L]], 4L)
-  expect_length(body(z)[[2L]][[3L]], 3L)
+  # the literal keeps the parser's canonical four-cell spine, srcref nil-ed:
+  # a truncated spine breaks rlang's trace capture on the worker
+  expect_length(body(z)[[2L]][[3L]], 4L)
+  expect_null(body(z)[[2L]][[3L]][[4L]])
   expect_identical(z(1), 2)
   h <- eval(parse(
     text = "function(x) {\n  (function(y) y + 1)(x)\n}",
     keep.source = TRUE
   ))
   zh <- mizu:::strip_srcref(h)
-  expect_length(body(zh)[[2L]][[1L]][[2L]], 3L)
+  expect_length(body(zh)[[2L]][[1L]][[2L]], 4L)
+  expect_null(body(zh)[[2L]][[1L]][[2L]][[4L]])
   expect_identical(zh(1), 2)
 })
 
@@ -670,6 +674,31 @@ test_that("classed conditions from f survive the crossing, index attached", {
   e <- tryCatch(collect30(p[["ctrl"]], st), error = identity)
   expect_s3_class(e, "mizu_test_error")
   expect_identical(e[["mizu_map_index"]], 3)
+  pool_end(p)
+})
+
+test_that("an rlang abort caught inside f crosses with its condition intact", {
+  skip_if_not_installed("rlang")
+  p <- pool_pair()
+  # a handler inside f puts rlang's trace capture over the stack calls; a
+  # stripped function literal must keep its canonical four-cell spine or
+  # the capture errors and masks the abort ("bad value" regression)
+  f <- function(i) {
+    if (i == 2L) {
+      tryCatch(rlang::abort("boom"), error = function(e) stop(e))
+    }
+    i
+  }
+  environment(f) <- globalenv()
+  st <- mizu:::map_stage(p[["ctrl"]], 1:2, f, list())
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  e <- tryCatch(collect30(p[["ctrl"]], st), error = identity)
+  expect_s3_class(e, "rlang_error")
+  expect_identical(conditionMessage(e), "boom")
+  expect_identical(e[["mizu_map_index"]], 2)
   pool_end(p)
 })
 

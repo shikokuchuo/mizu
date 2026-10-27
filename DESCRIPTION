@@ -36,6 +36,7 @@ Suggests:
     nanoarrow,
     promises,
     quarto,
+    rlang,
     testthat (>= 3.0.0)
 VignetteBuilder:
     quarto

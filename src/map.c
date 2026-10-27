@@ -1104,7 +1104,11 @@ SEXP R_mkClosure(SEXP formals, SEXP body, SEXP env) {
 /* In-place strip of a private tree: the three source-reference attributes
    on every call / pairlist / expression node, plus the srcref object the
    parser stores as the fourth element of a `function` call literal — the
-   nested-closure case, truncated rather than copied out. Backbone cells
+   nested-closure case. The literal keeps its canonical four-cell spine
+   with the srcref CAR nil-ed (the parser's own keep.source = FALSE form,
+   utils::removeSource's form): a truncated spine breaks rlang's trace
+   capture on the worker — its call_zap_fn assumes the four-cell shape and
+   pokes past the list end ("bad value" from SETCAR on nil). Backbone cells
    are walked iteratively; only child recursion grows the stack, so depth
    stays the expression nesting the parser already bounded. */
 static void mizu_strip_walk(SEXP x) {
@@ -1117,8 +1121,9 @@ static void mizu_strip_walk(SEXP x) {
       Rf_setAttrib(x, mizu_srcfile_sym, R_NilValue);
       Rf_setAttrib(x, mizu_wholesrcref_sym, R_NilValue);
     }
-    if (CAR(x) == mizu_function_sym && CDDR(x) != R_NilValue) {
-      SETCDR(CDDR(x), R_NilValue);
+    if (CAR(x) == mizu_function_sym && CDDR(x) != R_NilValue &&
+        CDR(CDDR(x)) != R_NilValue) {
+      SETCAR(CDR(CDDR(x)), R_NilValue);
     }
     mizu_strip_walk(CAR(x));
     for (SEXP node = CDR(x); node != R_NilValue; node = CDR(node)) {
