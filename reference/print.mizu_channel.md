@@ -60,7 +60,7 @@ print(x, ...)
 ``` r
 p <- mizu_pool()
 p
-#> <mizu_pool /mizu_1a61_ff2b343d: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_1a52_e254da32: controller, 1/1 workers live, 0 pending>
 t <- mizu_submit(p, 1 + 1)
 t
 #> <mizu_task: ok>
