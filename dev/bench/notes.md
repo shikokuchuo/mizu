@@ -1857,3 +1857,21 @@ pipelined 1.0M, collect_all 2.0M, collect_all_async 2.78M, many waiters
 Status: full suite green (5382 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs); rchk clean on a tree copy (the one
 report is the pre-existing [UP] note on mizu_channel_recv_call).
+
+## 2026-10-27 — mizu_task_handler: the promise-free per-task consumer
+
+The per-task promises row's floor was the promises package itself
+(promise() + resolve ~52 us of R6 construction per task). The pool-side
+mirror of the channel's mizu_recv_handler(): mizu_task_handler(task, fn)
+enrolls a `taskh` waiter on the phase-1 C registry — the task verdict
+with its own mode only so refusal messages name it — and settles through
+the existing boxed collect: fn receives the value, or the classed
+condition the sync verb would have raised. No promise, no then, one fn
+call per task. C delta: one registry mode (a label, a case fallthrough,
+the mode bound).
+
+Measured (2000 tasks, 1 worker, medians of 7, standalone): per-task
+handlers 200k tasks/s vs per-task promises 12.9k on the same build —
+15.5x; the suite's weakest ratio closes from ~1/80th of the pipelined
+row to ~1/5th of it. Suite row reads (shared pool history): handlers
+90.9k vs promises 10.3k (8.8x).

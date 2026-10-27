@@ -46,11 +46,14 @@ notify_requires <- function() {
   invisible()
 }
 
-notify_requires_later <- function() {
+notify_requires_later <- function(verb) {
   if (!isTRUE(notify_pkgs[["later"]])) {
     if (!requireNamespace("later", quietly = TRUE)) {
       stop(
-        "mizu: mizu_recv_handler() requires the 'later' package to be installed",
+        sprintf(
+          "mizu: %s requires the 'later' package to be installed",
+          verb
+        ),
         call. = FALSE
       )
     }
@@ -401,7 +404,7 @@ mizu_recv_handler <- function(ch, fn, batch = FALSE) {
     }
     return(invisible(ch))
   }
-  notify_requires_later()
+  notify_requires_later("mizu_recv_handler()")
   if (!is.function(fn)) {
     stop("mizu: fn must be a function or NULL", call. = FALSE)
   }
@@ -469,8 +472,10 @@ notify_pool_state <- function(pool) {
   st
 }
 
-# Waiter modes: the C registry's settle verdicts.
-waiter_mode <- c(task = 0L, any = 1L, all = 2L, map = 3L)
+# Waiter modes: the C registry's settle verdicts. taskh (the task handler)
+# shares the task verdict, carrying its own mode only so the refusal
+# messages name it.
+waiter_mode <- c(task = 0L, any = 1L, all = 2L, map = 3L, taskh = 4L)
 
 # Enroll one waiter (a stale task, a conflict, a submitter-less handle
 # are call-site errors — this runs ahead of the promise action). TRUE
@@ -497,7 +502,7 @@ pool_enroll <- function(state, w, tasks, wrap = NULL) {
 settle_waiter <- function(w) {
   cancel_timer(w)
   kind <- w[["kind"]]
-  if (kind == "task") {
+  if (kind == "task" || kind == "taskh") {
     v <- .Call(mizu_pool_collect_settle, w[["tasks"]][[1L]])
     if (inherits(v, "mizu_caught")) {
       w[["reject"]](v[[1L]])
@@ -675,6 +680,61 @@ mizu_collect_any_async <- function(tasks) {
       settle_waiter(w)
     }
   })
+}
+
+#' Per-Task Result Handler
+#'
+#' Installs `fn` as the consumer of a task's result without allocating a
+#' promise — the throughput form of the per-task consumer, mirroring
+#' [mizu_recv_handler()] on channels. `fn` is called exactly once, from
+#' the event loop or — when the task has already published — from the
+#' call site: with the task's value on success, or with the classed
+#' condition the blocking [mizu_collect()] would have raised on failure
+#' (test `inherits(x, "mizu_error")`, or `conditionMessage(x)`).
+#'
+#' One consumer per result: a task with a handler installed refuses
+#' blocking collects, [promises::as.promise()], and a second handler,
+#' and vice versa — all naming the consumer. `fn` runs on the event
+#' loop; an error it raises surfaces at the [later::run_now()] site, and
+#' a long-running `fn` starves the loop — offload heavy work to another
+#' task instead.
+#'
+#' Requires the \pkg{later} package, which must be installed.
+#'
+#' @param task a task handle from [mizu_submit()].
+#' @param fn a `function(x)` called once with the task's value, or with
+#'   the classed condition on failure.
+#'
+#' @return the task handle, invisibly.
+#'
+#' @examplesIf interactive() && requireNamespace("later", quietly = TRUE)
+#' p <- mizu_pool(1L)
+#' mizu_task_handler(mizu_submit(p, 42L), print)
+#' later::run_now()
+#' mizu_pool_stop(p)
+#'
+#' @export
+mizu_task_handler <- function(task, fn) {
+  notify_requires_later("mizu_task_handler()")
+  if (!is.function(fn)) {
+    stop("mizu: fn must be a function", call. = FALSE)
+  }
+  pool <- .Call(mizu_task_pool, task)
+  tstate <- .Call(mizu_pool_task_state, task)
+  if (tstate == "collected" || tstate == "dropped") {
+    stop("mizu: task handle is already collected", call. = FALSE)
+  }
+  state <- notify_pool_state(pool)
+  w <- new.env(parent = emptyenv())
+  w[["kind"]] <- "taskh"
+  w[["tasks"]] <- list(task)
+  ready <- pool_enroll(state, w, w[["tasks"]])
+  w[["resolve"]] <- fn
+  w[["reject"]] <- fn
+  if (ready) {
+    settle_waiter(w)
+  }
+  invisible(task)
 }
 
 #' @rdname mizu_collect_all_async

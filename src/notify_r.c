@@ -55,11 +55,12 @@ typedef struct ntfy_ent_s {
   SEXP wrap;                      /* map: the morsel wrap; else R_NilValue */
 } ntfy_ent;
 
-enum { NTFY_TASK = 0, NTFY_ANY = 1, NTFY_ALL = 2, NTFY_MAP = 3 };
+enum { NTFY_TASK = 0, NTFY_ANY = 1, NTFY_ALL = 2, NTFY_MAP = 3,
+       NTFY_TASKH = 4 };
 
-static const char *const ntfy_labels[4] = {
+static const char *const ntfy_labels[5] = {
   "as.promise()", "mizu_collect_any_async()", "mizu_collect_all_async()",
-  "a map promise"
+  "a map promise", "a task handler"
 };
 
 static void ntfy_reg_free(mizu_r_notify *rec);
@@ -410,6 +411,7 @@ static int ent_done(mizu_pool *p, const ntfy_ent *e) {
   const uint64_t *w = ent_words(e);
   switch (e->mode) {
   case NTFY_TASK:
+  case NTFY_TASKH:
     return task_term(p, w[0]);
   case NTFY_ANY:
     for (uint32_t i = 0; i < e->n; i++)
@@ -563,7 +565,8 @@ SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
   if (TYPEOF(state) != ENVSXP || TYPEOF(w) != ENVSXP)
     Rf_error("mizu: expected a notify state env and a waiter env");
   const int mode = Rf_asInteger(mode_sexp);
-  if (mode < NTFY_TASK || mode > NTFY_MAP) Rf_error("mizu: invalid waiter mode");
+  if (mode < NTFY_TASK || mode > NTFY_TASKH)
+    Rf_error("mizu: invalid waiter mode");
   if (TYPEOF(tasks) != VECSXP || XLENGTH(tasks) == 0)
     Rf_error("mizu: tasks must be a non-empty list of task handles");
   const R_xlen_t n = XLENGTH(tasks);

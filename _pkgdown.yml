@@ -33,6 +33,7 @@ reference:
     contents:
       - mizu_recv_async
       - mizu_collect_all_async
+      - mizu_task_handler
   - title: Monitoring and debugging
     contents:
       - mizu_pool_status

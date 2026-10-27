@@ -454,6 +454,67 @@ test_that("as.promise on an already-collected task errors", {
   expect_error(promises::as.promise(t), "already collected")
 })
 
+test_that("a task handler receives the value, or the condition on failure", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  got <- NULL
+  t <- mizu_submit(p[["ctrl"]], 42L)
+  mizu_task_handler(t, function(x) got <<- x)
+  pool_step(p)
+  expect_true(pump_until(function() !is.null(got)))
+  expect_identical(got, 42L)
+  err <- NULL
+  t2 <- mizu_submit(p[["ctrl"]], stop("boom"))
+  mizu_task_handler(t2, function(x) err <<- x)
+  pool_step(p)
+  expect_true(pump_until(function() !is.null(err)))
+  expect_s3_class(err, "simpleError")
+  expect_match(conditionMessage(err), "boom")
+})
+
+test_that("a task handler on an already-terminal task fires at the call site", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 9L)
+  pool_step(p)
+  got <- NULL
+  mizu_task_handler(t, function(x) got <<- x)
+  expect_identical(got, 9L)
+})
+
+test_that("a handler-enrolled task refuses other consumers, and vice versa", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1L) # unstepped: stays pending
+  mizu_task_handler(t, identity)
+  expect_error(mizu_task_handler(t, identity), "task handler")
+  expect_error(promises::as.promise(t), "task handler")
+  expect_error(mizu_collect(t, 0), "task handler")
+  got <- NULL
+  t2 <- mizu_submit(p[["ctrl"]], 2L)
+  o <- observe(promises::as.promise(t2))
+  expect_error(mizu_task_handler(t2, identity), "as.promise")
+  pool_step(p)
+  pool_step(p)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, 2L)
+})
+
+test_that("mizu_task_handler validates its arguments", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1L)
+  expect_error(mizu_task_handler(t, 1), "fn must be a function")
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 1L)
+  expect_error(mizu_task_handler(t, identity), "already collected")
+  expect_error(mizu_task_handler(1, identity), "not a task handle")
+})
+
 test_that("collect_all_async resolves once, input order with names carried", {
   skip_if_no_promises()
   p <- pool_pair()
@@ -693,7 +754,7 @@ test_that("the notify .Call entries validate their handles", {
   expect_error(enroll(ctrl, st, w, list(), 0L, NULL), "non-empty list")
   expect_error(enroll(ctrl, st, w, list(1), 0L, NULL), "not a task handle")
   expect_error(enroll(ctrl, st, w, list(t2), 0L, NULL), "same pool handle")
-  expect_error(enroll(ctrl, st, w, list(t1), 4L, NULL), "invalid waiter mode")
+  expect_error(enroll(ctrl, st, w, list(t1), 5L, NULL), "invalid waiter mode")
   expect_error(.Call(mizu:::mizu_pool_notify_find, 1), "not a task handle")
   expect_error(.Call(mizu:::mizu_pool_notify_scan, 1, 64L), "not a pool handle")
   expect_error(.Call(mizu:::mizu_pool_notify_remove, 1, w), "not a pool handle")
