@@ -200,15 +200,17 @@ test_that("event-driven consumers report against the sync rows", {
   # one promise per collection: the async counterpart of collect_all
   p <- mizu_pool(1L, max_submitters = 2L, result_slots = 20480L)
   exprs <- as.list(rep(1L, n))
-  v <- NULL
   coll <- function() {
     for (j in seq_len(k)) {
+      # the flag must bind locally ahead of the callback: an outer binding
+      # left over from a previous coll() call reads non-NULL and the pump
+      # is skipped, so the burst's collection lags a burst behind
+      v <- NULL
       pr <- mizu_collect_all_async(mizu_submit_batch(p, exprs))
       promises::then(pr, function(x) v <<- x)
       while (is.null(v)) {
         later::run_now(1)
       }
-      v <- NULL
     }
   }
   coll() # warm-up

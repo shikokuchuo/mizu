@@ -399,12 +399,13 @@ with_pool(
     })
     note_rate("event-driven", "mizu collect_all_async", k * n, function() {
       for (j in seq_len(k)) {
+        # local flag ahead of the callback, as test-benchmark.R's row
+        v <- NULL
         pr <- mizu_collect_all_async(mizu_submit_batch(p, exprs))
         promises::then(pr, function(x) v <<- x)
         while (is.null(v)) {
           later::run_now(1)
         }
-        v <- NULL
       }
     })
   },
