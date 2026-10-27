@@ -298,6 +298,24 @@ test_that("event-driven bursts report the FIFO-depth and per-wake scan regimes",
   pertask()
   el <- proc.time()[[3]] - t0
   cat(sprintf("async per-task promises (%d tasks): %.0f tasks/s\n", n, n / el))
+
+  # per-task handlers: the promise-free consumer — the enroll, the boxed
+  # settle, one fn call; no R6 promise per task
+  h <- new.env(parent = emptyenv())
+  h$n <- 0L
+  incr <- function(x) h$n <- h$n + 1L
+  perh <- function() {
+    h$n <- 0L
+    for (i in seq_len(n)) {
+      mizu_task_handler(mizu_submit(p, 1L), incr)
+    }
+    expect_true(pump_until(function() h$n == n, timeout = 30))
+  }
+  perh() # warm-up
+  t0 <- proc.time()[[3]]
+  perh()
+  el <- proc.time()[[3]] - t0
+  cat(sprintf("async per-task handlers (%d tasks): %.0f tasks/s\n", n, n / el))
   expect_true(mizu_pool_stop(p))
 })
 
