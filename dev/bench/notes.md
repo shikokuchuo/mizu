@@ -1749,3 +1749,51 @@ mizu_collect_all_async 2.54M tasks/s vs the sync collect_all row at
 streaming, map, serialize, plan).
 
 Status: full suite green (5200 pass, 0 fail, 6 skips).
+
+## 2026-10-27 — async rows join the report suite (tests/testthat/test-benchmark.R)
+
+The section 2b event-driven rows move into the report-only test suite
+ahead of the async audit's efficiency work, joined by three regime
+rows: deep FIFO (4,000 pending recv promises, one burst — the
+pending-queue and per-message promise cost at depth), many waiters (64
+concurrent collections — the per-wake scan on the submitter's one
+coalescing word), and per-task promises (one enrollment per task — the
+enroll/settle cost the batch forms amortize). First recordings on a
+non-quiet machine; the rows exist for A/B, so deltas from here matter
+more than the absolutes.
+
+Results: channel armed 599k rt/s; channel batch handler 11.1M msg/s;
+collect_all_async 2.44M tasks/s; deep FIFO 761 us/msg; many waiters
+99.2k tasks/s; per-task promises 3.9k tasks/s. The three regime rows
+sit far below the batched forms as the audit predicts (the O(n^2) FIFO
+churn, the per-wake all-waiter scans, and per-enrollment arms).
+
+Status: the two new tests pass (8/8); suite not re-run (test-only
+change).
+
+## 2026-10-27 — async efficiency: linked-list registries, C verdicts, exact-size bursts [(with libmizu notify efficiency)]
+
+The async audit's R-side findings land: the channel FIFO and the pool
+waiter registry are env linked lists (a list paid a vector copy per op
+either end — the deep-FIFO burst was O(n^2)); the drain's per-waiter
+probe is one C verdict call (mizu_pool_waiter_terminal, early-exit
+any/all) where the old form allocated a logical per task per wake and
+re-scanned it in R; recv_batch(timeout = 0) sizes its out vector from
+the new core mizu_channel_avail accessor (no cap-size allocation +
+shrink per burst); the drain hoists mode/batch out of the per-item
+loop, calls the .Call recv directly, and reads the clock every 64
+items; the requireNamespace probes memoize. Core-side (vendored): the
+pool publish's coalescing-word RMW is load-gated, re-arms of a
+continuously armed word skip the endpoint drain, and the tx opens
+before the edge is claimed (a lost-wake hole on open failure).
+
+Results (A/B vs the morning's first recordings, best of the day's
+runs): deep FIFO 761 -> 324-394 us/msg (~2x); per-task promises 3.9k ->
+7.3-7.9k tasks/s (~2x); batch handler 11.1M -> 14.3M msg/s (+29%);
+many waiters 99.2k -> 110-142k tasks/s; collect_all_async 2.44M ->
+2.3-3.3M tasks/s (band, flat); channel armed 599k -> 585-633k rt/s
+(flat, as designed — one signal per run).
+
+Status: full suite green (5340 pass, 0 fail, 10 skips — fork/system-
+library/macOS skips; the pymizu venv on PATH ran the cross-language
+legs).

@@ -406,3 +406,30 @@ SEXP mizu_pool_tasks_terminal(SEXP tasks) {
   UNPROTECT(1);
   return out;
 }
+
+/* The per-waiter verdicts behind the drain's scans: one .Call, no
+   per-task vector — mode 0 the first task, 1 any terminal, 2 all
+   terminal (the collective forms early-exit). */
+SEXP mizu_pool_waiter_terminal(SEXP tasks, SEXP mode) {
+  mizu_task *ts;
+  mizu_r_handle *h;
+  R_xlen_t n;
+  mizu_pool *p = ntfy_tasks_get(tasks, &ts, &h, &n);
+  int done;
+  switch (Rf_asInteger(mode)) {
+  case 0:
+    done = mizu_pool_task_state(p, &ts[0]) != MIZU_RS_PENDING;
+    break;
+  case 1:
+    done = 0;
+    for (R_xlen_t i = 0; i < n && !done; i++)
+      done = mizu_pool_task_state(p, &ts[i]) != MIZU_RS_PENDING;
+    break;
+  default:
+    done = 1;
+    for (R_xlen_t i = 0; i < n && done; i++)
+      done = mizu_pool_task_state(p, &ts[i]) != MIZU_RS_PENDING;
+    break;
+  }
+  return Rf_ScalarLogical(done);
+}

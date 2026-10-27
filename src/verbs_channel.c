@@ -399,13 +399,21 @@ SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
   mizu_channel *c = (mizu_channel *) h->core;
   int n = Rf_asInteger(n_sexp);
   if (n < 1) Rf_error("mizu: n must be at least 1");
-  SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
-  size_t count = 0;
+  double ms = mizu_timeout_ms(mizu_r_timeout_arg(timeout));
   /* the consumer-side boundary collection and a fresh decline slot (verbs.c) */
   mizu_r_recv_begin(h);
+  /* the exact-size form: a non-blocking call sizes the out vector from
+     availability (only this consumer shrinks it) instead of allocating the
+     cap and shrinking — the drain's steady state */
+  if (ms == 0) {
+    size_t avail = mizu_channel_avail(c);
+    if (avail == 0) return status_sentinel(MIZU_TIMEOUT);
+    if (avail < (size_t) n) n = (int) avail;
+  }
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
+  size_t count = 0;
   mizu_status st = mizu_channel_recv_batch_fn(c, (size_t) n, &count,
-                                            mizu_vec_sink, out,
-                                            mizu_timeout_ms(mizu_r_timeout_arg(timeout)));
+                                            mizu_vec_sink, out, ms);
   if (st == MIZU_ERR) {
     /* keep the protect balance on the decline's signal path */
     if (VECTOR_ELT(h->prot, h->decline_slot) != R_NilValue) UNPROTECT(1);

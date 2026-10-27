@@ -828,6 +828,7 @@ SEXP mizu_pool_notify_arm_call(SEXP, SEXP);
 SEXP mizu_pool_notify_disarm_call(SEXP);
 SEXP mizu_pool_task_notify_call(SEXP, SEXP);
 SEXP mizu_pool_tasks_terminal(SEXP);
+SEXP mizu_pool_waiter_terminal(SEXP, SEXP);
 /* map.c */
 SEXP mizu_map_eligible(SEXP);
 SEXP mizu_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);

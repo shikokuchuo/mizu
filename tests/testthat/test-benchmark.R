@@ -122,6 +122,183 @@ test_that("pool task dispatch reports against the mirai baseline", {
   expect_true(mizu_pool_stop(p))
 })
 
+# The event-driven surface (notify endpoints -> later/promises). The rows
+# below report against their sync anchors (the pipelined and collect_all
+# rows above); dated records live in dev/bench/notes.md.
+
+test_that("event-driven consumers report against the sync rows", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  skip_if_no_promises()
+  n <- 10000L
+  k <- 10L
+
+  # armed: a recv promise pending the whole run — the producer pays one
+  # endpoint signal total (the first publish clears the edge-triggered
+  # bit); the rate must sit in the band of the unarmed pipelined row
+  ch <- mizu_channel(echo_expr)
+  armed <- function() {
+    mizu_recv_async(ch)
+    for (j in seq_len(k)) {
+      for (i in seq_len(n)) {
+        mizu_send(ch, 1L)
+        mizu_recv(ch, 30)
+      }
+    }
+    mizu_send(ch, 1L)
+    later::run_now(0) # settles the pending promise, disarming the next rep
+  }
+  armed() # warm-up
+  t0 <- proc.time()[[3]]
+  armed()
+  rate <- k * n / (proc.time()[[3]] - t0)
+  cat(sprintf("\nchannel armed (one pending recv promise): %.0f rt/s\n", rate))
+  expect_true(mizu_close(ch, timeout = 10))
+
+  # batch handler: one R call per burst, per-message cost back to ~1x
+  # transport; the pump is part of the form (resolution at the loop turn)
+  ch <- mizu_channel(
+    quote(
+      repeat {
+        xs <- mizu_recv_batch(ch, n = 4096L, timeout = 30)
+        if (inherits(xs, "mizu_sentinel")) {
+          break
+        }
+        mizu_send_batch(ch, xs)
+      }
+    )
+  )
+  got <- new.env()
+  got$n <- 0L
+  mizu_recv_handler(
+    ch,
+    function(xs) got$n <- got$n + length(xs),
+    batch = TRUE
+  )
+  batch <- as.list(rep(1L, 4096L))
+  handler <- function() {
+    base <- got$n
+    for (j in seq_len(k)) {
+      sent <- 0L
+      while (sent < n) {
+        want <- min(4096L, n - sent)
+        sent <- sent + mizu_send_batch(ch, batch[seq_len(want)])
+      }
+      while (got$n - base < j * n) {
+        later::run_now(1)
+      }
+    }
+  }
+  handler() # warm-up
+  t0 <- proc.time()[[3]]
+  handler()
+  rate <- k * n / (proc.time()[[3]] - t0)
+  mizu_recv_handler(ch, NULL)
+  cat(sprintf("channel batch handler: %.0f msg/s\n", rate))
+  expect_true(mizu_close(ch, timeout = 10))
+
+  # one promise per collection: the async counterpart of collect_all
+  p <- mizu_pool(1L, max_submitters = 2L, result_slots = 20480L)
+  exprs <- as.list(rep(1L, n))
+  v <- NULL
+  coll <- function() {
+    for (j in seq_len(k)) {
+      pr <- mizu_collect_all_async(mizu_submit_batch(p, exprs))
+      promises::then(pr, function(x) v <<- x)
+      while (is.null(v)) {
+        later::run_now(1)
+      }
+      v <- NULL
+    }
+  }
+  coll() # warm-up
+  t0 <- proc.time()[[3]]
+  coll()
+  rate <- k * n / (proc.time()[[3]] - t0)
+  cat(sprintf("collect_all_async: %.0f tasks/s\n", rate))
+  expect_true(mizu_pool_stop(p))
+})
+
+test_that("event-driven bursts report the FIFO-depth and per-wake scan regimes", {
+  skip_on_cran()
+  skip_if_no_child_mizu()
+  skip_if_no_promises()
+
+  # deep FIFO: d recv promises pending, one burst delivered — per-message
+  # promise resolution plus the pending-queue cost at depth
+  ch <- mizu_channel(echo_expr)
+  d <- 4000L
+  deep <- function() {
+    obs <- lapply(seq_len(d), function(i) observe(mizu_recv_async(ch)))
+    for (i in seq_len(d)) {
+      mizu_send(ch, 1L)
+    }
+    expect_true(pump_until(
+      function() all(vapply(obs, settled, TRUE)),
+      timeout = 30
+    ))
+  }
+  deep() # warm-up
+  t0 <- proc.time()[[3]]
+  deep()
+  el <- proc.time()[[3]] - t0
+  cat(sprintf(
+    "\nasync deep FIFO (%d pending recvs, one burst): %.2f us/msg\n",
+    d,
+    el / d * 1e6
+  ))
+  expect_true(mizu_close(ch, timeout = 10))
+
+  # many waiters: w concurrent collections — every wake scans every
+  # enrolled waiter on the submitter's one coalescing word
+  p <- mizu_pool(1L, max_submitters = 2L)
+  w <- 64L
+  tpw <- 31L # 64 x 31 = 1984 <= the 2048 result-slot share
+  many <- function() {
+    prs <- replicate(
+      w,
+      mizu_collect_all_async(lapply(seq_len(tpw), function(i) {
+        mizu_submit(p, 1L)
+      })),
+      simplify = FALSE
+    )
+    obs <- lapply(prs, observe)
+    expect_true(pump_until(
+      function() all(vapply(obs, settled, TRUE)),
+      timeout = 30
+    ))
+  }
+  many() # warm-up
+  t0 <- proc.time()[[3]]
+  many()
+  el <- proc.time()[[3]] - t0
+  cat(sprintf(
+    "async many waiters (%d collections x %d tasks): %.0f tasks/s\n",
+    w,
+    tpw,
+    w * tpw / el
+  ))
+
+  # per-task promises: one enrollment per task — the enroll/settle cost
+  # the batch forms above amortize
+  n <- 2000L
+  pertask <- function() {
+    obs <- lapply(seq_len(n), function(i) {
+      observe(promises::as.promise(mizu_submit(p, 1L)))
+    })
+    expect_true(pump_until(
+      function() all(vapply(obs, settled, TRUE)),
+      timeout = 30
+    ))
+  }
+  pertask() # warm-up
+  t0 <- proc.time()[[3]]
+  pertask()
+  el <- proc.time()[[3]] - t0
+  cat(sprintf("async per-task promises (%d tasks): %.0f tasks/s\n", n, n / el))
+  expect_true(mizu_pool_stop(p))
+})
+
 test_that("mizu_map reports against serial lapply and per-task dispatch", {
   skip_on_cran() # host + 2 workers exceeds 2 cores
   skip_if_no_child_mizu()

@@ -150,6 +150,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_pool_notify_disarm",     (DL_FUNC) &mizu_pool_notify_disarm_call,   1},
   {"mizu_pool_task_notify",       (DL_FUNC) &mizu_pool_task_notify_call,     2},
   {"mizu_pool_tasks_terminal",    (DL_FUNC) &mizu_pool_tasks_terminal,       1},
+  {"mizu_pool_waiter_terminal",   (DL_FUNC) &mizu_pool_waiter_terminal,      2},
   {"mizu_map_eligible",           (DL_FUNC) &mizu_map_eligible,              1},
   {"mizu_map_stage",              (DL_FUNC) &mizu_map_stage,                 6},
   {"mizu_map_open",               (DL_FUNC) &mizu_map_open,                  2},

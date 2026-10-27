@@ -20,28 +20,41 @@
 notify_quantum_n <- 2048L
 notify_quantum_secs <- 0.001
 
+# the requireNamespace probes memoize (they ran twice per async verb
+# call); the env's fields mutate where a namespace binding could not
+notify_pkgs <- new.env(parent = emptyenv())
+
 notify_requires <- function() {
-  if (!requireNamespace("later", quietly = TRUE)) {
-    stop(
-      "mizu: the async verbs require the 'later' package to be installed",
-      call. = FALSE
-    )
+  if (!isTRUE(notify_pkgs[["later"]])) {
+    if (!requireNamespace("later", quietly = TRUE)) {
+      stop(
+        "mizu: the async verbs require the 'later' package to be installed",
+        call. = FALSE
+      )
+    }
+    notify_pkgs[["later"]] <- TRUE
   }
-  if (!requireNamespace("promises", quietly = TRUE)) {
-    stop(
-      "mizu: the async verbs require the 'promises' package to be installed",
-      call. = FALSE
-    )
+  if (!isTRUE(notify_pkgs[["promises"]])) {
+    if (!requireNamespace("promises", quietly = TRUE)) {
+      stop(
+        "mizu: the async verbs require the 'promises' package to be installed",
+        call. = FALSE
+      )
+    }
+    notify_pkgs[["promises"]] <- TRUE
   }
   invisible()
 }
 
 notify_requires_later <- function() {
-  if (!requireNamespace("later", quietly = TRUE)) {
-    stop(
-      "mizu: mizu_recv_handler() requires the 'later' package to be installed",
-      call. = FALSE
-    )
+  if (!isTRUE(notify_pkgs[["later"]])) {
+    if (!requireNamespace("later", quietly = TRUE)) {
+      stop(
+        "mizu: mizu_recv_handler() requires the 'later' package to be installed",
+        call. = FALSE
+      )
+    }
+    notify_pkgs[["later"]] <- TRUE
   }
   invisible()
 }
@@ -62,14 +75,17 @@ cancel_timer <- function(w) {
 # The per-channel notify state env (prot slot [3] of the handle): mode
 # NULL | "promise" | "handler" (the two consumer forms are exclusive),
 # the pending-promise FIFO, the handler and its batch flag, and the
-# .drain closure the C bridge calls.
+# .drain closure the C bridge calls. The FIFO is an env linked list
+# (fifo_head / fifo_tail, w[["next"]] links): O(1) push and pop — a list
+# paid a vector copy per op either end, quadratic per burst at depth.
 notify_chan_state <- function(ch) {
   st <- .Call(mizu_chan_notify_peek, ch)
   if (is.null(st)) {
     st <- new.env(parent = emptyenv())
     st[["ch"]] <- ch
     st[["mode"]] <- NULL
-    st[["fifo"]] <- list()
+    st[["fifo_head"]] <- NULL
+    st[["fifo_tail"]] <- NULL
     st[["batch"]] <- FALSE
     st[[".drain"]] <- function() chan_drain(st)
     .Call(mizu_chan_notify_set, ch, st)
@@ -79,19 +95,62 @@ notify_chan_state <- function(ch) {
 
 chan_disarm <- function(state) {
   state[["mode"]] <- NULL
-  state[["fifo"]] <- list()
+  state[["fifo_head"]] <- NULL
+  state[["fifo_tail"]] <- NULL
   state[["fn"]] <- NULL
   .Call(mizu_chan_notify_disarm, state[["ch"]])
   invisible()
 }
 
+# Push one waiter (envs carry their resolve/reject; w[["next"]] links).
+chan_fifo_push <- function(state, w) {
+  w[["next"]] <- NULL
+  if (is.null(state[["fifo_head"]])) {
+    state[["fifo_head"]] <- w
+  } else {
+    state[["fifo_tail"]][["next"]] <- w
+  }
+  state[["fifo_tail"]] <- w
+  invisible()
+}
+
+# Pop the head waiter, or NULL when empty.
+chan_fifo_pop <- function(state) {
+  w <- state[["fifo_head"]]
+  if (is.null(w)) {
+    return(NULL)
+  }
+  state[["fifo_head"]] <- w[["next"]]
+  if (is.null(state[["fifo_head"]])) {
+    state[["fifo_tail"]] <- NULL
+  }
+  w[["next"]] <- NULL
+  w
+}
+
 # Remove a waiter from the FIFO by identity (its timer fired, or it
 # settled); disarm when the FIFO runs empty.
 chan_fifo_remove <- function(state, w) {
-  fifo <- state[["fifo"]]
-  keep <- !vapply(fifo, identical, TRUE, w)
-  state[["fifo"]] <- fifo[keep]
-  if (!any(keep) && identical(state[["mode"]], "promise")) {
+  prev <- NULL
+  cur <- state[["fifo_head"]]
+  while (!is.null(cur)) {
+    if (identical(cur, w)) {
+      nxt <- cur[["next"]]
+      if (is.null(prev)) {
+        state[["fifo_head"]] <- nxt
+      } else {
+        prev[["next"]] <- nxt
+      }
+      if (identical(state[["fifo_tail"]], cur)) {
+        state[["fifo_tail"]] <- prev
+      }
+      cur[["next"]] <- NULL
+      break
+    }
+    prev <- cur
+    cur <- cur[["next"]]
+  }
+  if (is.null(state[["fifo_head"]]) && identical(state[["mode"]], "promise")) {
     chan_disarm(state)
   }
   invisible()
@@ -106,11 +165,12 @@ chan_terminal <- function(state, cond) {
     chan_disarm(state)
     fn(cond)
   } else {
-    fifo <- state[["fifo"]]
+    w <- state[["fifo_head"]]
     chan_disarm(state)
-    for (w in fifo) {
+    while (!is.null(w)) {
       cancel_timer(w)
       w[["reject"]](cond)
+      w <- w[["next"]]
     }
   }
   invisible()
@@ -136,28 +196,30 @@ chan_call_fn <- function(state, arg) {
 chan_drain <- function(state) {
   # a timer can disarm between the watch's signal and this callback: the
   # mode is stable within a pass (callbacks never fire mid-loop), but it
-  # may be gone at entry
-  if (is.null(state[["mode"]])) {
+  # may be gone at entry — read it (and the batch flag) once, not per item
+  mode <- state[["mode"]]
+  if (is.null(mode)) {
     return(invisible())
   }
+  batch <- isTRUE(state[["batch"]])
   t0 <- mono_time()
   items <- 0L
   repeat {
     # the FIFO can empty mid-pass with messages still in the ring: disarm
     # ahead of consuming anything with nobody waiting (the next arm's
     # availability report picks those messages up)
-    if (identical(state[["mode"]], "promise") && !length(state[["fifo"]])) {
+    if (identical(mode, "promise") && is.null(state[["fifo_head"]])) {
       chan_disarm(state)
       return(invisible())
     }
-    x <- if (identical(state[["mode"]], "handler") && state[["batch"]]) {
+    x <- if (identical(mode, "handler") && batch) {
       tryCatch(
         .Call(mizu_channel_recv_batch, state[["ch"]], notify_quantum_n, 0),
         mizu_error_python_payload = identity
       )
     } else {
       tryCatch(
-        mizu_recv(state[["ch"]], 0),
+        .Call(mizu_channel_recv, state[["ch"]], 0),
         mizu_error_python_payload = identity
       )
     }
@@ -182,36 +244,33 @@ chan_drain <- function(state) {
       # the foreign decline: consumed, the channel keeps flowing — reject
       # the head waiter / deliver to the handler as the condition
       items <- items + 1L
-      if (identical(state[["mode"]], "handler")) {
+      if (identical(mode, "handler")) {
         chan_call_fn(state, x)
       } else {
-        w <- state[["fifo"]][[1L]]
-        state[["fifo"]] <- state[["fifo"]][-1L]
+        w <- chan_fifo_pop(state)
         cancel_timer(w)
         w[["reject"]](x)
       }
     } else {
       items <- items +
-        if (
-          identical(state[["mode"]], "handler") &&
-            state[["batch"]]
-        ) {
+        if (identical(mode, "handler") && batch) {
           chan_call_fn(state, x)
           length(x)
-        } else if (identical(state[["mode"]], "handler")) {
+        } else if (identical(mode, "handler")) {
           chan_call_fn(state, x)
           1L
         } else {
-          w <- state[["fifo"]][[1L]]
-          state[["fifo"]] <- state[["fifo"]][-1L]
+          w <- chan_fifo_pop(state)
           cancel_timer(w)
           w[["resolve"]](x)
           1L
         }
     }
+    # the clock read strides (per item it was a .Call per message): the
+    # quantum's seconds bound is advisory
     if (
       items >= notify_quantum_n ||
-        mono_time() - t0 >= notify_quantum_secs
+        (items %% 64L == 0L && mono_time() - t0 >= notify_quantum_secs)
     ) {
       later::later(state[[".drain"]], 0)
       return(invisible())
@@ -316,9 +375,7 @@ mizu_recv_async <- function(ch, timeout = Inf) {
     w <- new.env(parent = emptyenv())
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject
-    fifo <- state[["fifo"]]
-    fifo[[length(fifo) + 1L]] <- w
-    state[["fifo"]] <- fifo
+    chan_fifo_push(state, w)
     if (is.finite(timeout)) {
       w[["timer"]] <- later::later(
         function() {
@@ -393,13 +450,16 @@ notify_chan_flush_closed <- function(ch) {
 # registry and the .drain closure. One coalescing notify word serves
 # every outstanding waiter of the submitter — each enrolled task carries
 # the NOTIFY announce on its own result slot, and a publish to any of
-# them signals the endpoint once per burst.
+# them signals the endpoint once per burst. The registry is the same env
+# linked list as the channel FIFO: enrollment pushes at the tail, the
+# drain unlinks settled waiters, both O(1).
 notify_pool_state <- function(pool) {
   st <- .Call(mizu_pool_notify_peek, pool)
   if (is.null(st)) {
     st <- new.env(parent = emptyenv())
     st[["pool"]] <- pool
-    st[["waiters"]] <- list()
+    st[["w_head"]] <- NULL
+    st[["w_tail"]] <- NULL
     st[[".drain"]] <- function() pool_drain(st)
     .Call(mizu_pool_notify_set, pool, st)
   }
@@ -411,15 +471,50 @@ pool_disarm <- function(state) {
   invisible()
 }
 
-# The completion probe per waiter: the C terminal scan (atomic loads
-# only) — per task for the single form, any/all for the collectives, and
-# the terminal-or-abandoned runner verdicts for a map.
+pool_waiter_push <- function(state, w) {
+  w[["next"]] <- NULL
+  if (is.null(state[["w_head"]])) {
+    state[["w_head"]] <- w
+  } else {
+    state[["w_tail"]][["next"]] <- w
+  }
+  state[["w_tail"]] <- w
+  invisible()
+}
+
+# Unlink a waiter by identity (a timeout fires); FALSE when absent.
+pool_waiter_remove <- function(state, w) {
+  prev <- NULL
+  cur <- state[["w_head"]]
+  while (!is.null(cur)) {
+    if (identical(cur, w)) {
+      nxt <- cur[["next"]]
+      if (is.null(prev)) {
+        state[["w_head"]] <- nxt
+      } else {
+        prev[["next"]] <- nxt
+      }
+      if (identical(state[["w_tail"]], cur)) {
+        state[["w_tail"]] <- prev
+      }
+      cur[["next"]] <- NULL
+      return(TRUE)
+    }
+    prev <- cur
+    cur <- cur[["next"]]
+  }
+  FALSE
+}
+
+# The completion probe per waiter: the C verdicts (atomic loads only, no
+# per-task vector) — per task for the single form, any/all for the
+# collectives, and the terminal-or-abandoned runner verdicts for a map.
 waiter_done <- function(w) {
   switch(
     w[["kind"]],
-    task = .Call(mizu_pool_tasks_terminal, w[["tasks"]])[[1L]],
-    any = any(.Call(mizu_pool_tasks_terminal, w[["tasks"]])),
-    all = all(.Call(mizu_pool_tasks_terminal, w[["tasks"]])),
+    task = .Call(mizu_pool_waiter_terminal, w[["tasks"]], 0L),
+    any = .Call(mizu_pool_waiter_terminal, w[["tasks"]], 1L),
+    all = .Call(mizu_pool_waiter_terminal, w[["tasks"]], 2L),
     map = {
       hs <- w[["map"]][["st"]][["handles"]]
       hs <- hs[!vapply(hs, is.null, TRUE)]
@@ -490,7 +585,7 @@ settle_waiter <- function(state, w) {
   invisible()
 }
 
-# The main-thread pool drain: one C scan per waiter per pass, settling
+# The main-thread pool drain: one C verdict per waiter per pass, settling
 # the completed, bounded per callback. The edge-triggered submitter word
 # is cleared by the publish that woke the drain, so a pass that ends with
 # a non-empty pending set re-arms and re-checks — the announce/re-check
@@ -500,35 +595,58 @@ pool_drain <- function(state) {
   t0 <- mono_time()
   items <- 0L
   repeat {
-    i <- 1L
-    while (i <= length(state[["waiters"]])) {
-      w <- state[["waiters"]][[i]]
+    prev <- NULL
+    w <- state[["w_head"]]
+    while (!is.null(w)) {
+      nxt <- w[["next"]]
       if (!waiter_done(w)) {
-        i <- i + 1L
+        prev <- w
+        w <- nxt
         next
       }
-      state[["waiters"]][i] <- NULL
+      if (is.null(prev)) {
+        state[["w_head"]] <- nxt
+      } else {
+        prev[["next"]] <- nxt
+      }
+      if (identical(state[["w_tail"]], w)) {
+        state[["w_tail"]] <- prev
+      }
+      w[["next"]] <- NULL
       settle_waiter(state, w)
       items <- items + 1L
+      # the clock read strides (per settle it was a .Call each)
       if (
         items >= notify_quantum_n ||
-          mono_time() - t0 >= notify_quantum_secs
+          (items %% 64L == 0L && mono_time() - t0 >= notify_quantum_secs)
       ) {
         later::later(state[[".drain"]], 0)
         return(invisible())
       }
+      w <- nxt
     }
-    if (!length(state[["waiters"]])) {
+    if (is.null(state[["w_head"]])) {
       pool_disarm(state)
       return(invisible())
     }
     .Call(mizu_pool_notify_arm, state[["pool"]], state)
     # the re-check: a publish that landed between the last scan and the
     # re-arm signals nothing (it saw the cleared word) — scan once more
-    if (!any(vapply(state[["waiters"]], waiter_done, TRUE))) {
+    if (!pool_any_done(state)) {
       return(invisible())
     }
   }
+}
+
+pool_any_done <- function(state) {
+  w <- state[["w_head"]]
+  while (!is.null(w)) {
+    if (waiter_done(w)) {
+      return(TRUE)
+    }
+    w <- w[["next"]]
+  }
+  FALSE
 }
 
 # The enrollment conflict check shared by every async form: a task
@@ -536,18 +654,20 @@ pool_drain <- function(state) {
 # it. Returns the matching waiter when `want` is the waiter's own kind
 # (as.promise's cached-promise lookup).
 notify_find_waiter <- function(state, task) {
-  for (w in state[["waiters"]]) {
+  w <- state[["w_head"]]
+  while (!is.null(w)) {
     for (t in w[["tasks"]]) {
       if (identical(t, task)) {
         return(w)
       }
     }
+    w <- w[["next"]]
   }
   NULL
 }
 
 notify_check_unenrolled <- function(state, tasks, verb) {
-  if (!length(state[["waiters"]])) {
+  if (is.null(state[["w_head"]])) {
     return(invisible())
   }
   for (task in tasks) {
@@ -573,7 +693,7 @@ notify_check_unenrolled <- function(state, tasks, verb) {
 # announce. The flag is the enrollment itself — it clears at settle.
 notify_check_collectable <- function(task) {
   st <- .Call(mizu_task_notify_state, task)
-  if (is.null(st) || !length(st[["waiters"]])) {
+  if (is.null(st) || is.null(st[["w_head"]])) {
     return(invisible())
   }
   w <- notify_find_waiter(st, task)
@@ -604,9 +724,7 @@ pool_announce_arm <- function(state, tasks) {
 }
 
 pool_enroll <- function(state, w) {
-  ws <- state[["waiters"]]
-  ws[[length(ws) + 1L]] <- w
-  state[["waiters"]] <- ws
+  pool_waiter_push(state, w)
   pool_drain(state)
   invisible()
 }
@@ -686,14 +804,11 @@ mizu_collect_all_async <- function(tasks, timeout = Inf) {
     if (is.finite(timeout)) {
       w[["timer"]] <- later::later(
         function() {
-          ws <- state[["waiters"]]
-          keep <- !vapply(ws, identical, TRUE, w)
-          if (all(keep)) {
+          if (!pool_waiter_remove(state, w)) {
             return(invisible())
           }
-          state[["waiters"]] <- ws[keep]
           .Call(mizu_pool_task_notify, tasks, FALSE)
-          if (!length(state[["waiters"]])) {
+          if (is.null(state[["w_head"]])) {
             pool_disarm(state)
           }
           reject(cond_timeout())
