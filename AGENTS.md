@@ -681,11 +681,11 @@ to shift every element’s stream by `offset`; results are batching- and
 steal-order-invariant. f is srcref-stripped at stage time by the C-level
 `mizu_strip_srcref` (`src/map.c` — the package has no Imports), and
 result assembly runs in C. The map region’s protocol half — the 128-byte
-header, the CLAIM-word claim CAS, AIMD batch sizing, reset/trim, and the
-lost-set scan — is the core’s morsel module (vendored `morsel.c`,
-`mizu_morsel_*`; magic `MIZM`); `src/map.c` keeps the descriptor stream,
-the x-section slices, the batch eval loop, and the gather. A view x (a
-received channel/pool view, a
+header, the CLAIM-word claim CAS, proportional batch sizing, reset/trim,
+and the lost-set scan — is the core’s morsel module (vendored
+`morsel.c`, `mizu_morsel_*`; magic `MIZM`); `src/map.c` keeps the
+descriptor stream, the x-section slices, the batch eval loop, and the
+gather. A view x (a received channel/pool view, a
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector)
 rides the descriptor as its identifier via the wire hooks, and the batch
 loop reads elements straight off the shared pages (a `DATAPTR_OR_NULL`
@@ -747,11 +747,11 @@ to shift every element’s stream by `offset`; results are batching- and
 steal-order-invariant. f is srcref-stripped at stage time by the C-level
 `mizu_strip_srcref` (`src/map.c` — the package has no Imports), and
 result assembly runs in C. The map region’s protocol half — the 128-byte
-header, the CLAIM-word claim CAS, AIMD batch sizing, reset/trim, and the
-lost-set scan — is the core’s morsel module (vendored `morsel.c`,
-`mizu_morsel_*`; magic `MIZM`); `src/map.c` keeps the descriptor stream,
-the x-section slices, the batch eval loop, and the gather. A view x (a
-received channel/pool view, a
+header, the CLAIM-word claim CAS, proportional batch sizing, reset/trim,
+and the lost-set scan — is the core’s morsel module (vendored
+`morsel.c`, `mizu_morsel_*`; magic `MIZM`); `src/map.c` keeps the
+descriptor stream, the x-section slices, the batch eval loop, and the
+gather. A view x (a received channel/pool view, a
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector)
 rides the descriptor as its identifier via the wire hooks, and the batch
 loop reads elements straight off the shared pages (a `DATAPTR_OR_NULL`
