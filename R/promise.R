@@ -194,9 +194,10 @@ chan_call_fn <- function(state, arg) {
 # armed-and-sleeping (the watch fires on the next burst), or re-scheduled
 # (the quantum is spent and work remains).
 chan_drain <- function(state) {
-  # a timer can disarm between the watch's signal and this callback: the
-  # mode is stable within a pass (callbacks never fire mid-loop), but it
-  # may be gone at entry — read it (and the batch flag) once, not per item
+  # a timer can disarm between the watch's signal and this callback, so
+  # the mode may be gone at entry — read it (and the batch flag) once,
+  # not per item; the loop head re-checks it in handler mode, whose fn
+  # is user code run mid-pass
   mode <- state[["mode"]]
   if (is.null(mode)) {
     return(invisible())
@@ -205,6 +206,12 @@ chan_drain <- function(state) {
   t0 <- mono_time()
   items <- 0L
   repeat {
+    # fn can remove or replace the consumer mid-pass: end the pass — the
+    # replacement's own arm covers the ring, and a removed consumer is
+    # never re-armed below
+    if (identical(mode, "handler") && !identical(state[["mode"]], mode)) {
+      return(invisible())
+    }
     # the FIFO can empty mid-pass with messages still in the ring: disarm
     # ahead of consuming anything with nobody waiting (the next arm's
     # availability report picks those messages up)
@@ -314,8 +321,11 @@ chan_drain <- function(state) {
 #' A channel holds at most one of the two consumer forms at a time:
 #' installing a handler with promises pending, or requesting a promise
 #' with a handler installed, is an error. Mixing a blocking
-#' [mizu_recv()] with pending promises consumes in arrival order — the
-#' blocking call may take a message a promise was waiting on.
+#' [mizu_recv()] with either consumer form consumes in arrival order —
+#' the blocking call may take a message a promise or the handler was
+#' waiting on. A terminal it observes is observed by the consumer too:
+#' terminals are channel state, re-read on every receive, never
+#' consumed.
 #'
 #' Every main-thread drain is bounded per event-loop quantum and
 #' re-scheduled, so a saturated ring starves neither Shiny nor

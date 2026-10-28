@@ -130,6 +130,45 @@ test_that("handler and promise on one channel are mutually exclusive", {
   expect_true(pump_until(function() settled(o)))
 })
 
+test_that("a blocking recv mixed with a pending promise consumes in arrival order", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o <- observe(mizu_recv_async(p[["host"]]))
+  mizu_send(p[["peer"]], 1L)
+  expect_identical(mizu_recv(p[["host"]], 5), 1L) # the blocking call takes it
+  mizu_send(p[["peer"]], 2L)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, 2L) # the promise waited for the next
+})
+
+test_that("a blocking recv mixed with a handler consumes in arrival order", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  got <- new.env(parent = emptyenv())
+  got$xs <- list()
+  mizu_recv_handler(p[["host"]], function(x) {
+    got$xs[[length(got$xs) + 1L]] <- x
+  })
+  mizu_send(p[["peer"]], 1L)
+  expect_identical(mizu_recv(p[["host"]], 5), 1L) # the blocking call takes it
+  mizu_send(p[["peer"]], 2L)
+  expect_true(pump_until(function() length(got$xs) == 1L))
+  expect_identical(got$xs[[1L]], 2L) # the handler sees the next
+})
+
+test_that("a terminal observed by a blocking recv reaches the consumer too", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o <- observe(mizu_recv_async(p[["host"]]))
+  .Call(mizu:::mizu_channel_close_signal, p[["peer"]])
+  expect_s3_class(mizu_recv(p[["host"]], 5), "mizu_closed")
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_closed")
+})
+
 test_that("the channel async verbs validate their arguments", {
   skip_if_no_promises()
   p <- channel_pair()
@@ -349,6 +388,25 @@ test_that("a re-scheduled drain behind a handler removal exits cleanly", {
   later::run_now()
   expect_identical(got, rest)
   expect_identical(mizu_recv(p[["host"]], 0), rest + 1L) # the rest is untouched
+})
+
+test_that("a handler removing itself mid-drain ends the pass cleanly", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  got <- new.env(parent = emptyenv())
+  got$xs <- list()
+  mizu_recv_handler(p[["host"]], function(x) {
+    got$xs[[length(got$xs) + 1L]] <- x
+    mizu_recv_handler(p[["host"]], NULL)
+  })
+  mizu_send_batch(p[["peer"]], list(1L, 2L, 3L))
+  expect_true(pump_until(function() length(got$xs) == 1L))
+  later::run_now()
+  expect_identical(got$xs, list(1L)) # no NULL-fn call, no zombie re-arm
+  o <- observe(mizu_recv_async(p[["host"]]))
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, 2L) # the ring's remainder reaches the next consumer
 })
 
 test_that("a promise FIFO larger than the quantum resolves in FIFO order", {
