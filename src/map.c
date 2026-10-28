@@ -32,8 +32,8 @@ void mizu_map_init(void) {
 }
 
 /* The map region's protocol half — the 128-byte header, the morsel-state
-   words, the claim CAS, the AIMD batch sizing, reset/trim, and the lost-set
-   scan — is the core's morsel module (vendor/libmizu/morsel.c,
+   words, the claim CAS, the proportional batch sizing, reset/trim, and the
+   lost-set scan — is the core's morsel module (vendor/libmizu/morsel.c,
    mizu_morsel_*): the struct is the layout. This file keeps the language-
    coupled half: the descriptor stream, the x-section slices, the batch
    eval loop, and the result assembly. */
