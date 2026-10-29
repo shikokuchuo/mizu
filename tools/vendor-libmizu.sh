@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="930a2090e9e1bac8619964497ba93b86bb27592c"  # libmizu: Bind Linux notify endpoints under the liveness dir
+PIN="e3036ba03f49c056297f11055ccca0fad7f907b4"  # libmizu: Pool and listener hygiene: claim reset, slot geometry checks, atomic notify tx, off-lock abnormal fire
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

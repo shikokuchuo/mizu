@@ -254,6 +254,12 @@ static void chan_survivor_unlink(mizu_channel *c) {
   }
   if (c->live_self_path[0] != '\0') (void) remove(c->live_self_path);
   if (c->live_peer_path[0] != '\0') (void) remove(c->live_peer_path);
+  /* a hard-killed peer's notify endpoint outlives it (no close ran): the
+     endpoint is named by the dead side's tag under the recorded livedir.
+     On a rendezvous teardown with a live peer this is a harmless duplicate
+     of the peer's own close-time unlink. */
+  mizu_notify_ep_unlink(c->livedir, c->shm.name,
+                        c->side == MIZU_ENTITY_HOST ? "peer" : "host");
 }
 
 static int chan_probe_dead(mizu_channel *c) {
@@ -527,6 +533,17 @@ static void chan_publish_head(mizu_channel *c) {
   if (r->phead != r->lhead) {
     atomic_store_explicit(r->head, r->lhead, memory_order_release);
     r->phead = r->lhead;
+    /* Dekker with a peer parked in destroy's drain wait (chan_drain_wait):
+       our head store and its parked-flag store are each fenced before the
+       cross-check, so either it sees the caught-up head in its re-check or
+       we see the flag. Only a caught-up ring can release it, and the
+       publish cadence keeps the check off the mid-batch path. */
+    if (r->lhead == r->cached_tail) {
+      atomic_thread_fence(memory_order_seq_cst);
+      if ((atomic_load_explicit(c->peer_parked, memory_order_relaxed) &
+           MIZU_WAIT_PARKED) != 0)
+        mizu_unpark(&c->peer_pk);
+    }
   }
   r->unpublished = 0;
   chan_reap(c, 0);
