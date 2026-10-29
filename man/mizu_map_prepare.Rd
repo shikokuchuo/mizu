@@ -43,7 +43,7 @@ granularity), or \code{NULL} for the default. See the Granularity section.}
 
 \item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a
 sliding window instead of staging \code{.x} into shared memory wholesale,
-bounding shared-memory residency by the window times the slice size.
+bounding shared-memory use by the window times the slice size.
 See the Streaming maps section. A streaming map handle collects
 with \code{\link[=mizu_collect]{mizu_collect()}} only (it cannot be promise-armed).}
 
@@ -87,23 +87,25 @@ use. \code{mizu_map_run(pm, .seed = i)} varies the RNG streams per run for
 free: the seed state rides the runner payloads, not the region.
 }
 \details{
-Between runs, the shared scheduling state of the region is re-armed in
-O(1). The cursor and cancel word clear, and the run generation embedded
-in every claim word advances. A straggler task from a previous run can
-never issue against the cursor of the new run. After an unclean run — a
+Between runs, the region's shared scheduling state resets in O(1). The
+cursor and cancel word clear, and the run generation embedded in every
+claim word advances. A leftover task from a previous run can never
+interfere with the new run. After an unclean run — a
 \code{.timeout} expiry, an error in \code{.f}, a worker death — the handle is
 marked stale. The next \code{mizu_map_run()} restages into a fresh region
-transparently (the old one unlinks at garbage collection under any
-stragglers). A run collected with \code{.collect = "view"} restages
-likewise: the returned view pins its region, so the next run stages
-fresh rather than re-arming pages a held view still reads. A map small
-enough to ride entirely inline keeps its staged blob on the handle
-instead: runs resubmit it, still skipping the serialization.
+automatically (the old one is deleted at garbage collection, once any
+leftover tasks are done with it). A run collected with
+\code{.collect = "view"} restages likewise: the returned view keeps its
+region alive, so the next run stages fresh rather than reusing pages
+a held view still reads. A map small enough to ride entirely inline
+keeps its staged blob on the handle instead: runs resubmit it, still
+skipping the serialization.
 
-The prepared handle pins the staged \code{.x} (for transparent restaging) and
-the map region for its lifetime. Both release at garbage collection
-when the handle is dropped. The chunking geometry is fixed at prepare
-time. The runner count adapts to the live workers at each run.
+The prepared handle keeps the staged \code{.x} (for automatic restaging)
+and the map region alive for its lifetime. Both release at garbage
+collection when the handle is dropped. The number of chunks is fixed
+at prepare time. The runner count adapts to the live workers at each
+run.
 }
 \section{Replacing x between runs}{
 
@@ -112,13 +114,13 @@ staged and the replacement \code{.x} are bare-byte eligible (atomic,
 non-ALTREP, no attributes beyond names) with identical type and length,
 the swap is in place. The new bytes are copied over the \code{.x} section of
 the region. This runs the iterate-over-same-shape loop (optimizer
-steps, simulation sweeps) at memcpy cost, skipping the region create
-and the re-attach of every worker. Any other change of \code{.x} — a
+steps, simulation sweeps) at the cost of one copy, skipping the region
+create and the re-attach of every worker. Any other change of \code{.x} — a
 different shape or type, a list, a map staged inline — restages
-transparently on the next run. A streaming prepared map keeps \code{.x}
-submitter-side, so a replacement \code{.x} of any shape simply re-slices on
-the next run — only a length change under \code{.template} restages (the
-output area is sized for the staged length).
+automatically on the next run. A streaming prepared map keeps \code{.x}
+in the submitting process, so a replacement \code{.x} of any shape
+re-slices on the next run — only a length change under \code{.template}
+restages (the output area is sized for the staged length).
 }
 
 \examples{

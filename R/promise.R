@@ -296,21 +296,20 @@ chan_drain <- function(state) {
 #' The promise rejects on `mizu_closed`, `mizu_peer_gone`, and on
 #' `timeout` expiry — as classed *error* conditions carrying the same
 #' class names as the sentinels, so `inherits(x, "mizu_closed")` works on
-#' either form. Close and peer death reach the drain through the core's
-#' terminal wakes, so the rejection is prompt, never timeout-driven.
+#' either form. Close and peer death wake the event loop directly, so
+#' the rejection is prompt, never timeout-driven.
 #'
 #' Several outstanding calls on one channel resolve in FIFO call order,
-#' one message each. Arming is loss-free: messages already in the ring
-#' resolve from the arm's synchronous drain (delivered asynchronously at
-#' top level, per promises discipline); only genuinely pending entries
-#' ride the watch.
+#' one message each. No message is lost: messages already in the ring
+#' resolve immediately (still asynchronously, as promises require), and
+#' only messages yet to arrive wait on the event.
 #'
 #' `mizu_recv_handler()` is the stream form: it installs `fn` on the
 #' channel and each burst of messages is delivered to it from the event
 #' loop — no promise is allocated per message. With `batch = TRUE` each
 #' drained burst is delivered as one list in a single `fn(list)` call
 #' (the throughput form: one R call per burst); with `batch = FALSE`,
-#' `fn(value)` is called per message. Transport terminals are delivered
+#' `fn(value)` is called per message. Close and peer death are delivered
 #' to `fn` as the classed error conditions (`mizu_closed`,
 #' `mizu_peer_gone`), after which the handler is removed. A declined
 #' foreign payload (see [mizu_send()]) is delivered as its
@@ -323,11 +322,11 @@ chan_drain <- function(state) {
 #' with a handler installed, is an error. Mixing a blocking
 #' [mizu_recv()] with either consumer form consumes in arrival order —
 #' the blocking call may take a message a promise or the handler was
-#' waiting on. A terminal it observes is observed by the consumer too:
-#' terminals are channel state, re-read on every receive, never
+#' waiting on. A close or peer death it observes is observed by the
+#' consumer too: both are channel state, re-read on every receive, never
 #' consumed.
 #'
-#' Every main-thread drain is bounded per event-loop quantum and
+#' Every main-thread drain is bounded per event-loop turn and
 #' re-scheduled, so a saturated ring starves neither Shiny nor
 #' [later::run_now()].
 #'
@@ -604,27 +603,27 @@ pool_drain <- function(state) {
 #' `mizu_collect_all_async()` and `mizu_collect_any_async()` are the
 #' async counterparts of [mizu_collect_all()] and [mizu_collect_any()]:
 #' each returns immediately with exactly **one** [promises::promise()]
-#' per collection — no per-task promise is ever allocated. The arm
-#' announces each task on its own result slot; on each wake a C terminal
-#' scan notes newly-terminal handles, and when the collection completes
-#' the sync verb's gather runs once and resolves the promise.
+#' per collection — no per-task promise is ever allocated. On each wake
+#' the pool checks for newly finished tasks, and when the collection
+#' completes the sync version's result assembly runs once and resolves
+#' the promise.
 #'
-#' Semantics mirror the sync verbs. Collect-all resolves in input order
-#' with names carried; the first erroring handle by position rejects
+#' The behavior mirrors the sync functions. Collect-all resolves in
+#' input order with names carried; the first erroring handle by position
+#' rejects
 #' with `index` (only that handle consumed, the rest collectible).
 #' Collect-any resolves `list(index, value)` for the first terminal
 #' task, a raised outcome rejecting with the `index` field. A timeout
 #' rejects with the `mizu_timeout` classed error and consumes nothing.
-#' When a collection settles —
-#' resolve, reject, or timeout — every enrolled handle's announce is
-#' withdrawn: the handles the settle leaves unconsumed return to
-#' blocking-collectible.
+#' When a collection finishes — resolved, rejected, or timed out —
+#' every handle in it is released: handles whose results were not
+#' consumed become blocking-collectible again.
 #'
-#' A task with a promise attached — or enrolled in a pending collection —
+#' A task with a promise attached — or part of a pending collection —
 #' refuses [mizu_collect()], [mizu_collect_any()], [mizu_collect_all()],
-#' and a second enrollment, with an error naming the pending consumer.
-#' [mizu_cancel()] stays allowed: the cancel publishes, and the drain
-#' rejects with `mizu_error_cancelled`.
+#' and a second promise, with an error naming the pending consumer.
+#' [mizu_cancel()] stays allowed: the cancel publishes, and the pending
+#' promise rejects with `mizu_error_cancelled`.
 #'
 #' Requires the \pkg{later} and \pkg{promises} packages.
 #'

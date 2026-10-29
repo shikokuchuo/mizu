@@ -45,11 +45,11 @@ spawned into. \code{mizu_retire_worker()} invisibly returns \code{NULL}.
 \code{mizu_spawn_workers()} spawns additional workers into free registry
 slots, up to the \code{max_workers} of the pool, and waits for them to join.
 \code{mizu_retire_worker()} asks one worker to exit cleanly. The request is
-non-blocking and never preemptive. The worker observes it between tasks
-and releases its slot. The remaining workers consume in place any work
-still queued on its deque. The process of a retired worker can linger
-briefly as a lifetime anchor for the results it produced that are not
-yet collected.
+non-blocking and never interrupts a task. The worker observes it
+between tasks and releases its slot. The remaining workers take over
+any work still queued on its deque. A retired worker's process can
+linger briefly to keep alive the results it produced that are not yet
+collected.
 }
 \details{
 Slots free up when workers retire, exit at shutdown, or die and are

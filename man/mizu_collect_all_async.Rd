@@ -41,28 +41,28 @@ resolves \code{list(index, value)}.
 \code{mizu_collect_all_async()} and \code{mizu_collect_any_async()} are the
 async counterparts of \code{\link[=mizu_collect_all]{mizu_collect_all()}} and \code{\link[=mizu_collect_any]{mizu_collect_any()}}:
 each returns immediately with exactly \strong{one} \code{\link[promises:promise]{promises::promise()}}
-per collection — no per-task promise is ever allocated. The arm
-announces each task on its own result slot; on each wake a C terminal
-scan notes newly-terminal handles, and when the collection completes
-the sync verb's gather runs once and resolves the promise.
+per collection — no per-task promise is ever allocated. On each wake
+the pool checks for newly finished tasks, and when the collection
+completes the sync version's result assembly runs once and resolves
+the promise.
 }
 \details{
-Semantics mirror the sync verbs. Collect-all resolves in input order
-with names carried; the first erroring handle by position rejects
+The behavior mirrors the sync functions. Collect-all resolves in
+input order with names carried; the first erroring handle by position
+rejects
 with \code{index} (only that handle consumed, the rest collectible).
 Collect-any resolves \code{list(index, value)} for the first terminal
 task, a raised outcome rejecting with the \code{index} field. A timeout
 rejects with the \code{mizu_timeout} classed error and consumes nothing.
-When a collection settles —
-resolve, reject, or timeout — every enrolled handle's announce is
-withdrawn: the handles the settle leaves unconsumed return to
-blocking-collectible.
+When a collection finishes — resolved, rejected, or timed out —
+every handle in it is released: handles whose results were not
+consumed become blocking-collectible again.
 
-A task with a promise attached — or enrolled in a pending collection —
+A task with a promise attached — or part of a pending collection —
 refuses \code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_collect_any]{mizu_collect_any()}}, \code{\link[=mizu_collect_all]{mizu_collect_all()}},
-and a second enrollment, with an error naming the pending consumer.
-\code{\link[=mizu_cancel]{mizu_cancel()}} stays allowed: the cancel publishes, and the drain
-rejects with \code{mizu_error_cancelled}.
+and a second promise, with an error naming the pending consumer.
+\code{\link[=mizu_cancel]{mizu_cancel()}} stays allowed: the cancel publishes, and the pending
+promise rejects with \code{mizu_error_cancelled}.
 
 Requires the \pkg{later} and \pkg{promises} packages.
 }

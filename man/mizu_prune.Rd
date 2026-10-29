@@ -23,8 +23,8 @@ They persist until pruned or until the machine reboots.
 }
 \details{
 Regions of running processes are never touched, and mori regions are
-invisible to mizu (and vice versa): the two packages keep disjoint
-namespaces. If another mizu session on the machine is itself
+invisible to mizu (and mizu regions to mori): the two packages keep
+disjoint namespaces. If another mizu session on the machine is itself
 recovering from a crash, do not run this. Payloads sent by a now-dead
 peer stay deliverable to its survivor until drained, and this function
 reaps them.

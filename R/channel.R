@@ -2,10 +2,10 @@
 #'
 #' Creates a shared-memory SPSC channel — one lock-free ring per direction —
 #' and spawns a child R process connected to the other end. The channel is
-#' two-way after the spawn: the returned handle produces on the host-to-peer
-#' ring and consumes the peer-to-host ring. Setup is one-sided: only a short
-#' join token (the suffix of the region name) crosses the process boundary,
-#' as a command-line argument.
+#' two-way once the peer is spawned: the returned handle produces on the
+#' host-to-peer ring and consumes the peer-to-host ring. Setup is
+#' one-sided: only a short join token (the suffix of the region name)
+#' crosses the process boundary, as a command-line argument.
 #'
 #' `expr` is a quoted expression, not a closure. It captures nothing, and
 #' unlike [mizu_submit()] mizu does not capture it for you: pass it
@@ -39,8 +39,8 @@
 #'   larger spill to the arena, and past it to a fresh region.
 #' @param arena_size spill-arena bytes per direction. A multiple of 128, or 0
 #'   to disable (every spill then creates a region). This bounds the
-#'   in-flight spill. An undersized arena degrades to region-create
-#'   fallbacks, never to errors.
+#'   in-flight spill. An undersized arena falls back to creating a region
+#'   per payload, never to errors.
 #' @param spin opts the channel into pure-spin waiting: consumers never park
 #'   and producers skip the wake check on publish. Use this only when the
 #'   consumer never yields. If a spin-mode consumer parks, the producer
@@ -113,9 +113,9 @@ mizu_channel <- function(
 #' moment the call returns, with no separate flush step. `mizu_recv()`
 #' returns the next message, and waits up to `timeout` seconds for it.
 #'
-#' Sends never block for ring space. Receives surface every terminal state
-#' as a class-tagged sentinel, not an error. Dispatch with
-#' `inherits(x, "mizu_sentinel")`, or on the specific classes:
+#' Sends never block for ring space. Receives report every terminal state
+#' as a class-tagged sentinel, not an error. Test for them with
+#' `inherits(x, "mizu_sentinel")`, or with the specific classes:
 #'
 #' * `mizu_full` — the ring is full (send). Back off until the peer drains,
 #'   or drop the message.
@@ -157,10 +157,10 @@ mizu_channel <- function(
 #'
 #' Large payloads can arrive as zero-copy views over shared memory: the view
 #' is a small R object pinning memory the garbage collector cannot see. To
-#' return those loans promptly, the receive verbs (and worker task
+#' return those loans promptly, the receive functions (and worker task
 #' boundaries) run a minor garbage collection once 8 MiB of released view
-#' memory has accumulated — an occasional ~0.2 ms verb, the largest latency
-#' outlier in the system. Set `options(mizu.gc_boundary)` (bytes; `0`
+#' memory has accumulated — an occasional ~0.2 ms pause, the largest
+#' latency outlier in the system. Set `options(mizu.gc_boundary)` (bytes; `0`
 #' disables) before loading the package to tune the threshold.
 #'
 #' @param ch a channel handle from [mizu_channel()] (or the `ch` binding
@@ -189,7 +189,7 @@ mizu_recv <- function(ch, timeout = Inf) .Call(mizu_channel_recv, ch, timeout)
 
 #' Batched Send and Receive
 #'
-#' At target rates the R call boundary is a first-order cost.
+#' At high message rates the cost of each R call matters.
 #' `mizu_send_batch()` moves a list of payloads in a single `.Call` and
 #' publishes them to the peer in one batched tail store.
 #' `mizu_recv_batch()` drains up to `n` messages in a single park cycle and
@@ -228,13 +228,13 @@ mizu_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 #' Close a Channel
 #'
 #' Orderly shutdown. Signals close to the peer, then waits up to `timeout`
-#' seconds for the close of the peer (or its death). This rendezvous makes
-#' it safe to release the sent-payload pins: the peer sets its bit only
-#' after it finishes draining. On rendezvous, all resources are released
-#' and the region name is unlinked. The handle is dead afterwards, and
-#' closing it again is a no-op. On timeout the handle stays usable, and the
-#' resources release at garbage collection, which runs the same rendezvous
-#' check again.
+#' seconds for the peer's close (or its death). Waiting for the peer is
+#' what makes it safe to release the resources held by sent payloads: the
+#' peer confirms only after it has finished reading its messages. On that
+#' confirmation, all resources are released and the region name is
+#' deleted. The handle is dead afterwards, and closing it again is a
+#' no-op. On timeout the handle stays usable, and the resources release
+#' at garbage collection, which runs the same check again.
 #'
 #' After either side signals close, sends on both sides return the
 #' `mizu_closed` sentinel, and receives drain the remaining messages before
@@ -243,8 +243,8 @@ mizu_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 #' @inheritParams mizu_send
 #' @param timeout seconds to wait for the close of the peer.
 #'
-#' @return Invisibly, `TRUE` on rendezvous, `FALSE` on timeout (with a
-#'   warning).
+#' @return Invisibly, `TRUE` on a clean mutual close, `FALSE` on timeout
+#'   (with a warning).
 #'
 #' @examples
 #' ch <- mizu_channel(quote(mizu_send(ch, "done")))
@@ -269,18 +269,18 @@ mizu_close <- function(ch, timeout = 5) {
   invisible(ok)
 }
 
-#' Probe Peer Liveness
+#' Check Whether the Channel Peer Is Alive
 #'
-#' An explicit probe for supervisors. Reports whether the peer process
-#' holds its liveness lock, in about 1 microsecond with no waiting.
-#' [mizu_recv()] and [mizu_send()] surface peer death automatically as
-#' `mizu_peer_gone`. Use this probe to ask without touching the rings. A
-#' peer that closed the channel but still runs reads as alive.
+#' Reports whether the peer process still holds its liveness lock, in
+#' about a microsecond, without touching the rings. [mizu_recv()] and
+#' [mizu_send()] report peer death automatically as `mizu_peer_gone`.
+#' This function asks directly. A peer that closed the channel but still
+#' runs counts as alive.
 #'
 #' @inheritParams mizu_send
 #'
 #' @return `TRUE` while the peer process is alive, `FALSE` after it dies.
-#'   At that point the survivor unlinked the names of the channel.
+#'   By then the survivor has deleted the channel's shared memory.
 #'
 #' @examples
 #' ch <- mizu_channel(quote(mizu_recv(ch)))

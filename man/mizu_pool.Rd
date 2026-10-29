@@ -41,8 +41,8 @@ bounds the outstanding (uncollected) tasks of each submitter.}
 
 \item{slot_size}{bytes per queue entry and result slot. A power of two
 between 128 and 2^20. A payload (task or result) that serializes past
-the inline budget travels in a fresh region per payload. This is an
-order-of-magnitude latency cliff, surfaced per submitter as
+the inline budget travels in a fresh region per payload. This costs
+an order of magnitude more latency, reported per submitter as
 \code{\link[=mizu_pool_stats]{mizu_pool_stats()}}\verb{$submitters$spills}. The default \code{512L} keeps
 typical expression-plus-arguments tasks inline. Pools that move only
 scalar payloads can drop to \code{256L}.}
@@ -63,24 +63,23 @@ Handles are process-private and do not survive \code{fork()}.
 }
 \description{
 Creates a shared-memory task pool and spawns its worker processes.
-Per-submitter injection rings feed the workers, and results are
-published through result slots. A submission is one SHM ring write plus
-at most one directed wake: no dispatcher process is in the loop. Each
-worker owns a work-stealing deque. Idle workers steal from busy peers
-and consume the injection rings. A fairness tick bounds the latency of
-external submissions on a saturated pool.
+Each submitter feeds the workers through its own queue (an injection
+ring), and results are published through result slots. A submission is
+one shared-memory write plus at most one wake-up: no dispatcher
+process is in the loop. Each worker owns a work-stealing deque. Idle
+workers steal from busy ones and drain the injection rings. A fairness
+tick bounds the latency of external submissions on a saturated pool.
 }
 \details{
-The lifetime of the pool is bound to the creating process, which holds
-submitter slot 0 of the returned handle. Use this handle directly with
-\code{\link[=mizu_submit]{mizu_submit()}} and \code{\link[=mizu_collect]{mizu_collect()}}. Other processes join as submitters
-through \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}. Dropping the handle (or exiting R) shuts
-the pool down as \code{\link[=mizu_pool_stop]{mizu_pool_stop()}} does, but without the wait.
+The pool lives as long as the process that created it. Use the
+returned handle directly with \code{\link[=mizu_submit]{mizu_submit()}} and \code{\link[=mizu_collect]{mizu_collect()}}.
+Other processes join as submitters through \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}.
+Dropping the handle (or exiting R) shuts the pool down as
+\code{\link[=mizu_pool_stop]{mizu_pool_stop()}} does, but without the wait.
 
-Payload contents interoperate transparently with mori. A \code{mori::share()}d
-object anywhere inside the arguments of a task or its result serializes
-to its short identifier wire form through the mori hooks. It maps
-zero-copy on the other side.
+Payload contents interoperate with mori. A \code{mori::share()}d object
+anywhere inside the arguments of a task or its result crosses as a
+short identifier, and maps zero-copy on the other side.
 
 The liveness lock files of the pool (the death-detection verdict) live
 in a per-platform directory chosen at create time. This is \verb{/dev/shm} on

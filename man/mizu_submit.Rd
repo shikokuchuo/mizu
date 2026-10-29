@@ -33,8 +33,8 @@ otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
 \code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}. A map handle collects the whole
 map: the gathered list (or templated vector), an element error
 re-signalled with its \code{mizu_map_index}, or a worker death as
-\code{mizu_error_worker_died} with the lost element ranges — exactly the
-semantics of \code{\link[=mizu_map]{mizu_map()}}'s Errors section. A task or map handle
+\code{mizu_error_worker_died} with the lost element ranges — the same
+rules as in \code{\link[=mizu_map]{mizu_map()}}'s Errors section. A task or map handle
 with a pending promise (or enrolled in a pending
 \code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}} / \code{\link[=mizu_collect_any_async]{mizu_collect_any_async()}} collection)
 refuses a blocking collect: one consumer per result.}
@@ -59,19 +59,20 @@ task raised an error, \code{mizu_collect()} signals that condition again in
 the collecting process.
 }
 \details{
-Submission blocks only when the injection ring of the submitter is
-full: back-pressure is per-submitter. On \code{.timeout} expiry, submission
-raises \code{mizu_error_submit_timeout} instead of stalling. If no result
-arrives within \code{timeout}, collection returns the \code{mizu_timeout} sentinel
-(class \code{c("mizu_timeout", "mizu_sentinel")}). Collecting a task whose
-handle was cancelled (or whose pool was stopped) raises
-\code{mizu_error_cancelled}. Collecting a task whose executing worker died
-raises \code{mizu_error_worker_died}, carrying the slot and pid of the worker
-(see \link{mizu_error}). Worker death is detected at OS notification latency:
-a kernel-released lock is the verdict, with no heartbeats and no
-polling. The death fails exactly the tasks that the dead worker
-claimed, and the surviving workers consume the work still queued on its
-deque.
+Submission blocks only when the submitter's own injection ring is
+full: one submitter waiting never slows another. On \code{.timeout} expiry,
+submission raises \code{mizu_error_submit_timeout} instead of stalling. If
+no result arrives within \code{timeout}, collection returns the
+\code{mizu_timeout} sentinel (class \code{c("mizu_timeout", "mizu_sentinel")}).
+Collecting a task whose handle was cancelled (or whose pool was
+stopped) raises \code{mizu_error_cancelled}. Collecting a task whose
+executing worker died raises \code{mizu_error_worker_died}, carrying the
+slot and pid of the worker (see \link{mizu_error}). Worker death is
+detected as soon as the operating system reports it: each worker holds
+a lock that the kernel releases the moment its process exits, with no
+heartbeats and no polling. The death fails exactly the tasks that the
+dead worker claimed, and the surviving workers consume the work still
+queued on its deque.
 }
 \section{Outcomes}{
 
@@ -93,17 +94,17 @@ exceptional outcome is raised as a classed condition (see \link{mizu_error}):\ta
 A re-signalled task error is a transport condition: it carries the
 original classes, \code{message}, \code{call}, and every named field the
 payload codec can carry within the result slot's inline budget, with
-anything untransportable dropped and named in a \code{dropped_fields}
+anything it cannot carry dropped and named in a \code{dropped_fields}
 field. See the Task error transport section of \link{mizu_error}.
 
 Inside a task, \code{\link[=mizu_current_pool]{mizu_current_pool()}} returns the handle of the
-evaluating worker, so a task can submit nested subtasks.
+worker running it, so a task can submit nested subtasks.
 \code{mizu_submit(mizu_current_pool(), ...)} inside a task pushes onto the
 work-stealing deque of the worker itself: no ring, no wait. A full
 deque runs the subtask inline instead. A worker blocked in
 \code{mizu_collect()} on a nested handle helps instead of sleeping. It
 executes work from its own deque (and steals from peers) until the
-awaited result is published. So nested fan-outs run at fork/join cost
+awaited result is published. So nested fan-outs cost almost nothing
 and never deadlock the pool. A nested submission claims a submitter
 slot for the worker on first use.
 

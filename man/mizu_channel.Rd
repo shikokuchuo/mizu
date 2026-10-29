@@ -32,8 +32,8 @@ larger spill to the arena, and past it to a fresh region.}
 
 \item{arena_size}{spill-arena bytes per direction. A multiple of 128, or 0
 to disable (every spill then creates a region). This bounds the
-in-flight spill. An undersized arena degrades to region-create
-fallbacks, never to errors.}
+in-flight spill. An undersized arena falls back to creating a region
+per payload, never to errors.}
 
 \item{spin}{opts the channel into pure-spin waiting: consumers never park
 and producers skip the wake check on publish. Use this only when the
@@ -62,10 +62,10 @@ process-private and do not survive \code{fork()}.
 \description{
 Creates a shared-memory SPSC channel — one lock-free ring per direction —
 and spawns a child R process connected to the other end. The channel is
-two-way after the spawn: the returned handle produces on the host-to-peer
-ring and consumes the peer-to-host ring. Setup is one-sided: only a short
-join token (the suffix of the region name) crosses the process boundary,
-as a command-line argument.
+two-way once the peer is spawned: the returned handle produces on the
+host-to-peer ring and consumes the peer-to-host ring. Setup is
+one-sided: only a short join token (the suffix of the region name)
+crosses the process boundary, as a command-line argument.
 }
 \details{
 \code{expr} is a quoted expression, not a closure. It captures nothing, and

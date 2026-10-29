@@ -2,8 +2,8 @@
 #'
 #' Terminal failures that a caller can act on programmatically are raised
 #' as classed conditions. Each inherits `"mizu_error"` (alongside `"error"`
-#' and `"condition"`), with a subclass that names the failure. Handlers
-#' dispatch with `tryCatch(..., mizu_error_worker_died = ...)` or test with
+#' and `"condition"`), with a subclass that names the failure. Catch them
+#' with `tryCatch(..., mizu_error_worker_died = ...)` or test with
 #' [inherits()] instead of matching message text. Messages are not API and
 #' can be reworded. The class vectors and fields below are API.
 #'
@@ -38,7 +38,7 @@
 #'   [mizu_spawn_workers()] when a child process fails to attach within
 #'   `startup_timeout`.
 #' * `mizu_error_shm` — shared-memory region create or open failure
-#'   anywhere on the surface. Field `bytes`: the requested size of a
+#'   anywhere in the API. Field `bytes`: the requested size of a
 #'   region that was not created, `NA` when a region was not opened.
 #' * `mizu_error_python_payload` — [mizu_recv()] or [mizu_recv_batch()]
 #'   on a channel message written in a language-private stream (a pymizu
@@ -67,19 +67,19 @@
 #'
 #' Raised `mizu_error` conditions are distinct from sentinels (class
 #' `mizu_sentinel`, returned by [mizu_send()], [mizu_recv()] and
-#' [mizu_collect()]). A sentinel is an ordinary return value that tags a
-#' terminal state on the hot path, not a signalled condition. See
+#' [mizu_collect()]). A sentinel is an ordinary return value that marks a
+#' terminal state, not a signalled condition. See
 #' [mizu_is_sentinel()].
 #'
-#' Which discipline applies follows the shape of the call. The verbs that
-#' move payloads and wait with a bound — [mizu_send()], [mizu_recv()],
+#' Which of the two you get follows the shape of the call. The functions
+#' that move payloads and wait with a bound — [mizu_send()], [mizu_recv()],
 #' [mizu_collect()], [mizu_map()] — return sentinels for transport states.
 #' These are: not yet (`mizu_timeout`), not now (`mizu_full`), stream over
 #' (`mizu_closed`, `mizu_peer_gone`). Their caller is a loop, and these are
 #' its normal outcomes. Conditions are raised where a request failed for
 #' good. Constructors and [mizu_submit()], whose return is a handle the
 #' next line uses, raise on every failure. [mizu_collect()] raises when the
-#' value can never arrive: the own error of the task re-signalled,
+#' value can never arrive: the task's own error re-signalled,
 #' `mizu_error_cancelled`, `mizu_error_worker_died`. A sentinel invites the
 #' next iteration of the loop. A condition means stop and deal with it.
 #'
@@ -160,15 +160,15 @@ stop_startup <- function(what, timeout) {
 
 #' Test for a mizu Sentinel
 #'
-#' Identity comparison against the four interned sentinel singletons —
-#' `mizu_full`, `mizu_timeout`, `mizu_closed`, `mizu_peer_gone` — that the
-#' verbs of mizu return to tag terminal states. `inherits(x,
-#' "mizu_sentinel")` tests the class alone, which any payload can carry.
-#' This includes a genuine sentinel forwarded over a channel, which arrives
-#' as an ordinary copy. `mizu_is_sentinel()` is provenance: `TRUE` only for
-#' the exact objects that the own calls of mizu return in this process.
-#' So code that relays untrusted values can distinguish its terminal states
-#' from look-alike payloads.
+#' Tests identity against the four sentinel values — `mizu_full`,
+#' `mizu_timeout`, `mizu_closed`, `mizu_peer_gone` — that mizu's functions
+#' return to signal terminal states. `inherits(x, "mizu_sentinel")` tests
+#' the class alone, which any payload can carry: even a genuine sentinel
+#' forwarded over a channel arrives as an ordinary copy.
+#' `mizu_is_sentinel()` returns `TRUE` only for the exact sentinel
+#' objects mizu's own calls returned in this process. So code that relays
+#' untrusted values can tell its terminal states from look-alike
+#' payloads.
 #'
 #' Sentinels are ordinary values, not R conditions: nothing is signalled,
 #' and condition handlers never see them.

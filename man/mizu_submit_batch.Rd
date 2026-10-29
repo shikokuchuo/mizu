@@ -31,9 +31,9 @@ accepted task — shorter than \code{.exprs} when the ring filled past
 }
 \description{
 \code{mizu_submit_batch()} submits one task per element of \code{.exprs} in a
-single \code{.Call}: one R boundary crossing and one wake-up sweep per
-batch instead of per task. At target rates the call boundary is a
-first-order cost, so a burst submitted this way reaches the workers
+single \code{.Call}: one crossing into shared memory and one wake-up sweep
+per batch instead of per task. At high task rates the cost of each R
+call matters, so a burst submitted this way reaches the workers
 sooner than the same burst looped through \code{\link[=mizu_submit]{mizu_submit()}}. Pair with
 \code{\link[=mizu_collect_all]{mizu_collect_all()}} to batch the collection side too.
 }
@@ -44,7 +44,7 @@ the batch. Unlike \code{mizu_submit()}, expressions are not captured:
 the elements of \code{.exprs} are pre-quoted (or plain values, which
 evaluate to themselves).
 
-Submission semantics per task are \code{\link[=mizu_submit]{mizu_submit()}}'s, with one
+Submission behaves per task as in \code{\link[=mizu_submit]{mizu_submit()}}, with one
 difference: if the injection ring fills past \code{.timeout} mid-batch,
 the call returns the handles accepted so far instead of raising
 \code{mizu_error_submit_timeout}. Fatal outcomes (pool stopped, result

@@ -16,10 +16,10 @@ the call was too late: the task completed, was already cancelled, or
 its pool is gone.
 }
 \description{
-Advisory and discard-only, never preemptive. The worker skips a task
-that is still queued. A task already executing runs to completion, and
-its result is dropped. Collecting a cancelled handle raises
-\code{mizu_error_cancelled} (see \link{mizu_error}).
+Cancellation is advisory: it never interrupts running code. The
+worker skips a task that is still queued. A task already executing
+runs to completion, and its result is dropped. Collecting a cancelled
+handle raises \code{mizu_error_cancelled} (see \link{mizu_error}).
 }
 \details{
 On a map handle from \code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}, the shared

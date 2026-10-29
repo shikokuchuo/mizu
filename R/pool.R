@@ -22,23 +22,22 @@ check_dots_empty <- function(...) {
 #' Create a Task Pool and Spawn Its Workers
 #'
 #' Creates a shared-memory task pool and spawns its worker processes.
-#' Per-submitter injection rings feed the workers, and results are
-#' published through result slots. A submission is one SHM ring write plus
-#' at most one directed wake: no dispatcher process is in the loop. Each
-#' worker owns a work-stealing deque. Idle workers steal from busy peers
-#' and consume the injection rings. A fairness tick bounds the latency of
-#' external submissions on a saturated pool.
+#' Each submitter feeds the workers through its own queue (an injection
+#' ring), and results are published through result slots. A submission is
+#' one shared-memory write plus at most one wake-up: no dispatcher
+#' process is in the loop. Each worker owns a work-stealing deque. Idle
+#' workers steal from busy ones and drain the injection rings. A fairness
+#' tick bounds the latency of external submissions on a saturated pool.
 #'
-#' The lifetime of the pool is bound to the creating process, which holds
-#' submitter slot 0 of the returned handle. Use this handle directly with
-#' [mizu_submit()] and [mizu_collect()]. Other processes join as submitters
-#' through [mizu_pool_attach()]. Dropping the handle (or exiting R) shuts
-#' the pool down as [mizu_pool_stop()] does, but without the wait.
+#' The pool lives as long as the process that created it. Use the
+#' returned handle directly with [mizu_submit()] and [mizu_collect()].
+#' Other processes join as submitters through [mizu_pool_attach()].
+#' Dropping the handle (or exiting R) shuts the pool down as
+#' [mizu_pool_stop()] does, but without the wait.
 #'
-#' Payload contents interoperate transparently with mori. A `mori::share()`d
-#' object anywhere inside the arguments of a task or its result serializes
-#' to its short identifier wire form through the mori hooks. It maps
-#' zero-copy on the other side.
+#' Payload contents interoperate with mori. A `mori::share()`d object
+#' anywhere inside the arguments of a task or its result crosses as a
+#' short identifier, and maps zero-copy on the other side.
 #'
 #' The liveness lock files of the pool (the death-detection verdict) live
 #' in a per-platform directory chosen at create time. This is `/dev/shm` on
@@ -63,8 +62,8 @@ check_dots_empty <- function(...) {
 #'   bounds the outstanding (uncollected) tasks of each submitter.
 #' @param slot_size bytes per queue entry and result slot. A power of two
 #'   between 128 and 2^20. A payload (task or result) that serializes past
-#'   the inline budget travels in a fresh region per payload. This is an
-#'   order-of-magnitude latency cliff, surfaced per submitter as
+#'   the inline budget travels in a fresh region per payload. This costs
+#'   an order of magnitude more latency, reported per submitter as
 #'   [mizu_pool_stats()]`$submitters$spills`. The default `512L` keeps
 #'   typical expression-plus-arguments tasks inline. Pools that move only
 #'   scalar payloads can drop to `256L`.
@@ -148,11 +147,11 @@ launch_workers <- function(pool, slots, launcher, startup_timeout) {
 #' `mizu_spawn_workers()` spawns additional workers into free registry
 #' slots, up to the `max_workers` of the pool, and waits for them to join.
 #' `mizu_retire_worker()` asks one worker to exit cleanly. The request is
-#' non-blocking and never preemptive. The worker observes it between tasks
-#' and releases its slot. The remaining workers consume in place any work
-#' still queued on its deque. The process of a retired worker can linger
-#' briefly as a lifetime anchor for the results it produced that are not
-#' yet collected.
+#' non-blocking and never interrupts a task. The worker observes it
+#' between tasks and releases its slot. The remaining workers take over
+#' any work still queued on its deque. A retired worker's process can
+#' linger briefly to keep alive the results it produced that are not yet
+#' collected.
 #'
 #' Slots free up when workers retire, exit at shutdown, or die and are
 #' reaped. So a pool can cycle workers within its registry capacity for
@@ -212,10 +211,10 @@ mizu_retire_worker <- function(pool, slot) {
 
 #' Attach to a Pool as a Submitter
 #'
-#' Joins an existing pool from another process. Claims a free submitter
-#' slot with its own injection ring and result-slot subrange. The name of
-#' the pool travels out of band: it is `mizu_pool_status(p)$name` on the
-#' creator.
+#' Joins an existing pool from another process, claiming a free submitter
+#' slot with its own injection ring and result slots. You pass the name
+#' of the pool to the joining process yourself: it is
+#' `mizu_pool_status(p)$name` on the creator.
 #'
 #' @param name the region name of the pool, or its suffix (the part after
 #'   the platform prefix).
@@ -225,7 +224,7 @@ mizu_retire_worker <- function(pool, slot) {
 #' @examples
 #' p <- mizu_pool()
 #' name <- mizu_pool_status(p)[["name"]]
-#' # `name` travels out of band to the joining process, which runs:
+#' # pass `name` to the joining process yourself. There, run:
 #' # pa <- mizu_pool_attach(name)
 #' # mizu_collect(mizu_submit(pa, runif(3)))
 #' mizu_pool_stop(p)
@@ -249,19 +248,20 @@ mizu_pool_attach <- function(name) {
 #' task raised an error, `mizu_collect()` signals that condition again in
 #' the collecting process.
 #'
-#' Submission blocks only when the injection ring of the submitter is
-#' full: back-pressure is per-submitter. On `.timeout` expiry, submission
-#' raises `mizu_error_submit_timeout` instead of stalling. If no result
-#' arrives within `timeout`, collection returns the `mizu_timeout` sentinel
-#' (class `c("mizu_timeout", "mizu_sentinel")`). Collecting a task whose
-#' handle was cancelled (or whose pool was stopped) raises
-#' `mizu_error_cancelled`. Collecting a task whose executing worker died
-#' raises `mizu_error_worker_died`, carrying the slot and pid of the worker
-#' (see [mizu_error]). Worker death is detected at OS notification latency:
-#' a kernel-released lock is the verdict, with no heartbeats and no
-#' polling. The death fails exactly the tasks that the dead worker
-#' claimed, and the surviving workers consume the work still queued on its
-#' deque.
+#' Submission blocks only when the submitter's own injection ring is
+#' full: one submitter waiting never slows another. On `.timeout` expiry,
+#' submission raises `mizu_error_submit_timeout` instead of stalling. If
+#' no result arrives within `timeout`, collection returns the
+#' `mizu_timeout` sentinel (class `c("mizu_timeout", "mizu_sentinel")`).
+#' Collecting a task whose handle was cancelled (or whose pool was
+#' stopped) raises `mizu_error_cancelled`. Collecting a task whose
+#' executing worker died raises `mizu_error_worker_died`, carrying the
+#' slot and pid of the worker (see [mizu_error]). Worker death is
+#' detected as soon as the operating system reports it: each worker holds
+#' a lock that the kernel releases the moment its process exits, with no
+#' heartbeats and no polling. The death fails exactly the tasks that the
+#' dead worker claimed, and the surviving workers consume the work still
+#' queued on its deque.
 #'
 #' @section Outcomes:
 #' A timeout on collect is a normal outcome and is returned. Every
@@ -282,17 +282,17 @@ mizu_pool_attach <- function(name) {
 #' A re-signalled task error is a transport condition: it carries the
 #' original classes, `message`, `call`, and every named field the
 #' payload codec can carry within the result slot's inline budget, with
-#' anything untransportable dropped and named in a `dropped_fields`
+#' anything it cannot carry dropped and named in a `dropped_fields`
 #' field. See the Task error transport section of [mizu_error].
 #'
 #' Inside a task, [mizu_current_pool()] returns the handle of the
-#' evaluating worker, so a task can submit nested subtasks.
+#' worker running it, so a task can submit nested subtasks.
 #' `mizu_submit(mizu_current_pool(), ...)` inside a task pushes onto the
 #' work-stealing deque of the worker itself: no ring, no wait. A full
 #' deque runs the subtask inline instead. A worker blocked in
 #' `mizu_collect()` on a nested handle helps instead of sleeping. It
 #' executes work from its own deque (and steals from peers) until the
-#' awaited result is published. So nested fan-outs run at fork/join cost
+#' awaited result is published. So nested fan-outs cost almost nothing
 #' and never deadlock the pool. A nested submission claims a submitter
 #' slot for the worker on first use.
 #'
@@ -322,8 +322,8 @@ mizu_pool_attach <- function(name) {
 #'   [mizu_map()] / [mizu_map_run()]. A map handle collects the whole
 #'   map: the gathered list (or templated vector), an element error
 #'   re-signalled with its `mizu_map_index`, or a worker death as
-#'   `mizu_error_worker_died` with the lost element ranges — exactly the
-#'   semantics of [mizu_map()]'s Errors section. A task or map handle
+#'   `mizu_error_worker_died` with the lost element ranges — the same
+#'   rules as in [mizu_map()]'s Errors section. A task or map handle
 #'   with a pending promise (or enrolled in a pending
 #'   [mizu_collect_all_async()] / [mizu_collect_any_async()] collection)
 #'   refuses a blocking collect: one consumer per result.
@@ -370,9 +370,9 @@ mizu_collect <- function(task, timeout = Inf) {
 #' work-stealing deque, and a worker blocked collecting them helps instead
 #' of sleeping). Outside a task, it returns `NULL`.
 #'
-#' The handle is runtime-owned: the pool sets it around each task
-#' evaluation, so unlike a variable binding it cannot be shadowed by a
-#' task argument or a local assignment.
+#' The pool itself provides the handle around each task evaluation, so
+#' unlike a variable binding it cannot be shadowed by a task argument or
+#' a local assignment.
 #'
 #' @return A pool handle (class `"mizu_pool"`) inside a pool task;
 #'   otherwise `NULL`.
@@ -408,16 +408,16 @@ mizu_current_pool <- function() {
 #' default on exit, including on error. `mizu_local_pool()` sets the
 #' default until the calling frame exits (the withr `local_*` pattern).
 #'
-#' The registry anchors the handle: a pool set as the default stays alive
-#' even after its variable is removed, until the default is cleared or
-#' replaced. Handles from [mizu_pool_attach()] are valid defaults;
-#' ownership and teardown stay with the pool's creator.
+#' The default keeps the pool alive even after its variable is removed,
+#' until the default is cleared or replaced. Handles from
+#' [mizu_pool_attach()] are valid defaults; ownership and teardown stay
+#' with the pool's creator.
 #'
 #' Setting a default checks the type only: a stopped pool is accepted
-#' (liveness is transient; a probe would prove nothing about use time) and
-#' fails later with the usual stopped-pool errors. The default is
-#' process-global state — after a `fork()`, a child process reads it as
-#' unset.
+#' (liveness is transient, so a probe would prove nothing about use
+#' time) and fails later with the usual stopped-pool errors. The default
+#' is process-global state — after a `fork()`, a child process reads it
+#' as unset.
 #'
 #' @section Package authors:
 #' A function that takes an optional pool resolves it in this order: an
@@ -506,9 +506,9 @@ defer <- function(expr, envir) {
 #' Submit a Batch of Tasks
 #'
 #' `mizu_submit_batch()` submits one task per element of `.exprs` in a
-#' single `.Call`: one R boundary crossing and one wake-up sweep per
-#' batch instead of per task. At target rates the call boundary is a
-#' first-order cost, so a burst submitted this way reaches the workers
+#' single `.Call`: one crossing into shared memory and one wake-up sweep
+#' per batch instead of per task. At high task rates the cost of each R
+#' call matters, so a burst submitted this way reaches the workers
 #' sooner than the same burst looped through [mizu_submit()]. Pair with
 #' [mizu_collect_all()] to batch the collection side too.
 #'
@@ -518,7 +518,7 @@ defer <- function(expr, envir) {
 #' the elements of `.exprs` are pre-quoted (or plain values, which
 #' evaluate to themselves).
 #'
-#' Submission semantics per task are [mizu_submit()]'s, with one
+#' Submission behaves per task as in [mizu_submit()], with one
 #' difference: if the injection ring fills past `.timeout` mid-batch,
 #' the call returns the handles accepted so far instead of raising
 #' `mizu_error_submit_timeout`. Fatal outcomes (pool stopped, result
@@ -549,11 +549,10 @@ mizu_submit_batch <- function(.pool, .exprs, ..., .timeout = Inf) {
 #' `mizu_collect_any()` waits on several task handles at once and returns
 #' as soon as any of them reaches a terminal state — result published,
 #' error raised, cancelled, or its worker died. Among handles already
-#' terminal, the earliest in `tasks` is reported. The wait parks on the
-#' submitter's single parker: any publishing worker wakes it directly,
-#' with no polling. For the whole set at once, [mizu_collect_all()]
-#' waits until every task is terminal and returns all results in input
-#' order.
+#' terminal, the earliest in `tasks` is reported. The wait sleeps until
+#' any publishing worker wakes it directly: no polling. For the whole
+#' set at once, [mizu_collect_all()] waits until every task is terminal
+#' and returns all results in input order.
 #'
 #' @section Outcomes:
 #' As for [mizu_collect()], but attributed to a handle by position:
@@ -603,9 +602,8 @@ mizu_collect_any <- function(tasks, timeout = Inf) {
 #' `mizu_collect_all()` waits until every task in `tasks` reaches a
 #' terminal state and returns all results in input order — the batch
 #' counterpart of [mizu_collect()] for fire-then-collect patterns, with
-#' one R call boundary for the whole set instead of one per task. The
-#' wait parks on the submitter's single parker: any publishing worker
-#' wakes it directly, with no polling.
+#' one R call for the whole set instead of one per task. The wait sleeps
+#' until any publishing worker wakes it directly: no polling.
 #'
 #' For homogeneous element-wise work, [mizu_map()] remains the right
 #' answer (it batches submission and staging, not just collection).
@@ -659,10 +657,10 @@ mizu_collect_all <- function(tasks, timeout = Inf) {
 
 #' Cancel a Task or a Map
 #'
-#' Advisory and discard-only, never preemptive. The worker skips a task
-#' that is still queued. A task already executing runs to completion, and
-#' its result is dropped. Collecting a cancelled handle raises
-#' `mizu_error_cancelled` (see [mizu_error]).
+#' Cancellation is advisory: it never interrupts running code. The
+#' worker skips a task that is still queued. A task already executing
+#' runs to completion, and its result is dropped. Collecting a cancelled
+#' handle raises `mizu_error_cancelled` (see [mizu_error]).
 #'
 #' On a map handle from [mizu_map()] / [mizu_map_run()], the shared
 #' cancel word of the map is set: executing runners stop within about one
@@ -695,10 +693,10 @@ mizu_cancel <- function(task) {
 
 #' Stop a Pool
 #'
-#' Broadcasts shutdown, wakes every parked participant, and cancels all
+#' Broadcasts shutdown, wakes every sleeping participant, and cancels all
 #' pending tasks (blocked collectors raise `mizu_error_cancelled`). Then
 #' waits up to `timeout` seconds for the workers to exit cleanly, and
-#' unlinks the region and the liveness files. The handle is dead
+#' deletes the shared region and the liveness files. The handle is dead
 #' afterwards, and stopping it again is a no-op. Only the creating process
 #' can stop a pool.
 #'
@@ -788,13 +786,12 @@ mizu_pool_status <- function(pool) {
 #' Dump the Distributed State of a Pool
 #'
 #' A read-only debugging snapshot of the entire pool region, one level
-#' deeper than [mizu_pool_status()]. It shows per-slot registry detail, the
-#' park, ready, and back-pressure masks unpacked per slot, and every
-#' occupied result slot. State is distributed across processes and
-#' execution is non-deterministic, so reach for this tool first when a
-#' pool hangs. The scan takes no locks and can race in-flight transitions.
-#' Each field is a consistent single read. The rows need not be mutually
-#' consistent.
+#' deeper than [mizu_pool_status()]. It shows per-slot registry detail
+#' and every occupied result slot. State is distributed across processes
+#' and execution is non-deterministic, so reach for this tool first when
+#' a pool hangs. The scan takes no locks and can race in-flight
+#' transitions. Each field is a consistent single read. The rows need not
+#' be mutually consistent.
 #'
 #' @inheritParams mizu_pool_stop
 #'
@@ -808,7 +805,7 @@ mizu_pool_status <- function(pool) {
 #'   entries are queued with every worker busy, awaiting pickup by a map
 #'   runner at its next batch transition or a worker helping out of a
 #'   nested [mizu_collect()] (the `rehome` event of [mizu_pool_trace()]).
-#'   `local` is the process-private machinery of this handle: the
+#'   `local` is the process-private state of this handle: the
 #'   occupancy of the producer free list (`fl_entries`, `fl_bytes`), its
 #'   reuse count (`fl_hits`), the `open_hits` and `open_misses` of the
 #'   consumer mapping cache, `collect_parks` (how often a collect on
@@ -847,15 +844,15 @@ mizu_pool_dump <- function(pool) {
 #'
 #' Per-worker and per-submitter counters, accumulated since each
 #' participant joined. They complement the point-in-time snapshots of
-#' [mizu_pool_status()] and [mizu_pool_dump()]. Nothing here costs the hot
-#' paths anything. The submitter counts are the monotonic positions of the
-#' injection rings themselves: submission writes nothing extra, and the
-#' spill counter moves only on the spill path, which a fresh region per
-#' payload already dominates. The worker counters are kept process-locally
-#' and mirrored into the region only when a worker parks, leaves, or
-#' passes its fairness tick. So under continuous load, the row of a worker
-#' can lag by up to 61 claims. The row is exact whenever that worker is
-#' parked or retired, or the pool is quiescent.
+#' [mizu_pool_status()] and [mizu_pool_dump()]. Keeping them costs the
+#' pool nothing. The submitter counts ride the injection ring's own
+#' positions: submission writes nothing extra, and the spill counter
+#' moves only on the spill path, whose region create already costs far
+#' more than the counter update. The worker counters are kept
+#' process-locally and mirrored into the region only when a worker
+#' parks, leaves, or passes its fairness tick. So under continuous load,
+#' a worker's row can lag by up to 61 claims. The row is exact whenever
+#' that worker is parked or retired, or the pool is idle.
 #'
 #' @inheritParams mizu_pool_stop
 #'
@@ -905,10 +902,10 @@ mizu_pool_stats <- function(pool) {
 #' * On worker handles: `"start"` before the evaluation of a task, and
 #'   `"done"` or `"error"` when its result is published.
 #' * `"drop"` when a claimed task is discarded (cancelled before or during
-#'   execution, or its out-of-line payload died with its enqueuer).
-#' * `"rehome"` when a doorbell help beat claims a map runner. The helper
-#'   moves it onto its own deque — where idle peers can steal it — instead
-#'   of executing it nested.
+#'   execution, or its payload's shared region died with its submitter).
+#' * `"rehome"` when a worker helping with the doorbell claims a map
+#'   runner. The helper moves it onto its own deque — where idle peers
+#'   can steal it — instead of executing it nested.
 #'
 #' `id` identifies the task as `"<submitter slot>:<counter>"`. This id is
 #' stable across processes, so logs from both sides of a pool can be
@@ -919,12 +916,11 @@ mizu_pool_stats <- function(pool) {
 #' workers. To trace a worker, install the hook from a task on the
 #' worker's own handle:
 #' `mizu_submit(p, mizu_pool_trace(mizu_current_pool(), fn))`. The
-#' disabled hook costs one pointer check per event site, and no event
-#' sites exist on the channel
-#' hot path. An error raised by the hook propagates as an infrastructure
-#' failure at its site. On a worker, it takes the worker down. This
-#' differs from the own error of a task, which is published as the ERR
-#' result of that task.
+#' disabled hook costs one pointer check per event site, and the channel
+#' functions have no event sites. An error raised by the hook propagates
+#' as an internal failure at its site. On a worker, it takes the worker
+#' down. This differs from a task's own error, which is published as the
+#' error result of that task.
 #'
 #' @inheritParams mizu_pool_stop
 #' @param fn a `function(event, id)`, or `NULL` to remove a registered

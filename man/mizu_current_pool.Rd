@@ -18,9 +18,9 @@ work-stealing deque, and a worker blocked collecting them helps instead
 of sleeping). Outside a task, it returns \code{NULL}.
 }
 \details{
-The handle is runtime-owned: the pool sets it around each task
-evaluation, so unlike a variable binding it cannot be shadowed by a
-task argument or a local assignment.
+The pool itself provides the handle around each task evaluation, so
+unlike a variable binding it cannot be shadowed by a task argument or
+a local assignment.
 }
 \examples{
 p <- mizu_pool()

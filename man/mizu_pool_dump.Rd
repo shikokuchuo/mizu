@@ -22,7 +22,7 @@ slot, status, sequence, executing worker, parked waiter), \code{help}, and
 entries are queued with every worker busy, awaiting pickup by a map
 runner at its next batch transition or a worker helping out of a
 nested \code{\link[=mizu_collect]{mizu_collect()}} (the \code{rehome} event of \code{\link[=mizu_pool_trace]{mizu_pool_trace()}}).
-\code{local} is the process-private machinery of this handle: the
+\code{local} is the process-private state of this handle: the
 occupancy of the producer free list (\code{fl_entries}, \code{fl_bytes}), its
 reuse count (\code{fl_hits}), the \code{open_hits} and \code{open_misses} of the
 consumer mapping cache, \code{collect_parks} (how often a collect on
@@ -31,13 +31,12 @@ this handle parked waiting for a result), and \code{ledger_entries}
 }
 \description{
 A read-only debugging snapshot of the entire pool region, one level
-deeper than \code{\link[=mizu_pool_status]{mizu_pool_status()}}. It shows per-slot registry detail, the
-park, ready, and back-pressure masks unpacked per slot, and every
-occupied result slot. State is distributed across processes and
-execution is non-deterministic, so reach for this tool first when a
-pool hangs. The scan takes no locks and can race in-flight transitions.
-Each field is a consistent single read. The rows need not be mutually
-consistent.
+deeper than \code{\link[=mizu_pool_status]{mizu_pool_status()}}. It shows per-slot registry detail
+and every occupied result slot. State is distributed across processes
+and execution is non-deterministic, so reach for this tool first when
+a pool hangs. The scan takes no locks and can race in-flight
+transitions. Each field is a consistent single read. The rows need not
+be mutually consistent.
 }
 \examples{
 p <- mizu_pool()

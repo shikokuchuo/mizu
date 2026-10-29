@@ -28,8 +28,9 @@ the same shared-memory core. The mirror of pymizu's
 The first worker's join records the workers' language in the pool, so
 the launcher carries no language attribute: a pool of Python workers
 takes \code{\link[=mizu_call]{mizu_call()}} specifications through \code{\link[=mizu_submit_call]{mizu_submit_call()}}, and a
-native \code{\link[=mizu_submit]{mizu_submit()}} errors locally naming the spec verb. A launcher
-that spawns the wrong language fails at join, not at the first task.
+plain \code{\link[=mizu_submit]{mizu_submit()}} fails at once with an error naming
+\code{\link[=mizu_submit_call]{mizu_submit_call()}}. A launcher that spawns the wrong language fails
+at join, not at the first task.
 
 The interpreter is probed for pymizu when the launcher is created, so a
 missing interpreter or package raises here, before any pool exists.

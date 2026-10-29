@@ -34,7 +34,7 @@ surfaces on the next receive, which raises like \code{\link[=mizu_recv]{mizu_rec
 does the batch itself when the first message is the one declined.
 }
 \description{
-At target rates the R call boundary is a first-order cost.
+At high message rates the cost of each R call matters.
 \code{mizu_send_batch()} moves a list of payloads in a single \code{.Call} and
 publishes them to the peer in one batched tail store.
 \code{mizu_recv_batch()} drains up to \code{n} messages in a single park cycle and

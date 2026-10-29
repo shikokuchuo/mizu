@@ -23,9 +23,8 @@ sentinel.
 \code{mizu_collect_all()} waits until every task in \code{tasks} reaches a
 terminal state and returns all results in input order — the batch
 counterpart of \code{\link[=mizu_collect]{mizu_collect()}} for fire-then-collect patterns, with
-one R call boundary for the whole set instead of one per task. The
-wait parks on the submitter's single parker: any publishing worker
-wakes it directly, with no polling.
+one R call for the whole set instead of one per task. The wait sleeps
+until any publishing worker wakes it directly: no polling.
 }
 \details{
 For homogeneous element-wise work, \code{\link[=mizu_map]{mizu_map()}} remains the right

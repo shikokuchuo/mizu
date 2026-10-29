@@ -1,12 +1,12 @@
-#' Call a Function in Another Language: the Task Specification
+#' Call a Function in Another Language
 #'
 #' `mizu_call()` builds a task specification: a qualified name or a source
 #' string in the pool workers' language, plus the constant arguments.
 #' [mizu_submit_call()] stages it as a neutral task stream any worker
-#' language reads. This is how a foreign pool is driven: spawn the workers
+#' language reads. This is how you drive a foreign pool: spawn the workers
 #' with [mizu_py_pool_launcher()] and submit specs to them.
 #'
-#' The spec describes a call; it is not a value. The language never
+#' The spec describes a call. It is not a value. The language never
 #' appears at the call site: `mizu_submit_call()` resolves the workers'
 #' language from the pool itself, for attached submitters too, and a bare
 #' (unqualified) name errors at submit, not at spec construction.
@@ -15,7 +15,7 @@
 #'   (or `"pkg:::fn"`) for R workers, `"mod.fn"` for Python workers. The
 #'   qualifier is required: a worker's global namespace is the runner
 #'   module, never the submitter's, so the name resolves through the
-#'   worker's own namespace machinery.
+#'   worker's own namespace.
 #' @param ... the constant arguments. Unnamed arguments map to the
 #'   positional argument list and named ones to the named argument dict,
 #'   matching Python's `*args` and `**kwargs`. Arguments must be portable
@@ -37,16 +37,17 @@
 #'   task error arrives as a `mizu_error_remote` condition (see
 #'   [mizu_is_remote_error()]), and a result that has no portable home
 #'   fails the task with one naming the value's type. On a same-language
-#'   pool the spec verb keeps the rich private error format.
+#'   pool, `mizu_submit_call()` keeps the full same-language error
+#'   format.
 #'
 #'   Large arguments cross to foreign workers by reference rather than by
-#'   copy: one fresh value past the zero-copy floor stages a single
-#'   layout write into a shared region (the worker reads a view over it),
-#'   and an argument that is already a shared view (received from a
-#'   channel, a pool result, or a `mori::share()`d vector) crosses as its
-#'   identifier alone — zero payload bytes. On a pool whose workers
-#'   predate the ref reader, such a task declines locally at submit
-#'   naming the remedy.
+#'   copy: a fresh value past the zero-copy floor is written once into a
+#'   shared region (the worker reads a view over it), and an argument
+#'   that is already a shared view (received from a channel, a pool
+#'   result, or a `mori::share()`d vector) crosses as its identifier
+#'   alone — zero payload bytes. On a pool whose workers are too old to
+#'   read a reference, such a task fails at submit with an error naming
+#'   the fix.
 #'
 #' @examples
 #' p <- mizu_pool()

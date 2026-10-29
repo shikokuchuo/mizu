@@ -2,7 +2,7 @@
 % Please edit documentation in R/channel.R
 \name{mizu_alive}
 \alias{mizu_alive}
-\title{Probe Peer Liveness}
+\title{Check Whether the Channel Peer Is Alive}
 \usage{
 mizu_alive(ch)
 }
@@ -12,14 +12,14 @@ inside a peer expression).}
 }
 \value{
 \code{TRUE} while the peer process is alive, \code{FALSE} after it dies.
-At that point the survivor unlinked the names of the channel.
+By then the survivor has deleted the channel's shared memory.
 }
 \description{
-An explicit probe for supervisors. Reports whether the peer process
-holds its liveness lock, in about 1 microsecond with no waiting.
-\code{\link[=mizu_recv]{mizu_recv()}} and \code{\link[=mizu_send]{mizu_send()}} surface peer death automatically as
-\code{mizu_peer_gone}. Use this probe to ask without touching the rings. A
-peer that closed the channel but still runs reads as alive.
+Reports whether the peer process still holds its liveness lock, in
+about a microsecond, without touching the rings. \code{\link[=mizu_recv]{mizu_recv()}} and
+\code{\link[=mizu_send]{mizu_send()}} report peer death automatically as \code{mizu_peer_gone}.
+This function asks directly. A peer that closed the channel but still
+runs counts as alive.
 }
 \examples{
 ch <- mizu_channel(quote(mizu_recv(ch)))

@@ -40,16 +40,16 @@ default on exit, including on error. \code{mizu_local_pool()} sets the
 default until the calling frame exits (the withr \verb{local_*} pattern).
 }
 \details{
-The registry anchors the handle: a pool set as the default stays alive
-even after its variable is removed, until the default is cleared or
-replaced. Handles from \code{\link[=mizu_pool_attach]{mizu_pool_attach()}} are valid defaults;
-ownership and teardown stay with the pool's creator.
+The default keeps the pool alive even after its variable is removed,
+until the default is cleared or replaced. Handles from
+\code{\link[=mizu_pool_attach]{mizu_pool_attach()}} are valid defaults; ownership and teardown stay
+with the pool's creator.
 
 Setting a default checks the type only: a stopped pool is accepted
-(liveness is transient; a probe would prove nothing about use time) and
-fails later with the usual stopped-pool errors. The default is
-process-global state — after a \code{fork()}, a child process reads it as
-unset.
+(liveness is transient, so a probe would prove nothing about use
+time) and fails later with the usual stopped-pool errors. The default
+is process-global state — after a \code{fork()}, a child process reads it
+as unset.
 }
 \section{Package authors}{
 

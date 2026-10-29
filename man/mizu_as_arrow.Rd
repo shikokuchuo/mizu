@@ -20,29 +20,30 @@ channel or collected from a pool — into a struct-typed
 other Arrow C Data Interface consumer.
 }
 \details{
-Frames arrive over channels and pools alike: an Arrow tabular sent
-top-level stages as one frame region, and an Arrow tabular nested in a
-payload (a list element, a task argument, the spliced task expression
-itself) crosses by reference as a frame leaf — the received object
-holds a view in place of the table. Collect a pool result and the
-view is what you get; convert explicitly with this function. One
-caveat on sends: the conversion counts (a uint64 past 2^63 - 1, an
-int32 or int64 minimum reading as \code{NA}) warn at send over a channel,
-but at a pool publish they fire on the worker and are not observable
-by the submitter.
+Frames arrive over channels and pools alike: Arrow data sent at top
+level stages as one frame region, and Arrow data nested inside a
+payload (a list element, a task argument, the task expression itself)
+crosses by reference — the received object holds a view in place of
+the table. Collect a pool result and the view is what you get.
+Convert it explicitly with this function. One caveat on sends: the
+conversion warnings (a uint64 past 2^63 - 1 becoming \code{NA}, an int32
+or int64 minimum reading as \code{NA}) fire at send over a channel, but at
+a pool publish they fire on the worker and the submitter never sees
+them.
 
 Columns still backed by their received shared-memory pages export
 zero-copy: the stream's buffers point straight into the shared region
 for attribute-free double, integer, \code{integer64}, and character views
-(character as \code{large_string}). This covers any region-backed column —
-the frame's own leaves, remote leaves referencing another region, and
-root views assembled into a data frame — with one counted loan per
-distinct region; a region whose producer exited degrades only its own
-columns to the copy path. Everything else — factors, Date /
-POSIXct / difftime columns, logical and raw vectors, and materialized
-or never-shared columns — converts per column through
-\code{nanoarrow::as_nanoarrow_array()}. The shared region stays mapped
-until the stream and every array produced from it are fully released.
+(character as \code{large_string}). This covers any column backed by a
+shared region — the frame's own columns, columns referencing another
+region, and received views assembled into a data frame — with one
+reference held per region. A region whose producer has exited affects
+only its own columns, which fall back to copying. Everything else —
+factors, Date / POSIXct / difftime columns, logical and raw vectors,
+and materialized or never-shared columns — converts per column
+through \code{nanoarrow::as_nanoarrow_array()}. The shared region stays
+mapped until the stream and every array produced from it are fully
+released.
 }
 \examples{
 \dontshow{if (requireNamespace("nanoarrow", quietly = TRUE) && requireNamespace("arrow", quietly = TRUE)) withAutoprint(\{ # examplesIf}

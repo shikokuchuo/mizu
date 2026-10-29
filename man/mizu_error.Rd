@@ -16,8 +16,8 @@
 \description{
 Terminal failures that a caller can act on programmatically are raised
 as classed conditions. Each inherits \code{"mizu_error"} (alongside \code{"error"}
-and \code{"condition"}), with a subclass that names the failure. Handlers
-dispatch with \code{tryCatch(..., mizu_error_worker_died = ...)} or test with
+and \code{"condition"}), with a subclass that names the failure. Catch them
+with \code{tryCatch(..., mizu_error_worker_died = ...)} or test with
 \code{\link[=inherits]{inherits()}} instead of matching message text. Messages are not API and
 can be reworded. The class vectors and fields below are API.
 }
@@ -53,7 +53,7 @@ started executing anywhere.
 \code{\link[=mizu_spawn_workers]{mizu_spawn_workers()}} when a child process fails to attach within
 \code{startup_timeout}.
 \item \code{mizu_error_shm} — shared-memory region create or open failure
-anywhere on the surface. Field \code{bytes}: the requested size of a
+anywhere in the API. Field \code{bytes}: the requested size of a
 region that was not created, \code{NA} when a region was not opened.
 \item \code{mizu_error_python_payload} — \code{\link[=mizu_recv]{mizu_recv()}} or \code{\link[=mizu_recv_batch]{mizu_recv_batch()}}
 on a channel message written in a language-private stream (a pymizu
@@ -83,19 +83,19 @@ outcomes that a running system produces, not programming mistakes.
 
 Raised \code{mizu_error} conditions are distinct from sentinels (class
 \code{mizu_sentinel}, returned by \code{\link[=mizu_send]{mizu_send()}}, \code{\link[=mizu_recv]{mizu_recv()}} and
-\code{\link[=mizu_collect]{mizu_collect()}}). A sentinel is an ordinary return value that tags a
-terminal state on the hot path, not a signalled condition. See
+\code{\link[=mizu_collect]{mizu_collect()}}). A sentinel is an ordinary return value that marks a
+terminal state, not a signalled condition. See
 \code{\link[=mizu_is_sentinel]{mizu_is_sentinel()}}.
 
-Which discipline applies follows the shape of the call. The verbs that
-move payloads and wait with a bound — \code{\link[=mizu_send]{mizu_send()}}, \code{\link[=mizu_recv]{mizu_recv()}},
+Which of the two you get follows the shape of the call. The functions
+that move payloads and wait with a bound — \code{\link[=mizu_send]{mizu_send()}}, \code{\link[=mizu_recv]{mizu_recv()}},
 \code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_map]{mizu_map()}} — return sentinels for transport states.
 These are: not yet (\code{mizu_timeout}), not now (\code{mizu_full}), stream over
 (\code{mizu_closed}, \code{mizu_peer_gone}). Their caller is a loop, and these are
 its normal outcomes. Conditions are raised where a request failed for
 good. Constructors and \code{\link[=mizu_submit]{mizu_submit()}}, whose return is a handle the
 next line uses, raise on every failure. \code{\link[=mizu_collect]{mizu_collect()}} raises when the
-value can never arrive: the own error of the task re-signalled,
+value can never arrive: the task's own error re-signalled,
 \code{mizu_error_cancelled}, \code{mizu_error_worker_died}. A sentinel invites the
 next iteration of the loop. A condition means stop and deal with it.
 }

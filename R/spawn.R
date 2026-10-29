@@ -333,8 +333,9 @@ mizu_py_launcher <- function(python = NULL, stdout = "", stderr = "") {
 #' The first worker's join records the workers' language in the pool, so
 #' the launcher carries no language attribute: a pool of Python workers
 #' takes [mizu_call()] specifications through [mizu_submit_call()], and a
-#' native [mizu_submit()] errors locally naming the spec verb. A launcher
-#' that spawns the wrong language fails at join, not at the first task.
+#' plain [mizu_submit()] fails at once with an error naming
+#' [mizu_submit_call()]. A launcher that spawns the wrong language fails
+#' at join, not at the first task.
 #'
 #' The interpreter is probed for pymizu when the launcher is created, so a
 #' missing interpreter or package raises here, before any pool exists.

@@ -13,14 +13,15 @@ mizu_is_sentinel(x)
 \code{TRUE} or \code{FALSE}.
 }
 \description{
-Identity comparison against the four interned sentinel singletons —
-\code{mizu_full}, \code{mizu_timeout}, \code{mizu_closed}, \code{mizu_peer_gone} — that the
-verbs of mizu return to tag terminal states. \code{inherits(x, "mizu_sentinel")} tests the class alone, which any payload can carry.
-This includes a genuine sentinel forwarded over a channel, which arrives
-as an ordinary copy. \code{mizu_is_sentinel()} is provenance: \code{TRUE} only for
-the exact objects that the own calls of mizu return in this process.
-So code that relays untrusted values can distinguish its terminal states
-from look-alike payloads.
+Tests identity against the four sentinel values — \code{mizu_full},
+\code{mizu_timeout}, \code{mizu_closed}, \code{mizu_peer_gone} — that mizu's functions
+return to signal terminal states. \code{inherits(x, "mizu_sentinel")} tests
+the class alone, which any payload can carry: even a genuine sentinel
+forwarded over a channel arrives as an ordinary copy.
+\code{mizu_is_sentinel()} returns \code{TRUE} only for the exact sentinel
+objects mizu's own calls returned in this process. So code that relays
+untrusted values can tell its terminal states from look-alike
+payloads.
 }
 \details{
 Sentinels are ordinary values, not R conditions: nothing is signalled,

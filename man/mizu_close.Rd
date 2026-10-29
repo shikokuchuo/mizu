@@ -13,18 +13,18 @@ inside a peer expression).}
 \item{timeout}{seconds to wait for the close of the peer.}
 }
 \value{
-Invisibly, \code{TRUE} on rendezvous, \code{FALSE} on timeout (with a
-warning).
+Invisibly, \code{TRUE} on a clean mutual close, \code{FALSE} on timeout
+(with a warning).
 }
 \description{
 Orderly shutdown. Signals close to the peer, then waits up to \code{timeout}
-seconds for the close of the peer (or its death). This rendezvous makes
-it safe to release the sent-payload pins: the peer sets its bit only
-after it finishes draining. On rendezvous, all resources are released
-and the region name is unlinked. The handle is dead afterwards, and
-closing it again is a no-op. On timeout the handle stays usable, and the
-resources release at garbage collection, which runs the same rendezvous
-check again.
+seconds for the peer's close (or its death). Waiting for the peer is
+what makes it safe to release the resources held by sent payloads: the
+peer confirms only after it has finished reading its messages. On that
+confirmation, all resources are released and the region name is
+deleted. The handle is dead afterwards, and closing it again is a
+no-op. On timeout the handle stays usable, and the resources release
+at garbage collection, which runs the same check again.
 }
 \details{
 After either side signals close, sends on both sides return the

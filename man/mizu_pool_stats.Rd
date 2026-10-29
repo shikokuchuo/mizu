@@ -34,15 +34,15 @@ a new joiner reuses a slot.
 \description{
 Per-worker and per-submitter counters, accumulated since each
 participant joined. They complement the point-in-time snapshots of
-\code{\link[=mizu_pool_status]{mizu_pool_status()}} and \code{\link[=mizu_pool_dump]{mizu_pool_dump()}}. Nothing here costs the hot
-paths anything. The submitter counts are the monotonic positions of the
-injection rings themselves: submission writes nothing extra, and the
-spill counter moves only on the spill path, which a fresh region per
-payload already dominates. The worker counters are kept process-locally
-and mirrored into the region only when a worker parks, leaves, or
-passes its fairness tick. So under continuous load, the row of a worker
-can lag by up to 61 claims. The row is exact whenever that worker is
-parked or retired, or the pool is quiescent.
+\code{\link[=mizu_pool_status]{mizu_pool_status()}} and \code{\link[=mizu_pool_dump]{mizu_pool_dump()}}. Keeping them costs the
+pool nothing. The submitter counts ride the injection ring's own
+positions: submission writes nothing extra, and the spill counter
+moves only on the spill path, whose region create already costs far
+more than the counter update. The worker counters are kept
+process-locally and mirrored into the region only when a worker
+parks, leaves, or passes its fairness tick. So under continuous load,
+a worker's row can lag by up to 61 claims. The row is exact whenever
+that worker is parked or retired, or the pool is idle.
 }
 \examples{
 p <- mizu_pool()

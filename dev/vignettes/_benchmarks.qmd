@@ -103,14 +103,17 @@ The tools below overlap at the edges; the differences are in what has to run, ho
 
 ### Base R
 
-`mclapply()` forks workers on Unix — cheap there, because a fork shares the parent's pages copy-on-write — but fork is unavailable on Windows and composes poorly with threads, GUI sessions, and some external libraries; `parLapply()` over a socket cluster is the portable form and serializes every task and result through a socket.
+`mclapply()` forks workers on Unix — cheap there, because a fork shares the parent's pages copy-on-write — but fork is unavailable on Windows and composes poorly with threads, GUI sessions, and some external libraries.
+`parLapply()` over a socket cluster is the portable form, and it serializes every task and result through a socket.
 
 ### mirai, crew, and future
 
-mirai dispatches tasks to daemon processes over nanonext sockets, its dispatcher working through callbacks rather than as a broker process — socket copies are the price of its generality: daemons can run anywhere a network reaches, including other machines and HPC clusters, which shared memory cannot.
+mirai dispatches tasks to daemon processes over nanonext sockets, its dispatcher working through callbacks rather than as a broker process.
+Socket copies are the price of its generality: daemons can run anywhere a network reaches, including other machines and HPC clusters, which shared memory cannot.
 crew builds auto-scaling worker management on mirai for bursty pipelines.
 
-future layers a backend-agnostic interface over these and other backends (multisession, multicore, or mirai itself via future.mirai), so code ports between them unchanged; the cost of that abstraction is much higher per-task overhead than either mirai or crew, ahead of the backend's own transport.
+future layers a backend-agnostic interface over these and other backends (multisession, multicore, or mirai itself via future.mirai), so code ports between them unchanged.
+The cost of that abstraction is much higher per-task overhead than either mirai or crew, on top of the backend's own transport cost.
 
 ### callr
 
@@ -122,4 +125,5 @@ It is the right tool for one-off isolation, not for dividing a loop.
 A pool whose workers are Python processes, exchanging vectors and data frames as shared-memory views ([Python interop](interop.html)).
 None of the tools above cross the language boundary.
 
-The short version: choose mizu when the work fits one machine, when tasks are fine-grained or vectors and frames large, or when Python needs to be in the loop; choose mirai or crew when workers must run on other machines or under a scheduler, and callr when a task needs a pristine session.
+The short version: choose mizu when the work fits one machine, when tasks are fine-grained or vectors and frames large, or when Python needs to be in the loop.
+Choose mirai or crew when workers must run on other machines or under a scheduler, and callr when a task needs a pristine session.
