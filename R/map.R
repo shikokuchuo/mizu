@@ -284,6 +284,11 @@ mono_time <- function() .Call(mizu_now_call)
 #'   `c("mizu_timeout", "mizu_sentinel")`). `Inf` (the default) waits
 #'   indefinitely. Submission blocks only while an injection ring is full;
 #'   the collection deadline is [mizu_collect()]'s `timeout`.
+#' @param .stream `TRUE` streams slices of `.x` to workers under a
+#'   sliding window instead of staging `.x` into shared memory wholesale,
+#'   bounding shared-memory residency by the window times the slice size.
+#'   See the Streaming maps section. A streaming map handle collects
+#'   with [mizu_collect()] only (it cannot be promise-armed).
 #' @param .collect `"value"` (the default) gathers template results into
 #'   an owning R vector at [mizu_collect()]. `"view"` instead returns an
 #'   ALTREP view over the map's shared output area — no gather copy — for
@@ -292,11 +297,6 @@ mono_time <- function() .Call(mizu_now_call)
 #'   copy. It keeps the map region alive until released, and re-sending
 #'   it through a channel or pool crosses as a full copy, not by
 #'   reference. The choice is stored on the handle.
-#' @param .stream `TRUE` streams slices of `.x` to workers under a
-#'   sliding window instead of staging `.x` into shared memory wholesale,
-#'   bounding shared-memory residency by the window times the slice size.
-#'   See the Streaming maps section. A streaming map handle collects
-#'   with [mizu_collect()] only (it cannot be promise-armed).
 #'
 #' @return A map handle (class `"mizu_map"`). [mizu_collect()] on it
 #'   returns a list of the results of `.f` in the order of `.x`, with
@@ -332,8 +332,8 @@ mizu_map <- function(
   .chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
-  .collect = "value",
-  .stream = FALSE
+  .stream = FALSE,
+  .collect = "value"
 ) {
   ident <- map_check_native(.pool, .f)
   dots <- list(...)

@@ -13,8 +13,8 @@ mizu_map(
   .chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
-  .collect = "value",
-  .stream = FALSE
+  .stream = FALSE,
+  .collect = "value"
 )
 }
 \arguments{
@@ -52,6 +52,12 @@ tasks already in, and returns the \code{mizu_timeout} sentinel (class
 indefinitely. Submission blocks only while an injection ring is full;
 the collection deadline is \code{\link[=mizu_collect]{mizu_collect()}}'s \code{timeout}.}
 
+\item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a
+sliding window instead of staging \code{.x} into shared memory wholesale,
+bounding shared-memory residency by the window times the slice size.
+See the Streaming maps section. A streaming map handle collects
+with \code{\link[=mizu_collect]{mizu_collect()}} only (it cannot be promise-armed).}
+
 \item{.collect}{\code{"value"} (the default) gathers template results into
 an owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an
 ALTREP view over the map's shared output area — no gather copy — for
@@ -60,12 +66,6 @@ The view is copy-on-write: the first write materializes a private
 copy. It keeps the map region alive until released, and re-sending
 it through a channel or pool crosses as a full copy, not by
 reference. The choice is stored on the handle.}
-
-\item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a
-sliding window instead of staging \code{.x} into shared memory wholesale,
-bounding shared-memory residency by the window times the slice size.
-See the Streaming maps section. A streaming map handle collects
-with \code{\link[=mizu_collect]{mizu_collect()}} only (it cannot be promise-armed).}
 }
 \value{
 A map handle (class \code{"mizu_map"}). \code{\link[=mizu_collect]{mizu_collect()}} on it

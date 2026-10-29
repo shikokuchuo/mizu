@@ -14,7 +14,7 @@ check_dots_empty <- function(...) {
   stop(
     "mizu: unused argument(s)",
     what,
-    " — options after '...' must be given by name",
+    " \u2014 options after '...' must be given by name",
     call. = FALSE
   )
 }
