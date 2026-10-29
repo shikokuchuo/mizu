@@ -1913,3 +1913,37 @@ green (5395 pass, 0 fail, 7 skips; the pymizu venv on PATH ran the
 cross-language legs); pymizu 1030 pass, 1 pre-existing xfail-style skip
 set. Vendored as 97bd267-dirty (the change set is upstream working-tree
 state pending its commit).
+
+## 2026-10-29 — F3: isb as the aarch64 spin hint (libmizu 786ed89)
+
+Phase 3 of the 2026-10-28 low-latency review: MIZU_PAUSE on aarch64 is now
+`isb sy` (the Rust/Folly convention) — `yield` is a NOP on Apple cores, so
+the pre-park spin free-ran at predicate speed. A/B (the F1 discipline: .so
+swaps into one install, 3 interleaved rounds, bench::mark medians, 20k
+round trips per rep; hw.cachelinesize 128; Zoom/Positron renderers active,
+caught by the interleave):
+
+| Row | yield | isb | d |
+|---|---|---|---|
+| channel rt | 1.067 us | 1.043 us | -2% |
+| channel rt, 20 us peer gap | 22.42 us | 22.26 us | -1% |
+| pool rt w1 / w4 / w8 / w16 | 1.82 / 2.53 / 2.85 / 2.62 us | 1.83 / 2.55 / 2.91 / 2.53 us | within noise |
+| pool rt, 50 us task | 57.34 us | 57.17 us | -0% |
+| host CPU at a 500 us gap | 2.11% | 1.92% | same band |
+
+Every latency row within +/-3% (bands overlap across rounds; w16's -3.3%
+is one low isb round, direction consistent with throttled spinners easing
+contention there but not asserted). The decisive read is the spin's clock
+share, sampled (`sample`, 8 s, channel rt at a 20 us peer gap): yield
+spends 1629/6062 spin-path samples in mach_absolute_time (26.9%); isb
+spends 120/6329 (1.9%) — the F3 regime closed, the clock read now
+amortized over ~0.5-1 us strides as on x86. Candidate (b) (cntvct_el0
+every iteration) rejected on that read: at 1.9% there is nothing left to
+recover, and (b) would drop the load-rate throttle that is the change's
+coherence point.
+
+Status: libmizu unit + ext + integration tiers green; tidy clean (30
+pre-existing lines, identical without the change); mizu full suite green
+(5405 pass, 0 fail, 7 skips, pymizu venv on PATH); pymizu 1033 pass, 7
+skips. Vendored as 786ed89 into both bindings. Best-known table
+untouched — no row moved.
