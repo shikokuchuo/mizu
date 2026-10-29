@@ -90,8 +90,10 @@ A channel holds at most one of the two consumer forms at a time:
 installing a handler with promises pending, or requesting a promise with
 a handler installed, is an error. Mixing a blocking
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
-with pending promises consumes in arrival order — the blocking call may
-take a message a promise was waiting on.
+with either consumer form consumes in arrival order — the blocking call
+may take a message a promise or the handler was waiting on. A terminal
+it observes is observed by the consumer too: terminals are channel
+state, re-read on every receive, never consumed.
 
 Every main-thread drain is bounded per event-loop quantum and
 re-scheduled, so a saturated ring starves neither Shiny nor
