@@ -32,6 +32,7 @@
 #'   A single character string is instead UTF-8 source text in the peer's
 #'   language, for a non-R peer spawned by a custom `launcher` (an R peer
 #'   parses and evaluates it as R source).
+#' @param ... These dots are for future extensions and must be empty.
 #' @param capacity slots per ring. A power of two between 2 and 2^24.
 #' @param slot_size bytes per slot. A power of two between 64 and 2^20. The
 #'   inline payload budget is `slot_size - 16`. Payloads that serialize
@@ -44,6 +45,9 @@
 #'   and producers skip the wake check on publish. Use this only when the
 #'   consumer never yields. If a spin-mode consumer parks, the producer
 #'   never wakes it.
+#' @param startup_timeout seconds to wait for the peer to attach and signal
+#'   ready. On expiry, mizu releases the channel and raises
+#'   `mizu_error_startup` (see [mizu_error]).
 #' @param launcher a `function(token)` that spawns the peer process. For an
 #'   R peer, it arranges for a process to call `mizu:::peer_main(token)`. The
 #'   default [mizu_launcher()] spawns `Rscript` and propagates the
@@ -54,9 +58,6 @@
 #'   and speaks the wire protocol, such as `python3 -m pymizu.child` for a
 #'   Python peer — [mizu_py_launcher()] is the ready-made launcher for
 #'   that case.
-#' @param startup_timeout seconds to wait for the peer to attach and signal
-#'   ready. On expiry, mizu releases the channel and raises
-#'   `mizu_error_startup` (see [mizu_error]).
 #'
 #' @return A channel handle (class `"mizu_channel"`). Handles are
 #'   process-private and do not survive `fork()`.
@@ -76,13 +77,15 @@
 #' @export
 mizu_channel <- function(
   expr,
+  ...,
   capacity = 16384L,
   slot_size = 256L,
   arena_size = 4194304,
   spin = FALSE,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 ) {
+  check_dots_empty(...)
   if (!is.language(expr) && !is_scalar_string(expr)) {
     stop(
       "mizu: expr must be a quoted expression (wrap it in quote()) or a ",

@@ -54,6 +54,30 @@
       Error:
       ! mizu: max_workers must be at least 1
 
+# the pool constructors reject misspelled and positional options
+
+    Code
+      mizu_pool(1L, 2L)
+    Condition
+      Error:
+      ! mizu: unused argument(s) — options after '...' must be given by name
+
+---
+
+    Code
+      mizu_pool(slot_sise = 1024L)
+    Condition
+      Error:
+      ! mizu: unused argument(s): 'slot_sise' — options after '...' must be given by name
+
+---
+
+    Code
+      mizu_spawn_workers(NULL, 1L, 2L)
+    Condition
+      Error:
+      ! mizu: unused argument(s) — options after '...' must be given by name
+
 # mizu_spawn_workers is controller-only, spawning nothing otherwise (L36)
 
     Code

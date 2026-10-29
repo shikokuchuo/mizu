@@ -6,19 +6,22 @@
 \usage{
 mizu_pool(
   n_workers = 1L,
+  ...,
   max_workers = n_workers,
   max_submitters = 8L,
   injection_cap = 1024L,
   per_worker_cap = 1024L,
   result_slots = 4096L,
   slot_size = 512L,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 )
 }
 \arguments{
 \item{n_workers}{number of worker processes to spawn, at most
 \code{max_workers}.}
+
+\item{...}{These dots are for future extensions and must be empty.}
 
 \item{max_workers}{worker registry capacity (at most 64).}
 
@@ -44,15 +47,15 @@ order-of-magnitude latency cliff, surfaced per submitter as
 typical expression-plus-arguments tasks inline. Pools that move only
 scalar payloads can drop to \code{256L}.}
 
+\item{startup_timeout}{seconds to wait for all workers to join. On
+expiry, mizu destroys the pool and raises \code{mizu_error_startup} (see
+\link{mizu_error}).}
+
 \item{launcher}{a \verb{function(token, slot)} that arranges for an R process
 to call \code{mizu:::worker_main(token, slot)}. The default
 \code{\link[=mizu_launcher]{mizu_launcher()}} spawns \code{Rscript} and propagates the \code{.libPaths()} of
 the host. Its \code{stdout} and \code{stderr} arguments direct the worker
 output. A custom launcher must arrange the library paths itself.}
-
-\item{startup_timeout}{seconds to wait for all workers to join. On
-expiry, mizu destroys the pool and raises \code{mizu_error_startup} (see
-\link{mizu_error}).}
 }
 \value{
 A pool handle (class \code{"mizu_pool"}) holding submitter slot 0.

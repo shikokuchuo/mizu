@@ -1,3 +1,24 @@
+# Guards the '...' separator of the constructor signatures: whatever lands
+# there is a typo or a positional leftover, never an intended argument.
+check_dots_empty <- function(...) {
+  n <- ...length()
+  if (n == 0L) {
+    return(invisible())
+  }
+  nms <- ...names()
+  what <- if (!is.null(nms) && all(nzchar(nms))) {
+    paste0(": '", paste(nms, collapse = "', '"), "'")
+  } else {
+    ""
+  }
+  stop(
+    "mizu: unused argument(s)",
+    what,
+    " — options after '...' must be given by name",
+    call. = FALSE
+  )
+}
+
 #' Create a Task Pool and Spawn Its Workers
 #'
 #' Creates a shared-memory task pool and spawns its worker processes.
@@ -28,6 +49,7 @@
 #'
 #' @param n_workers number of worker processes to spawn, at most
 #'   `max_workers`.
+#' @param ... These dots are for future extensions and must be empty.
 #' @param max_workers worker registry capacity (at most 64).
 #' @param max_submitters submitter registry capacity (at most 64). Each
 #'   submitter owns its own injection ring and an equal share of
@@ -46,14 +68,14 @@
 #'   [mizu_pool_stats()]`$submitters$spills`. The default `512L` keeps
 #'   typical expression-plus-arguments tasks inline. Pools that move only
 #'   scalar payloads can drop to `256L`.
+#' @param startup_timeout seconds to wait for all workers to join. On
+#'   expiry, mizu destroys the pool and raises `mizu_error_startup` (see
+#'   [mizu_error]).
 #' @param launcher a `function(token, slot)` that arranges for an R process
 #'   to call `mizu:::worker_main(token, slot)`. The default
 #'   [mizu_launcher()] spawns `Rscript` and propagates the `.libPaths()` of
 #'   the host. Its `stdout` and `stderr` arguments direct the worker
 #'   output. A custom launcher must arrange the library paths itself.
-#' @param startup_timeout seconds to wait for all workers to join. On
-#'   expiry, mizu destroys the pool and raises `mizu_error_startup` (see
-#'   [mizu_error]).
 #'
 #' @return A pool handle (class `"mizu_pool"`) holding submitter slot 0.
 #'   Handles are process-private and do not survive `fork()`.
@@ -67,15 +89,17 @@
 #' @export
 mizu_pool <- function(
   n_workers = 1L,
+  ...,
   max_workers = n_workers,
   max_submitters = 8L,
   injection_cap = 1024L,
   per_worker_cap = 1024L,
   result_slots = 4096L,
   slot_size = 512L,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 ) {
+  check_dots_empty(...)
   n_workers <- as.integer(n_workers)
   if (is.na(n_workers) || n_workers < 1L) {
     stop("mizu: n_workers must be at least 1", call. = FALSE)
@@ -153,9 +177,11 @@ launch_workers <- function(pool, slots, launcher, startup_timeout) {
 mizu_spawn_workers <- function(
   pool,
   n = 1L,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  ...,
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 ) {
+  check_dots_empty(...)
   n <- as.integer(n)
   if (is.na(n) || n < 1L) {
     stop("mizu: n must be at least 1", call. = FALSE)

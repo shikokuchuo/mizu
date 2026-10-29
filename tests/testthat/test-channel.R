@@ -11,6 +11,11 @@ test_that("mizu_channel validates expr is a language object", {
   expect_error(mizu_channel(NULL), "must be a quoted expression")
 })
 
+test_that("mizu_channel rejects misspelled and positional options", {
+  expect_snapshot(error = TRUE, mizu_channel(quote(NULL), 1024L))
+  expect_snapshot(error = TRUE, mizu_channel(quote(NULL), spin_mode = TRUE))
+})
+
 test_that("mizu_channel_create validates its parameters", {
   expect_error(
     .Call(mizu:::mizu_channel_create, quote(NULL), 3L, 256L, 0, FALSE),

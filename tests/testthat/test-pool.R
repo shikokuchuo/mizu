@@ -79,6 +79,12 @@ test_that("the R-level constructor validates max_workers (L35)", {
   )
 })
 
+test_that("the pool constructors reject misspelled and positional options", {
+  expect_snapshot(error = TRUE, mizu_pool(1L, 2L))
+  expect_snapshot(error = TRUE, mizu_pool(slot_sise = 1024L))
+  expect_snapshot(error = TRUE, mizu_spawn_workers(NULL, 1L, 2L))
+})
+
 test_that("a fresh pool reports its layout and registry state", {
   p <- pool_pair(
     max_submitters = 4L,

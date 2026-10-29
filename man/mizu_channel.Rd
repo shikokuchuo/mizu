@@ -6,12 +6,13 @@
 \usage{
 mizu_channel(
   expr,
+  ...,
   capacity = 16384L,
   slot_size = 256L,
   arena_size = 4194304,
   spin = FALSE,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 )
 }
 \arguments{
@@ -20,6 +21,8 @@ in the peer process with \code{ch} bound to the peer-side channel handle.
 A single character string is instead UTF-8 source text in the peer's
 language, for a non-R peer spawned by a custom \code{launcher} (an R peer
 parses and evaluates it as R source).}
+
+\item{...}{These dots are for future extensions and must be empty.}
 
 \item{capacity}{slots per ring. A power of two between 2 and 2^24.}
 
@@ -37,6 +40,10 @@ and producers skip the wake check on publish. Use this only when the
 consumer never yields. If a spin-mode consumer parks, the producer
 never wakes it.}
 
+\item{startup_timeout}{seconds to wait for the peer to attach and signal
+ready. On expiry, mizu releases the channel and raises
+\code{mizu_error_startup} (see \link{mizu_error}).}
+
 \item{launcher}{a \verb{function(token)} that spawns the peer process. For an
 R peer, it arranges for a process to call \code{mizu:::peer_main(token)}. The
 default \code{\link[=mizu_launcher]{mizu_launcher()}} spawns \code{Rscript} and propagates the
@@ -47,10 +54,6 @@ source-string \code{expr}), it spawns a program that attaches with \code{token}
 and speaks the wire protocol, such as \verb{python3 -m pymizu.child} for a
 Python peer — \code{\link[=mizu_py_launcher]{mizu_py_launcher()}} is the ready-made launcher for
 that case.}
-
-\item{startup_timeout}{seconds to wait for the peer to attach and signal
-ready. On expiry, mizu releases the channel and raises
-\code{mizu_error_startup} (see \link{mizu_error}).}
 }
 \value{
 A channel handle (class \code{"mizu_channel"}). Handles are

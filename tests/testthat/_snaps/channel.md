@@ -1,3 +1,19 @@
+# mizu_channel rejects misspelled and positional options
+
+    Code
+      mizu_channel(quote(NULL), 1024L)
+    Condition
+      Error:
+      ! mizu: unused argument(s) — options after '...' must be given by name
+
+---
+
+    Code
+      mizu_channel(quote(NULL), spin_mode = TRUE)
+    Condition
+      Error:
+      ! mizu: unused argument(s): 'spin_mode' — options after '...' must be given by name
+
 # mizu_channel_create rejects fractional and NA geometry
 
     Code
