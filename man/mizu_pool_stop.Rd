@@ -26,6 +26,11 @@ unlinks the region and the liveness files. The handle is dead
 afterwards, and stopping it again is a no-op. Only the creating process
 can stop a pool.
 }
+\details{
+A stop also rejects every promise still pending on the pool — task
+promises, \code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}} and \code{\link[=mizu_collect_any_async]{mizu_collect_any_async()}}
+collections, and map promises — with \code{mizu_error_stopped}.
+}
 \examples{
 p <- mizu_pool()
 t <- mizu_submit(p, 1 + 1)

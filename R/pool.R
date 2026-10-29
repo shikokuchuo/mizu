@@ -702,6 +702,10 @@ mizu_cancel <- function(task) {
 #' afterwards, and stopping it again is a no-op. Only the creating process
 #' can stop a pool.
 #'
+#' A stop also rejects every promise still pending on the pool — task
+#' promises, [mizu_collect_all_async()] and [mizu_collect_any_async()]
+#' collections, and map promises — with `mizu_error_stopped`.
+#'
 #' @param pool a pool handle from [mizu_pool()] or [mizu_pool_attach()];
 #'   inside a task, the evaluating worker's own handle from
 #'   [mizu_current_pool()].
