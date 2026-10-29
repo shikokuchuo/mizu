@@ -492,7 +492,9 @@ static inline void mizu_decline_foreign(mizu_read_ctx *ctx) {
    pin pressure. The gate sizes the reclaim drip against the spill free
    list's 2-per-class cap: a firing hands back one or two regions per class
    (they rejoin the list); a bigger gate would burst past the cap, the
-   excess destroyed at insert and re-created next task. */
+   excess destroyed at insert and re-created next task. The
+   mizu.gc_boundary option overrides it once at package load (0 disables,
+   returning loans to R's gc cadence). */
 #define MIZU_R_GC_BYTES ((size_t) 8 << 20)
 
 void mizu_zc_init(void);
@@ -553,6 +555,7 @@ void mizu_zc_gc_boundary(void);
 SEXP mizu_zc_view_check_call(SEXP x);
 SEXP mizu_zc_refcount_call(SEXP x);
 SEXP mizu_zc_armed_bytes_call(void);
+SEXP mizu_zc_gc_boundary_set_call(SEXP bytes);
 SEXP mizu_zc_fl_info(mizu_handle *h);
 
 // Classed error conditions (condition.c) -------------------------------------------

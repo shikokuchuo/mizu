@@ -72,6 +72,14 @@ From a non-R peer, only vectors and strings are legal payloads. Anything
 else (a pymizu codec stream or a pickle) is declined: the receive raises
 a classed \code{mizu_error_python_payload} error (see \link{mizu_error}). The
 declined message is consumed, so the channel keeps flowing.
+
+Large payloads can arrive as zero-copy views over shared memory: the view
+is a small R object pinning memory the garbage collector cannot see. To
+return those loans promptly, the receive verbs (and worker task
+boundaries) run a minor garbage collection once 8 MiB of released view
+memory has accumulated — an occasional ~0.2 ms verb, the largest latency
+outlier in the system. Set \code{options(mizu.gc_boundary)} (bytes; \code{0}
+disables) before loading the package to tune the threshold.
 }
 \examples{
 ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))

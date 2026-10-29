@@ -665,6 +665,47 @@ test_that("the collect-entry boundary fires past the gate; dead views never leak
   pool_end(pp)
 })
 
+test_that("a zero mizu.gc_boundary disables the boundary collection", {
+  p <- pool_pair()
+  armed <- function() .Call(mizu:::mizu_zc_armed_bytes)
+  set <- function(x) invisible(.Call(mizu:::mizu_zc_gc_boundary_set, x))
+  on.exit(set(8 * 1024 * 1024))
+  x <- runif(2^20) # 8 MB: one wrap arms past the default gate
+  set(0)
+  t <- mizu_submit(p[["ctrl"]], x, x = x)
+  pool_step(p)
+  r <- mizu_collect(t, 5)
+  expect_true(is_view(r))
+  t2 <- mizu_submit(p[["ctrl"]], 1L)
+  pool_step(p) # the exec entry would fire an enabled boundary
+  expect_gt(armed(), 8 * 1024 * 1024)
+  expect_identical(mizu_collect(t2, 5), 1L)
+  set(1) # a 1-byte gate fires at the next boundary
+  t3 <- mizu_submit(p[["ctrl"]], 1L)
+  pool_step(p)
+  expect_identical(armed(), 0)
+  expect_identical(mizu_collect(t3, 5), 1L)
+  pool_end(p)
+})
+
+test_that("the mizu.gc_boundary option is validated at package load", {
+  skip_if_no_child_mizu()
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    "options(mizu.gc_boundary = 0); library(mizu); file.create(%s)",
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f))
+  unlink(f)
+  g <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    "options(mizu.gc_boundary = -1); tryCatch(library(mizu), error = function(e) file.create(%s))",
+    deparse(g)
+  ))
+  expect_true(wait_for_file(g))
+  unlink(g)
+})
+
 test_that("channel zc churn falls back to the copy tiers past the lent budget and recovers", {
   skip_on_os(c("mac", "windows")) # the churn signal is Linux-only (spill_fl_pop)
   p <- channel_pair(arena_size = 0)

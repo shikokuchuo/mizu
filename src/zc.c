@@ -63,6 +63,11 @@ static int mizu_zc_nmarks;
    cannot see (a view is ~100 B of R heap over MBs of shm). */
 static size_t mizu_zc_armed;
 
+/* The firing threshold: MIZU_R_GC_BYTES unless the mizu.gc_boundary option
+   overrides it at package load (0 disables, returning loans to R's gc
+   cadence). A plain static — the verb path pays one load and compare. */
+static size_t mizu_zc_gc_bytes = MIZU_R_GC_BYTES;
+
 static void zc_list_clear(SEXP list, int *pn) {
   const int n = *pn;
   for (int i = 0; i < n; i++)
@@ -201,7 +206,7 @@ static void mizu_zc_gc_run(void *data) {
 }
 
 void mizu_zc_gc_boundary(void) {
-  if (mizu_zc_armed <= MIZU_R_GC_BYTES) return;
+  if (mizu_zc_gc_bytes == 0 || mizu_zc_armed <= mizu_zc_gc_bytes) return;
   mizu_zc_armed = 0;
   /* the top-level context contains the eval (finalizers included: each
      rides its own top-level context and cannot unwind into this frame) */
@@ -1185,6 +1190,13 @@ SEXP mizu_zc_view_name_call(SEXP x) {
    boundary collection (mizu_zc_gc_boundary resets it on firing). */
 SEXP mizu_zc_armed_bytes_call(void) {
   return Rf_ScalarReal((double) mizu_zc_armed);
+}
+
+/* The mizu.gc_boundary option's write half (.onLoad and tests): bytes as a
+   double — 2^53 exactness covers any sane threshold. 0 disables. */
+SEXP mizu_zc_gc_boundary_set_call(SEXP bytes) {
+  mizu_zc_gc_bytes = (size_t) Rf_asReal(bytes);
+  return R_NilValue;
 }
 
 /* c(free-list entries, lent-ledger entries) for a handle's spill state. */

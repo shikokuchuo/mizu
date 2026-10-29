@@ -37,6 +37,15 @@ export GLIBC_TUNABLES=glibc.malloc.mmap_threshold=33554432:glibc.malloc.trim_thr
 
 If you have set `GLIBC_TUNABLES`, mizu respects your values.
 
+## Garbage collection boundary
+
+Received zero-copy views pin shared memory that R’s garbage collector cannot see.
+To return those loans promptly, the receive verbs and worker task boundaries run a minor garbage collection once 8 MiB of released view memory has accumulated.
+This costs about 0.2 ms at verb cadence — the largest latency outlier in the system.
+
+Set `options(mizu.gc_boundary)` before loading the package to change the threshold (in bytes).
+`0` disables the boundary collection, returning loan release to R’s own GC cadence.
+
 ## When a process dies
 
 The death of any participant is detected at OS notification latency, with no heartbeats and no polling.

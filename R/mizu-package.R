@@ -33,6 +33,22 @@
 # pointer width and, on Linux, pidfd_open for the peer death listener.
 .onLoad <- function(libname, pkgname) {
   .Call(mizu_onload_probe)
+  gc_boundary <- getOption("mizu.gc_boundary")
+  if (!is.null(gc_boundary)) {
+    if (
+      !is.numeric(gc_boundary) ||
+        length(gc_boundary) != 1L ||
+        !is.finite(gc_boundary) ||
+        gc_boundary < 0
+    ) {
+      stop(
+        "mizu: option 'mizu.gc_boundary' must be a single non-negative ",
+        "number of bytes",
+        call. = FALSE
+      )
+    }
+    .Call(mizu_zc_gc_boundary_set, as.double(gc_boundary))
+  }
 }
 
 # No .onUnload: the DLL must stay mapped — live handles carry finalizers
