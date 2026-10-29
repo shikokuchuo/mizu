@@ -93,6 +93,12 @@ inside a task, the evaluating worker's own handle from
 <code>FALSE</code> otherwise, with a warning (the workers still exit on their
 own).</p>
     </div>
+    <div class="section level2">
+    <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
+    <p>A stop also rejects every promise still pending on the pool — task
+promises, <code><a href="mizu_collect_all_async.html">mizu_collect_all_async()</a></code> and <code><a href="mizu_collect_all_async.html">mizu_collect_any_async()</a></code>
+collections, and map promises — with <code>mizu_error_stopped</code>.</p>
+    </div>
 
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>

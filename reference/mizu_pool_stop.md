@@ -33,6 +33,15 @@ mizu_pool_stop(pool, timeout = 5)
 Invisibly, `TRUE` if all workers exited within the timeout. `FALSE`
 otherwise, with a warning (the workers still exit on their own).
 
+## Details
+
+A stop also rejects every promise still pending on the pool — task
+promises,
+[`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+and
+[`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+collections, and map promises — with `mizu_error_stopped`.
+
 ## Examples
 
 ``` r
