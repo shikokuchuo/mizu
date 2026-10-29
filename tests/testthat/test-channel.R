@@ -224,6 +224,17 @@ test_that("the close protocol rendezvouses and releases both ends", {
   expect_false(mizu_alive(p[["host"]]))
 })
 
+test_that("a non-blocking batch receive reports close instead of timeout", {
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  expect_s3_class(mizu_recv_batch(p[["host"]], 10L, 0), "mizu_timeout")
+  mizu_send(p[["peer"]], "parting")
+  .Call(mizu:::mizu_channel_close_signal, p[["peer"]])
+  # drain-before-verdict, then the terminal sentinel rather than timeout
+  expect_identical(mizu_recv_batch(p[["host"]], 10L, 0), list("parting"))
+  expect_s3_class(mizu_recv_batch(p[["host"]], 10L, 0), "mizu_closed")
+})
+
 test_that("close times out with a warning when the peer never answers", {
   p <- channel_pair()
   expect_warning(ok <- mizu_close(p[["host"]], timeout = 0.2), "timed out")

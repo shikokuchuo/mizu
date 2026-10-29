@@ -407,8 +407,9 @@ SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
      cap and shrinking — the drain's steady state */
   if (ms == 0) {
     size_t avail = mizu_channel_avail(c);
-    if (avail == 0) return status_sentinel(MIZU_TIMEOUT);
-    if (avail < (size_t) n) n = (int) avail;
+    /* an empty ring falls through to the core call: it reports an orderly
+       close or peer death that an early TIMEOUT here would mask */
+    if (avail != 0 && avail < (size_t) n) n = (int) avail;
   }
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) n));
   size_t count = 0;

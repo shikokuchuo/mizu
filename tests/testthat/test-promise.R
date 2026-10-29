@@ -114,6 +114,30 @@ test_that("the handler form delivers a burst and receives the terminal condition
   expect_s3_class(got$xs[[4L]], "mizu_error")
 })
 
+test_that("the batch handler form receives the terminal condition", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(.Call(mizu:::mizu_channel_destroy, p[["host"]]))
+  on.exit(.Call(mizu:::mizu_channel_destroy, p[["peer"]]), add = TRUE)
+  got <- new.env(parent = emptyenv())
+  got$xs <- list()
+  mizu_recv_handler(
+    p[["host"]],
+    function(x) {
+      got$xs[[length(got$xs) + 1L]] <- x
+    },
+    batch = TRUE
+  )
+  mizu_send(p[["peer"]], 1L)
+  mizu_send(p[["peer"]], 2L)
+  expect_true(pump_until(function() length(got$xs) == 1L))
+  expect_identical(got$xs[[1L]], list(1L, 2L))
+  .Call(mizu:::mizu_channel_close_signal, p[["peer"]])
+  expect_true(pump_until(function() length(got$xs) == 2L))
+  expect_s3_class(got$xs[[2L]], "mizu_closed")
+  expect_s3_class(got$xs[[2L]], "mizu_error")
+})
+
 test_that("handler and promise on one channel are mutually exclusive", {
   skip_if_no_promises()
   p <- channel_pair()
