@@ -43,7 +43,7 @@ mizu_channel(
 
 - arena_size:
 
-  spill-arena bytes per direction. A multiple of 64, or 0 to disable
+  spill-arena bytes per direction. A multiple of 128, or 0 to disable
   (every spill then creates a region). This bounds the in-flight spill.
   An undersized arena degrades to region-create fallbacks, never to
   errors.
