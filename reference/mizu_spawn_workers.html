@@ -79,8 +79,9 @@ yet collected.</p>
     <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">mizu_spawn_workers</span><span class="op">(</span></span>
 <span>  <span class="va">pool</span>,</span>
 <span>  n <span class="op">=</span> <span class="fl">1L</span>,</span>
-<span>  launcher <span class="op">=</span> <span class="fu"><a href="mizu_launcher.html">mizu_launcher</a></span><span class="op">(</span><span class="op">)</span>,</span>
-<span>  startup_timeout <span class="op">=</span> <span class="fl">30</span></span>
+<span>  <span class="va">...</span>,</span>
+<span>  startup_timeout <span class="op">=</span> <span class="fl">30</span>,</span>
+<span>  launcher <span class="op">=</span> <span class="fu"><a href="mizu_launcher.html">mizu_launcher</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="op">)</span></span>
 <span></span>
 <span><span class="fu">mizu_retire_worker</span><span class="op">(</span><span class="va">pool</span>, <span class="va">slot</span><span class="op">)</span></span></code></pre></div>
@@ -100,18 +101,22 @@ inside a task, the evaluating worker's own handle from
 <dd><p>number of workers to spawn.</p></dd>
 
 
-<dt id="arg-launcher">launcher<a class="anchor" aria-label="anchor" href="#arg-launcher"></a></dt>
-<dd><p>a <code>function(token, slot)</code> that arranges for an R process
-to call <code>mizu:::worker_main(token, slot)</code>. The default
-<code><a href="mizu_launcher.html">mizu_launcher()</a></code> spawns <code>Rscript</code> and propagates the <code><a href="https://rdrr.io/r/base/libPaths.html" class="external-link">.libPaths()</a></code> of
-the host. Its <code>stdout</code> and <code>stderr</code> arguments direct the worker
-output. A custom launcher must arrange the library paths itself.</p></dd>
+<dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
+<dd><p>These dots are for future extensions and must be empty.</p></dd>
 
 
 <dt id="arg-startup-timeout">startup_timeout<a class="anchor" aria-label="anchor" href="#arg-startup-timeout"></a></dt>
 <dd><p>seconds to wait for all workers to join. On
 expiry, mizu destroys the pool and raises <code>mizu_error_startup</code> (see
 <a href="mizu_error.html">mizu_error</a>).</p></dd>
+
+
+<dt id="arg-launcher">launcher<a class="anchor" aria-label="anchor" href="#arg-launcher"></a></dt>
+<dd><p>a <code>function(token, slot)</code> that arranges for an R process
+to call <code>mizu:::worker_main(token, slot)</code>. The default
+<code><a href="mizu_launcher.html">mizu_launcher()</a></code> spawns <code>Rscript</code> and propagates the <code><a href="https://rdrr.io/r/base/libPaths.html" class="external-link">.libPaths()</a></code> of
+the host. Its <code>stdout</code> and <code>stderr</code> arguments direct the worker
+output. A custom launcher must arrange the library paths itself.</p></dd>
 
 
 <dt id="arg-slot">slot<a class="anchor" aria-label="anchor" href="#arg-slot"></a></dt>

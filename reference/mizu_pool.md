@@ -13,14 +13,15 @@ external submissions on a saturated pool.
 ``` r
 mizu_pool(
   n_workers = 1L,
+  ...,
   max_workers = n_workers,
   max_submitters = 8L,
   injection_cap = 1024L,
   per_worker_cap = 1024L,
   result_slots = 4096L,
   slot_size = 512L,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 )
 ```
 
@@ -29,6 +30,10 @@ mizu_pool(
 - n_workers:
 
   number of worker processes to spawn, at most `max_workers`.
+
+- ...:
+
+  These dots are for future extensions and must be empty.
 
 - max_workers:
 
@@ -63,6 +68,12 @@ mizu_pool(
   The default `512L` keeps typical expression-plus-arguments tasks
   inline. Pools that move only scalar payloads can drop to `256L`.
 
+- startup_timeout:
+
+  seconds to wait for all workers to join. On expiry, mizu destroys the
+  pool and raises `mizu_error_startup` (see
+  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
+
 - launcher:
 
   a `function(token, slot)` that arranges for an R process to call
@@ -72,12 +83,6 @@ mizu_pool(
   [`.libPaths()`](https://rdrr.io/r/base/libPaths.html) of the host. Its
   `stdout` and `stderr` arguments direct the worker output. A custom
   launcher must arrange the library paths itself.
-
-- startup_timeout:
-
-  seconds to wait for all workers to join. On expiry, mizu destroys the
-  pool and raises `mizu_error_startup` (see
-  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 ## Value
 

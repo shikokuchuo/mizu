@@ -12,12 +12,13 @@ crosses the process boundary, as a command-line argument.
 ``` r
 mizu_channel(
   expr,
+  ...,
   capacity = 16384L,
   slot_size = 256L,
   arena_size = 4194304,
   spin = FALSE,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 )
 ```
 
@@ -30,6 +31,10 @@ mizu_channel(
   character string is instead UTF-8 source text in the peer's language,
   for a non-R peer spawned by a custom `launcher` (an R peer parses and
   evaluates it as R source).
+
+- ...:
+
+  These dots are for future extensions and must be empty.
 
 - capacity:
 
@@ -55,6 +60,12 @@ mizu_channel(
   consumer never yields. If a spin-mode consumer parks, the producer
   never wakes it.
 
+- startup_timeout:
+
+  seconds to wait for the peer to attach and signal ready. On expiry,
+  mizu releases the channel and raises `mizu_error_startup` (see
+  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
+
 - launcher:
 
   a `function(token)` that spawns the peer process. For an R peer, it
@@ -69,12 +80,6 @@ mizu_channel(
   protocol, such as `python3 -m pymizu.child` for a Python peer —
   [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
   is the ready-made launcher for that case.
-
-- startup_timeout:
-
-  seconds to wait for the peer to attach and signal ready. On expiry,
-  mizu releases the channel and raises `mizu_error_startup` (see
-  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 ## Value
 

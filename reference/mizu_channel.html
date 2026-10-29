@@ -72,12 +72,13 @@ as a command-line argument.</p>
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">mizu_channel</span><span class="op">(</span></span>
 <span>  <span class="va">expr</span>,</span>
+<span>  <span class="va">...</span>,</span>
 <span>  capacity <span class="op">=</span> <span class="fl">16384L</span>,</span>
 <span>  slot_size <span class="op">=</span> <span class="fl">256L</span>,</span>
 <span>  arena_size <span class="op">=</span> <span class="fl">4194304</span>,</span>
 <span>  spin <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  launcher <span class="op">=</span> <span class="fu"><a href="mizu_launcher.html">mizu_launcher</a></span><span class="op">(</span><span class="op">)</span>,</span>
-<span>  startup_timeout <span class="op">=</span> <span class="fl">30</span></span>
+<span>  startup_timeout <span class="op">=</span> <span class="fl">30</span>,</span>
+<span>  launcher <span class="op">=</span> <span class="fu"><a href="mizu_launcher.html">mizu_launcher</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -91,6 +92,10 @@ in the peer process with <code>ch</code> bound to the peer-side channel handle.
 A single character string is instead UTF-8 source text in the peer's
 language, for a non-R peer spawned by a custom <code>launcher</code> (an R peer
 parses and evaluates it as R source).</p></dd>
+
+
+<dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
+<dd><p>These dots are for future extensions and must be empty.</p></dd>
 
 
 <dt id="arg-capacity">capacity<a class="anchor" aria-label="anchor" href="#arg-capacity"></a></dt>
@@ -117,6 +122,12 @@ consumer never yields. If a spin-mode consumer parks, the producer
 never wakes it.</p></dd>
 
 
+<dt id="arg-startup-timeout">startup_timeout<a class="anchor" aria-label="anchor" href="#arg-startup-timeout"></a></dt>
+<dd><p>seconds to wait for the peer to attach and signal
+ready. On expiry, mizu releases the channel and raises
+<code>mizu_error_startup</code> (see <a href="mizu_error.html">mizu_error</a>).</p></dd>
+
+
 <dt id="arg-launcher">launcher<a class="anchor" aria-label="anchor" href="#arg-launcher"></a></dt>
 <dd><p>a <code>function(token)</code> that spawns the peer process. For an
 R peer, it arranges for a process to call <code>mizu:::peer_main(token)</code>. The
@@ -128,12 +139,6 @@ source-string <code>expr</code>), it spawns a program that attaches with <code>t
 and speaks the wire protocol, such as <code>python3 -m pymizu.child</code> for a
 Python peer — <code><a href="mizu_py_launcher.html">mizu_py_launcher()</a></code> is the ready-made launcher for
 that case.</p></dd>
-
-
-<dt id="arg-startup-timeout">startup_timeout<a class="anchor" aria-label="anchor" href="#arg-startup-timeout"></a></dt>
-<dd><p>seconds to wait for the peer to attach and signal
-ready. On expiry, mizu releases the channel and raises
-<code>mizu_error_startup</code> (see <a href="mizu_error.html">mizu_error</a>).</p></dd>
 
 </dl></div>
     <div class="section level2">

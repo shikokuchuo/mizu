@@ -15,8 +15,9 @@ yet collected.
 mizu_spawn_workers(
   pool,
   n = 1L,
-  launcher = mizu_launcher(),
-  startup_timeout = 30
+  ...,
+  startup_timeout = 30,
+  launcher = mizu_launcher()
 )
 
 mizu_retire_worker(pool, slot)
@@ -37,6 +38,16 @@ mizu_retire_worker(pool, slot)
 
   number of workers to spawn.
 
+- ...:
+
+  These dots are for future extensions and must be empty.
+
+- startup_timeout:
+
+  seconds to wait for all workers to join. On expiry, mizu destroys the
+  pool and raises `mizu_error_startup` (see
+  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
+
 - launcher:
 
   a `function(token, slot)` that arranges for an R process to call
@@ -46,12 +57,6 @@ mizu_retire_worker(pool, slot)
   [`.libPaths()`](https://rdrr.io/r/base/libPaths.html) of the host. Its
   `stdout` and `stderr` arguments direct the worker output. A custom
   launcher must arrange the library paths itself.
-
-- startup_timeout:
-
-  seconds to wait for all workers to join. On expiry, mizu destroys the
-  pool and raises `mizu_error_startup` (see
-  [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 - slot:
 

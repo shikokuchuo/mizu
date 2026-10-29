@@ -75,14 +75,15 @@ external submissions on a saturated pool.</p>
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">mizu_pool</span><span class="op">(</span></span>
 <span>  n_workers <span class="op">=</span> <span class="fl">1L</span>,</span>
+<span>  <span class="va">...</span>,</span>
 <span>  max_workers <span class="op">=</span> <span class="va">n_workers</span>,</span>
 <span>  max_submitters <span class="op">=</span> <span class="fl">8L</span>,</span>
 <span>  injection_cap <span class="op">=</span> <span class="fl">1024L</span>,</span>
 <span>  per_worker_cap <span class="op">=</span> <span class="fl">1024L</span>,</span>
 <span>  result_slots <span class="op">=</span> <span class="fl">4096L</span>,</span>
 <span>  slot_size <span class="op">=</span> <span class="fl">512L</span>,</span>
-<span>  launcher <span class="op">=</span> <span class="fu"><a href="mizu_launcher.html">mizu_launcher</a></span><span class="op">(</span><span class="op">)</span>,</span>
-<span>  startup_timeout <span class="op">=</span> <span class="fl">30</span></span>
+<span>  startup_timeout <span class="op">=</span> <span class="fl">30</span>,</span>
+<span>  launcher <span class="op">=</span> <span class="fu"><a href="mizu_launcher.html">mizu_launcher</a></span><span class="op">(</span><span class="op">)</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -93,6 +94,10 @@ external submissions on a saturated pool.</p>
 <dl><dt id="arg-n-workers">n_workers<a class="anchor" aria-label="anchor" href="#arg-n-workers"></a></dt>
 <dd><p>number of worker processes to spawn, at most
 <code>max_workers</code>.</p></dd>
+
+
+<dt id="arg--">...<a class="anchor" aria-label="anchor" href="#arg--"></a></dt>
+<dd><p>These dots are for future extensions and must be empty.</p></dd>
 
 
 <dt id="arg-max-workers">max_workers<a class="anchor" aria-label="anchor" href="#arg-max-workers"></a></dt>
@@ -131,18 +136,18 @@ typical expression-plus-arguments tasks inline. Pools that move only
 scalar payloads can drop to <code>256L</code>.</p></dd>
 
 
+<dt id="arg-startup-timeout">startup_timeout<a class="anchor" aria-label="anchor" href="#arg-startup-timeout"></a></dt>
+<dd><p>seconds to wait for all workers to join. On
+expiry, mizu destroys the pool and raises <code>mizu_error_startup</code> (see
+<a href="mizu_error.html">mizu_error</a>).</p></dd>
+
+
 <dt id="arg-launcher">launcher<a class="anchor" aria-label="anchor" href="#arg-launcher"></a></dt>
 <dd><p>a <code>function(token, slot)</code> that arranges for an R process
 to call <code>mizu:::worker_main(token, slot)</code>. The default
 <code><a href="mizu_launcher.html">mizu_launcher()</a></code> spawns <code>Rscript</code> and propagates the <code><a href="https://rdrr.io/r/base/libPaths.html" class="external-link">.libPaths()</a></code> of
 the host. Its <code>stdout</code> and <code>stderr</code> arguments direct the worker
 output. A custom launcher must arrange the library paths itself.</p></dd>
-
-
-<dt id="arg-startup-timeout">startup_timeout<a class="anchor" aria-label="anchor" href="#arg-startup-timeout"></a></dt>
-<dd><p>seconds to wait for all workers to join. On
-expiry, mizu destroys the pool and raises <code>mizu_error_startup</code> (see
-<a href="mizu_error.html">mizu_error</a>).</p></dd>
 
 </dl></div>
     <div class="section level2">
