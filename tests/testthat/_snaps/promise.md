@@ -46,3 +46,11 @@
       Error:
       ! mizu: tasks must be a non-empty list of task handles
 
+---
+
+    Code
+      mizu_collect_any_async(list(t), NA)
+    Condition
+      Error:
+      ! mizu: timeout must be a number of seconds, not NA
+

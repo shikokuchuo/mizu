@@ -11,7 +11,7 @@
 \usage{
 mizu_collect_all_async(tasks, timeout = Inf)
 
-mizu_collect_any_async(tasks)
+mizu_collect_any_async(tasks, timeout = Inf)
 
 \method{as.promise}{mizu_task}(x)
 
@@ -51,9 +51,9 @@ Semantics mirror the sync verbs. Collect-all resolves in input order
 with names carried; the first erroring handle by position rejects
 with \code{index} (only that handle consumed, the rest collectible).
 Collect-any resolves \code{list(index, value)} for the first terminal
-task, a raised outcome rejecting with the \code{index} field. A
-\code{mizu_collect_all_async()} timeout rejects with the \code{mizu_timeout}
-classed error and consumes nothing. When a collection settles —
+task, a raised outcome rejecting with the \code{index} field. A timeout
+rejects with the \code{mizu_timeout} classed error and consumes nothing.
+When a collection settles —
 resolve, reject, or timeout — every enrolled handle's announce is
 withdrawn: the handles the settle leaves unconsumed return to
 blocking-collectible.

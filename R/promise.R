@@ -592,9 +592,9 @@ pool_drain <- function(state) {
 #' with names carried; the first erroring handle by position rejects
 #' with `index` (only that handle consumed, the rest collectible).
 #' Collect-any resolves `list(index, value)` for the first terminal
-#' task, a raised outcome rejecting with the `index` field. A
-#' `mizu_collect_all_async()` timeout rejects with the `mizu_timeout`
-#' classed error and consumes nothing. When a collection settles —
+#' task, a raised outcome rejecting with the `index` field. A timeout
+#' rejects with the `mizu_timeout` classed error and consumes nothing.
+#' When a collection settles —
 #' resolve, reject, or timeout — every enrolled handle's announce is
 #' withdrawn: the handles the settle leaves unconsumed return to
 #' blocking-collectible.
@@ -667,8 +667,11 @@ mizu_collect_all_async <- function(tasks, timeout = Inf) {
 
 #' @rdname mizu_collect_all_async
 #' @export
-mizu_collect_any_async <- function(tasks) {
+mizu_collect_any_async <- function(tasks, timeout = Inf) {
   notify_requires()
+  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
+    stop("mizu: timeout must be a number of seconds, not NA", call. = FALSE)
+  }
   if (!is.list(tasks) || !length(tasks)) {
     stop("mizu: tasks must be a non-empty list of task handles", call. = FALSE)
   }
@@ -683,6 +686,17 @@ mizu_collect_any_async <- function(tasks) {
     w[["reject"]] <- reject
     if (ready) {
       settle_waiter(w)
+    } else if (is.finite(timeout)) {
+      # as on collect-all: the removal withdraws the announces, so the
+      # loser returns to blocking-collectible
+      w[["timer"]] <- later::later(
+        function() {
+          if (.Call(mizu_pool_notify_remove, pool, w)) {
+            reject(cond_timeout())
+          }
+        },
+        timeout
+      )
     }
   })
 }
