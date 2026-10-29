@@ -534,6 +534,14 @@ test_that("a stopped or destroyed handle is dead across the verb surface", {
   expect_true(.Call(mizu:::mizu_pool_stop_call, p[["ctrl"]], 0))
 })
 
+test_that("pool introspection on a stopped pool names the closed handle", {
+  ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
+  mizu_pool_stop(ctrl, timeout = 0)
+  expect_error(mizu_pool_status(ctrl), "pool handle is closed")
+  expect_error(mizu_pool_stats(ctrl), "pool handle is closed")
+  expect_error(mizu_pool_dump(ctrl), "pool handle is closed")
+})
+
 test_that("an attached submitter observes shutdown at its next verb", {
   p <- pool_pair()
   s <- .Call(

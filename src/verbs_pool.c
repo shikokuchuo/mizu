@@ -255,8 +255,9 @@ SEXP mizu_pool_create_call(SEXP maxw_sexp, SEXP maxs_sexp, SEXP inj_sexp,
 SEXP mizu_pool_suffix(SEXP xp) {
   mizu_pool *p = pool_core(xp);
   char buf[64];
+  /* a released pool records thread-locally (its own record is gone) */
   if (mizu_pool_token(p, buf, sizeof(buf)) != MIZU_OK)
-    pool_raise(p);
+    mizu_r_raise_tls();
   return Rf_mkString(buf);
 }
 
@@ -1025,7 +1026,7 @@ SEXP mizu_pool_stop_call(SEXP xp, SEXP timeout) {
 SEXP mizu_pool_status_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
   mizu_pool_status st;
-  if (mizu_pool_status_get(p, &st) != MIZU_OK) pool_raise(p);
+  if (mizu_pool_status_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
   const char *names[] = {"name", "role", "max_workers", "max_submitters",
                          "injection_cap", "result_slots", "slot_size",
                          "workers", "parked", "submitters", "injection",
@@ -1079,7 +1080,7 @@ SEXP mizu_pool_status_call(SEXP xp) {
 SEXP mizu_pool_stats_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
   mizu_pool_dump d;
-  if (mizu_pool_dump_get(p, &d) != MIZU_OK) pool_raise(p);
+  if (mizu_pool_dump_get(p, &d) != MIZU_OK) mizu_r_raise_tls();
   uint32_t mw = d.status.max_workers, ms = d.status.max_submitters;
   const char *names[] = {"workers", "submitters", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
@@ -1129,7 +1130,7 @@ SEXP mizu_pool_stats_call(SEXP xp) {
 SEXP mizu_pool_dump_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
   mizu_pool_dump d;
-  if (mizu_pool_dump_get(p, &d) != MIZU_OK) pool_raise(p);
+  if (mizu_pool_dump_get(p, &d) != MIZU_OK) mizu_r_raise_tls();
   uint32_t mw = d.status.max_workers, ms = d.status.max_submitters;
   const char *names[] = {"name", "shutdown", "workers", "submitters",
                          "tasks", "local", "help", "language",
@@ -1207,7 +1208,8 @@ SEXP mizu_pool_dump_call(SEXP xp) {
   uint32_t rs_total = d.status.result_slots;
   mizu_rs_row *rows = (mizu_rs_row *) R_alloc(rs_total, sizeof(mizu_rs_row));
   uint32_t n = 0;
-  if (mizu_pool_tasks_get(p, rows, rs_total, &n) != MIZU_OK) pool_raise(p);
+  if (mizu_pool_tasks_get(p, rows, rs_total, &n) != MIZU_OK)
+    mizu_r_raise_tls();
   const char *tnames[] = {"slot", "status", "sequence", "worker", "waiter",
                           ""};
   SEXP tk = Rf_mkNamed(VECSXP, tnames);
@@ -1233,10 +1235,11 @@ SEXP mizu_pool_dump_call(SEXP xp) {
 SEXP mizu_pool_map_caps_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
   uint32_t free_rs, inj_cap, inline_entry;
+  /* map_caps records on the handle (pool_get); status_get thread-locally */
   if (mizu_pool_map_caps(p, &free_rs, &inj_cap, &inline_entry) != 0)
     pool_raise(p);
   mizu_pool_status st;
-  if (mizu_pool_status_get(p, &st) != MIZU_OK) pool_raise(p);
+  if (mizu_pool_status_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
   int live = 0;
   for (uint32_t i = 0; i < st.max_workers; i++)
     live += st.worker_state[i] == MIZU_WK_LIVE;
