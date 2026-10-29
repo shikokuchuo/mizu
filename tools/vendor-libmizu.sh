@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="786ed8989daad430690fd4b5363d52b2a6e7a7c4"  # libmizu: Emit isb as the aarch64 spin-loop pause hint
+PIN="930a2090e9e1bac8619964497ba93b86bb27592c"  # libmizu: Bind Linux notify endpoints under the liveness dir
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
