@@ -75,7 +75,7 @@ the sync verb's gather runs once and resolves the promise.</p>
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">mizu_collect_all_async</span><span class="op">(</span><span class="va">tasks</span>, timeout <span class="op">=</span> <span class="cn">Inf</span><span class="op">)</span></span>
 <span></span>
-<span><span class="fu">mizu_collect_any_async</span><span class="op">(</span><span class="va">tasks</span><span class="op">)</span></span>
+<span><span class="fu">mizu_collect_any_async</span><span class="op">(</span><span class="va">tasks</span>, timeout <span class="op">=</span> <span class="cn">Inf</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># S3 method for class 'mizu_task'</span></span>
 <span><span class="fu">as.promise</span><span class="op">(</span><span class="va">x</span><span class="op">)</span></span>
@@ -122,9 +122,9 @@ resolves <code>list(index, value)</code>.</p>
 with names carried; the first erroring handle by position rejects
 with <code>index</code> (only that handle consumed, the rest collectible).
 Collect-any resolves <code>list(index, value)</code> for the first terminal
-task, a raised outcome rejecting with the <code>index</code> field. A
-<code>mizu_collect_all_async()</code> timeout rejects with the <code>mizu_timeout</code>
-classed error and consumes nothing. When a collection settles —
+task, a raised outcome rejecting with the <code>index</code> field. A timeout
+rejects with the <code>mizu_timeout</code> classed error and consumes nothing.
+When a collection settles —
 resolve, reject, or timeout — every enrolled handle's announce is
 withdrawn: the handles the settle leaves unconsumed return to
 blocking-collectible.</p>

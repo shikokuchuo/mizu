@@ -17,7 +17,7 @@ sync verb's gather runs once and resolves the promise.
 ``` r
 mizu_collect_all_async(tasks, timeout = Inf)
 
-mizu_collect_any_async(tasks)
+mizu_collect_any_async(tasks, timeout = Inf)
 
 # S3 method for class 'mizu_task'
 as.promise(x)
@@ -65,11 +65,11 @@ Semantics mirror the sync verbs. Collect-all resolves in input order
 with names carried; the first erroring handle by position rejects with
 `index` (only that handle consumed, the rest collectible). Collect-any
 resolves `list(index, value)` for the first terminal task, a raised
-outcome rejecting with the `index` field. A `mizu_collect_all_async()`
-timeout rejects with the `mizu_timeout` classed error and consumes
-nothing. When a collection settles — resolve, reject, or timeout — every
-enrolled handle's announce is withdrawn: the handles the settle leaves
-unconsumed return to blocking-collectible.
+outcome rejecting with the `index` field. A timeout rejects with the
+`mizu_timeout` classed error and consumes nothing. When a collection
+settles — resolve, reject, or timeout — every enrolled handle's announce
+is withdrawn: the handles the settle leaves unconsumed return to
+blocking-collectible.
 
 A task with a promise attached — or enrolled in a pending collection —
 refuses
