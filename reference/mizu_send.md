@@ -83,6 +83,14 @@ a classed `mizu_error_python_payload` error (see
 [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)). The
 declined message is consumed, so the channel keeps flowing.
 
+Large payloads can arrive as zero-copy views over shared memory: the
+view is a small R object pinning memory the garbage collector cannot
+see. To return those loans promptly, the receive verbs (and worker task
+boundaries) run a minor garbage collection once 8 MiB of released view
+memory has accumulated — an occasional ~0.2 ms verb, the largest latency
+outlier in the system. Set `options(mizu.gc_boundary)` (bytes; `0`
+disables) before loading the package to tune the threshold.
+
 ## Examples
 
 ``` r
