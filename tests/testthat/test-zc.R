@@ -722,6 +722,16 @@ test_that("the mizu.gc_boundary option is validated at package load", {
   unlink(h)
 })
 
+test_that(".onLoad validates and applies the mizu.gc_boundary option", {
+  set <- function(x) invisible(.Call(mizu:::mizu_zc_gc_boundary_set, x))
+  on.exit(set(8 * 1024 * 1024))
+  opts <- options(mizu.gc_boundary = 2^20)
+  on.exit(options(opts), add = TRUE)
+  expect_no_error(mizu:::.onLoad())
+  options(mizu.gc_boundary = -1)
+  expect_snapshot(error = TRUE, mizu:::.onLoad())
+})
+
 test_that("channel zc churn falls back to the copy tiers past the lent budget and recovers", {
   skip_on_os(c("mac", "windows")) # the churn signal is Linux-only (spill_fl_pop)
   p <- channel_pair(arena_size = 0)

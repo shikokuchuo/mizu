@@ -6,6 +6,14 @@
       Error in `doTryCatch()`:
       ! mizu: corrupt payload slot
 
+# .onLoad validates and applies the mizu.gc_boundary option
+
+    Code
+      mizu:::.onLoad()
+    Condition
+      Error:
+      ! mizu: option 'mizu.gc_boundary' must be a single non-negative number of bytes not exceeding 2^53
+
 # remote-leaf declines are corrupt-or-newer shaped
 
     Code

@@ -560,6 +560,22 @@ test_that("collect_all_async resolves once, input order with names carried", {
   expect_identical(o$value, list(a = 1L, b = 2L))
 })
 
+test_that("collect_all_async settles tasks already terminal at enrollment", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ts <- list(
+    a = mizu_submit(p[["ctrl"]], 1L),
+    b = mizu_submit(p[["ctrl"]], 2L)
+  )
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  o <- observe(mizu_collect_all_async(ts))
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, list(a = 1L, b = 2L))
+})
+
 test_that("collect_all_async rejects the first erroring by position; the rest collectible", {
   skip_if_no_promises()
   p <- pool_pair()

@@ -540,6 +540,7 @@ test_that("pool introspection on a stopped pool names the closed handle", {
   expect_error(mizu_pool_status(ctrl), "pool handle is closed")
   expect_error(mizu_pool_stats(ctrl), "pool handle is closed")
   expect_error(mizu_pool_dump(ctrl), "pool handle is closed")
+  expect_error(.Call(mizu:::mizu_pool_suffix, ctrl), "pool handle is closed")
 })
 
 test_that("an attached submitter observes shutdown at its next verb", {
