@@ -457,6 +457,24 @@ notify_chan_flush_closed <- function(ch) {
   invisible()
 }
 
+# The mizu_pool_stop() flush: reject every enrolled waiter with the
+# stopped condition — the pool's analog of the close flush above. The
+# core stop releases the handle, so no enrolled waiter can ever settle;
+# the C half unlinks them (announces withdrawn) and disarms the registry.
+# A map waiter's watchdog timer rides cancel_timer with the rest.
+notify_pool_flush_stopped <- function(pool) {
+  ws <- .Call(mizu_pool_notify_flush, pool)
+  cond <- cond_stopped()
+  for (w in ws) {
+    cancel_timer(w)
+    if (identical(w[["kind"]], "map")) {
+      w[["map"]][["done"]] <- TRUE
+    }
+    w[["reject"]](cond)
+  }
+  invisible()
+}
+
 # Pool state ------------------------------------------------------------------
 
 # The per-pool-submitter notify state env (prot slot [6]): the pool

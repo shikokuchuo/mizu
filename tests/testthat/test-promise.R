@@ -854,6 +854,53 @@ test_that("a failed map-promise enroll leaves the handle collectible", {
   expect_s3_class(mizu_collect(m, 0), "mizu_timeout")
 })
 
+test_that("pool stop rejects every enrolled waiter with mizu_error_stopped", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t1 <- mizu_submit(p[["ctrl"]], 1L)
+  t2 <- mizu_submit(p[["ctrl"]], 2L)
+  o1 <- observe(promises::as.promise(t1))
+  o2 <- observe(mizu_collect_all_async(list(t2), timeout = 30))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, p[["ctrl"]]), 2L)
+  suppressWarnings(mizu_pool_stop(p[["ctrl"]], timeout = 0))
+  expect_true(pump_until(function() settled(o1) && settled(o2)))
+  expect_s3_class(o1$error, "mizu_error_stopped")
+  expect_s3_class(o2$error, "mizu_error_stopped")
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, p[["ctrl"]]), 0L)
+})
+
+test_that("pool stop rejects an armed map promise and cancels its watchdog", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i)
+  o <- observe(promises::as.promise(m))
+  suppressWarnings(mizu_pool_stop(p[["ctrl"]], timeout = 0))
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_error_stopped")
+  expect_true(m[["done"]])
+  # the cancelled watchdog never fires: quiet a beat past its 1 s cadence
+  t0 <- Sys.time()
+  while (as.numeric(Sys.time() - t0, units = "secs") < 1.2) {
+    later::run_now(0.05)
+  }
+})
+
+test_that("a pool scan behind a stop disarms instead of raising", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1L)
+  o <- observe(promises::as.promise(t))
+  # the direct stop verb bypasses the R wrapper's stop-time flush: the
+  # shutdown wake's drain finds a released pool and must not raise
+  invisible(.Call(mizu:::mizu_pool_stop_call, p[["ctrl"]], 0))
+  later::run_now(1)
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, p[["ctrl"]]), 1L)
+  expect_false(settled(o))
+})
+
 test_that("several workers publishing to one armed submitter send one signal", {
   skip_if_no_promises()
   p <- pool_pair(workers = 2L)

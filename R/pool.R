@@ -720,6 +720,9 @@ mizu_cancel <- function(task) {
 #' @export
 mizu_pool_stop <- function(pool, timeout = 5) {
   ok <- .Call(mizu_pool_stop_call, pool, timeout)
+  # the stop released the handle: settle every armed async consumer —
+  # their waiters can never publish now
+  notify_pool_flush_stopped(pool)
   if (!ok) {
     warning(
       "mizu: pool stop timed out waiting for workers; they exit on ",

@@ -136,6 +136,13 @@ cond_timeout <- function() {
   )
 }
 
+cond_stopped <- function() {
+  errorCondition(
+    "mizu: pool stopped",
+    class = c("mizu_error_stopped", "mizu_error")
+  )
+}
+
 # The startup-timeout failure shared by every constructor that spawns
 # children: `what` is "child" (a channel peer) or "workers" (a pool's).
 stop_startup <- function(what, timeout) {

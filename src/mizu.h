@@ -832,6 +832,7 @@ SEXP mizu_pool_notify_scan(SEXP, SEXP);
 SEXP mizu_pool_notify_remove(SEXP, SEXP);
 SEXP mizu_pool_notify_find(SEXP);
 SEXP mizu_pool_notify_count(SEXP);
+SEXP mizu_pool_notify_flush(SEXP);
 void mizu_r_notify_refuse(mizu_r_handle *h, const mizu_task *ts, size_t n);
 /* map.c */
 SEXP mizu_map_eligible(SEXP);

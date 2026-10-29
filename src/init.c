@@ -151,6 +151,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_pool_notify_remove",     (DL_FUNC) &mizu_pool_notify_remove,        2},
   {"mizu_pool_notify_find",       (DL_FUNC) &mizu_pool_notify_find,          1},
   {"mizu_pool_notify_count",      (DL_FUNC) &mizu_pool_notify_count,         1},
+  {"mizu_pool_notify_flush",      (DL_FUNC) &mizu_pool_notify_flush,         1},
   {"mizu_map_eligible",           (DL_FUNC) &mizu_map_eligible,              1},
   {"mizu_map_stage",              (DL_FUNC) &mizu_map_stage,                 6},
   {"mizu_map_open",               (DL_FUNC) &mizu_map_open,                  2},

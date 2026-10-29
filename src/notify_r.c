@@ -654,7 +654,13 @@ SEXP mizu_pool_notify_scan(SEXP pool_xp, SEXP max_sexp) {
     return Rf_allocVector(VECSXP, 0);
   }
   mizu_pool *p = (mizu_pool *) h->core;
-  if (mizu_pool_notify_arm(p, 1) != MIZU_OK) ntfy_pool_raise(p);
+  if (mizu_pool_notify_arm(p, 1) != MIZU_OK) {
+    /* a released pool (a stop landed behind a queued drain): disarm and
+       report nothing, as the empty-registry branch does — the stop's own
+       flush is what settles the waiters */
+    mizu_r_notify_disarm(h);
+    return Rf_allocVector(VECSXP, 0);
+  }
   const R_xlen_t lim = max < rec->n ? max : rec->n;
   SEXP out = PROTECT(Rf_allocVector(VECSXP, lim));
   R_xlen_t k = 0, j = 0;
@@ -677,6 +683,30 @@ SEXP mizu_pool_notify_scan(SEXP pool_xp, SEXP max_sexp) {
   rec->n = j;
   if (j == 0) mizu_r_notify_disarm(h);
   if (k < lim) out = Rf_lengthgets(out, (R_len_t) k);
+  UNPROTECT(1);
+  return out;
+}
+
+/* The stop-time flush: every enrolled waiter unlinked in registry order,
+   announces withdrawn, the registry disarmed — the R half rejects them
+   with the stopped condition. Total on a released pool: ent_withdraw's
+   probes read FREE and skip. */
+SEXP mizu_pool_notify_flush(SEXP pool_xp) {
+  mizu_r_handle *h = mizu_r_handle_peek(pool_xp, mizu_ntfy_pool_tag, "pool");
+  mizu_r_notify *rec = h == NULL ? NULL : h->notify;
+  if (rec == NULL || rec->n == 0) return Rf_allocVector(VECSXP, 0);
+  mizu_pool *p = (mizu_pool *) h->core;
+  const R_xlen_t n = rec->n;
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, n));
+  for (R_xlen_t i = 0; i < n; i++) {
+    SET_VECTOR_ELT(out, i, VECTOR_ELT(rec->ws, i));
+    SET_VECTOR_ELT(rec->ws, i, R_NilValue);
+    ent_withdraw(p, &rec->ents[i]);
+    free(rec->ents[i].words);
+  }
+  rec->n = 0;
+  rec->nwords = 0;
+  mizu_r_notify_disarm(h);
   UNPROTECT(1);
   return out;
 }
