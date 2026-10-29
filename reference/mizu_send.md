@@ -36,9 +36,9 @@ otherwise. `mizu_recv()` returns the received payload or a sentinel.
 
 ## Details
 
-Sends never block for ring space. Receives surface every terminal state
-as a class-tagged sentinel, not an error. Dispatch with
-`inherits(x, "mizu_sentinel")`, or on the specific classes:
+Sends never block for ring space. Receives report every terminal state
+as a class-tagged sentinel, not an error. Test for them with
+`inherits(x, "mizu_sentinel")`, or with the specific classes:
 
 - `mizu_full` — the ring is full (send). Back off until the peer drains,
   or drop the message.
@@ -85,11 +85,11 @@ declined message is consumed, so the channel keeps flowing.
 
 Large payloads can arrive as zero-copy views over shared memory: the
 view is a small R object pinning memory the garbage collector cannot
-see. To return those loans promptly, the receive verbs (and worker task
-boundaries) run a minor garbage collection once 8 MiB of released view
-memory has accumulated — an occasional ~0.2 ms verb, the largest latency
-outlier in the system. Set `options(mizu.gc_boundary)` (bytes; `0`
-disables) before loading the package to tune the threshold.
+see. To return those loans promptly, the receive functions (and worker
+task boundaries) run a minor garbage collection once 8 MiB of released
+view memory has accumulated — an occasional ~0.2 ms pause, the largest
+latency outlier in the system. Set `options(mizu.gc_boundary)` (bytes;
+`0` disables) before loading the package to tune the threshold.
 
 ## Examples
 

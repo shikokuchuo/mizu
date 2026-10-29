@@ -42,10 +42,12 @@ takes
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 specifications through
 [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md),
-and a native
+and a plain
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-errors locally naming the spec verb. A launcher that spawns the wrong
-language fails at join, not at the first task.
+fails at once with an error naming
+[`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md).
+A launcher that spawns the wrong language fails at join, not at the
+first task.
 
 The interpreter is probed for pymizu when the launcher is created, so a
 missing interpreter or package raises here, before any pool exists.

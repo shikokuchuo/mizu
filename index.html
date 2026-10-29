@@ -83,7 +83,7 @@
 <li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages</li>
 <li>Zero-copy Arrow interchange — <code>arrow</code> tables and record batches travel as one frame, converting back without copying</li>
 <li>Event-driven async — messages stream into a <code>later</code> event loop without polling, and channels, tasks, and maps plug into <code>promises</code> pipelines, ready for Shiny</li>
-<li>Reproducible parallel randomness (<code>.seed</code>), invariant for any worker count or steal order</li>
+<li>Reproducible parallel random numbers (<code>.seed</code>) — identical results for any worker count or steal order</li>
 <li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>
 </ul>
 <blockquote>

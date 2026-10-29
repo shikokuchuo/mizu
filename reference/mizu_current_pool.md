@@ -20,9 +20,9 @@ A pool handle (class `"mizu_pool"`) inside a pool task; otherwise
 
 ## Details
 
-The handle is runtime-owned: the pool sets it around each task
-evaluation, so unlike a variable binding it cannot be shadowed by a task
-argument or a local assignment.
+The pool itself provides the handle around each task evaluation, so
+unlike a variable binding it cannot be shadowed by a task argument or a
+local assignment.
 
 ## Examples
 

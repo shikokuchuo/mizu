@@ -1,12 +1,11 @@
-# Probe Peer Liveness
+# Check Whether the Channel Peer Is Alive
 
-An explicit probe for supervisors. Reports whether the peer process
-holds its liveness lock, in about 1 microsecond with no waiting.
+Reports whether the peer process still holds its liveness lock, in about
+a microsecond, without touching the rings.
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) and
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
-surface peer death automatically as `mizu_peer_gone`. Use this probe to
-ask without touching the rings. A peer that closed the channel but still
-runs reads as alive.
+report peer death automatically as `mizu_peer_gone`. This function asks
+directly. A peer that closed the channel but still runs counts as alive.
 
 ## Usage
 
@@ -24,8 +23,8 @@ mizu_alive(ch)
 
 ## Value
 
-`TRUE` while the peer process is alive, `FALSE` after it dies. At that
-point the survivor unlinked the names of the channel.
+`TRUE` while the peer process is alive, `FALSE` after it dies. By then
+the survivor has deleted the channel's shared memory.
 
 ## Examples
 

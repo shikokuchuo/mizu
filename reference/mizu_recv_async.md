@@ -65,20 +65,20 @@ handle, invisibly.
 The promise rejects on `mizu_closed`, `mizu_peer_gone`, and on `timeout`
 expiry — as classed *error* conditions carrying the same class names as
 the sentinels, so `inherits(x, "mizu_closed")` works on either form.
-Close and peer death reach the drain through the core's terminal wakes,
-so the rejection is prompt, never timeout-driven.
+Close and peer death wake the event loop directly, so the rejection is
+prompt, never timeout-driven.
 
 Several outstanding calls on one channel resolve in FIFO call order, one
-message each. Arming is loss-free: messages already in the ring resolve
-from the arm's synchronous drain (delivered asynchronously at top level,
-per promises discipline); only genuinely pending entries ride the watch.
+message each. No message is lost: messages already in the ring resolve
+immediately (still asynchronously, as promises require), and only
+messages yet to arrive wait on the event.
 
 `mizu_recv_handler()` is the stream form: it installs `fn` on the
 channel and each burst of messages is delivered to it from the event
 loop — no promise is allocated per message. With `batch = TRUE` each
 drained burst is delivered as one list in a single `fn(list)` call (the
 throughput form: one R call per burst); with `batch = FALSE`,
-`fn(value)` is called per message. Transport terminals are delivered to
+`fn(value)` is called per message. Close and peer death are delivered to
 `fn` as the classed error conditions (`mizu_closed`, `mizu_peer_gone`),
 after which the handler is removed. A declined foreign payload (see
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)) is
@@ -91,12 +91,12 @@ installing a handler with promises pending, or requesting a promise with
 a handler installed, is an error. Mixing a blocking
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
 with either consumer form consumes in arrival order — the blocking call
-may take a message a promise or the handler was waiting on. A terminal
-it observes is observed by the consumer too: terminals are channel
+may take a message a promise or the handler was waiting on. A close or
+peer death it observes is observed by the consumer too: both are channel
 state, re-read on every receive, never consumed.
 
-Every main-thread drain is bounded per event-loop quantum and
-re-scheduled, so a saturated ring starves neither Shiny nor
+Every main-thread drain is bounded per event-loop turn and re-scheduled,
+so a saturated ring starves neither Shiny nor
 [`later::run_now()`](https://later.r-lib.org/reference/run_now.html).
 
 Requires the later package (and promises for `mizu_recv_async()`), both

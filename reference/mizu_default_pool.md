@@ -48,15 +48,14 @@ mizu_local_pool(pool, frame = parent.frame())
 
 ## Details
 
-The registry anchors the handle: a pool set as the default stays alive
-even after its variable is removed, until the default is cleared or
-replaced. Handles from
+The default keeps the pool alive even after its variable is removed,
+until the default is cleared or replaced. Handles from
 [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md)
 are valid defaults; ownership and teardown stay with the pool's creator.
 
 Setting a default checks the type only: a stopped pool is accepted
-(liveness is transient; a probe would prove nothing about use time) and
-fails later with the usual stopped-pool errors. The default is
+(liveness is transient, so a probe would prove nothing about use time)
+and fails later with the usual stopped-pool errors. The default is
 process-global state — after a `fork()`, a child process reads it as
 unset.
 
@@ -92,7 +91,7 @@ f(1L)
 mizu_with_pool(NULL, mizu_default_pool())
 #> NULL
 mizu_default_pool()
-#> <mizu_pool /mizu_197d_1cd8fdb6: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_1b45_696a082d: controller, 1/1 workers live, 0 pending>
 
 mizu_set_default_pool(old)
 mizu_pool_stop(p)

@@ -1,6 +1,6 @@
 # Batched Send and Receive
 
-At target rates the R call boundary is a first-order cost.
+At high message rates the cost of each R call matters.
 `mizu_send_batch()` moves a list of payloads in a single `.Call` and
 publishes them to the peer in one batched tail store.
 `mizu_recv_batch()` drains up to `n` messages in a single park cycle and

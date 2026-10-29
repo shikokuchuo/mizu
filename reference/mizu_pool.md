@@ -1,12 +1,12 @@
 # Create a Task Pool and Spawn Its Workers
 
-Creates a shared-memory task pool and spawns its worker processes.
-Per-submitter injection rings feed the workers, and results are
-published through result slots. A submission is one SHM ring write plus
-at most one directed wake: no dispatcher process is in the loop. Each
-worker owns a work-stealing deque. Idle workers steal from busy peers
-and consume the injection rings. A fairness tick bounds the latency of
-external submissions on a saturated pool.
+Creates a shared-memory task pool and spawns its worker processes. Each
+submitter feeds the workers through its own queue (an injection ring),
+and results are published through result slots. A submission is one
+shared-memory write plus at most one wake-up: no dispatcher process is
+in the loop. Each worker owns a work-stealing deque. Idle workers steal
+from busy ones and drain the injection rings. A fairness tick bounds the
+latency of external submissions on a saturated pool.
 
 ## Usage
 
@@ -62,8 +62,8 @@ mizu_pool(
 
   bytes per queue entry and result slot. A power of two between 128 and
   2^20. A payload (task or result) that serializes past the inline
-  budget travels in a fresh region per payload. This is an
-  order-of-magnitude latency cliff, surfaced per submitter as
+  budget travels in a fresh region per payload. This costs an order of
+  magnitude more latency, reported per submitter as
   [`mizu_pool_stats()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stats.md)`$submitters$spills`.
   The default `512L` keeps typical expression-plus-arguments tasks
   inline. Pools that move only scalar payloads can drop to `256L`.
@@ -91,8 +91,8 @@ are process-private and do not survive `fork()`.
 
 ## Details
 
-The lifetime of the pool is bound to the creating process, which holds
-submitter slot 0 of the returned handle. Use this handle directly with
+The pool lives as long as the process that created it. Use the returned
+handle directly with
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 and
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
@@ -102,11 +102,10 @@ Dropping the handle (or exiting R) shuts the pool down as
 [`mizu_pool_stop()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stop.md)
 does, but without the wait.
 
-Payload contents interoperate transparently with mori. A
+Payload contents interoperate with mori. A
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d object
-anywhere inside the arguments of a task or its result serializes to its
-short identifier wire form through the mori hooks. It maps zero-copy on
-the other side.
+anywhere inside the arguments of a task or its result crosses as a short
+identifier, and maps zero-copy on the other side.
 
 The liveness lock files of the pool (the death-detection verdict) live
 in a per-platform directory chosen at create time. This is `/dev/shm` on

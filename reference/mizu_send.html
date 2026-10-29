@@ -93,9 +93,9 @@ sentinel.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>Sends never block for ring space. Receives surface every terminal state
-as a class-tagged sentinel, not an error. Dispatch with
-<code>inherits(x, "mizu_sentinel")</code>, or on the specific classes:</p><ul><li><p><code>mizu_full</code> — the ring is full (send). Back off until the peer drains,
+    <p>Sends never block for ring space. Receives report every terminal state
+as a class-tagged sentinel, not an error. Test for them with
+<code>inherits(x, "mizu_sentinel")</code>, or with the specific classes:</p><ul><li><p><code>mizu_full</code> — the ring is full (send). Back off until the peer drains,
 or drop the message.</p></li>
 <li><p><code>mizu_timeout</code> — no message arrived within <code>timeout</code> (recv).</p></li>
 <li><p><code>mizu_closed</code> — the other side closed the channel. A receive drains all
@@ -131,10 +131,10 @@ a classed <code>mizu_error_python_payload</code> error (see <a href="mizu_error.
 declined message is consumed, so the channel keeps flowing.</p>
 <p>Large payloads can arrive as zero-copy views over shared memory: the view
 is a small R object pinning memory the garbage collector cannot see. To
-return those loans promptly, the receive verbs (and worker task
+return those loans promptly, the receive functions (and worker task
 boundaries) run a minor garbage collection once 8 MiB of released view
-memory has accumulated — an occasional ~0.2 ms verb, the largest latency
-outlier in the system. Set <code>options(mizu.gc_boundary)</code> (bytes; <code>0</code>
+memory has accumulated — an occasional ~0.2 ms pause, the largest
+latency outlier in the system. Set <code>options(mizu.gc_boundary)</code> (bytes; <code>0</code>
 disables) before loading the package to tune the threshold.</p>
     </div>
 

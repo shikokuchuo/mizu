@@ -176,7 +176,7 @@ mizu_close(ch)
 ```
 
 Sending a stream consumes it: a RecordBatchReader is fully materialized
-at send. The fidelity is frame-level, not Arrow-schema-exact: a
+at send. The values survive exactly, but the Arrow schema does not: a
 dictionary returns as a factor, and unsigned integers widen. The [dtype
 matrix](https://shikokuchuo.net/pymizu/user-guide/interop.html#the-dtype-matrix)
 on the pymizu site has the exact per-dtype correspondence.

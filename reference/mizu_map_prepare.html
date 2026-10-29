@@ -134,7 +134,7 @@ granularity), or <code>NULL</code> for the default. See the Granularity section.
 <dt id="arg--stream">.stream<a class="anchor" aria-label="anchor" href="#arg--stream"></a></dt>
 <dd><p><code>TRUE</code> streams slices of <code>.x</code> to workers under a
 sliding window instead of staging <code>.x</code> into shared memory wholesale,
-bounding shared-memory residency by the window times the slice size.
+bounding shared-memory use by the window times the slice size.
 See the Streaming maps section. A streaming map handle collects
 with <code><a href="mizu_submit.html">mizu_collect()</a></code> only (it cannot be promise-armed).</p></dd>
 
@@ -178,22 +178,24 @@ or the <code>mizu_timeout</code> sentinel.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>Between runs, the shared scheduling state of the region is re-armed in
-O(1). The cursor and cancel word clear, and the run generation embedded
-in every claim word advances. A straggler task from a previous run can
-never issue against the cursor of the new run. After an unclean run — a
+    <p>Between runs, the region's shared scheduling state resets in O(1). The
+cursor and cancel word clear, and the run generation embedded in every
+claim word advances. A leftover task from a previous run can never
+interfere with the new run. After an unclean run — a
 <code>.timeout</code> expiry, an error in <code>.f</code>, a worker death — the handle is
 marked stale. The next <code>mizu_map_run()</code> restages into a fresh region
-transparently (the old one unlinks at garbage collection under any
-stragglers). A run collected with <code>.collect = "view"</code> restages
-likewise: the returned view pins its region, so the next run stages
-fresh rather than re-arming pages a held view still reads. A map small
-enough to ride entirely inline keeps its staged blob on the handle
-instead: runs resubmit it, still skipping the serialization.</p>
-<p>The prepared handle pins the staged <code>.x</code> (for transparent restaging) and
-the map region for its lifetime. Both release at garbage collection
-when the handle is dropped. The chunking geometry is fixed at prepare
-time. The runner count adapts to the live workers at each run.</p>
+automatically (the old one is deleted at garbage collection, once any
+leftover tasks are done with it). A run collected with
+<code>.collect = "view"</code> restages likewise: the returned view keeps its
+region alive, so the next run stages fresh rather than reusing pages
+a held view still reads. A map small enough to ride entirely inline
+keeps its staged blob on the handle instead: runs resubmit it, still
+skipping the serialization.</p>
+<p>The prepared handle keeps the staged <code>.x</code> (for automatic restaging)
+and the map region alive for its lifetime. Both release at garbage
+collection when the handle is dropped. The number of chunks is fixed
+at prepare time. The runner count adapts to the live workers at each
+run.</p>
     </div>
     <div class="section level2">
     <h2 id="replacing-x-between-runs">Replacing x between runs<a class="anchor" aria-label="anchor" href="#replacing-x-between-runs"></a></h2>
@@ -204,13 +206,13 @@ staged and the replacement <code>.x</code> are bare-byte eligible (atomic,
 non-ALTREP, no attributes beyond names) with identical type and length,
 the swap is in place. The new bytes are copied over the <code>.x</code> section of
 the region. This runs the iterate-over-same-shape loop (optimizer
-steps, simulation sweeps) at memcpy cost, skipping the region create
-and the re-attach of every worker. Any other change of <code>.x</code> — a
+steps, simulation sweeps) at the cost of one copy, skipping the region
+create and the re-attach of every worker. Any other change of <code>.x</code> — a
 different shape or type, a list, a map staged inline — restages
-transparently on the next run. A streaming prepared map keeps <code>.x</code>
-submitter-side, so a replacement <code>.x</code> of any shape simply re-slices on
-the next run — only a length change under <code>.template</code> restages (the
-output area is sized for the staged length).</p>
+automatically on the next run. A streaming prepared map keeps <code>.x</code>
+in the submitting process, so a replacement <code>.x</code> of any shape
+re-slices on the next run — only a length change under <code>.template</code>
+restages (the output area is sized for the staged length).</p>
     </div>
 
     <div class="section level2">

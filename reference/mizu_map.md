@@ -7,7 +7,7 @@ returns a task.
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 on the handle waits for completion and returns the results in input
 order: a list by default, or an atomic vector (or matrix) with
-[`vapply()`](https://rdrr.io/r/base/lapply.html) semantics when
+[`vapply()`](https://rdrr.io/r/base/lapply.html)-style results when
 `.template` is given.
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
 stops it.
@@ -20,7 +20,7 @@ Unlike mapping with per-element
 calls, one `mizu_map()` call serializes `.f`, the constant arguments in
 `...`, and `.x` exactly once. It submits one *runner* task per live
 worker, and each worker materializes that map context at most once. The
-per-element residual cost is one R closure call, as in
+remaining per-element cost is one R function call, as in
 [`lapply()`](https://rdrr.io/r/base/lapply.html). Runners self-schedule:
 they claim contiguous element batches off a shared cursor in the map
 region and size each batch adaptively toward a fixed time target. A
@@ -115,7 +115,7 @@ mizu_map(
 
   `TRUE` streams slices of `.x` to workers under a sliding window
   instead of staging `.x` into shared memory wholesale, bounding
-  shared-memory residency by the window times the slice size. See the
+  shared-memory use by the window times the slice size. See the
   Streaming maps section. A streaming map handle collects with
   [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
   only (it cannot be promise-armed).
@@ -154,13 +154,12 @@ are created.
 Runners are ordinary pool tasks: they are stolen and balanced like any
 other work. Worker death is detected and reported (see Errors), and
 every pool invariant applies unchanged. Between batches, a runner also
-answers a pool-wide doorbell. When the task of another submitter arrives
-with every worker busy inside a map, one runner picks it up at its next
-batch boundary. Foreign-task pickup latency is time-bounded and
-independent of `length(.x)`. A runner claimed off the bell is not
-executed there: a runner is the join ticket of a map. The helper moves
-it onto its own deque instead, where the next free worker steals it and
-joins that map.
+answers a pool-wide doorbell: when another submitter's task arrives
+while every worker is busy inside a map, one runner picks it up at its
+next batch boundary. Pickup latency is bounded and independent of
+`length(.x)`. A map runner picked up this way is not executed on the
+spot: the helper moves it onto its own deque instead, where the next
+free worker steals it and joins that map.
 
 ## Granularity
 
@@ -170,7 +169,7 @@ granularity floor for cancellation, help, and loss reporting. Morsels go
 to runners in adaptively sized batches of consecutive morsels. `.chunks`
 overrides the morsel count outright (`min(length(.x), .chunks)`
 morsels). With no per-morsel shared state, `.chunks = length(x)` is
-admissible at zero memory cost for pathological imbalance. A map
+admissible at zero memory cost for extremely skewed element times. A map
 submitted while no worker is live queues a single runner in the
 injection ring and runs when a worker joins. If no worker has ever
 joined the pool, `mizu_map()` errors instead, as
@@ -181,53 +180,53 @@ anything.
 
 ## Templates
 
-`.template` gives [`vapply()`](https://rdrr.io/r/base/lapply.html)
-semantics: every result must match its type and length exactly, or
+`.template` is [`vapply()`](https://rdrr.io/r/base/lapply.html)'s
+`FUN.VALUE`: every result must match its type and length exactly, or
 coerce upward (logical -\> integer -\> double -\> complex, checked on
 the workers per element). A classed `integer64` template (bit64's
 layout) is also supported: results must be `integer64` of the template's
-length — int64 joins no widening lattice — and the gathered vector or
-view keeps the class. Results are written directly into a shared output
-area and gathered in one copy: zero result serializations. With
-`.collect = "view"`, the gather copy is skipped as well: the result is a
-copy-on-write view over the shared output area itself, for pipelines
-that immediately reduce. A template of length `m > 1` gathers an
-`m * length(.x)` matrix, with the names of the template as row names, as
-[`vapply()`](https://rdrr.io/r/base/lapply.html) does. Character
+length — an int64 result never widens to double — and the gathered
+vector or view keeps the class. Results are written directly into a
+shared output area and gathered in one copy: zero result serializations.
+With `.collect = "view"`, the gather copy is skipped as well: the result
+is a copy-on-write view over the shared output area itself, for
+pipelines that immediately reduce. A template of length `m > 1` gathers
+an `m * length(.x)` matrix, with the names of the template as row names,
+as [`vapply()`](https://rdrr.io/r/base/lapply.html) does. Character
 templates are assembled through the generic result path instead. Their
 type checks then surface at assembly, not per element on the workers.
-Big shape-regular results belong on the template path: the generic
-results of a runner accumulate on the worker and publish once, so
-`.template` both caps worker memory and moves the values cross-process
-without serialization. Note for readers of
+Big results of a consistent shape belong on the template path: a
+runner's generic results accumulate on the worker and publish once, so
+`.template` both caps worker memory and moves the values across
+processes without serialization. Note for readers of
 [`mizu_pool_stats()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stats.md):
 a map with large *generic* results publishes them through the ordinary
-result framing. Such a map can add a few result-slot `spills` per call
-even when the `slot_size` of the pool is right for its usual traffic.
+result path. Such a map can add a few result-slot `spills` per call even
+when the `slot_size` of the pool is right for its usual traffic.
 
 ## Errors, timeout, and cleanup
 
 An error raised by `.f` signals again in the caller as the original
 condition. A `mizu_map_index` field names the failing element: the first
-by element index among the elements that ran. Failure is fail-fast. The
-erroring runner sets the shared cancel word of the map before it
-publishes. So every peer stops within about one batch instead of
-draining the remaining elements. If a worker dies mid-map, the map
+by element index among the elements that ran. Failure is fail-fast: the
+erroring runner sets the map's shared cancel word before publishing its
+error, so every other runner stops within about one batch instead of
+finishing the remaining elements. If a worker dies mid-map, the map
 raises `mizu_error_worker_died` (see
 [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)),
 carrying the lost elements as an `elements` field: a two-column matrix
-of inclusive `lo, hi` ranges. Loss is reported runner-granular and
-conservatively. The results of a dead runner publish only at the end, so
-everything it completed is reported lost alongside what it was
-executing, never the reverse. On `.timeout` expiry, mid-submit or
-mid-collect, the outstanding work is cancelled and the `mizu_timeout`
-sentinel is returned, never raised. Executing runners observe
-cancellation within about one batch (one element where `.f` is
-expensive), independent of `length(.x)`. The slot of a
-published-uncollected result is released only when the finalizer of the
-dropped handle runs at the next garbage collection. The staging region
-of the map is likewise unlinked at GC. A subsequent map absorbs this
-transient occupancy by clamping its runner count.
+of inclusive `lo, hi` ranges. Loss is reported conservatively, per
+runner: a dead runner's results publish only at the end, so everything
+it completed counts as lost alongside what it was executing, never the
+reverse. On `.timeout` expiry, mid-submit or mid-collect, the
+outstanding work is cancelled and the `mizu_timeout` sentinel is
+returned, never raised. Executing runners observe cancellation within
+about one batch (one element where `.f` is expensive), independent of
+`length(.x)`. The slot of a published-uncollected result is released
+only when the dropped handle's finalizer runs at the next garbage
+collection. The map's staging region is likewise deleted at garbage
+collection. A later map absorbs these temporarily occupied slots by
+using fewer runners.
 
 ## Reproducible RNG
 
@@ -235,8 +234,8 @@ By default nothing is guaranteed about random draws inside `.f`: the
 workers seed lazily and independently, and the fast path pays nothing
 for the option. `.seed` opts into reproducible per-element L'Ecuyer-CMRG
 streams: element `i` runs under the stream `i` jumps of 2^127 steps from
-the base state that `set.seed(.seed, "L'Ecuyer-CMRG")` installs. The own
-`.Random.seed` of the caller is not touched, and the RNG state of each
+the base state that `set.seed(.seed, "L'Ecuyer-CMRG")` installs. The
+caller's own `.Random.seed` is not touched, and the RNG state of each
 worker is saved and restored around its batches. Because the streams are
 per-element, the results are identical for any `.chunks` value, batch
 sizing, worker count, or steal order. With `c(seed, offset)`, element
@@ -247,10 +246,10 @@ uninterrupted run.
 ## Nested maps
 
 `mizu_map(mizu_current_pool(), ...)` inside a task expression uses the
-evaluating worker's own handle. Runner submissions push onto the own
-deque of the worker. The blocked collect executes its own runners while
-idle peers steal the rest: nested parallelism at deque cost. The first
-nested map of a worker claims a submitter slot. So at the default
+handle of the worker running it. Runner submissions push onto the
+worker's own deque. The blocked collect executes its own runners while
+idle peers steal the rest: nested parallelism at minimal overhead. The
+first nested map of a worker claims a submitter slot. So at the default
 `max_submitters = 8` (one held by the controller) at most 7 workers can
 nest concurrently. Raise `max_submitters` for wider nested fan-outs.
 
@@ -270,14 +269,14 @@ with it — so `...` must be empty with a spec `.f`. Constants and
 elements must be portable values (the interchange subset documented in
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)); a
 non-portable one raises `mizu_error_not_portable` at stage time.
-`.template` and `.collect` work unchanged — the output area is
-wire-typed slots gathered (or view-wrapped) by the submitter's own
-binding — and a per-element error crosses with its element index.
-`.seed` carries as the language-neutral `(seed, offset)` pair and each
-worker language derives its own per-element streams: batching- and
-steal-order invariance holds within a worker language, but the draws are
-not identical across languages. A spec map runs on a same-language pool
-too, subject to the same portability rules.
+`.template` and `.collect` work unchanged — the results are gathered (or
+view-wrapped) by the submitter's own language — and a per-element error
+crosses with its element index. `.seed` carries as the language-neutral
+`(seed, offset)` pair and each worker language derives its own
+per-element streams: batching- and steal-order invariance holds within a
+worker language, but the draws are not identical across languages. A
+spec map runs on a same-language pool too, subject to the same
+portability rules.
 
 ## Streaming maps
 
@@ -286,32 +285,31 @@ shared memory: it streams slices of `.x` to workers as they take work;
 the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
 under a sliding submit/collect window of at most
 `min(.chunks, 2 * live workers, free result slots)` outstanding tasks,
-so shared-memory residency is bounded by `window x slice` instead of
-`sizeof(.x)` — with the default chunk count that is roughly
+so shared-memory use is bounded by `window x slice` instead of the size
+of `.x` — with the default chunk count that is roughly
 `(2 * workers) / .chunks` of the serialized `.x`. The chunk count
 defaults to `min(length(.x), 32 * live workers)` and `.chunks` overrides
 it outright (`.chunks = length(.x)` is the mirai-style extreme of one
 element per task). Everything else — result order, `.template` and
-`.collect`, `.seed` invariance, the error taxonomy — is exactly the
-non-streaming map's. Fail-fast latency coarsens from about one adaptive
+`.collect`, `.seed` invariance, the error behavior — is exactly the
+non-streaming map's. Fail-fast latency grows from about one adaptive
 morsel batch to about one chunk: the outstanding work at any time is
 bounded by the window, so the bound moves with `.chunks`. Two trade-offs
 come with fixed chunks: the adaptive batch sizing of the morsel
-machinery is lost (skew mitigation is to raise `.chunks`), and slices
-cross via the serialized tiers, so per-chunk staging costs an ordinary
-submit's serialization rather than the raw-section path's zero-serialize
-slicing. A streaming map with R workers shares one description of the
-map with every worker, and each worker reads that description at most
-once. A
+scheduler is lost (to mitigate skew, raise `.chunks`), and slices cross
+serialized, so each chunk pays an ordinary submit's serialization
+instead of the non-streaming map's serialization-free slicing. A
+streaming map with R workers shares one description of the map with
+every worker, and each worker reads that description at most once. A
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 spec as `.f` streams too, over workers of any language. Each chunk in
 the window then stages a small shared region of its own (the slice plus
 the task that runs on it, one runner task per chunk), removed as soon as
 the chunk completes. Shared-memory use stays bounded by the window plus
 a small per-worker cache (up to 8 recent slices per worker) rather than
-by `sizeof(.x)`. Each chunk also writes its results separately, so they
-cannot combine into one view: `.collect = "view"` errors on a streaming
-spec map, as does preparing one with
+by the size of `.x`. Each chunk also writes its results separately, so
+they cannot combine into one view: `.collect = "view"` errors on a
+streaming spec map, as does preparing one with
 [`mizu_map_prepare()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md).
 
 ## Very large x
@@ -322,7 +320,7 @@ budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
 the wrapper to about 270 bytes. Seeded maps on such pools work but spill
 a region per runner, so keep the default `slot_size` on pools meant for
 seeded maps. For a very large `.x`, two paths avoid materializing it per
-worker. If shared-memory residency is acceptable, share it first: a
+worker. If the shared-memory use is acceptable, share it first: a
 zero-copy view received from a channel or a pool result, or a
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector,
 reduces to its ~30-byte identifier inside the staged descriptor, and

@@ -33,8 +33,8 @@ Python, so R and Python can talk to each other.
 - Event-driven async — messages stream into a `later` event loop without
   polling, and channels, tasks, and maps plug into `promises` pipelines,
   ready for Shiny
-- Reproducible parallel randomness (`.seed`), invariant for any worker
-  count or steal order
+- Reproducible parallel random numbers (`.seed`) — identical results for
+  any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 
 > **Pre-release.** The API is not stable and can change at any time
@@ -189,7 +189,7 @@ By participating in this project you agree to abide by its terms.
 - [`mizu_close()`](https://shikokuchuo.net/mizu/reference/mizu_close.md)
   : Close a Channel
 - [`mizu_alive()`](https://shikokuchuo.net/mizu/reference/mizu_alive.md)
-  : Probe Peer Liveness
+  : Check Whether the Channel Peer Is Alive
 
 ## Pools
 
@@ -261,7 +261,7 @@ By participating in this project you agree to abide by its terms.
   : Convert a Received Frame to an Arrow Stream
 - [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
   [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-  : Call a Function in Another Language: the Task Specification
+  : Call a Function in Another Language
 - [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
   : Default Child Process Launcher
 - [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)

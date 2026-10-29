@@ -36,11 +36,11 @@ Invisibly, `NULL`.
   `"done"` or `"error"` when its result is published.
 
 - `"drop"` when a claimed task is discarded (cancelled before or during
-  execution, or its out-of-line payload died with its enqueuer).
+  execution, or its payload's shared region died with its submitter).
 
-- `"rehome"` when a doorbell help beat claims a map runner. The helper
-  moves it onto its own deque — where idle peers can steal it — instead
-  of executing it nested.
+- `"rehome"` when a worker helping with the doorbell claims a map
+  runner. The helper moves it onto its own deque — where idle peers can
+  steal it — instead of executing it nested.
 
 `id` identifies the task as `"<submitter slot>:<counter>"`. This id is
 stable across processes, so logs from both sides of a pool can be
@@ -50,11 +50,11 @@ Registration is per-handle and per-process. A submitter that traces its
 own handle sees only `"submit"`. Execution events happen on the workers.
 To trace a worker, install the hook from a task on the worker's own
 handle: `mizu_submit(p, mizu_pool_trace(mizu_current_pool(), fn))`. The
-disabled hook costs one pointer check per event site, and no event sites
-exist on the channel hot path. An error raised by the hook propagates as
-an infrastructure failure at its site. On a worker, it takes the worker
-down. This differs from the own error of a task, which is published as
-the ERR result of that task.
+disabled hook costs one pointer check per event site, and the channel
+functions have no event sites. An error raised by the hook propagates as
+an internal failure at its site. On a worker, it takes the worker down.
+This differs from a task's own error, which is published as the error
+result of that task.
 
 ## Examples
 

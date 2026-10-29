@@ -88,8 +88,8 @@ be enumerated (Windows, where orphans cannot exist), always <code>NULL</code>.</
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
     <p>Regions of running processes are never touched, and mori regions are
-invisible to mizu (and vice versa): the two packages keep disjoint
-namespaces. If another mizu session on the machine is itself
+invisible to mizu (and mizu regions to mori): the two packages keep
+disjoint namespaces. If another mizu session on the machine is itself
 recovering from a crash, do not run this. Payloads sent by a now-dead
 peer stay deliverable to its survivor until drained, and this function
 reaps them.</p>

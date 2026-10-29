@@ -2,8 +2,8 @@
 
 Terminal failures that a caller can act on programmatically are raised
 as classed conditions. Each inherits `"mizu_error"` (alongside `"error"`
-and `"condition"`), with a subclass that names the failure. Handlers
-dispatch with `tryCatch(..., mizu_error_worker_died = ...)` or test with
+and `"condition"`), with a subclass that names the failure. Catch them
+with `tryCatch(..., mizu_error_worker_died = ...)` or test with
 [`inherits()`](https://rdrr.io/r/base/class.html) instead of matching
 message text. Messages are not API and can be reworded. The class
 vectors and fields below are API.
@@ -64,7 +64,7 @@ carry as condition elements:
   when a child process fails to attach within `startup_timeout`.
 
 - `mizu_error_shm` — shared-memory region create or open failure
-  anywhere on the surface. Field `bytes`: the requested size of a region
+  anywhere in the API. Field `bytes`: the requested size of a region
   that was not created, `NA` when a region was not opened.
 
 - `mizu_error_python_payload` —
@@ -105,12 +105,12 @@ Raised `mizu_error` conditions are distinct from sentinels (class
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md),
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) and
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)).
-A sentinel is an ordinary return value that tags a terminal state on the
-hot path, not a signalled condition. See
+A sentinel is an ordinary return value that marks a terminal state, not
+a signalled condition. See
 [`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/reference/mizu_is_sentinel.md).
 
-Which discipline applies follows the shape of the call. The verbs that
-move payloads and wait with a bound —
+Which of the two you get follows the shape of the call. The functions
+that move payloads and wait with a bound —
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md),
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md),
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
@@ -123,7 +123,7 @@ Constructors and
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
 whose return is a handle the next line uses, raise on every failure.
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-raises when the value can never arrive: the own error of the task
+raises when the value can never arrive: the task's own error
 re-signalled, `mizu_error_cancelled`, `mizu_error_worker_died`. A
 sentinel invites the next iteration of the loop. A condition means stop
 and deal with it.

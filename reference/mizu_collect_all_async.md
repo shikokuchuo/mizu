@@ -7,10 +7,9 @@ and
 [`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md):
 each returns immediately with exactly **one**
 [`promises::promise()`](https://rstudio.github.io/promises/reference/promise.html)
-per collection — no per-task promise is ever allocated. The arm
-announces each task on its own result slot; on each wake a C terminal
-scan notes newly-terminal handles, and when the collection completes the
-sync verb's gather runs once and resolves the promise.
+per collection — no per-task promise is ever allocated. On each wake the
+pool checks for newly finished tasks, and when the collection completes
+the sync version's result assembly runs once and resolves the promise.
 
 ## Usage
 
@@ -61,25 +60,25 @@ collect-all resolves a plain list of the task values in the order of
 
 ## Details
 
-Semantics mirror the sync verbs. Collect-all resolves in input order
-with names carried; the first erroring handle by position rejects with
-`index` (only that handle consumed, the rest collectible). Collect-any
-resolves `list(index, value)` for the first terminal task, a raised
-outcome rejecting with the `index` field. A timeout rejects with the
-`mizu_timeout` classed error and consumes nothing. When a collection
-settles — resolve, reject, or timeout — every enrolled handle's announce
-is withdrawn: the handles the settle leaves unconsumed return to
-blocking-collectible.
+The behavior mirrors the sync functions. Collect-all resolves in input
+order with names carried; the first erroring handle by position rejects
+with `index` (only that handle consumed, the rest collectible).
+Collect-any resolves `list(index, value)` for the first terminal task, a
+raised outcome rejecting with the `index` field. A timeout rejects with
+the `mizu_timeout` classed error and consumes nothing. When a collection
+finishes — resolved, rejected, or timed out — every handle in it is
+released: handles whose results were not consumed become
+blocking-collectible again.
 
-A task with a promise attached — or enrolled in a pending collection —
+A task with a promise attached — or part of a pending collection —
 refuses
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
 [`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md),
 [`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md),
-and a second enrollment, with an error naming the pending consumer.
+and a second promise, with an error naming the pending consumer.
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
-stays allowed: the cancel publishes, and the drain rejects with
-`mizu_error_cancelled`.
+stays allowed: the cancel publishes, and the pending promise rejects
+with `mizu_error_cancelled`.
 
 Requires the later and promises packages.
 

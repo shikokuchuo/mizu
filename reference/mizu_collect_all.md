@@ -4,9 +4,9 @@
 terminal state and returns all results in input order — the batch
 counterpart of
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-for fire-then-collect patterns, with one R call boundary for the whole
-set instead of one per task. The wait parks on the submitter's single
-parker: any publishing worker wakes it directly, with no polling.
+for fire-then-collect patterns, with one R call for the whole set
+instead of one per task. The wait sleeps until any publishing worker
+wakes it directly: no polling.
 
 ## Usage
 

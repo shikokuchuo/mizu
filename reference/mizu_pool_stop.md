@@ -1,9 +1,9 @@
 # Stop a Pool
 
-Broadcasts shutdown, wakes every parked participant, and cancels all
+Broadcasts shutdown, wakes every sleeping participant, and cancels all
 pending tasks (blocked collectors raise `mizu_error_cancelled`). Then
 waits up to `timeout` seconds for the workers to exit cleanly, and
-unlinks the region and the liveness files. The handle is dead
+deletes the shared region and the liveness files. The handle is dead
 afterwards, and stopping it again is a no-op. Only the creating process
 can stop a pool.
 

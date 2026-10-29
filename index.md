@@ -33,8 +33,8 @@ Python, so R and Python can talk to each other.
 - Event-driven async — messages stream into a `later` event loop without
   polling, and channels, tasks, and maps plug into `promises` pipelines,
   ready for Shiny
-- Reproducible parallel randomness (`.seed`), invariant for any worker
-  count or steal order
+- Reproducible parallel random numbers (`.seed`) — identical results for
+  any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 
 > **Pre-release.** The API is not stable and can change at any time

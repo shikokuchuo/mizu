@@ -3,9 +3,9 @@
 `mizu_collect_any()` waits on several task handles at once and returns
 as soon as any of them reaches a terminal state — result published,
 error raised, cancelled, or its worker died. Among handles already
-terminal, the earliest in `tasks` is reported. The wait parks on the
-submitter's single parker: any publishing worker wakes it directly, with
-no polling. For the whole set at once,
+terminal, the earliest in `tasks` is reported. The wait sleeps until any
+publishing worker wakes it directly: no polling. For the whole set at
+once,
 [`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
 waits until every task is terminal and returns all results in input
 order.

@@ -1,10 +1,10 @@
 # Submit a Batch of Tasks
 
 `mizu_submit_batch()` submits one task per element of `.exprs` in a
-single `.Call`: one R boundary crossing and one wake-up sweep per batch
-instead of per task. At target rates the call boundary is a first-order
-cost, so a burst submitted this way reaches the workers sooner than the
-same burst looped through
+single `.Call`: one crossing into shared memory and one wake-up sweep
+per batch instead of per task. At high task rates the cost of each R
+call matters, so a burst submitted this way reaches the workers sooner
+than the same burst looped through
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
 Pair with
 [`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
@@ -62,8 +62,8 @@ with the `...` arguments shared by every task in the batch. Unlike
 expressions are not captured: the elements of `.exprs` are pre-quoted
 (or plain values, which evaluate to themselves).
 
-Submission semantics per task are
-[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)'s,
+Submission behaves per task as in
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
 with one difference: if the injection ring fills past `.timeout`
 mid-batch, the call returns the handles accepted so far instead of
 raising `mizu_error_submit_timeout`. Fatal outcomes (pool stopped,

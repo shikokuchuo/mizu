@@ -1,13 +1,13 @@
 # Close a Channel
 
 Orderly shutdown. Signals close to the peer, then waits up to `timeout`
-seconds for the close of the peer (or its death). This rendezvous makes
-it safe to release the sent-payload pins: the peer sets its bit only
-after it finishes draining. On rendezvous, all resources are released
-and the region name is unlinked. The handle is dead afterwards, and
-closing it again is a no-op. On timeout the handle stays usable, and the
-resources release at garbage collection, which runs the same rendezvous
-check again.
+seconds for the peer's close (or its death). Waiting for the peer is
+what makes it safe to release the resources held by sent payloads: the
+peer confirms only after it has finished reading its messages. On that
+confirmation, all resources are released and the region name is deleted.
+The handle is dead afterwards, and closing it again is a no-op. On
+timeout the handle stays usable, and the resources release at garbage
+collection, which runs the same check again.
 
 ## Usage
 
@@ -29,7 +29,8 @@ mizu_close(ch, timeout = 5)
 
 ## Value
 
-Invisibly, `TRUE` on rendezvous, `FALSE` on timeout (with a warning).
+Invisibly, `TRUE` on a clean mutual close, `FALSE` on timeout (with a
+warning).
 
 ## Details
 

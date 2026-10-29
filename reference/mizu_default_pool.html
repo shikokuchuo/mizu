@@ -109,15 +109,15 @@ value of <code>expr</code>.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>The registry anchors the handle: a pool set as the default stays alive
-even after its variable is removed, until the default is cleared or
-replaced. Handles from <code><a href="mizu_pool_attach.html">mizu_pool_attach()</a></code> are valid defaults;
-ownership and teardown stay with the pool's creator.</p>
+    <p>The default keeps the pool alive even after its variable is removed,
+until the default is cleared or replaced. Handles from
+<code><a href="mizu_pool_attach.html">mizu_pool_attach()</a></code> are valid defaults; ownership and teardown stay
+with the pool's creator.</p>
 <p>Setting a default checks the type only: a stopped pool is accepted
-(liveness is transient; a probe would prove nothing about use time) and
-fails later with the usual stopped-pool errors. The default is
-process-global state — after a <code>fork()</code>, a child process reads it as
-unset.</p>
+(liveness is transient, so a probe would prove nothing about use
+time) and fails later with the usual stopped-pool errors. The default
+is process-global state — after a <code>fork()</code>, a child process reads it
+as unset.</p>
     </div>
     <div class="section level2">
     <h2 id="package-authors">Package authors<a class="anchor" aria-label="anchor" href="#package-authors"></a></h2>
@@ -151,7 +151,7 @@ pool is user-set state and never overrides it.</p>
 <span class="r-in"><span><span class="fu">mizu_with_pool</span><span class="op">(</span><span class="cn">NULL</span>, <span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> NULL</span>
 <span class="r-in"><span><span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_197d_1cd8fdb6: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1b45_696a082d: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="fu">mizu_set_default_pool</span><span class="op">(</span><span class="va">old</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>

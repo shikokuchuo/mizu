@@ -31,8 +31,8 @@ mizu_pool_stop(p)
 - [Benchmarks](https://shikokuchuo.net/mizu/articles/benchmarks.md) —
   head-to-head measurements against mirai.
 - [Channels](https://shikokuchuo.net/mizu/articles/channels.md) —
-  two-way message links between R processes: send and receive, batch
-  verbs, sentinel values, remote errors.
+  two-way message links between R processes: send and receive, batched
+  forms, sentinel values, remote errors.
 - [Task pools](https://shikokuchuo.net/mizu/articles/pools.md) —
   work-stealing worker pools: submit and collect, nested tasks, waiting
   on several tasks, sizing and observing a pool.
@@ -44,5 +44,5 @@ mizu_pool_stop(p)
   channels and pools shared with Python processes through pymizu,
   including the cross-language map.
 - [Operations](https://shikokuchuo.net/mizu/articles/operations.md) —
-  sizing `/dev/shm` on Linux, the Linux memory allocator, and crash
-  semantics.
+  sizing `/dev/shm` on Linux, the Linux memory allocator, and what
+  happens when a process crashes.

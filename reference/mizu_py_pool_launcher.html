@@ -94,8 +94,9 @@ the <code>launcher</code> argument of <code><a href="mizu_pool.html">mizu_pool()
     <p>The first worker's join records the workers' language in the pool, so
 the launcher carries no language attribute: a pool of Python workers
 takes <code><a href="mizu_call.html">mizu_call()</a></code> specifications through <code><a href="mizu_call.html">mizu_submit_call()</a></code>, and a
-native <code><a href="mizu_submit.html">mizu_submit()</a></code> errors locally naming the spec verb. A launcher
-that spawns the wrong language fails at join, not at the first task.</p>
+plain <code><a href="mizu_submit.html">mizu_submit()</a></code> fails at once with an error naming
+<code><a href="mizu_call.html">mizu_submit_call()</a></code>. A launcher that spawns the wrong language fails
+at join, not at the first task.</p>
 <p>The interpreter is probed for pymizu when the launcher is created, so a
 missing interpreter or package raises here, before any pool exists.</p>
     </div>

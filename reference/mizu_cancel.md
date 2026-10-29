@@ -1,9 +1,9 @@
 # Cancel a Task or a Map
 
-Advisory and discard-only, never preemptive. The worker skips a task
-that is still queued. A task already executing runs to completion, and
-its result is dropped. Collecting a cancelled handle raises
-`mizu_error_cancelled` (see
+Cancellation is advisory: it never interrupts running code. The worker
+skips a task that is still queued. A task already executing runs to
+completion, and its result is dropped. Collecting a cancelled handle
+raises `mizu_error_cancelled` (see
 [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
 
 ## Usage

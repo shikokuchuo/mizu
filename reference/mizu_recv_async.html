@@ -121,19 +121,18 @@ invisibly.</p>
     <p>The promise rejects on <code>mizu_closed</code>, <code>mizu_peer_gone</code>, and on
 <code>timeout</code> expiry — as classed <em>error</em> conditions carrying the same
 class names as the sentinels, so <code>inherits(x, "mizu_closed")</code> works on
-either form. Close and peer death reach the drain through the core's
-terminal wakes, so the rejection is prompt, never timeout-driven.</p>
+either form. Close and peer death wake the event loop directly, so
+the rejection is prompt, never timeout-driven.</p>
 <p>Several outstanding calls on one channel resolve in FIFO call order,
-one message each. Arming is loss-free: messages already in the ring
-resolve from the arm's synchronous drain (delivered asynchronously at
-top level, per promises discipline); only genuinely pending entries
-ride the watch.</p>
+one message each. No message is lost: messages already in the ring
+resolve immediately (still asynchronously, as promises require), and
+only messages yet to arrive wait on the event.</p>
 <p><code>mizu_recv_handler()</code> is the stream form: it installs <code>fn</code> on the
 channel and each burst of messages is delivered to it from the event
 loop — no promise is allocated per message. With <code>batch = TRUE</code> each
 drained burst is delivered as one list in a single <code>fn(list)</code> call
 (the throughput form: one R call per burst); with <code>batch = FALSE</code>,
-<code>fn(value)</code> is called per message. Transport terminals are delivered
+<code>fn(value)</code> is called per message. Close and peer death are delivered
 to <code>fn</code> as the classed error conditions (<code>mizu_closed</code>,
 <code>mizu_peer_gone</code>), after which the handler is removed. A declined
 foreign payload (see <code><a href="mizu_send.html">mizu_send()</a></code>) is delivered as its
@@ -145,10 +144,10 @@ installing a handler with promises pending, or requesting a promise
 with a handler installed, is an error. Mixing a blocking
 <code><a href="mizu_send.html">mizu_recv()</a></code> with either consumer form consumes in arrival order —
 the blocking call may take a message a promise or the handler was
-waiting on. A terminal it observes is observed by the consumer too:
-terminals are channel state, re-read on every receive, never
+waiting on. A close or peer death it observes is observed by the
+consumer too: both are channel state, re-read on every receive, never
 consumed.</p>
-<p>Every main-thread drain is bounded per event-loop quantum and
+<p>Every main-thread drain is bounded per event-loop turn and
 re-scheduled, so a saturated ring starves neither Shiny nor
 <code><a href="https://later.r-lib.org/reference/run_now.html" class="external-link">later::run_now()</a></code>.</p>
 <p>Requires the <span class="pkg">later</span> package (and <span class="pkg">promises</span> for

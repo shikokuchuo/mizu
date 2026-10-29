@@ -3,9 +3,8 @@
 A read-only debugging snapshot of the entire pool region, one level
 deeper than
 [`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md).
-It shows per-slot registry detail, the park, ready, and back-pressure
-masks unpacked per slot, and every occupied result slot. State is
-distributed across processes and execution is non-deterministic, so
+It shows per-slot registry detail and every occupied result slot. State
+is distributed across processes and execution is non-deterministic, so
 reach for this tool first when a pool hangs. The scan takes no locks and
 can race in-flight transitions. Each field is a consistent single read.
 The rows need not be mutually consistent.
@@ -41,8 +40,8 @@ batch transition or a worker helping out of a nested
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 (the `rehome` event of
 [`mizu_pool_trace()`](https://shikokuchuo.net/mizu/reference/mizu_pool_trace.md)).
-`local` is the process-private machinery of this handle: the occupancy
-of the producer free list (`fl_entries`, `fl_bytes`), its reuse count
+`local` is the process-private state of this handle: the occupancy of
+the producer free list (`fl_entries`, `fl_bytes`), its reuse count
 (`fl_hits`), the `open_hits` and `open_misses` of the consumer mapping
 cache, `collect_parks` (how often a collect on this handle parked
 waiting for a result), and `ledger_entries` (lent-out regions still
@@ -55,18 +54,18 @@ p <- mizu_pool()
 t <- mizu_submit(p, runif(1))
 mizu_pool_dump(p)
 #> $name
-#> [1] "/mizu_197d_1cd8fdc0"
+#> [1] "/mizu_1b45_696a0837"
 #> 
 #> $shutdown
 #> [1] FALSE
 #> 
 #> $workers
 #>   slot status  pid park_state parked top bottom in_flight
-#> 1    0   live 7872     parked   TRUE   0      0        -1
+#> 1    0   live 8327     parked   TRUE   0      0        -1
 #> 
 #> $submitters
 #>   slot status  pid rs_start rs_count queued ready full_waiter
-#> 1    0   live 6525        0      512      0 FALSE       FALSE
+#> 1    0   live 6981        0      512      0 FALSE       FALSE
 #> 2    1   free    0        0        0      0 FALSE       FALSE
 #> 3    2   free    0        0        0      0 FALSE       FALSE
 #> 4    3   free    0        0        0      0 FALSE       FALSE
@@ -115,6 +114,6 @@ mizu_pool_dump(p)
 #> [1] 479
 #> 
 mizu_collect(t)
-#> [1] 0.8714506
+#> [1] 0.6436031
 mizu_pool_stop(p)
 ```

@@ -1,9 +1,9 @@
 # Attach to a Pool as a Submitter
 
-Joins an existing pool from another process. Claims a free submitter
-slot with its own injection ring and result-slot subrange. The name of
-the pool travels out of band: it is `mizu_pool_status(p)$name` on the
-creator.
+Joins an existing pool from another process, claiming a free submitter
+slot with its own injection ring and result slots. You pass the name of
+the pool to the joining process yourself: it is
+`mizu_pool_status(p)$name` on the creator.
 
 ## Usage
 
@@ -27,7 +27,7 @@ A pool handle (class `"mizu_pool"`) holding a submitter slot.
 ``` r
 p <- mizu_pool()
 name <- mizu_pool_status(p)[["name"]]
-# `name` travels out of band to the joining process, which runs:
+# pass `name` to the joining process yourself. There, run:
 # pa <- mizu_pool_attach(name)
 # mizu_collect(mizu_submit(pa, runif(3)))
 mizu_pool_stop(p)

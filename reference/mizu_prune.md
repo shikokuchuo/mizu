@@ -24,10 +24,11 @@ enumerated (Windows, where orphans cannot exist), always `NULL`.
 ## Details
 
 Regions of running processes are never touched, and mori regions are
-invisible to mizu (and vice versa): the two packages keep disjoint
-namespaces. If another mizu session on the machine is itself recovering
-from a crash, do not run this. Payloads sent by a now-dead peer stay
-deliverable to its survivor until drained, and this function reaps them.
+invisible to mizu (and mizu regions to mori): the two packages keep
+disjoint namespaces. If another mizu session on the machine is itself
+recovering from a crash, do not run this. Payloads sent by a now-dead
+peer stay deliverable to its survivor until drained, and this function
+reaps them.
 
 A crashed process cannot clean up after itself, and a new process that
 happens to reuse its PID cannot reap its orphans either (it reads its

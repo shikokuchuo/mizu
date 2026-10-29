@@ -45,10 +45,10 @@ mizu_collect(m)
 ## Templates
 
 A `.template` (in the style of the `FUN.VALUE` argument of
-[`vapply()`](https://rdrr.io/r/base/lapply.html)) returns an atomic
+[`vapply()`](https://rdrr.io/r/base/lapply.html)) gives you an atomic
 vector or matrix instead of a list. The workers write the results
 straight into shared memory: each result crosses the process boundary
-exactly once, unserialized:
+exactly once, without serialization:
 
 ``` r
 
@@ -58,12 +58,12 @@ mizu_collect(m)
 ```
 
 With `.collect = "view"`, the result is the shared output area itself,
-wrapped as a read-only ALTREP view: the gather copy is skipped, and the
-region’s teardown defers to the view’s garbage collection.
+wrapped as a read-only ALTREP view: no final copy, and the region stays
+alive until the view is garbage collected.
 
 An `integer64` template (bit64’s layout, constructed without bit64) is
-also supported. int64 joins no widening lattice, so results must be
-exact `integer64` of the template’s length.
+also supported. An int64 result never widens to double, so results must
+be exact `integer64` of the template’s length.
 
 ## Reproducible randomness
 
@@ -84,13 +84,13 @@ identical(mizu_collect(m1), mizu_collect(m2))
 
 [`mizu_map_prepare()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
 stages a map — the function, its constant arguments, and the data —
-without running it: the serialization and the region create are paid
+without running it: the serialization and the region creation are paid
 once. Each
 [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
-then costs only task submission and collection, re-arms in O(1), and
-reuses the cached map context of each worker. Repeated stochastic
-simulation is the headline use: `.seed` rides each run rather than the
-region, so the random streams vary per run for free:
+then costs only task submission and collection, and reuses the map
+context cached by each worker. Repeated stochastic simulation is the
+headline use: `.seed` rides each run rather than the region, so the
+random streams vary per run for free:
 
 ``` r
 
@@ -104,21 +104,21 @@ vapply(runs, \(r) r[[1L]], numeric(1))
 ```
 
 `mizu_map_run(pm, .x = x2)` replaces the staged data: an atomic vector
-of the same type and length swaps in place at memcpy cost; any other
-replacement restages transparently. A run collected with
+of the same type and length swaps in place at the cost of one copy; any
+other replacement restages automatically. A run collected with
 `.collect = "view"` hands its region to the view, so the next run
-restages into a fresh one. The handle pins the staged data and the
-region for its lifetime; both release at garbage collection.
+restages into a fresh one. The handle keeps the staged data and the
+region alive for its lifetime; both release at garbage collection.
 
 ## Nested maps
 
 A map can nest: `mizu_map(mizu_current_pool(), ...)` inside a task
-expression uses the evaluating worker’s own handle. The runner
-submissions push straight onto the worker’s own deque, and the blocked
+expression uses the handle of the worker running the task. The runner
+submissions push straight onto that worker’s own deque, and the blocked
 collect executes its own runners while idle peers steal the rest: nested
-maps never deadlock the pool. A `.template` on the nested map returns
-the collect as an atomic vector the task reduces directly — no list
-assembly, no [`unlist()`](https://rdrr.io/r/base/unlist.html):
+maps never deadlock the pool. A `.template` on the nested map collects
+as an atomic vector the task reduces directly — no list assembly, no
+[`unlist()`](https://rdrr.io/r/base/unlist.html):
 
 ``` r
 

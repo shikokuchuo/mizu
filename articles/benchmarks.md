@@ -42,11 +42,11 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu        501.1µs 564.43µs     1126.  494.87KB      0  
-#> 2 mirai        7.16ms   7.41ms      134.    3.88MB     21.1
+#> 1 mizu        546.2µs 737.08µs      868.  483.41KB      0  
+#> 2 mirai        7.25ms   7.83ms      124.    3.81MB     18.4
 ```
 
-End to end, mizu is **13x** faster: every timed run stages the frame,
+End to end, mizu is **11x** faster: every timed run stages the frame,
 runs the task — computing the new column over all 53,940 rows — and
 returns the enriched frame (medians).
 
@@ -74,13 +74,13 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial      17.96ms  17.96ms     55.7     30.8MB  1281.  
-#> 2 mizu         5.27ms   5.55ms    131.     542.5KB     0   
-#> 3 mirai      210.76ms 210.76ms      4.74    19.1MB     9.49
+#> 1 serial         19ms  19.66ms     50.9     30.8MB   509.  
+#> 2 mizu          5.1ms   6.16ms    131.     517.1KB     2.02
+#> 3 mirai       206.3ms 206.27ms      4.85      19MB     9.70
 ```
 
 mizu turns the four workers into a **3.2x** gain over the serial loop,
-and runs **38x** ahead of mirai (medians).
+and runs **33x** ahead of mirai (medians).
 
 ``` r
 
@@ -116,23 +116,23 @@ can live.
 `mclapply()` forks workers on Unix — cheap there, because a fork shares
 the parent’s pages copy-on-write — but fork is unavailable on Windows
 and composes poorly with threads, GUI sessions, and some external
-libraries; `parLapply()` over a socket cluster is the portable form and
-serializes every task and result through a socket.
+libraries. `parLapply()` over a socket cluster is the portable form, and
+it serializes every task and result through a socket.
 
 ### mirai, crew, and future
 
 mirai dispatches tasks to daemon processes over nanonext sockets, its
-dispatcher working through callbacks rather than as a broker process —
-socket copies are the price of its generality: daemons can run anywhere
+dispatcher working through callbacks rather than as a broker process.
+Socket copies are the price of its generality: daemons can run anywhere
 a network reaches, including other machines and HPC clusters, which
 shared memory cannot. crew builds auto-scaling worker management on
 mirai for bursty pipelines.
 
 future layers a backend-agnostic interface over these and other backends
 (multisession, multicore, or mirai itself via future.mirai), so code
-ports between them unchanged; the cost of that abstraction is much
-higher per-task overhead than either mirai or crew, ahead of the
-backend’s own transport.
+ports between them unchanged. The cost of that abstraction is much
+higher per-task overhead than either mirai or crew, on top of the
+backend’s own transport cost.
 
 ### callr
 
@@ -150,6 +150,6 @@ tools above cross the language boundary.
 
 The short version: choose mizu when the work fits one machine, when
 tasks are fine-grained or vectors and frames large, or when Python needs
-to be in the loop; choose mirai or crew when workers must run on other
+to be in the loop. Choose mirai or crew when workers must run on other
 machines or under a scheduler, and callr when a task needs a pristine
 session.

@@ -33,11 +33,11 @@ code.
 
 Inside a task,
 [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
-returns the handle of the evaluating worker, so a task can split itself
-into subtasks. A nested submit pushes straight onto the own
-work-stealing deque of the worker — no ring, no wake. A worker that
-waits on a nested result executes other work instead of sleeping.
-Divide-and-conquer runs at fork/join cost and never deadlocks the pool:
+returns the handle of the worker running it, so a task can split itself
+into subtasks. A nested submit pushes straight onto that worker’s own
+work-stealing deque — no ring, no wake. A worker waiting on a nested
+result executes other work instead of sleeping. Divide-and-conquer runs
+at minimal overhead and never deadlocks the pool:
 
 ``` r
 
@@ -64,8 +64,8 @@ Package code can read a process-wide default pool with
 [`mizu_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md).
 [`mizu_set_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
 sets it — `NULL` clears it — and invisibly returns the previous default,
-so callers can save and restore. The registry anchors the handle: a pool
-set as the default stays alive even after its variable is removed.
+so callers can save and restore. The registry keeps the handle alive: a
+pool set as the default stays alive even after its variable is removed.
 [`mizu_with_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
 scopes the default to an expression,
 [`mizu_local_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
@@ -109,9 +109,9 @@ order. The other handles stay collectible.
 waits until every task is terminal and returns all values in input
 order, with the names of the handle list carried over. Both take one
 overall `timeout` and return the `mizu_timeout` sentinel on expiry,
-consuming nothing. An outcome that raises — the error of the task
-itself, a cancelled task, a dead worker — gains a 1-based `index` field
-naming the handle’s position, and only the reported handle is consumed:
+consuming nothing. An outcome that raises — the task’s own error, a
+cancelled task, a dead worker — gains a 1-based `index` field naming the
+handle’s position, and only the reported handle is consumed:
 
 ``` r
 
@@ -132,17 +132,18 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 3.405365
+#> [1] 4.046538
 #> 
 #> $label
 #> [1] "done"
 ```
 
+On the submit side,
 [`mizu_submit_batch()`](https://shikokuchuo.net/mizu/reference/mizu_submit_batch.md)
-moves the other direction: one task per element of a list of pre-quoted
-expressions in a single call — one boundary crossing and one wake-up
-sweep for the whole burst, with the `...` arguments shared by every
-task:
+is the batch form: one task per element of a list of pre-quoted
+expressions in a single call — one crossing into shared memory and one
+wake-up sweep for the whole burst, with the `...` arguments shared by
+every task:
 
 ``` r
 
@@ -157,29 +158,28 @@ mizu_collect_all(ts, timeout = 5)
 
 ## Promises and handlers
 
-For event-driven consumers, task handles thenable directly:
-`then(task, fn)` (or `as.promise(task)`) resolves with the task’s value
-and rejects with the classed condition
+For event-driven consumers, you can call
+[`then()`](https://rstudio.github.io/promises/reference/then.html)
+directly on a task handle: `then(task, fn)` (or `as.promise(task)`)
+resolves with the task’s value and rejects with the classed condition
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 would raise — worker death included.
 [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
 and
 [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
-ship the collective forms with exactly one promise per collection,
-mirroring the sync verbs: collect-all resolves in input order with names
+are the async forms of the collective functions, with exactly one
+promise per collection: collect-all resolves in input order with names
 carried, the first erroring handle by position rejecting with `index`;
-collect-any resolves `list(index, value)`.
-[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
-returns a handle with the same treatment — `then(map_handle, fn)`
-resolves with the whole gathered result. Requires the `later` and
-`promises` packages.
+collect-any resolves `list(index, value)`. A map handle gets the same
+treatment — `then(map_handle, fn)` resolves with the whole gathered
+result. Requires the `later` and `promises` packages.
 
-Resolution is per-collection, never per-task: a promise costs tens of
-microseconds of R machinery against about a microsecond of transport, so
-a map of ten thousand elements resolves one promise rather than
-allocating ten thousand. A result publishes once per burst no matter how
-many workers publish to an armed submitter, and every main-thread drain
-is bounded per event-loop quantum and re-scheduled.
+Resolution is per collection, never per task: a promise costs tens of
+microseconds of R work against about a microsecond of transport, so a
+map of ten thousand elements resolves one promise rather than allocating
+ten thousand. A burst of results produces one wake-up no matter how many
+workers published it, and every main-thread drain is bounded per
+event-loop turn and re-scheduled.
 
 ``` r
 
@@ -195,19 +195,20 @@ for (i in 1:8) later::run_now(1) # pump the loop until the resolutions land
 #> [1] "slow"
 ```
 
-A task with a promise attached — or enrolled in a pending collection —
+A task with a promise attached — or part of a pending async collection —
 refuses a blocking
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-and a second enrollment: one consumer per result.
+and a second promise: one consumer per result.
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
 stays allowed throughout; the cancel publishes, and the drain rejects.
 
 ## Sizing, sharing and watching a pool
 
-A pool can grow and shrink while it runs. Retirement is graceful: the
-worker finishes its current task, and the remaining workers consume
-anything still queued to it. Other R processes can join a running pool
-as submitters — the name of the pool is the only thing they need:
+A pool can grow and shrink while it runs. Retirement never interrupts a
+task: the worker finishes its current task, and the remaining workers
+take over anything still queued to it. Other R processes can join a
+running pool as submitters — the name of the pool is the only thing they
+need:
 
 ``` r
 

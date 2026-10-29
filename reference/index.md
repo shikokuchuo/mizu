@@ -13,7 +13,7 @@
 - [`mizu_close()`](https://shikokuchuo.net/mizu/reference/mizu_close.md)
   : Close a Channel
 - [`mizu_alive()`](https://shikokuchuo.net/mizu/reference/mizu_alive.md)
-  : Probe Peer Liveness
+  : Check Whether the Channel Peer Is Alive
 
 ## Pools
 
@@ -85,7 +85,7 @@
   : Convert a Received Frame to an Arrow Stream
 - [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
   [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-  : Call a Function in Another Language: the Task Specification
+  : Call a Function in Another Language
 - [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
   : Default Child Process Launcher
 - [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
