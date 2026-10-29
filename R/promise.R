@@ -374,13 +374,14 @@ mizu_recv_async <- function(ch, timeout = Inf) {
       call. = FALSE
     )
   }
-  state[["mode"]] <- "promise"
   # the arm runs ahead of the promise action: promise() converts an error
   # raised inside the action into a rejection, but arming failures (a spin
   # channel, a dead peer) are call-site errors. A signal landing between
   # here and the registration below schedules a drain that runs after the
-  # action (FIFO), so nothing is missed.
+  # action (FIFO), so nothing is missed. The mode is set only once the
+  # arm stands: a failed arm leaves no consumer behind.
   avail <- .Call(mizu_chan_notify_arm, ch, state)
+  state[["mode"]] <- "promise"
   promises::promise(function(resolve, reject) {
     w <- new.env(parent = emptyenv())
     w[["resolve"]] <- resolve
@@ -423,10 +424,12 @@ mizu_recv_handler <- function(ch, fn, batch = FALSE) {
       call. = FALSE
     )
   }
+  # as in mizu_recv_async: a failed arm (a spin channel) leaves no
+  # consumer behind — the mode, fn and batch ride a successful arm only
+  avail <- .Call(mizu_chan_notify_arm, ch, state)
   state[["mode"]] <- "handler"
   state[["fn"]] <- fn
   state[["batch"]] <- isTRUE(batch)
-  avail <- .Call(mizu_chan_notify_arm, ch, state)
   if (avail) {
     chan_drain(state)
   }
@@ -795,8 +798,11 @@ as.promise.mizu_map <- function(x) {
     invisible()
   }
   w[["timer"]] <- NULL
-  x[["promised"]] <- TRUE
+  # the enroll runs ahead of setting promised: a failed enroll (a stopped
+  # pool, a conflicting runner) is a call-site error and must leave the
+  # handle blocking-collectible
   ready <- pool_enroll(state, w, st[["handles"]], st[["wrap"]])
+  x[["promised"]] <- TRUE
   promise <- promises::promise(function(resolve, reject) {
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject

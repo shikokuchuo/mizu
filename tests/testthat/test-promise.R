@@ -285,6 +285,14 @@ test_that("arming a spin channel errors", {
   p <- channel_pair(spin = TRUE)
   on.exit(channel_end(p))
   expect_error(mizu_recv_async(p[["host"]]), class = "mizu_error")
+  # a failed arm leaves no consumer mode behind
+  expect_null(.Call(mizu:::mizu_chan_notify_peek, p[["host"]])[["mode"]])
+  expect_error(
+    mizu_recv_handler(p[["host"]], function(x) invisible()),
+    "spin channel",
+    class = "mizu_error"
+  )
+  expect_null(.Call(mizu:::mizu_chan_notify_peek, p[["host"]])[["mode"]])
 })
 
 test_that("edge trigger: N publishes while armed send exactly one signal", {
@@ -831,6 +839,19 @@ test_that("a destroyed pool refuses an enroll and scans empty", {
   expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
   expect_null(.Call(mizu:::mizu_pool_notify_find, t))
   expect_false(settled(o))
+})
+
+test_that("a failed map-promise enroll leaves the handle collectible", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i)
+  suppressWarnings(mizu_pool_stop(p[["ctrl"]], timeout = 0))
+  expect_error(promises::as.promise(m), "pool handle is closed")
+  expect_false(isTRUE(m[["promised"]]))
+  # collectible again: the blocking collect runs (and times out) rather
+  # than refusing on a promise that never enrolled
+  expect_s3_class(mizu_collect(m, 0), "mizu_timeout")
 })
 
 test_that("several workers publishing to one armed submitter send one signal", {

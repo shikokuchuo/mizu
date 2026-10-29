@@ -338,9 +338,15 @@ SEXP mizu_chan_notify_arm_call(SEXP xp, SEXP state) {
   mizu_r_handle *h =
     mizu_r_handle_get(xp, mizu_ntfy_chan_tag, "channel");
   mizu_channel *c = (mizu_channel *) h->core;
+  const int was_armed = h->notify != NULL && h->notify->armed;
   mizu_r_notify_ensure_armed(h, state, 0);
   int avail = 0;
-  if (mizu_channel_notify_arm(c, 1, &avail) != MIZU_OK) ntfy_chan_raise(c);
+  if (mizu_channel_notify_arm(c, 1, &avail) != MIZU_OK) {
+    /* the same rollback as the pool enroll: a fresh arm cycle's preserved
+       state env does not outlive the raise */
+    if (!was_armed) mizu_r_notify_disarm(h);
+    ntfy_chan_raise(c);
+  }
   return Rf_ScalarLogical(avail != 0);
 }
 
@@ -600,11 +606,15 @@ SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
     ent_withdraw(p, &ent);
     return Rf_ScalarLogical(1);
   }
+  const int was_armed = h->notify != NULL && h->notify->armed;
   mizu_r_notify_ensure_armed(h, state, 1);
   mizu_r_notify *rec = h->notify;
   ntfy_reg_reserve(rec);
   if (mizu_pool_notify_arm(p, 1) != MIZU_OK) {
     ent_withdraw(p, &ent);
+    /* roll a fresh arm cycle back: its preserved state env must not pin
+       the pool handle past this raise */
+    if (!was_armed) mizu_r_notify_disarm(h);
     ntfy_pool_raise(p);
   }
   if (n > 1) {
