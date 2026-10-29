@@ -2057,7 +2057,7 @@ test_that("malformed runner streams fail the runner with the decode error", {
       TRUE
     )
     # ring 0 entry 0 (pool_pair geometry): payload header at +24, payload +40
-    base <- 64L + 128L + 8L * 64L + 128L + 128L
+    base <- 128L + 256L + 8L * 128L + 256L + 256L
     nlen <- readBin(
       .Call(mizu:::mizu_peek, rw, base + 40L + 16L, 4L),
       "integer",
@@ -2102,7 +2102,7 @@ test_that("malformed runner streams fail the runner with the decode error", {
     mizu_pool_status(p[["ctrl"]])[["name"]],
     TRUE
   )
-  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  base <- 128L + 256L + 8L * 128L + 256L + 256L
   nlen <- readBin(
     .Call(mizu:::mizu_peek, rw, base + 40L + 16L, 4L),
     "integer",
@@ -2126,7 +2126,7 @@ test_that("malformed runner streams fail the runner with the decode error", {
     mizu_pool_status(p[["ctrl"]])[["name"]],
     TRUE
   )
-  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  base <- 128L + 256L + 8L * 128L + 256L + 256L
   len_at <- base + 24L + 4L
   len0 <- readBin(
     .Call(mizu:::mizu_peek, rw, len_at, 4L),

@@ -381,7 +381,7 @@ test_that("a corrupt ring entry is skipped without a claim", {
     TRUE
   )
   # ring 0 entry 0 (pool_pair geometry): the rs_index word
-  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  base <- 128L + 256L + 8L * 128L + 256L + 256L
   .Call(
     mizu:::mizu_poke,
     rw,
@@ -401,8 +401,8 @@ test_that("a corrupt deque entry is skipped without a claim", {
     mizu_pool_status(p[["ctrl"]])[["name"]],
     TRUE
   )
-  # wk[0]'s deque_buf_off is its slot word at 88; entry 0's rs_index word
-  doff <- i64v(.Call(mizu:::mizu_peek, rw, 88, 8))
+  # wk[0]'s deque_buf_off is its slot word at 152; entry 0's rs_index word
+  doff <- i64v(.Call(mizu:::mizu_peek, rw, 152, 8))
   .Call(
     mizu:::mizu_poke,
     rw,
@@ -422,7 +422,7 @@ test_that("a corrupt stolen entry aborts the steal", {
     mizu_pool_status(p[["ctrl"]])[["name"]],
     TRUE
   )
-  doff <- i64v(.Call(mizu:::mizu_peek, rw, 88, 8))
+  doff <- i64v(.Call(mizu:::mizu_peek, rw, 152, 8))
   .Call(
     mizu:::mizu_poke,
     rw,
@@ -443,7 +443,7 @@ test_that("a vanished task payload publishes LOST to the collector", {
     TRUE
   )
   # ring 0 entry 0 (pool_pair geometry): the SHM_RAW payload is the name
-  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  base <- 128L + 256L + 8L * 128L + 256L + 256L
   id <- .Call(mizu:::mizu_peek, rw, base + 40L, 40L)
   hex0 <- base + 40L + which(id == charToRaw("_"))[1L] + 1L
   b <- .Call(mizu:::mizu_peek, rw, hex0, 1L)
@@ -470,7 +470,7 @@ test_that("a rawspill-framed task whose region vanished reads as lost", {
   # ring 0 entry 0 reframed as RAWSPILL: the claim's byte resolve skips the
   # kind (vector data, not a stream), so the gone verdict lands past the
   # claim, in the exec's generic read
-  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  base <- 128L + 256L + 8L * 128L + 256L + 256L
   u32 <- function(v) writeBin(v, raw(), size = 4L, endian = "little")
   nm <- charToRaw("/mizu_deadbeef_1234") # well-formed, does not exist
   .Call(mizu:::mizu_poke, rw, base + 24L, as.raw(8L)) # kind RAWSPILL
@@ -1401,7 +1401,7 @@ test_that("collect_all attaches the consumed prefix to a mid-batch read failure"
   )
   # result slots follow the header, worker/submitter tables, the injection
   # rings, and the worker deques (pool_pair's default geometry)
-  off <- 64L + 128L + 8L * 64L + 128L + 8L * (128L + 64L * 512L) + 64L * 512L
+  off <- 128L + 256L + 8L * 128L + 256L + 8L * (256L + 64L * 512L) + 64L * 512L
   status_at <- function(k) {
     readBin(
       .Call(mizu:::mizu_peek, rw, off + k * 512L, 4L),
@@ -1424,7 +1424,7 @@ test_that("collect_all attaches the consumed prefix to a mid-batch read failure"
 })
 
 test_that("corrupt rawspill result slots reject at collect", {
-  off <- 64L + 128L + 8L * 64L + 128L + 8L * (128L + 64L * 512L) + 64L * 512L
+  off <- 128L + 256L + 8L * 128L + 256L + 8L * (256L + 64L * 512L) + 64L * 512L
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], as.raw(rep(1L, 10000)))
   pool_step(p)
@@ -1502,7 +1502,7 @@ test_that("a malformed ref identifier in a result fails the read", {
     mizu_pool_status(p$ctrl)[["name"]],
     TRUE
   )
-  off <- 64L + 128L + 8L * 64L + 128L + 8L * (128L + 64L * 512L) + 64L * 512L
+  off <- 128L + 256L + 8L * 128L + 256L + 8L * (256L + 64L * 512L) + 64L * 512L
   # rewrite slot 0's payload as a 0x13 ref leaf with a malformed identifier
   b <- ix_hex_to_raw(ix_corpus()[["err-ref-value"]])
   .Call(mizu:::mizu_poke, rw, off + 24L, raw(4L)) # kind INLINE
@@ -1649,7 +1649,7 @@ test_that("claim copies tolerate torn entry kind bytes", {
     mizu_pool_status(p[["ctrl"]])[["name"]],
     TRUE
   )
-  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  base <- 128L + 256L + 8L * 128L + 256L + 256L
   kinds <- raw(4L)
   for (i in 0:3) {
     mizu_submit(p[["ctrl"]], i)
@@ -1692,7 +1692,7 @@ test_that("a lost task reports its state before collect", {
     mizu_pool_status(p[["ctrl"]])[["name"]],
     TRUE
   )
-  base <- 64L + 128L + 8L * 64L + 128L + 128L
+  base <- 128L + 256L + 8L * 128L + 256L + 256L
   id <- .Call(mizu:::mizu_peek, rw, base + 40L, 40L)
   hex0 <- base + 40L + which(id == charToRaw("_"))[1L] + 1L
   b <- .Call(mizu:::mizu_peek, rw, hex0, 1L)

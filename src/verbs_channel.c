@@ -176,8 +176,8 @@ SEXP mizu_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
     Rf_error("mizu: capacity must be a power of two between 2 and 2^24");
   if (!mizu_r_pow2(slot) || slot < 64 || slot > (1u << 20))
     Rf_error("mizu: slot_size must be a power of two between 64 and 2^20");
-  if (arena_in > 1.1e12 || (uint64_t) arena_in % 64 != 0)
-    Rf_error("mizu: arena_size must be a non-negative multiple of 64");
+  if (arena_in > 1.1e12 || (uint64_t) arena_in % 128 != 0)
+    Rf_error("mizu: arena_size must be a non-negative multiple of 128");
 
   /* the drop: the peer's bootstrap, copied into the region at create. A
      quoted expression rides as an MIZU_DROP_R-tagged serialize stream; a

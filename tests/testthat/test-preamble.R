@@ -89,7 +89,7 @@ test_that("each corruption is caught before the ring protocol is engaged", {
   poke(xp, 24, as.raw(1)) # arena -> 1
   expect_error(
     .Call(mizu:::mizu_preamble_validate_call, xp),
-    "not a multiple of 64"
+    "not a multiple of 128"
   )
 
   xp <- new_channel_region()

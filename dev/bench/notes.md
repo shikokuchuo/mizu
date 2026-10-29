@@ -1881,3 +1881,35 @@ validity-claim wire-policy change, its own plan if pursued. The table's
 difftime row swaps to the new best.
 
 Status: no code changed.
+
+## 2026-10-29 — F1: 128-byte cache-line discipline (libmizu, vendored-dirty A/B)
+
+Phase 1 of the 2026-10-28 low-latency review: no two words written by
+different processes share a 128-byte span (channel ring indices re-paired
+by writer; injection-meta/tier/control blocks and the worker/submitter
+slots widened; pool section bases 128-aligned; channel arena_size now a
+multiple of 128; MIZU_ABI_VERSION stays 1 — the pre-release same-build
+exception). A/B verdict: performance-neutral at
+the R level. The controlled comparison (full mizu-bench.R, the built
+HEAD/F1 .so files swapped into one install, two rounds each): every row
+within +/-8% of HEAD, inside each row's band; 8 KB payload -13% and pool
+batch +5% the largest moves; the in-process anchor itself swung 3%
+between rounds. The libmizu C bench (forked peers) is flat to positive:
+channel rows unchanged, pool_submit_collect_NIL 0.46 -> 0.42 us,
+pool_steal_w4 7.19M -> 9.20M tasks/s (+28%, the intended contention
+read).
+
+Caveat for future A/Bs: the first three F1 runs showed a broad 35-75%
+"regression" (streaming 25M msg/s, plan k = 0 65 us) that bisect
+initially pinned on the channel index re-pairing. It was environmental —
+a Positron renderer process holding ~36% CPU (one core short for the
+multi-process rows); reinstall-swapped binaries later gave identical
+numbers on both builds, and every suspect row recovered. Full-bench A/Bs
+here need the machine idle AND the comparison runs interleaved;
+reinstall-timing-separated runs can alias a load phase onto a build.
+
+Status: libmizu unit + ext + integration tiers green; mizu full suite
+green (5395 pass, 0 fail, 7 skips; the pymizu venv on PATH ran the
+cross-language legs); pymizu 1030 pass, 1 pre-existing xfail-style skip
+set. Vendored as 97bd267-dirty (the change set is upstream working-tree
+state pending its commit).

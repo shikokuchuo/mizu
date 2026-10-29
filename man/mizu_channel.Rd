@@ -27,7 +27,7 @@ parses and evaluates it as R source).}
 inline payload budget is \code{slot_size - 16}. Payloads that serialize
 larger spill to the arena, and past it to a fresh region.}
 
-\item{arena_size}{spill-arena bytes per direction. A multiple of 64, or 0
+\item{arena_size}{spill-arena bytes per direction. A multiple of 128, or 0
 to disable (every spill then creates a region). This bounds the
 in-flight spill. An undersized arena degrades to region-create
 fallbacks, never to errors.}

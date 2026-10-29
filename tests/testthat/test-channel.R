@@ -22,7 +22,7 @@ test_that("mizu_channel_create validates its parameters", {
   )
   expect_error(
     .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 100, FALSE),
-    "arena_size must be a non-negative multiple of 64"
+    "arena_size must be a non-negative multiple of 128"
   )
   expect_error(
     .Call(mizu:::mizu_channel_create, c("a", "b"), 64L, 256L, 0, FALSE),

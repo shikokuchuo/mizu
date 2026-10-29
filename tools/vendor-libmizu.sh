@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="97bd267fcda6e2d30a90ede08c8b8a5529927740"  # libmizu: Free reaper-orphaned watches in the Linux fork guard
+PIN="0e027ef94680a7707f8f7f72bd63bd50b12b268b"  # libmizu: Separate cross-writer hot words onto 128-byte spans
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
