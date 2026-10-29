@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="067516ab2b674077fecb3ad1656a64025088213b"  # libmizu: Document the per-handle threading contract
+PIN="97bd267fcda6e2d30a90ede08c8b8a5529927740"  # libmizu: Free reaper-orphaned watches in the Linux fork guard
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
