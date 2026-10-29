@@ -43,8 +43,8 @@ mizu_map(
   .chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
-  .collect = "value",
-  .stream = FALSE
+  .stream = FALSE,
+  .collect = "value"
 )
 ```
 
@@ -111,6 +111,15 @@ mizu_map(
   [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)'s
   `timeout`.
 
+- .stream:
+
+  `TRUE` streams slices of `.x` to workers under a sliding window
+  instead of staging `.x` into shared memory wholesale, bounding
+  shared-memory residency by the window times the slice size. See the
+  Streaming maps section. A streaming map handle collects with
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
+  only (it cannot be promise-armed).
+
 - .collect:
 
   `"value"` (the default) gathers template results into an owning R
@@ -122,15 +131,6 @@ mizu_map(
   write materializes a private copy. It keeps the map region alive until
   released, and re-sending it through a channel or pool crosses as a
   full copy, not by reference. The choice is stored on the handle.
-
-- .stream:
-
-  `TRUE` streams slices of `.x` to workers under a sliding window
-  instead of staging `.x` into shared memory wholesale, bounding
-  shared-memory residency by the window times the slice size. See the
-  Streaming maps section. A streaming map handle collects with
-  [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-  only (it cannot be promise-armed).
 
 ## Value
 

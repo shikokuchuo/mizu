@@ -121,8 +121,8 @@ ever materializes more than a batch of it.</p>
 <span>  .chunks <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  .seed <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  .timeout <span class="op">=</span> <span class="cn">Inf</span>,</span>
-<span>  .collect <span class="op">=</span> <span class="st">"value"</span>,</span>
-<span>  .stream <span class="op">=</span> <span class="cn">FALSE</span></span>
+<span>  .stream <span class="op">=</span> <span class="cn">FALSE</span>,</span>
+<span>  .collect <span class="op">=</span> <span class="st">"value"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -180,6 +180,14 @@ indefinitely. Submission blocks only while an injection ring is full;
 the collection deadline is <code><a href="mizu_submit.html">mizu_collect()</a></code>'s <code>timeout</code>.</p></dd>
 
 
+<dt id="arg--stream">.stream<a class="anchor" aria-label="anchor" href="#arg--stream"></a></dt>
+<dd><p><code>TRUE</code> streams slices of <code>.x</code> to workers under a
+sliding window instead of staging <code>.x</code> into shared memory wholesale,
+bounding shared-memory residency by the window times the slice size.
+See the Streaming maps section. A streaming map handle collects
+with <code><a href="mizu_submit.html">mizu_collect()</a></code> only (it cannot be promise-armed).</p></dd>
+
+
 <dt id="arg--collect">.collect<a class="anchor" aria-label="anchor" href="#arg--collect"></a></dt>
 <dd><p><code>"value"</code> (the default) gathers template results into
 an owning R vector at <code><a href="mizu_submit.html">mizu_collect()</a></code>. <code>"view"</code> instead returns an
@@ -189,14 +197,6 @@ The view is copy-on-write: the first write materializes a private
 copy. It keeps the map region alive until released, and re-sending
 it through a channel or pool crosses as a full copy, not by
 reference. The choice is stored on the handle.</p></dd>
-
-
-<dt id="arg--stream">.stream<a class="anchor" aria-label="anchor" href="#arg--stream"></a></dt>
-<dd><p><code>TRUE</code> streams slices of <code>.x</code> to workers under a
-sliding window instead of staging <code>.x</code> into shared memory wholesale,
-bounding shared-memory residency by the window times the slice size.
-See the Streaming maps section. A streaming map handle collects
-with <code><a href="mizu_submit.html">mizu_collect()</a></code> only (it cannot be promise-armed).</p></dd>
 
 </dl></div>
     <div class="section level2">
