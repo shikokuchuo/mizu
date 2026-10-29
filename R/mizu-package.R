@@ -39,11 +39,12 @@
       !is.numeric(gc_boundary) ||
         length(gc_boundary) != 1L ||
         !is.finite(gc_boundary) ||
-        gc_boundary < 0
+        gc_boundary < 0 ||
+        gc_boundary > 2^53
     ) {
       stop(
         "mizu: option 'mizu.gc_boundary' must be a single non-negative ",
-        "number of bytes",
+        "number of bytes not exceeding 2^53",
         call. = FALSE
       )
     }

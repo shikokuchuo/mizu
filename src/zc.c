@@ -1193,9 +1193,15 @@ SEXP mizu_zc_armed_bytes_call(void) {
 }
 
 /* The mizu.gc_boundary option's write half (.onLoad and tests): bytes as a
-   double — 2^53 exactness covers any sane threshold. 0 disables. */
+   double — the 2^53 ceiling keeps the size_t conversion defined and covers
+   any sane threshold. 0 disables. */
 SEXP mizu_zc_gc_boundary_set_call(SEXP bytes) {
-  mizu_zc_gc_bytes = (size_t) Rf_asReal(bytes);
+  const double b = Rf_asReal(bytes);
+  if (ISNAN(b) || b < 0 || b > MIZU_DBL_SAFE_INT)
+    Rf_error(
+      "mizu: gc boundary must be a non-negative number of bytes not "
+      "exceeding 2^53");
+  mizu_zc_gc_bytes = (size_t) b;
   return R_NilValue;
 }
 

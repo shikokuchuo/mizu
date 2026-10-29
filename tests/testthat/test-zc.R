@@ -688,6 +688,15 @@ test_that("a zero mizu.gc_boundary disables the boundary collection", {
   pool_end(p)
 })
 
+test_that("the mizu.gc_boundary setter rejects out-of-range values", {
+  set <- function(x) invisible(.Call(mizu:::mizu_zc_gc_boundary_set, x))
+  on.exit(set(8 * 1024 * 1024))
+  expect_error(set(-1), "not exceeding 2^53", fixed = TRUE)
+  expect_error(set(2^54), "not exceeding 2^53", fixed = TRUE)
+  expect_error(set(NA_real_), "not exceeding 2^53", fixed = TRUE)
+  expect_error(set(2^53), NA)
+})
+
 test_that("the mizu.gc_boundary option is validated at package load", {
   skip_if_no_child_mizu()
   f <- tfile()
@@ -704,6 +713,13 @@ test_that("the mizu.gc_boundary option is validated at package load", {
   ))
   expect_true(wait_for_file(g))
   unlink(g)
+  h <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    "options(mizu.gc_boundary = 2^54); tryCatch(library(mizu), error = function(e) file.create(%s))",
+    deparse(h)
+  ))
+  expect_true(wait_for_file(h))
+  unlink(h)
 })
 
 test_that("channel zc churn falls back to the copy tiers past the lent budget and recovers", {
