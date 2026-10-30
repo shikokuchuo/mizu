@@ -1067,7 +1067,7 @@ test_that("a map promise scans mixed runner states before the full settle", {
   skip_if_no_promises()
   p <- pool_pair(workers = 2L)
   on.exit(pool_end(p))
-  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L, .chunks = 2L)
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L, .n_chunks = 2L)
   o <- observe(promises::as.promise(m))
   pool_step(p, wk = p[["wks"]][[1L]])
   later::run_now() # one runner terminal, one pending: the scan defers

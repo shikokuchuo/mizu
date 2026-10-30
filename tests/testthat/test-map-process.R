@@ -44,7 +44,7 @@ test_that("a map's chunks spread across the workers", {
         i * 2L
       },
       rdv = rdv,
-      .chunks = 16L
+      .n_chunks = 16L
     ),
     timeout = 60
   )
@@ -88,7 +88,7 @@ test_that("an imbalanced map still returns in order, work balanced", {
         i
       },
       rdv = rdv,
-      .chunks = 16L
+      .n_chunks = 16L
     ),
     timeout = 60
   )
@@ -407,7 +407,7 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
         Sys.sleep(1)
         i
       },
-      .chunks = 2L
+      .n_chunks = 2L
     ),
     timeout = 0.3
   )
@@ -453,7 +453,7 @@ test_that("a nested map fans out over the deque and peers steal it", {
         i * 10L
       },
       rdv = rdv,
-      .chunks = 8L
+      .n_chunks = 8L
     )),
     rdv = rdv
   )
@@ -478,7 +478,7 @@ test_that(".seed maps are identical across worker counts and chunkings", {
     1:8,
     f,
     .seed = 7L,
-    .chunks = 8L,
+    .n_chunks = 8L,
     .timeout = 60
   ))
   expect_identical(r1, r2)

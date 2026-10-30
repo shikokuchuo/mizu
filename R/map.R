@@ -105,8 +105,8 @@ mono_time <- function() .Call(mizu_now_call)
 #' `max(1, min(n %/% (workers * 256), 256))` elements. The morsel is the
 #' granularity floor for cancellation, help, and loss reporting. Morsels
 #' go to runners in adaptively sized batches of consecutive morsels.
-#' `.chunks` overrides the morsel count outright (`min(length(.x), .chunks)`
-#' morsels). With no per-morsel shared state, `.chunks = length(x)` is
+#' `.n_chunks` overrides the morsel count outright (`min(length(.x), .n_chunks)`
+#' morsels). With no per-morsel shared state, `.n_chunks = length(x)` is
 #' admissible at zero memory cost for extremely skewed element times. A
 #' map submitted while no worker is live queues a single runner in the
 #' injection ring and runs when a worker joins. If no worker has ever
@@ -170,7 +170,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' installs. The caller's own `.Random.seed` is not touched, and the
 #' RNG state of each worker is saved and restored around its batches.
 #' Because the streams are per-element, the results are identical for any
-#' `.chunks` value, batch sizing, worker count, or steal order. With
+#' `.n_chunks` value, batch sizing, worker count, or steal order. With
 #' `c(seed, offset)`, element `i` runs under the stream of element
 #' `i + offset` of an unoffset run, so a map split across runs or
 #' processes reproduces the streams of one uninterrupted run.
@@ -211,20 +211,20 @@ mono_time <- function() .Call(mizu_now_call)
 #' shared memory: it streams slices of `.x` to workers as they take work;
 #' the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
 #' under a sliding submit/collect window of at most
-#' `min(.chunks, 2 * live workers, free result slots)` outstanding tasks,
+#' `min(.n_chunks, 2 * live workers, free result slots)` outstanding tasks,
 #' so shared-memory use is bounded by `window x slice` instead of the
 #' size of `.x` — with the default chunk count that is roughly
-#' `(2 * workers) / .chunks` of the serialized `.x`. The chunk count
-#' defaults to `min(length(.x), 32 * live workers)` and `.chunks`
-#' overrides it outright (`.chunks = length(.x)` is the mirai-style
+#' `(2 * workers) / .n_chunks` of the serialized `.x`. The chunk count
+#' defaults to `min(length(.x), 32 * live workers)` and `.n_chunks`
+#' overrides it outright (`.n_chunks = length(.x)` is the mirai-style
 #' extreme of one element per task). Everything else — result order,
 #' `.template` and `.collect`, `.seed` invariance, the error behavior —
 #' is exactly the non-streaming map's. Fail-fast latency grows from
 #' about one adaptive morsel batch to about one chunk: the outstanding
 #' work at any time is bounded by the window, so the bound moves with
-#' `.chunks`. Two trade-offs come with fixed chunks: the adaptive batch
+#' `.n_chunks`. Two trade-offs come with fixed chunks: the adaptive batch
 #' sizing of the morsel scheduler is lost (to mitigate skew, raise
-#' `.chunks`), and slices cross serialized, so each chunk pays an
+#' `.n_chunks`), and slices cross serialized, so each chunk pays an
 #' ordinary submit's serialization instead of the non-streaming map's
 #' serialization-free slicing. A streaming map with R
 #' workers shares one description of the map with every worker, and each
@@ -272,7 +272,7 @@ mono_time <- function() .Call(mizu_now_call)
 #'   argument name passed here never collides with them.
 #' @param .template `NULL` for a list result, or a [vapply()]-style
 #'   `FUN.VALUE`: an atomic vector template that each result must match.
-#' @param .chunks the morsel count of the map (its scheduling
+#' @param .n_chunks the morsel count of the map (its scheduling
 #'   granularity), or `NULL` for the default. See the Granularity section.
 #' @param .seed `NULL` (default: no RNG guarantees, no cost), or a numeric
 #'   vector of length 1 or 2 that derives reproducible per-element RNG
@@ -328,7 +328,7 @@ mizu_map <- function(
   .f,
   ...,
   .template = NULL,
-  .chunks = NULL,
+  .n_chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
   .stream = FALSE,
@@ -350,9 +350,9 @@ mizu_map <- function(
     return(map_empty_handle(.pool, .x, .template, .collect))
   }
   st <- if (.stream) {
-    map_stage_stream(.pool, .x, .f, dots, .template, .chunks, .seed, ident)
+    map_stage_stream(.pool, .x, .f, dots, .template, .n_chunks, .seed, ident)
   } else {
-    map_stage(.pool, .x, .f, dots, .template, .chunks, .seed, ident)
+    map_stage(.pool, .x, .f, dots, .template, .n_chunks, .seed, ident)
   }
   map_submit_handle(.pool, st, .timeout, .collect)
 }
@@ -548,7 +548,7 @@ mizu_map_prepare <- function(
   .f,
   ...,
   .template = NULL,
-  .chunks = NULL,
+  .n_chunks = NULL,
   .stream = FALSE
 ) {
   ident <- map_check_native(.pool, .f)
@@ -569,13 +569,13 @@ mizu_map_prepare <- function(
   pm[["f"]] <- .f
   pm[["dots"]] <- dots
   pm[["template"]] <- .template
-  pm[["chunks"]] <- .chunks
+  pm[["chunks"]] <- .n_chunks
   pm[["stream"]] <- .stream
   if (length(.x) > 0L) {
     pm[["st"]] <- if (.stream) {
-      map_stage_stream(.pool, .x, .f, dots, .template, .chunks, ident = ident)
+      map_stage_stream(.pool, .x, .f, dots, .template, .n_chunks, ident = ident)
     } else {
-      map_stage(.pool, .x, .f, dots, .template, .chunks, ident = ident)
+      map_stage(.pool, .x, .f, dots, .template, .n_chunks, ident = ident)
     }
   }
   class(pm) <- "mizu_map_prepared"
@@ -1026,14 +1026,14 @@ map_empty <- function(x, template) {
 
 strip_srcref <- function(f) .Call(mizu_strip_srcref, f)
 
-# The .chunks gate, identical at every stage entry.
+# The .n_chunks gate, identical at every stage entry.
 map_check_chunks <- function(chunks) {
   if (is.null(chunks)) {
     return(NULL)
   }
   chunks <- as.numeric(chunks)
   if (length(chunks) != 1L || is.na(chunks) || chunks < 1) {
-    stop("mizu: .chunks must be a positive number", call. = FALSE)
+    stop("mizu: .n_chunks must be a positive number", call. = FALSE)
   }
   chunks
 }
@@ -1146,8 +1146,8 @@ map_stage <- function(
     # region path: x rides its own bare-byte section when the gate admits
     # it (the descriptor then carries only f and dots — cheap to count),
     # else folded into the one descriptor stream, whose exact size the
-    # probe already counted. .chunks overrides the morsel count outright,
-    # bypassing the cap (no per-morsel storage exists, so .chunks = n is
+    # probe already counted. .n_chunks overrides the morsel count outright,
+    # bypassing the cap (no per-morsel storage exists, so .n_chunks = n is
     # admissible at zero memory cost); the default targets
     # ~map_morsels_per_runner morsels per runner under the constant grain.
     st[["ms"]] <- if (is.null(chunks)) {
@@ -1225,9 +1225,9 @@ map_stream_window <- function(st, caps) {
 }
 
 # Streaming chunk geometry: C fixed chunks over n — min(n, 32 x live
-# workers) by default, .chunks overriding outright, bounded only by n (the
+# workers) by default, .n_chunks overriding outright, bounded only by n (the
 # window paces outstanding work, so no slot/ring clamp, unlike the blob
-# path; .chunks = n is the mirai extreme of one element per task). lo/hi
+# path; .n_chunks = n is the mirai extreme of one element per task). lo/hi
 # via map_set_ranges, shared with the blob path.
 map_stream_geometry <- function(st, caps) {
   n <- st[["n"]]

@@ -53,7 +53,7 @@ test_that("streaming stages a descriptor-only region and balanced chunks", {
     .Call(mizu:::mizu_map_slice, st[["wrap"]], 1, 2),
     "no x section"
   )
-  # .chunks overrides outright, bounded only by n
+  # .n_chunks overrides outright, bounded only by n
   st2 <- mizu:::map_stage_stream(
     p[["ctrl"]],
     1:100,
@@ -557,7 +557,7 @@ test_that("one attach per worker per map; the ctx cache serves chunk 2", {
   pool_end(p)
 })
 
-test_that(".chunks = n runs one element per task", {
+test_that(".n_chunks = n runs one element per task", {
   p <- pool_pair()
   st <- mizu:::map_stage_stream(
     p[["ctrl"]],
@@ -601,7 +601,7 @@ test_that("class-only integer64 streams with classed slices and elements", {
   pool_end(p)
 })
 
-test_that(".chunks validates on the streaming path", {
+test_that(".n_chunks validates on the streaming path", {
   p <- pool_pair()
   expect_error(
     mizu:::map_stage_stream(p[["ctrl"]], 1:4, identity, list(), chunks = 0),
@@ -706,10 +706,10 @@ test_that("mizu_map(.stream) end-to-end and out-of-order completion", {
     }
     i * 2L
   }
-  r <- mizu_collect(mizu_map(p, 1:32, f, .stream = TRUE, .chunks = 8L))
+  r <- mizu_collect(mizu_map(p, 1:32, f, .stream = TRUE, .n_chunks = 8L))
   expect_identical(r, as.list((1:32) * 2L))
   # identical to the non-streaming map on the same inputs
-  expect_identical(r, mizu_collect(mizu_map(p, 1:32, f, .chunks = 8L)))
+  expect_identical(r, mizu_collect(mizu_map(p, 1:32, f, .n_chunks = 8L)))
   v <- mizu_collect(mizu_map(
     p,
     1:32 + 0,

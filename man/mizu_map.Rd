@@ -10,7 +10,7 @@ mizu_map(
   .f,
   ...,
   .template = NULL,
-  .chunks = NULL,
+  .n_chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
   .stream = FALSE,
@@ -38,7 +38,7 @@ argument name passed here never collides with them.}
 \item{.template}{\code{NULL} for a list result, or a \code{\link[=vapply]{vapply()}}-style
 \code{FUN.VALUE}: an atomic vector template that each result must match.}
 
-\item{.chunks}{the morsel count of the map (its scheduling
+\item{.n_chunks}{the morsel count of the map (its scheduling
 granularity), or \code{NULL} for the default. See the Granularity section.}
 
 \item{.seed}{\code{NULL} (default: no RNG guarantees, no cost), or a numeric
@@ -119,8 +119,8 @@ Elements are claimed in \emph{morsels}: contiguous ranges of
 \code{max(1, min(n \%/\% (workers * 256), 256))} elements. The morsel is the
 granularity floor for cancellation, help, and loss reporting. Morsels
 go to runners in adaptively sized batches of consecutive morsels.
-\code{.chunks} overrides the morsel count outright (\code{min(length(.x), .chunks)}
-morsels). With no per-morsel shared state, \code{.chunks = length(x)} is
+\code{.n_chunks} overrides the morsel count outright (\code{min(length(.x), .n_chunks)}
+morsels). With no per-morsel shared state, \code{.n_chunks = length(x)} is
 admissible at zero memory cost for extremely skewed element times. A
 map submitted while no worker is live queues a single runner in the
 injection ring and runs when a worker joins. If no worker has ever
@@ -190,7 +190,7 @@ L'Ecuyer-CMRG streams: element \code{i} runs under the stream \code{i} jumps of
 installs. The caller's own \code{.Random.seed} is not touched, and the
 RNG state of each worker is saved and restored around its batches.
 Because the streams are per-element, the results are identical for any
-\code{.chunks} value, batch sizing, worker count, or steal order. With
+\code{.n_chunks} value, batch sizing, worker count, or steal order. With
 \code{c(seed, offset)}, element \code{i} runs under the stream of element
 \code{i + offset} of an unoffset run, so a map split across runs or
 processes reproduces the streams of one uninterrupted run.
@@ -237,20 +237,20 @@ With \code{.stream = TRUE}, the map never stages the whole of \code{.x} into
 shared memory: it streams slices of \code{.x} to workers as they take work;
 the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
 under a sliding submit/collect window of at most
-\verb{min(.chunks, 2 * live workers, free result slots)} outstanding tasks,
+\verb{min(.n_chunks, 2 * live workers, free result slots)} outstanding tasks,
 so shared-memory use is bounded by \verb{window x slice} instead of the
 size of \code{.x} — with the default chunk count that is roughly
-\code{(2 * workers) / .chunks} of the serialized \code{.x}. The chunk count
-defaults to \verb{min(length(.x), 32 * live workers)} and \code{.chunks}
-overrides it outright (\code{.chunks = length(.x)} is the mirai-style
+\code{(2 * workers) / .n_chunks} of the serialized \code{.x}. The chunk count
+defaults to \verb{min(length(.x), 32 * live workers)} and \code{.n_chunks}
+overrides it outright (\code{.n_chunks = length(.x)} is the mirai-style
 extreme of one element per task). Everything else — result order,
 \code{.template} and \code{.collect}, \code{.seed} invariance, the error behavior —
 is exactly the non-streaming map's. Fail-fast latency grows from
 about one adaptive morsel batch to about one chunk: the outstanding
 work at any time is bounded by the window, so the bound moves with
-\code{.chunks}. Two trade-offs come with fixed chunks: the adaptive batch
+\code{.n_chunks}. Two trade-offs come with fixed chunks: the adaptive batch
 sizing of the morsel scheduler is lost (to mitigate skew, raise
-\code{.chunks}), and slices cross serialized, so each chunk pays an
+\code{.n_chunks}), and slices cross serialized, so each chunk pays an
 ordinary submit's serialization instead of the non-streaming map's
 serialization-free slicing. A streaming map with R
 workers shares one description of the map with every worker, and each

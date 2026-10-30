@@ -80,7 +80,7 @@ test_that("seed invariance holds within a worker language", {
 
   f <- mizu_call(.source = "import random\nrandom.random()")
   a <- mizu_collect(mizu_map(p, 1:30, f, .seed = 42))
-  b <- mizu_collect(mizu_map(p, 1:30, f, .seed = 42, .chunks = 7))
+  b <- mizu_collect(mizu_map(p, 1:30, f, .seed = 42, .n_chunks = 7))
   expect_identical(a, b)
   # the split-map contract across the neutral (seed, offset) pair
   whole <- mizu_collect(mizu_map(p, 1:40, f, .seed = 7))
@@ -148,7 +148,7 @@ test_that("a spec map streams over foreign workers", {
   want <- mizu_collect(mizu_map(p, 1:60, f))
   for (chunks in list(NULL, 1, 7, 60)) {
     expect_identical(
-      mizu_collect(mizu_map(p, 1:60, f, .stream = TRUE, .chunks = chunks)),
+      mizu_collect(mizu_map(p, 1:60, f, .stream = TRUE, .n_chunks = chunks)),
       want
     )
   }
@@ -156,7 +156,7 @@ test_that("a spec map streams over foreign workers", {
   x <- as.double(1:100)
   wx <- mizu_collect(mizu_map(p, x, f))
   for (chunks in list(NULL, 8)) {
-    expect_identical(mizu_collect(mizu_map(p, x, f, .stream = TRUE, .chunks = chunks)), wx)
+    expect_identical(mizu_collect(mizu_map(p, x, f, .stream = TRUE, .n_chunks = chunks)), wx)
   }
 })
 
@@ -170,7 +170,7 @@ test_that("a streaming spec map keeps seed invariance across chunkings", {
   want <- mizu_collect(mizu_map(p, 1:40, f, .seed = 42))
   for (chunks in list(NULL, 1, 7, 40)) {
     expect_identical(
-      mizu_collect(mizu_map(p, 1:40, f, .seed = 42, .stream = TRUE, .chunks = chunks)),
+      mizu_collect(mizu_map(p, 1:40, f, .seed = 42, .stream = TRUE, .n_chunks = chunks)),
       want
     )
   }
@@ -184,7 +184,7 @@ test_that("a streaming spec map reports the global element index", {
 
   src <- paste("if x == 3:", "    raise ValueError('boom')", "x", sep = "\n")
   cnd <- tryCatch(
-    mizu_collect(mizu_map(p, 1:10, mizu_call(.source = src), .stream = TRUE, .chunks = 5)),
+    mizu_collect(mizu_map(p, 1:10, mizu_call(.source = src), .stream = TRUE, .n_chunks = 5)),
     mizu_error_remote = function(c) c
   )
   expect_s3_class(cnd, "mizu_error_remote")
@@ -207,7 +207,7 @@ test_that("a streaming spec map raises the minimum element index", {
     sep = "\n"
   )
   cnd <- tryCatch(
-    mizu_collect(mizu_map(p, 1:8, mizu_call(.source = src), .stream = TRUE, .chunks = 4)),
+    mizu_collect(mizu_map(p, 1:8, mizu_call(.source = src), .stream = TRUE, .n_chunks = 4)),
     mizu_error_remote = function(c) c
   )
   # chunk 1 fails at 3 strictly before chunk 2 at 5; the drained sibling's
@@ -224,7 +224,7 @@ test_that("a streaming spec map gathers per-chunk output areas", {
   f <- mizu_call(.source = "x * 2")
   want <- mizu_collect(mizu_map(p, 1:50, f, .template = numeric(1)))
   expect_identical(
-    mizu_collect(mizu_map(p, 1:50, f, .template = numeric(1), .stream = TRUE, .chunks = 7)),
+    mizu_collect(mizu_map(p, 1:50, f, .template = numeric(1), .stream = TRUE, .n_chunks = 7)),
     want
   )
   src <- paste(
@@ -238,7 +238,7 @@ test_that("a streaming spec map gathers per-chunk output areas", {
     mizu_call(.source = src),
     .template = numeric(2),
     .stream = TRUE,
-    .chunks = 3
+    .n_chunks = 3
   ))
   expect_identical(dim(m), c(2L, 6L))
   expect_identical(m[1L, ], as.double(1:6))

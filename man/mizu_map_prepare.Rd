@@ -11,7 +11,7 @@ mizu_map_prepare(
   .f,
   ...,
   .template = NULL,
-  .chunks = NULL,
+  .n_chunks = NULL,
   .stream = FALSE
 )
 
@@ -38,7 +38,7 @@ argument name passed here never collides with them.}
 \item{.template}{\code{NULL} for a list result, or a \code{\link[=vapply]{vapply()}}-style
 \code{FUN.VALUE}: an atomic vector template that each result must match.}
 
-\item{.chunks}{the morsel count of the map (its scheduling
+\item{.n_chunks}{the morsel count of the map (its scheduling
 granularity), or \code{NULL} for the default. See the Granularity section.}
 
 \item{.stream}{\code{TRUE} streams slices of \code{.x} to workers under a

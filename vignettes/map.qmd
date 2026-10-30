@@ -61,7 +61,7 @@ Then the results are identical for any chunking, worker count, or steal order:
 
 ``` r
 m1 <- mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L)
-m2 <- mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .chunks = 4L)
+m2 <- mizu_map(p, 1:4, \(i) rnorm(i), .seed = 123L, .n_chunks = 4L)
 identical(mizu_collect(m1), mizu_collect(m2))
 #> [1] TRUE
 ```

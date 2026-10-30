@@ -168,7 +168,7 @@ test_that("a map returns results in input order with names reapplied", {
   )
   # a named atomic x stays on the RAWVEC path: names never cross the wire
   expect_true(st[["xraw"]])
-  # .chunks is the morsel count: ceiling-sized morsels cover [1, n]
+  # .n_chunks is the morsel count: ceiling-sized morsels cover [1, n]
   expect_identical(st[["nm"]], 3)
   expect_identical(st[["ms"]], 4)
   expect_identical(.Call(mizu:::mizu_map_info, st[["wrap"]])[["n_morsels"]], 3)
@@ -1129,7 +1129,7 @@ test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
   d <- mizu_pool_dump(p[["ctrl"]])
   expect_identical(sort(d[["tasks"]][["status"]]), c("cancel", "pending"))
   # and mizu_map itself surfaces this as the sentinel
-  r <- mizu_map(p[["ctrl"]], 1:4, identity, .chunks = 2, .timeout = 0.2)
+  r <- mizu_map(p[["ctrl"]], 1:4, identity, .n_chunks = 2, .timeout = 0.2)
   expect_s3_class(r, "mizu_timeout")
   expect_s3_class(r, "mizu_sentinel")
   while (pool_step(p) == 1L) {
@@ -1370,7 +1370,7 @@ test_that("a nested map runs on the worker's own deque, help-collected", {
       mizu_current_pool(),
       1:6,
       function(i) i + 1L,
-      .chunks = 3L
+      .n_chunks = 3L
     ))
   )
   expect_identical(pool_step(p), 1L) # one step: chunks push + help-collect
@@ -1589,8 +1589,8 @@ test_that("mizu_map validates its arguments", {
     ".template must be"
   )
   expect_error(
-    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .chunks = NA)),
-    ".chunks must be"
+    mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .n_chunks = NA)),
+    ".n_chunks must be"
   )
   expect_error(
     mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .seed = "x")),
