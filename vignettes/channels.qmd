@@ -51,7 +51,7 @@ mizu_close(ch)
 ```
 
 If the peer’s code raises an error, the error crosses as data: a receive returns a `mizu_error_remote` condition object rather than signalling it.
-`mizu_is_remote_error()` tests for one, `conditionMessage()` leads with the remote type, and `mizu_raise()` signals it in your own session:
+`mizu_is_remote_error()` tests for one, `conditionMessage()` leads with the remote type, and `stop(x)` signals it in your own session:
 
 ``` r
 ch <- mizu_channel(quote(stop("boom")))

@@ -147,11 +147,10 @@ test_that("mizu_error_remote: class test, message and re-raise dispatch", {
   expect_false(mizu_is_remote_error(errorCondition("boom")))
   expect_false(mizu_is_remote_error(42))
   expect_identical(conditionMessage(e), "ValueError: boom")
-  raised <- tryCatch(mizu_raise(e), mizu_error_remote = identity)
+  raised <- tryCatch(stop(e), mizu_error_remote = identity)
   expect_identical(raised, e)
-  also <- tryCatch(mizu_raise(e), mizu_error = identity)
+  also <- tryCatch(stop(e), mizu_error = identity)
   expect_identical(also, e)
-  expect_error(mizu_raise(errorCondition("boom")), "mizu_error_remote")
 })
 
 test_that("an oversized task error flattens to the budget, dropping fields", {

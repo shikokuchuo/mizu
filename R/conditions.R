@@ -59,7 +59,7 @@
 #'   most-specific class of the original error), `message`, `detail`
 #'   (the call or traceback text), and `index` (the 1-based element
 #'   index) when the remote error carries one. Test with
-#'   [mizu_is_remote_error()]; raise with [mizu_raise()].
+#'   [mizu_is_remote_error()]; signal it with `stop(x)`.
 #'
 #' Errors of misuse (unnamed task arguments, out-of-range slots, operations
 #' on a closed handle) stay plain errors: the classed hierarchy covers the
@@ -193,16 +193,13 @@ mizu_is_sentinel <- function(x) .Call(mizu_sentinel_check, x)
 #' [mizu_error]) — an ordinary condition object, so it prints, and
 #' `conditionMessage()` leads with `remote_type: message`.
 #'
-#' `mizu_is_remote_error()` tests the class. `mizu_raise()` signals the
-#' condition with [stop()], so handlers dispatch on its classes
-#' (`mizu_error_remote`, then `mizu_error`, `error`, `condition`).
+#' `mizu_is_remote_error()` tests the class. Signal it with `stop(x)` —
+#' handlers dispatch on its classes (`mizu_error_remote`, then
+#' `mizu_error`, `error`, `condition`).
 #'
-#' @param x for `mizu_is_remote_error()`, any R object; for
-#'   `mizu_raise()`, a `mizu_error_remote` condition as returned by
-#'   [mizu_recv()] or [mizu_recv_batch()].
+#' @param x any R object.
 #'
-#' @return `mizu_is_remote_error()` returns `TRUE` or `FALSE`.
-#'   `mizu_raise()` does not return.
+#' @return `TRUE` or `FALSE`.
 #'
 #' @examples
 #' ch <- mizu_channel(quote(stop("boom")))
@@ -212,18 +209,6 @@ mizu_is_sentinel <- function(x) .Call(mizu_sentinel_check, x)
 #'
 #' @export
 mizu_is_remote_error <- function(x) inherits(x, "mizu_error_remote")
-
-#' @rdname mizu_is_remote_error
-#' @export
-mizu_raise <- function(x) {
-  if (!mizu_is_remote_error(x)) {
-    stop(
-      "mizu: mizu_raise() expects a mizu_error_remote condition",
-      call. = FALSE
-    )
-  }
-  stop(x)
-}
 
 #' @export
 conditionMessage.mizu_error_remote <- function(c) {

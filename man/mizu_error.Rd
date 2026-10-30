@@ -74,7 +74,7 @@ before exit, on every channel). Fields \code{remote_type} (the
 most-specific class of the original error), \code{message}, \code{detail}
 (the call or traceback text), and \code{index} (the 1-based element
 index) when the remote error carries one. Test with
-\code{\link[=mizu_is_remote_error]{mizu_is_remote_error()}}; raise with \code{\link[=mizu_raise]{mizu_raise()}}.
+\code{\link[=mizu_is_remote_error]{mizu_is_remote_error()}}; signal it with \code{stop(x)}.
 }
 
 Errors of misuse (unnamed task arguments, out-of-range slots, operations
