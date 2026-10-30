@@ -28,15 +28,17 @@ mizu_pool_dump(pool)
 
 ## Value
 
-A list with elements `name`, `shutdown`, `workers` (data frame: slot,
-status, pid, park_state, parked, deque `top` and `bottom`, and the
-in-flight result slot), `submitters` (data frame: slot, status, pid,
-result-slot subrange, queued injection entries, ready and full-waiter
-mask bits), `tasks` (data frame of occupied result slots: slot, status,
-sequence, executing worker, parked waiter), `help`, and `local`. `help`
-is the help-wanted doorbell: `TRUE` while injection entries are queued
-with every worker busy, awaiting pickup by a map runner at its next
-batch transition or a worker helping out of a nested
+A list with elements `token` and `name` (as in
+[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)),
+`shutdown`, `workers` (data frame: slot, status, pid, park_state,
+parked, deque `top` and `bottom`, and the in-flight result slot),
+`submitters` (data frame: slot, status, pid, result-slot subrange,
+queued injection entries, ready and full-waiter mask bits), `tasks`
+(data frame of occupied result slots: slot, status, sequence, executing
+worker, parked waiter), `help`, and `local`. `help` is the help-wanted
+doorbell: `TRUE` while injection entries are queued with every worker
+busy, awaiting pickup by a map runner at its next batch transition or a
+worker helping out of a nested
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 (the `rehome` event of
 [`mizu_pool_trace()`](https://shikokuchuo.net/mizu/reference/mizu_pool_trace.md)).
@@ -54,18 +56,18 @@ p <- mizu_pool()
 t <- mizu_submit(p, runif(1))
 mizu_pool_dump(p)
 #> $name
-#> [1] "/mizu_1a58_e045b2c1"
+#> [1] "/mizu_1958_6682f5a6"
 #> 
 #> $shutdown
 #> [1] FALSE
 #> 
 #> $workers
 #>   slot status  pid park_state parked top bottom in_flight
-#> 1    0   live 8096     parked   TRUE   0      0        -1
+#> 1    0   live 7835     parked   TRUE   0      0        -1
 #> 
 #> $submitters
 #>   slot status  pid rs_start rs_count queued ready full_waiter
-#> 1    0   live 6744        0      512      0 FALSE       FALSE
+#> 1    0   live 6488        0      512      0 FALSE       FALSE
 #> 2    1   free    0        0        0      0 FALSE       FALSE
 #> 3    2   free    0        0        0      0 FALSE       FALSE
 #> 4    3   free    0        0        0      0 FALSE       FALSE
@@ -113,7 +115,10 @@ mizu_pool_dump(p)
 #> $capabilities
 #> [1] 479
 #> 
+#> $token
+#> [1] "1958_6682f5a6"
+#> 
 mizu_collect(t)
-#> [1] 0.8143154
+#> [1] 0.7101705
 mizu_pool_stop(p)
 ```

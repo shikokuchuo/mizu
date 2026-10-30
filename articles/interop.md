@@ -185,7 +185,7 @@ on the pymizu site has the exact per-dtype correspondence.
 
 Channels move values. Pools move computation, and a pool’s workers can
 be Python processes too.
-[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
 spawns the workers.
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 builds a language-neutral task: a qualified `"mod.fn"` name or a
@@ -196,7 +196,7 @@ named ones become its keyword arguments:
 
 ``` r
 
-p <- mizu_pool(2L, launcher = mizu_py_pool_launcher())
+p <- mizu_pool(2L, launcher = mizu_py_launcher())
 
 t <- mizu_submit_call(p, mizu_call("numpy.quantile", faithful$eruptions, q = c(0.25, 0.5, 0.75)))
 mizu_collect(t)
@@ -219,8 +219,8 @@ Task errors cross as `mizu_error_remote` conditions that keep the remote
 type. Arguments follow the same rules as channel payloads, zero-copy
 included. A large array crosses as one shared view, and a view already
 in shared memory crosses as its name alone. The reverse direction
-mirrors this: `pymizu.Pool.create()` with `pymizu.r_pool_launcher()`,
-and `Pool.submit()` with `pymizu.call()` specs.
+mirrors this: `pymizu.Pool.create()` with `pymizu.r_launcher()`, and
+`Pool.submit()` with `pymizu.call()` specs.
 
 ## The cross-language map
 

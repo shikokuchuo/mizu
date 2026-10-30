@@ -118,11 +118,11 @@ ever materializes more than a batch of it.</p>
 <span>  <span class="va">.f</span>,</span>
 <span>  <span class="va">...</span>,</span>
 <span>  .template <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  .chunks <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  .n_chunks <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  .seed <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  .timeout <span class="op">=</span> <span class="cn">Inf</span>,</span>
 <span>  .stream <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  .collect <span class="op">=</span> <span class="st">"value"</span></span>
+<span>  .collect <span class="op">=</span> <span class="st">"copy"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -160,7 +160,7 @@ argument name passed here never collides with them.</p></dd>
 <code>FUN.VALUE</code>: an atomic vector template that each result must match.</p></dd>
 
 
-<dt id="arg--chunks">.chunks<a class="anchor" aria-label="anchor" href="#arg--chunks"></a></dt>
+<dt id="arg--n-chunks">.n_chunks<a class="anchor" aria-label="anchor" href="#arg--n-chunks"></a></dt>
 <dd><p>the morsel count of the map (its scheduling
 granularity), or <code>NULL</code> for the default. See the Granularity section.</p></dd>
 
@@ -189,7 +189,7 @@ with <code><a href="mizu_submit.html">mizu_collect()</a></code> only (it cannot 
 
 
 <dt id="arg--collect">.collect<a class="anchor" aria-label="anchor" href="#arg--collect"></a></dt>
-<dd><p><code>"value"</code> (the default) gathers template results into
+<dd><p><code>"copy"</code> (the default) gathers template results into
 an owning R vector at <code><a href="mizu_submit.html">mizu_collect()</a></code>. <code>"view"</code> instead returns an
 ALTREP view over the map's shared output area — no gather copy — for
 pipelines that immediately reduce. Requires an atomic <code>.template</code>.
@@ -233,8 +233,8 @@ free worker steals it and joins that map.</p>
 <code>max(1, min(n %/% (workers * 256), 256))</code> elements. The morsel is the
 granularity floor for cancellation, help, and loss reporting. Morsels
 go to runners in adaptively sized batches of consecutive morsels.
-<code>.chunks</code> overrides the morsel count outright (<code>min(length(.x), .chunks)</code>
-morsels). With no per-morsel shared state, <code>.chunks = length(x)</code> is
+<code>.n_chunks</code> overrides the morsel count outright (<code>min(length(.x), .n_chunks)</code>
+morsels). With no per-morsel shared state, <code>.n_chunks = length(x)</code> is
 admissible at zero memory cost for extremely skewed element times. A
 map submitted while no worker is live queues a single runner in the
 injection ring and runs when a worker joins. If no worker has ever
@@ -307,7 +307,7 @@ L'Ecuyer-CMRG streams: element <code>i</code> runs under the stream <code>i</cod
 installs. The caller's own <code>.Random.seed</code> is not touched, and the
 RNG state of each worker is saved and restored around its batches.
 Because the streams are per-element, the results are identical for any
-<code>.chunks</code> value, batch sizing, worker count, or steal order. With
+<code>.n_chunks</code> value, batch sizing, worker count, or steal order. With
 <code>c(seed, offset)</code>, element <code>i</code> runs under the stream of element
 <code>i + offset</code> of an unoffset run, so a map split across runs or
 processes reproduces the streams of one uninterrupted run.</p>
@@ -331,7 +331,7 @@ controller) at most 7 workers can nest concurrently. Raise
 
 <p><code>.f</code> may be a <code><a href="mizu_call.html">mizu_call()</a></code> specification instead of a function — the
 way to map over a foreign pool (one spawned with
-<code><a href="mizu_py_pool_launcher.html">mizu_py_pool_launcher()</a></code>, or any pool whose workers are not R). A spec
+<code><a href="mizu_py_launcher.html">mizu_py_launcher()</a></code>, or any pool whose workers are not R). A spec
 <code>.f</code> always stages a shared map region: the descriptor crosses in the
 interchange format and each runner task carries a region reference any
 worker language reads. The map element fills the spec's first
@@ -357,20 +357,20 @@ too, subject to the same portability rules.</p>
 shared memory: it streams slices of <code>.x</code> to workers as they take work;
 the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
 under a sliding submit/collect window of at most
-<code>min(.chunks, 2 * live workers, free result slots)</code> outstanding tasks,
+<code>min(.n_chunks, 2 * live workers, free result slots)</code> outstanding tasks,
 so shared-memory use is bounded by <code>window x slice</code> instead of the
 size of <code>.x</code> — with the default chunk count that is roughly
-<code>(2 * workers) / .chunks</code> of the serialized <code>.x</code>. The chunk count
-defaults to <code>min(length(.x), 32 * live workers)</code> and <code>.chunks</code>
-overrides it outright (<code>.chunks = length(.x)</code> is the mirai-style
+<code>(2 * workers) / .n_chunks</code> of the serialized <code>.x</code>. The chunk count
+defaults to <code>min(length(.x), 32 * live workers)</code> and <code>.n_chunks</code>
+overrides it outright (<code>.n_chunks = length(.x)</code> is the mirai-style
 extreme of one element per task). Everything else — result order,
 <code>.template</code> and <code>.collect</code>, <code>.seed</code> invariance, the error behavior —
 is exactly the non-streaming map's. Fail-fast latency grows from
 about one adaptive morsel batch to about one chunk: the outstanding
 work at any time is bounded by the window, so the bound moves with
-<code>.chunks</code>. Two trade-offs come with fixed chunks: the adaptive batch
+<code>.n_chunks</code>. Two trade-offs come with fixed chunks: the adaptive batch
 sizing of the morsel scheduler is lost (to mitigate skew, raise
-<code>.chunks</code>), and slices cross serialized, so each chunk pays an
+<code>.n_chunks</code>), and slices cross serialized, so each chunk pays an
 ordinary submit's serialization instead of the non-streaming map's
 serialization-free slicing. A streaming map with R
 workers shares one description of the map with every worker, and each

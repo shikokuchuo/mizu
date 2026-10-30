@@ -85,11 +85,11 @@ free: the seed state rides the runner payloads, not the region.</p>
 <span>  <span class="va">.f</span>,</span>
 <span>  <span class="va">...</span>,</span>
 <span>  .template <span class="op">=</span> <span class="cn">NULL</span>,</span>
-<span>  .chunks <span class="op">=</span> <span class="cn">NULL</span>,</span>
+<span>  .n_chunks <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  .stream <span class="op">=</span> <span class="cn">FALSE</span></span>
 <span><span class="op">)</span></span>
 <span></span>
-<span><span class="fu">mizu_map_run</span><span class="op">(</span><span class="va">pm</span>, .x <span class="op">=</span> <span class="cn">NULL</span>, .seed <span class="op">=</span> <span class="cn">NULL</span>, .timeout <span class="op">=</span> <span class="cn">Inf</span>, .collect <span class="op">=</span> <span class="st">"value"</span><span class="op">)</span></span></code></pre></div>
+<span><span class="fu">mizu_map_run</span><span class="op">(</span><span class="va">pm</span>, .x <span class="op">=</span> <span class="cn">NULL</span>, .seed <span class="op">=</span> <span class="cn">NULL</span>, .timeout <span class="op">=</span> <span class="cn">Inf</span>, .collect <span class="op">=</span> <span class="st">"copy"</span><span class="op">)</span></span></code></pre></div>
     </div>
 
     <div class="section level2">
@@ -126,7 +126,7 @@ argument name passed here never collides with them.</p></dd>
 <code>FUN.VALUE</code>: an atomic vector template that each result must match.</p></dd>
 
 
-<dt id="arg--chunks">.chunks<a class="anchor" aria-label="anchor" href="#arg--chunks"></a></dt>
+<dt id="arg--n-chunks">.n_chunks<a class="anchor" aria-label="anchor" href="#arg--n-chunks"></a></dt>
 <dd><p>the morsel count of the map (its scheduling
 granularity), or <code>NULL</code> for the default. See the Granularity section.</p></dd>
 
@@ -159,7 +159,7 @@ the collection deadline is <code><a href="mizu_submit.html">mizu_collect()</a></
 
 
 <dt id="arg--collect">.collect<a class="anchor" aria-label="anchor" href="#arg--collect"></a></dt>
-<dd><p><code>"value"</code> (the default) gathers template results into
+<dd><p><code>"copy"</code> (the default) gathers template results into
 an owning R vector at <code><a href="mizu_submit.html">mizu_collect()</a></code>. <code>"view"</code> instead returns an
 ALTREP view over the map's shared output area — no gather copy — for
 pipelines that immediately reduce. Requires an atomic <code>.template</code>.

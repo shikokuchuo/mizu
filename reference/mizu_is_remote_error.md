@@ -12,31 +12,23 @@ with `remote_type: message`.
 
 ``` r
 mizu_is_remote_error(x)
-
-mizu_raise(x)
 ```
 
 ## Arguments
 
 - x:
 
-  for `mizu_is_remote_error()`, any R object; for `mizu_raise()`, a
-  `mizu_error_remote` condition as returned by
-  [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
-  or
-  [`mizu_recv_batch()`](https://shikokuchuo.net/mizu/reference/mizu_send_batch.md).
+  any R object.
 
 ## Value
 
-`mizu_is_remote_error()` returns `TRUE` or `FALSE`. `mizu_raise()` does
-not return.
+`TRUE` or `FALSE`.
 
 ## Details
 
-`mizu_is_remote_error()` tests the class. `mizu_raise()` signals the
-condition with [`stop()`](https://rdrr.io/r/base/stop.html), so handlers
-dispatch on its classes (`mizu_error_remote`, then `mizu_error`,
-`error`, `condition`).
+`mizu_is_remote_error()` tests the class. Signal it with `stop(x)` —
+handlers dispatch on its classes (`mizu_error_remote`, then
+`mizu_error`, `error`, `condition`).
 
 ## Examples
 

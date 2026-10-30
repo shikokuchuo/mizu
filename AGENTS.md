@@ -499,8 +499,9 @@ submitter identity keys the result and ERR formats (foreign → the
 foreign writer policy with the capability-mask zc filter / the err
 stream, stashed per-task in `mizu_curpool_ident`; same-language → the
 private paths).
-[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
-is the worker spawn (the probe generalized per module); the pool word
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
+is also the worker spawn (the returned launcher picks `pymizu.child` or
+`pymizu.worker` by whether it gets a slot); the pool word
 (`mizu_pool_worker_ident`, cached on the handle, re-read while 0) is the
 worker language, and a plain
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
@@ -527,16 +528,24 @@ results in input order with names carried over, the first erroring
 handle by position re-raising with `index` (only that handle consumed,
 the rest collectible), a timeout consuming nothing.
 [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)
-is the first tool when a pool hangs. A task error never crosses as the
-caught condition itself: the ERR publish flattens it to a transport
-condition via `mizu_condition_flatten()` (`src/condition.c`) — original
-classes, the raw `message` field (custom `conditionMessage` methods
-bypassed; truncated at a UTF-8 boundary past half the budget), `call`,
-and every named field the codec carries within the result slot’s inline
-budget, priority message → call → fields → `dropped_fields` (which names
-what was dropped) — framed INLINE so the publish cannot raise: fail the
-task, never the worker. A task whose expression is a value type (eval is
-the identity there) binds no arguments and skips the per-task fresh
+is the first tool when a pool hangs. The join token is the pool’s
+documented identity:
+[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)
+and
+[`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)
+carry `$token` (`<pid hex>_<counter hex>`) alongside `$name` (the
+platform region name, for debugging), and
+[`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md)
+accepts either form. A task error never crosses as the caught condition
+itself: the ERR publish flattens it to a transport condition via
+`mizu_condition_flatten()` (`src/condition.c`) — original classes, the
+raw `message` field (custom `conditionMessage` methods bypassed;
+truncated at a UTF-8 boundary past half the budget), `call`, and every
+named field the codec carries within the result slot’s inline budget,
+priority message → call → fields → `dropped_fields` (which names what
+was dropped) — framed INLINE so the publish cannot raise: fail the task,
+never the worker. A task whose expression is a value type (eval is the
+identity there) binds no arguments and skips the per-task fresh
 environment on the worker. The channel’s per-verb retain reap is gated
 on outstanding retains / arena bytes / lent regions — keeperless traffic
 skips the cross-core head load. Handle teardown: the task finalizer
@@ -642,8 +651,8 @@ instead. The map is handle-first (a pre-release breaking change):
 `map_stage` + `map_submit` returning a `mizu_map` handle immediately,
 exactly as
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-returns a task — staging errors (bad `.f`, `.template`, `.chunks`) still
-raise at the call site, only element errors defer to collection.
+returns a task — staging errors (bad `.f`, `.template`, `.n_chunks`)
+still raise at the call site, only element errors defer to collection.
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 on the handle runs the existing `map_collect` machinery one verb deeper
 (gather / `.collect = "view"` wrap, element-indexed errors, the lost-set
@@ -658,7 +667,7 @@ runner-slot arm (a streaming handle refuses it — the sliding window
 needs the blocking turn loop, so streams are blocking-collect only);
 [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
 on a prepared handle returns the same form, restoring the state for
-re-arm only after a clean value collect. A dropped uncollected handle
+re-arm only after a clean copy collect. A dropped uncollected handle
 cancels at GC (`reg.finalizer` on the handle env — it must check `done`
 first: a prepared handle’s state lives on for the next run, and a stale
 finalizer firing mid-next-run would cancel it). The stages
@@ -671,73 +680,7 @@ attribute shape on the R side; the
 other object) — slices arrive classed, and `mizu_map_batch` re-classes
 the per-element scalars it hands to f. An integer64 `.template` stamps
 the output area `MIZU_TYPE_INT64`: results must be exact integer64 of
-the template’s length (int64 joins no widening lattice), value collect
-routes through `mizu_wire_alloc`, view collect inherits the class from
-the vec wrap, and `map_swap_x` compares the mapped wire type (int64 and
-double share typeof). `.seed` derives per-element L’Ecuyer-CMRG streams
-(the jump kernel is core-side `vendor/libmizu/rng_jump.c`, with
-RngStreams attribution — see LICENSE.note) and accepts `c(seed, offset)`
-to shift every element’s stream by `offset`; results are batching- and
-steal-order-invariant. f is srcref-stripped at stage time by the C-level
-`mizu_strip_srcref` (`src/map.c` — the package has no Imports), and
-result assembly runs in C. The map region’s protocol half — the 128-byte
-header, the CLAIM-word claim CAS, proportional batch sizing, reset/trim,
-and the lost-set scan — is the core’s morsel module (vendored
-`morsel.c`, `mizu_morsel_*`; magic `MIZM`); `src/map.c` keeps the
-descriptor stream, the x-section slices, the batch eval loop, and the
-gather. A view x (a received channel/pool view, a
-[`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d vector)
-rides the descriptor as its identifier via the wire hooks, and the batch
-loop reads elements straight off the shared pages (a `DATAPTR_OR_NULL`
-gate in `mizu_map_batch` — the writable accessors would COW-materialize
-the whole vector per worker). `.collect = "view"` wraps the template
-output area as an ALTREP view instead of the gather memcpy: the retain
-entry is the map handle itself (collector and producer are one process,
-so GC pinning — not the zc refcount — gates teardown), names/dim are
-applied in C (R’s setters would duplicate the view, and the default
-ALTREP duplicate materializes), and a view-collected prepared run
-restages into a fresh region. With no mori-shm hop in its retain chain,
-a re-sent map view degrades to a materializing copy. A
-[`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-spec as `f` is the cross-language map (Phase 5): it always stages a
-region (the blob path’s chunk tasks are private frames), its descriptor
-the `'I'` form `list[task, x | nil]` (`mizu_interop_write_map_desc`, the
-spec a nested kind 0/1 task tag — `map_ctx` picks the reader on the
-descriptor’s first byte, classed `"mizu_map_ix"`), and its runners
-kind-2 task streams (`mizu_interop_write_runner` / the
-`mizu_pool_submit_map_runner` veneer riding the `h->spec` seam with
-`MIZU_ENTRY_RUNNER`: region name, `ordinal * 2^32 + generation` in one
-i64, seed nil or the `(seed, offset)` i64 pair from `map_seed_pair`).
-The exec hook dispatches kind 2 (`pool_task_runner` → `map_runner_ix`,
-so the runner is always same-language as the worker — the exec/decode
-path shares `ixt_call` with kind 0/1, source kind a closure whose `...`
-carries the positional args so `..N` resolves, the element its formal
-`x`), and the runner result publishes under the §4.2 foreign policy
-(`pool_result_gate`). A foreign collect normalizes the worker language’s
-runner shape: pymizu’s (element-range, values) pairs via the C
-`mizu_map_splice_ix` / `map_hist_ix` (`st[["pymap"]]`), a remote error’s
-element index read off `mizu_error_remote`’s `index` field
-(`map_err_index`); the err writer’s local mode stamps a runner’s
-`mizu_map_index` as the err index.
-
-[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
-(`R/map.R`, `src/map.c`, `src/rng.c`) stages f/`...`/x once per call —
-into one map region (header + single descriptor stream + optional
-bare-bytes RAWVEC x section + optional template output area), or
-entirely inline in the chunk payloads when small — and submits one
-runner task per worker (`map_runner()` worker-side), each
-self-scheduling contiguous morsel batches off a shared cursor in the
-region; small inline maps ride ordinary chunk tasks (`map_chunk()`)
-instead. The stages (`map_stage`/`map_submit`/`map_collect`) are
-composable so the `pool_pair()` harness can interleave `pool_step()`.
-Workers cache map contexts on their handle’s prot\[2\], cleared whole by
-the idle sweep. The x section admits class-only integer64
-(`map_x_attrs_ok()` gates the attribute shape on the R side; the
-[`as.list()`](https://rdrr.io/r/base/list.html) coercion keeps every
-other object) — slices arrive classed, and `mizu_map_batch` re-classes
-the per-element scalars it hands to f. An integer64 `.template` stamps
-the output area `MIZU_TYPE_INT64`: results must be exact integer64 of
-the template’s length (int64 joins no widening lattice), value collect
+the template’s length (int64 joins no widening lattice), copy collect
 routes through `mizu_wire_alloc`, view collect inherits the class from
 the vec wrap, and `map_swap_x` compares the mapped wire type (int64 and
 double share typeof). `.seed` derives per-element L’Ecuyer-CMRG streams

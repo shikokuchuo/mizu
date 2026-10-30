@@ -64,9 +64,7 @@ it.
 [`mizu_is_remote_error()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md)
 tests for one,
 [`conditionMessage()`](https://rdrr.io/r/base/conditions.html) leads
-with the remote type, and
-[`mizu_raise()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md)
-signals it in your own session:
+with the remote type, and `stop(x)` signals it in your own session:
 
 ``` r
 

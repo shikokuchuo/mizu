@@ -67,9 +67,7 @@ otherwise. The value is a <code>mizu_error_remote</code> condition (see
 
     <div class="section level2">
     <h2 id="ref-usage">Usage<a class="anchor" aria-label="anchor" href="#ref-usage"></a></h2>
-    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">mizu_is_remote_error</span><span class="op">(</span><span class="va">x</span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu">mizu_raise</span><span class="op">(</span><span class="va">x</span><span class="op">)</span></span></code></pre></div>
+    <div class="sourceCode"><pre class="sourceCode r"><code><span><span class="fu">mizu_is_remote_error</span><span class="op">(</span><span class="va">x</span><span class="op">)</span></span></code></pre></div>
     </div>
 
     <div class="section level2">
@@ -77,21 +75,18 @@ otherwise. The value is a <code>mizu_error_remote</code> condition (see
 
 
 <dl><dt id="arg-x">x<a class="anchor" aria-label="anchor" href="#arg-x"></a></dt>
-<dd><p>for <code>mizu_is_remote_error()</code>, any R object; for
-<code>mizu_raise()</code>, a <code>mizu_error_remote</code> condition as returned by
-<code><a href="mizu_send.html">mizu_recv()</a></code> or <code><a href="mizu_send_batch.html">mizu_recv_batch()</a></code>.</p></dd>
+<dd><p>any R object.</p></dd>
 
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p><code>mizu_is_remote_error()</code> returns <code>TRUE</code> or <code>FALSE</code>.
-<code>mizu_raise()</code> does not return.</p>
+    <p><code>TRUE</code> or <code>FALSE</code>.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p><code>mizu_is_remote_error()</code> tests the class. <code>mizu_raise()</code> signals the
-condition with <code><a href="https://rdrr.io/r/base/stop.html" class="external-link">stop()</a></code>, so handlers dispatch on its classes
-(<code>mizu_error_remote</code>, then <code>mizu_error</code>, <code>error</code>, <code>condition</code>).</p>
+    <p><code>mizu_is_remote_error()</code> tests the class. Signal it with <code>stop(x)</code> —
+handlers dispatch on its classes (<code>mizu_error_remote</code>, then
+<code>mizu_error</code>, <code>error</code>, <code>condition</code>).</p>
     </div>
 
     <div class="section level2">

@@ -89,9 +89,7 @@
 - [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
   : Default Child Process Launcher
 - [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
-  : Python Channel Peer Launcher
-- [`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
-  : Python Pool Worker Launcher
+  : Python Launcher
 
 ## Conditions and sentinels
 
@@ -108,7 +106,6 @@
   [`mizu_error_remote`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   : Error Conditions
 - [`mizu_is_remote_error()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md)
-  [`mizu_raise()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md)
   : Remote Errors
 - [`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/reference/mizu_is_sentinel.md)
   : Test for a mizu Sentinel

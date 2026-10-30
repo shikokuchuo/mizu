@@ -123,14 +123,14 @@ mizu_pool_stop(p)
 Pool workers can be Python processes that run
 [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
 the same core.
-[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
 spawns them and
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 describes the task — here R’s built-in `mtcars` summarized by polars:
 
 ``` r
 
-p <- mizu_pool(n_workers = 4L, launcher = mizu_py_pool_launcher())
+p <- mizu_pool(n_workers = 4L, launcher = mizu_py_launcher())
 
 t <- mizu_submit_call(
   p,
@@ -157,7 +157,7 @@ mizu_pool_stop(p)
   `nanoarrow_array_stream`) crosses the same way
 
 The pymizu README shows the reverse direction: a Python host that drives
-R workers with `pymizu.r_pool_launcher()`.
+R workers with `pymizu.r_launcher()`.
 
 ## Vignettes
 

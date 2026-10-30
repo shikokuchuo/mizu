@@ -183,9 +183,9 @@
 <div class="section level2">
 <h2 id="python-interop">Python interop<a class="anchor" aria-label="anchor" href="#python-interop"></a>
 </h2>
-<p>Pool workers can be Python processes that run <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a>, the Python binding of the same core. <code><a href="reference/mizu_py_pool_launcher.html">mizu_py_pool_launcher()</a></code> spawns them and <code><a href="reference/mizu_call.html">mizu_call()</a></code> describes the task — here R’s built-in <code>mtcars</code> summarized by polars:</p>
+<p>Pool workers can be Python processes that run <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a>, the Python binding of the same core. <code><a href="reference/mizu_py_launcher.html">mizu_py_launcher()</a></code> spawns them and <code><a href="reference/mizu_call.html">mizu_call()</a></code> describes the task — here R’s built-in <code>mtcars</code> summarized by polars:</p>
 <div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span>, launcher <span class="op">=</span> <span class="fu"><a href="reference/mizu_py_pool_launcher.html">mizu_py_pool_launcher</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
+<code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span>, launcher <span class="op">=</span> <span class="fu"><a href="reference/mizu_py_launcher.html">mizu_py_launcher</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_call.html">mizu_submit_call</a></span><span class="op">(</span></span>
 <span>  <span class="va">p</span>,</span>
@@ -208,7 +208,7 @@
 <li>A NumPy array, or a polars, pyarrow, or pandas frame, arrives back as a vector or data frame</li>
 <li>Arrow data (<code>arrow</code> tables and record batches, or any struct-typed <code>nanoarrow_array_stream</code>) crosses the same way</li>
 </ul>
-<p>The pymizu README shows the reverse direction: a Python host that drives R workers with <code>pymizu.r_pool_launcher()</code>.</p>
+<p>The pymizu README shows the reverse direction: a Python host that drives R workers with <code>pymizu.r_launcher()</code>.</p>
 </div>
 <div class="section level2">
 <h2 id="vignettes">Vignettes<a class="anchor" aria-label="anchor" href="#vignettes"></a>

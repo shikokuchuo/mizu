@@ -121,7 +121,7 @@ before exit, on every channel). Fields <code>remote_type</code> (the
 most-specific class of the original error), <code>message</code>, <code>detail</code>
 (the call or traceback text), and <code>index</code> (the 1-based element
 index) when the remote error carries one. Test with
-<code><a href="mizu_is_remote_error.html">mizu_is_remote_error()</a></code>; raise with <code><a href="mizu_is_remote_error.html">mizu_raise()</a></code>.</p></li>
+<code><a href="mizu_is_remote_error.html">mizu_is_remote_error()</a></code>; signal it with <code>stop(x)</code>.</p></li>
 </ul><p>Errors of misuse (unnamed task arguments, out-of-range slots, operations
 on a closed handle) stay plain errors: the classed hierarchy covers the
 outcomes that a running system produces, not programming mistakes.</p>

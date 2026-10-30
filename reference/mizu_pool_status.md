@@ -22,12 +22,14 @@ mizu_pool_status(pool)
 
 ## Value
 
-A list with elements `name`, `role`, `max_workers`, `max_submitters`,
-`injection_cap`, `result_slots`, `slot_size`, `workers` (per-slot
-states), `parked`, `submitters` (per-slot states), `injection` (entries
-queued and unclaimed), `tasks` (result slots by state: pending / ok /
-err / cancel / died / lost), `deque` (per-worker deque depths), and
-`shutdown`.
+A list with elements `token` (the join identity: pass it to
+[`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md)),
+`name` (the platform region name, kept for debugging), `role`,
+`max_workers`, `max_submitters`, `injection_cap`, `result_slots`,
+`slot_size`, `workers` (per-slot states), `parked`, `submitters`
+(per-slot states), `injection` (entries queued and unclaimed), `tasks`
+(result slots by state: pending / ok / err / cancel / died / lost),
+`deque` (per-worker deque depths), and `shutdown`.
 
 ## Examples
 
@@ -35,7 +37,7 @@ err / cancel / died / lost), `deque` (per-worker deque depths), and
 p <- mizu_pool()
 mizu_pool_status(p)
 #> $name
-#> [1] "/mizu_1a58_e045b2c3"
+#> [1] "/mizu_1958_6682f5a8"
 #> 
 #> $role
 #> [1] "controller"
@@ -76,6 +78,9 @@ mizu_pool_status(p)
 #> 
 #> $shutdown
 #> [1] FALSE
+#> 
+#> $token
+#> [1] "1958_6682f5a8"
 #> 
 mizu_pool_stop(p)
 ```

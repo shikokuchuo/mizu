@@ -5,7 +5,7 @@ string in the pool workers' language, plus the constant arguments.
 `mizu_submit_call()` stages it as a neutral task stream any worker
 language reads. This is how you drive a foreign pool: spawn the workers
 with
-[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
 and submit specs to them.
 
 ## Usage
@@ -100,7 +100,7 @@ mizu_collect(t)
 mizu_pool_stop(p)
 
 if (FALSE) { # \dontrun{
-p <- mizu_pool(2, launcher = mizu_py_pool_launcher())
+p <- mizu_pool(2, launcher = mizu_py_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
 mizu_collect(t)
 mizu_pool_stop(p)

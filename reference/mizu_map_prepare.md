@@ -19,11 +19,11 @@ mizu_map_prepare(
   .f,
   ...,
   .template = NULL,
-  .chunks = NULL,
+  .n_chunks = NULL,
   .stream = FALSE
 )
 
-mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
+mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "copy")
 ```
 
 ## Arguments
@@ -67,7 +67,7 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
   [`vapply()`](https://rdrr.io/r/base/lapply.html)-style `FUN.VALUE`: an
   atomic vector template that each result must match.
 
-- .chunks:
+- .n_chunks:
 
   the morsel count of the map (its scheduling granularity), or `NULL`
   for the default. See the Granularity section.
@@ -104,7 +104,7 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
 
 - .collect:
 
-  `"value"` (the default) gathers template results into an owning R
+  `"copy"` (the default) gathers template results into an owning R
   vector at
   [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
   `"view"` instead returns an ALTREP view over the map's shared output

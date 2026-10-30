@@ -93,8 +93,7 @@ carry as condition elements:
   and `index` (the 1-based element index) when the remote error carries
   one. Test with
   [`mizu_is_remote_error()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md);
-  raise with
-  [`mizu_raise()`](https://shikokuchuo.net/mizu/reference/mizu_is_remote_error.md).
+  signal it with `stop(x)`.
 
 Errors of misuse (unnamed task arguments, out-of-range slots, operations
 on a closed handle) stay plain errors: the classed hierarchy covers the

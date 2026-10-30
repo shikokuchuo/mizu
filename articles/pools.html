@@ -143,7 +143,7 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; $total</span></span>
-<span><span class="co">#&gt; [1] 4.046538</span></span>
+<span><span class="co">#&gt; [1] 4.978443</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; $label</span></span>
 <span><span class="co">#&gt; [1] "done"</span></span></code></pre></div>
@@ -174,13 +174,13 @@
 <p>A task with a promise attached — or part of a pending async collection — refuses a blocking <code><a href="../reference/mizu_submit.html">mizu_collect()</a></code> and a second promise: one consumer per result. <code><a href="../reference/mizu_cancel.html">mizu_cancel()</a></code> stays allowed throughout; the cancel publishes, and the drain rejects.</p>
 </section><section class="level2"><h2 id="sizing-sharing-and-watching-a-pool">Sizing, sharing and watching a pool<a class="anchor" aria-label="anchor" href="#sizing-sharing-and-watching-a-pool"></a>
 </h2>
-<p>A pool can grow and shrink while it runs. Retirement never interrupts a task: the worker finishes its current task, and the remaining workers take over anything still queued to it. Other R processes can join a running pool as submitters — the name of the pool is the only thing they need:</p>
+<p>A pool can grow and shrink while it runs. Retirement never interrupts a task: the worker finishes its current task, and the remaining workers take over anything still queued to it. Other R processes can join a running pool as submitters — the join token of the pool is the only thing they need:</p>
 <div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_spawn_workers</a></span><span class="op">(</span><span class="va">p</span>, n <span class="op">=</span> <span class="fl">2L</span><span class="op">)</span>     <span class="co"># two more workers join the pool</span></span>
 <span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_retire_worker</a></span><span class="op">(</span><span class="va">p</span>, slot <span class="op">=</span> <span class="fl">0L</span><span class="op">)</span>  <span class="co"># worker 0 exits after its current task</span></span>
 <span></span>
 <span><span class="co"># in another R process — submit and collect exactly as the creator does:</span></span>
-<span><span class="va">p2</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_pool_attach.html">mizu_pool_attach</a></span><span class="op">(</span><span class="va">name</span><span class="op">)</span>      <span class="co"># name: mizu_pool_status(p)$name on the creator</span></span></code></pre></div>
+<span><span class="va">p2</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_pool_attach.html">mizu_pool_attach</a></span><span class="op">(</span><span class="va">token</span><span class="op">)</span>     <span class="co"># token: mizu_pool_status(p)$token on the creator</span></span></code></pre></div>
 <p>Four read-only tools observe a running pool without disturbing it:</p>
 <div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_pool_status.html">mizu_pool_status</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>  <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>

@@ -40,11 +40,11 @@ mizu_map(
   .f,
   ...,
   .template = NULL,
-  .chunks = NULL,
+  .n_chunks = NULL,
   .seed = NULL,
   .timeout = Inf,
   .stream = FALSE,
-  .collect = "value"
+  .collect = "copy"
 )
 ```
 
@@ -89,7 +89,7 @@ mizu_map(
   [`vapply()`](https://rdrr.io/r/base/lapply.html)-style `FUN.VALUE`: an
   atomic vector template that each result must match.
 
-- .chunks:
+- .n_chunks:
 
   the morsel count of the map (its scheduling granularity), or `NULL`
   for the default. See the Granularity section.
@@ -122,7 +122,7 @@ mizu_map(
 
 - .collect:
 
-  `"value"` (the default) gathers template results into an owning R
+  `"copy"` (the default) gathers template results into an owning R
   vector at
   [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
   `"view"` instead returns an ALTREP view over the map's shared output
@@ -166,13 +166,13 @@ free worker steals it and joins that map.
 Elements are claimed in *morsels*: contiguous ranges of
 `max(1, min(n %/% (workers * 256), 256))` elements. The morsel is the
 granularity floor for cancellation, help, and loss reporting. Morsels go
-to runners in adaptively sized batches of consecutive morsels. `.chunks`
-overrides the morsel count outright (`min(length(.x), .chunks)`
-morsels). With no per-morsel shared state, `.chunks = length(x)` is
-admissible at zero memory cost for extremely skewed element times. A map
-submitted while no worker is live queues a single runner in the
-injection ring and runs when a worker joins. If no worker has ever
-joined the pool, `mizu_map()` errors instead, as
+to runners in adaptively sized batches of consecutive morsels.
+`.n_chunks` overrides the morsel count outright
+(`min(length(.x), .n_chunks)` morsels). With no per-morsel shared state,
+`.n_chunks = length(x)` is admissible at zero memory cost for extremely
+skewed element times. A map submitted while no worker is live queues a
+single runner in the injection ring and runs when a worker joins. If no
+worker has ever joined the pool, `mizu_map()` errors instead, as
 [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 does. If the result-slot subrange of the submitter is fully occupied by
 outstanding tasks, `mizu_map()` errors immediately, before it stages
@@ -237,7 +237,7 @@ streams: element `i` runs under the stream `i` jumps of 2^127 steps from
 the base state that `set.seed(.seed, "L'Ecuyer-CMRG")` installs. The
 caller's own `.Random.seed` is not touched, and the RNG state of each
 worker is saved and restored around its batches. Because the streams are
-per-element, the results are identical for any `.chunks` value, batch
+per-element, the results are identical for any `.n_chunks` value, batch
 sizing, worker count, or steal order. With `c(seed, offset)`, element
 `i` runs under the stream of element `i + offset` of an unoffset run, so
 a map split across runs or processes reproduces the streams of one
@@ -259,7 +259,7 @@ nest concurrently. Raise `max_submitters` for wider nested fan-outs.
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 specification instead of a function — the way to map over a foreign pool
 (one spawned with
-[`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md),
+[`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md),
 or any pool whose workers are not R). A spec `.f` always stages a shared
 map region: the descriptor crosses in the interchange format and each
 runner task carries a region reference any worker language reads. The
@@ -284,23 +284,24 @@ With `.stream = TRUE`, the map never stages the whole of `.x` into
 shared memory: it streams slices of `.x` to workers as they take work;
 the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
 under a sliding submit/collect window of at most
-`min(.chunks, 2 * live workers, free result slots)` outstanding tasks,
+`min(.n_chunks, 2 * live workers, free result slots)` outstanding tasks,
 so shared-memory use is bounded by `window x slice` instead of the size
 of `.x` — with the default chunk count that is roughly
-`(2 * workers) / .chunks` of the serialized `.x`. The chunk count
-defaults to `min(length(.x), 32 * live workers)` and `.chunks` overrides
-it outright (`.chunks = length(.x)` is the mirai-style extreme of one
-element per task). Everything else — result order, `.template` and
-`.collect`, `.seed` invariance, the error behavior — is exactly the
-non-streaming map's. Fail-fast latency grows from about one adaptive
-morsel batch to about one chunk: the outstanding work at any time is
-bounded by the window, so the bound moves with `.chunks`. Two trade-offs
-come with fixed chunks: the adaptive batch sizing of the morsel
-scheduler is lost (to mitigate skew, raise `.chunks`), and slices cross
-serialized, so each chunk pays an ordinary submit's serialization
-instead of the non-streaming map's serialization-free slicing. A
-streaming map with R workers shares one description of the map with
-every worker, and each worker reads that description at most once. A
+`(2 * workers) / .n_chunks` of the serialized `.x`. The chunk count
+defaults to `min(length(.x), 32 * live workers)` and `.n_chunks`
+overrides it outright (`.n_chunks = length(.x)` is the mirai-style
+extreme of one element per task). Everything else — result order,
+`.template` and `.collect`, `.seed` invariance, the error behavior — is
+exactly the non-streaming map's. Fail-fast latency grows from about one
+adaptive morsel batch to about one chunk: the outstanding work at any
+time is bounded by the window, so the bound moves with `.n_chunks`. Two
+trade-offs come with fixed chunks: the adaptive batch sizing of the
+morsel scheduler is lost (to mitigate skew, raise `.n_chunks`), and
+slices cross serialized, so each chunk pays an ordinary submit's
+serialization instead of the non-streaming map's serialization-free
+slicing. A streaming map with R workers shares one description of the
+map with every worker, and each worker reads that description at most
+once. A
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 spec as `.f` streams too, over workers of any language. Each chunk in
 the window then stages a small shared region of its own (the slice plus

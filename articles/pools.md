@@ -132,7 +132,7 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 4.046538
+#> [1] 4.978443
 #> 
 #> $label
 #> [1] "done"
@@ -207,8 +207,8 @@ stays allowed throughout; the cancel publishes, and the drain rejects.
 A pool can grow and shrink while it runs. Retirement never interrupts a
 task: the worker finishes its current task, and the remaining workers
 take over anything still queued to it. Other R processes can join a
-running pool as submitters — the name of the pool is the only thing they
-need:
+running pool as submitters — the join token of the pool is the only
+thing they need:
 
 ``` r
 
@@ -216,7 +216,7 @@ mizu_spawn_workers(p, n = 2L)     # two more workers join the pool
 mizu_retire_worker(p, slot = 0L)  # worker 0 exits after its current task
 
 # in another R process — submit and collect exactly as the creator does:
-p2 <- mizu_pool_attach(name)      # name: mizu_pool_status(p)$name on the creator
+p2 <- mizu_pool_attach(token)     # token: mizu_pool_status(p)$token on the creator
 ```
 
 Four read-only tools observe a running pool without disturbing it:

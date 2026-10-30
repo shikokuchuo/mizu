@@ -35,9 +35,7 @@ Initial release.
 - Python interop — channels and pools mix with Python processes running
   pymizu:
   [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
-  /
-  [`mizu_py_pool_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_pool_launcher.md)
-  spawn peers and workers, and
+  spawns peers and workers, and
   [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
   task specs drive them, data frames crossing with full type fidelity.
 - Event-driven async —

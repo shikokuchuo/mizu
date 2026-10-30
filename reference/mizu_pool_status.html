@@ -73,7 +73,9 @@ inside a task, the evaluating worker's own handle from
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A list with elements <code>name</code>, <code>role</code>, <code>max_workers</code>,
+    <p>A list with elements <code>token</code> (the join identity: pass it to
+<code><a href="mizu_pool_attach.html">mizu_pool_attach()</a></code>), <code>name</code> (the platform region name, kept for
+debugging), <code>role</code>, <code>max_workers</code>,
 <code>max_submitters</code>, <code>injection_cap</code>, <code>result_slots</code>, <code>slot_size</code>,
 <code>workers</code> (per-slot states), <code>parked</code>, <code>submitters</code> (per-slot states),
 <code>injection</code> (entries queued and unclaimed), <code>tasks</code> (result slots by
@@ -86,7 +88,7 @@ deque depths), and <code>shutdown</code>.</p>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_pool.html">mizu_pool</a></span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu">mizu_pool_status</span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $name</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_1a58_e045b2c3"</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_1958_6682f5a8"</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $role</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] "controller"</span>
@@ -127,6 +129,9 @@ deque depths), and <code>shutdown</code>.</p>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $shutdown</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] FALSE</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> </span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> $token</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "1958_6682f5a8"</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-in"><span><span class="fu"><a href="mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-in"><span></span></span>
