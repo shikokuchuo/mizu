@@ -46,7 +46,7 @@ when the source ends with a statement.}
 string in the pool workers' language, plus the constant arguments.
 \code{\link[=mizu_submit_call]{mizu_submit_call()}} stages it as a neutral task stream any worker
 language reads. This is how you drive a foreign pool: spawn the workers
-with \code{\link[=mizu_py_pool_launcher]{mizu_py_pool_launcher()}} and submit specs to them.
+with \code{\link[=mizu_py_launcher]{mizu_py_launcher()}} and submit specs to them.
 }
 \details{
 The spec describes a call. It is not a value. The language never
@@ -78,7 +78,7 @@ mizu_collect(t)
 mizu_pool_stop(p)
 
 \dontrun{
-p <- mizu_pool(2, launcher = mizu_py_pool_launcher())
+p <- mizu_pool(2, launcher = mizu_py_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
 mizu_collect(t)
 mizu_pool_stop(p)

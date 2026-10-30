@@ -175,21 +175,6 @@ test_that("mizu_py_launcher needs a python3 on the PATH by default", {
   expect_snapshot(out)
 })
 
-test_that("mizu_py_pool_launcher probes the interpreter for pymizu", {
-  expect_snapshot(
-    mizu_py_pool_launcher(python = "/nonexistent/python3"),
-    error = TRUE
-  )
-})
-
-test_that("mizu_py_pool_launcher needs a python3 on the PATH by default", {
-  old <- Sys.getenv("PATH")
-  Sys.setenv(PATH = tempdir())
-  out <- tryCatch(mizu_py_pool_launcher(), error = conditionMessage)
-  Sys.setenv(PATH = old)
-  expect_snapshot(out)
-})
-
 test_that("spawn_worker validates the join token and slot", {
   expect_error(
     mizu:::spawn_worker("evil'; echo pwned", 0L),

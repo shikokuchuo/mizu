@@ -525,7 +525,7 @@ test_that("foreign pool task args by reference report the copy removed (F1)", {
   skip_on_cran()
   skip_if_no_child_mizu()
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
 
   n <- 1024L * 1024L # 8 MiB float64

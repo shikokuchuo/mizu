@@ -48,7 +48,7 @@ skip_if_no_pyarrow <- function(py) {
   testthat::skip_if_not(pyarrow_ok(py), "pyarrow not available")
 }
 
-# The Python-host tests spawn R workers through pymizu's r_pool_launcher():
+# The Python-host tests spawn R workers through pymizu's r_launcher():
 # the probe and the workers need an installed mizu visible to a bare
 # Rscript — under R CMD check that is the check library, so it propagates
 # via R_LIBS (read even by a --vanilla Rscript).
@@ -63,7 +63,7 @@ py_r_host_ok <- local({
       val <<- nzchar(py) &&
         suppressWarnings(system2(
           py,
-          c("-c", shQuote("import pymizu; pymizu.r_pool_launcher()")),
+          c("-c", shQuote("import pymizu; pymizu.r_launcher()")),
           stdout = FALSE,
           stderr = FALSE,
           env = r_libs_env()
@@ -79,7 +79,7 @@ py_r_host_ok <- local({
 skip_if_no_py_r_host <- function(py) {
   testthat::skip_if_not(
     py_r_host_ok(py),
-    "pymizu's r_pool_launcher() cannot resolve R with an installed mizu"
+    "pymizu's r_launcher() cannot resolve R with an installed mizu"
   )
 }
 
@@ -93,7 +93,7 @@ while True:
     ch.send(x)
 )"
 
-# The Python pool host: drives R workers through pymizu.r_pool_launcher and
+# The Python pool host: drives R workers through pymizu.r_launcher and
 # checks the nested-submit identity discipline — a nested help-collect must
 # not clobber the outer task's foreign result policy (the value format, the
 # neutral err stream, and the not-portable gate). Prints one line per case.
@@ -105,7 +105,7 @@ nested = (
     "mizu::mizu_collect(t)\n"
 )
 
-with pymizu.Pool.create(1, launcher=pymizu.r_pool_launcher()) as p:
+with pymizu.Pool.create(1, launcher=pymizu.r_launcher()) as p:
     t = p.submit(pymizu.call(source=nested + "list(a = 1, b = 'x')"))
     assert t.collect() == {"a": 1.0, "b": "x"}
     print("value ok", flush=True)

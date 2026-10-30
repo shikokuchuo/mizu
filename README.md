@@ -102,10 +102,10 @@ mizu_pool_stop(p)
 ## Python interop
 
 Pool workers can be Python processes that run [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of the same core.
-`mizu_py_pool_launcher()` spawns them and `mizu_call()` describes the task — here R’s built-in `mtcars` summarized by polars:
+`mizu_py_launcher()` spawns them and `mizu_call()` describes the task — here R’s built-in `mtcars` summarized by polars:
 
 ``` r
-p <- mizu_pool(n_workers = 4L, launcher = mizu_py_pool_launcher())
+p <- mizu_pool(n_workers = 4L, launcher = mizu_py_launcher())
 
 t <- mizu_submit_call(
   p,
@@ -128,7 +128,7 @@ mizu_pool_stop(p)
 - A NumPy array, or a polars, pyarrow, or pandas frame, arrives back as a vector or data frame
 - Arrow data (`arrow` tables and record batches, or any struct-typed `nanoarrow_array_stream`) crosses the same way
 
-The pymizu README shows the reverse direction: a Python host that drives R workers with `pymizu.r_pool_launcher()`.
+The pymizu README shows the reverse direction: a Python host that drives R workers with `pymizu.r_launcher()`.
 
 ## Vignettes
 

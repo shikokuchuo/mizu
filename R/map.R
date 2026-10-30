@@ -188,7 +188,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' @section Cross-language maps:
 #' `.f` may be a [mizu_call()] specification instead of a function — the
 #' way to map over a foreign pool (one spawned with
-#' [mizu_py_pool_launcher()], or any pool whose workers are not R). A spec
+#' [mizu_py_launcher()], or any pool whose workers are not R). A spec
 #' `.f` always stages a shared map region: the descriptor crosses in the
 #' interchange format and each runner task carries a region reference any
 #' worker language reads. The map element fills the spec's first

@@ -2,7 +2,7 @@
 % Please edit documentation in R/spawn.R
 \name{mizu_py_launcher}
 \alias{mizu_py_launcher}
-\title{Python Channel Peer Launcher}
+\title{Python Launcher}
 \usage{
 mizu_py_launcher(python = NULL, stdout = "", stderr = "")
 }
@@ -10,25 +10,35 @@ mizu_py_launcher(python = NULL, stdout = "", stderr = "")
 \item{python}{path to the Python interpreter. The default looks up
 \code{python3} on the \code{PATH}.}
 
-\item{stdout, stderr}{forwarded to \code{\link[=system2]{system2()}} for the peer process, as
-in \code{\link[=mizu_launcher]{mizu_launcher()}}.}
+\item{stdout, stderr}{forwarded to \code{\link[=system2]{system2()}} for the spawned process,
+as in \code{\link[=mizu_launcher]{mizu_launcher()}}.}
 }
 \value{
-A \verb{function(token)} that spawns the peer process, for the
-\code{launcher} argument of \code{\link[=mizu_channel]{mizu_channel()}}.
+A \verb{function(token, slot)}. \code{\link[=mizu_channel]{mizu_channel()}} calls it with
+\code{token} alone to spawn the peer. \code{\link[=mizu_pool]{mizu_pool()}} and
+\code{\link[=mizu_spawn_workers]{mizu_spawn_workers()}} call it with both arguments to spawn the
+worker for \code{slot}.
 }
 \description{
-Returns a launcher for \code{\link[=mizu_channel]{mizu_channel()}} that spawns the peer as a
-Python process running \verb{python -m pymizu.child}, the peer entry of
+Returns a launcher that spawns Python processes running
 \href{https://github.com/shikokuchuo/pymizu}{pymizu}, the Python binding of
-the same shared-memory core. The mirror of pymizu's \code{r_launcher()},
-which spawns an R peer from a Python host.
+the same shared-memory core: \verb{python -m pymizu.child} for the channel
+peer of \code{\link[=mizu_channel]{mizu_channel()}}, \verb{python -m pymizu.worker} for the pool
+workers of \code{\link[=mizu_pool]{mizu_pool()}} and \code{\link[=mizu_spawn_workers]{mizu_spawn_workers()}}. The mirror of
+pymizu's \code{r_launcher()}, which spawns R processes from a Python host.
 }
 \details{
+The first worker's join records the workers' language in the pool, so
+the launcher carries no language attribute: a pool of Python workers
+takes \code{\link[=mizu_call]{mizu_call()}} specifications through \code{\link[=mizu_submit_call]{mizu_submit_call()}}, and a
+plain \code{\link[=mizu_submit]{mizu_submit()}} fails at once with an error naming
+\code{\link[=mizu_submit_call]{mizu_submit_call()}}. A launcher that spawns the wrong language fails
+at join, not at the first task.
+
 The interpreter is probed for pymizu when the launcher is created, so a
-missing interpreter or package raises here, before the channel exists.
-The payload rules for a non-R peer apply: only vectors and strings
-cross (see \code{\link[=mizu_send]{mizu_send()}}).
+missing interpreter or package raises here, before anything exists.
+The payload rules for a non-R channel peer apply: only vectors and
+strings cross (see \code{\link[=mizu_send]{mizu_send()}}).
 }
 \examples{
 \dontrun{
@@ -46,6 +56,11 @@ while True:
 mizu_send(ch, c(1.5, 2.5, 3.5))
 mizu_recv(ch, timeout = 5)
 mizu_close(ch)
+
+p <- mizu_pool(2, launcher = mizu_py_launcher())
+t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
+mizu_collect(t)
+mizu_pool_stop(p)
 }
 
 }

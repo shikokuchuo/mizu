@@ -189,7 +189,7 @@ with_pool(4L, function(p) {
     },
     "us/elt"
   )
-}, launcher = mizu_py_pool_launcher())
+}, launcher = mizu_py_launcher())
 
 # 2. compute regime: ~10 us of work per element as one map call
 
@@ -224,7 +224,7 @@ with_pool(4L, function(p) {
     mark_ms(function() invisible(mizu_collect(mizu_map(p, seq_len(n), gspec)))),
     "ms wall"
   )
-}, launcher = mizu_py_pool_launcher())
+}, launcher = mizu_py_launcher())
 
 cat("\n== summary ==\n")
 print(do.call(rbind, results), row.names = FALSE)

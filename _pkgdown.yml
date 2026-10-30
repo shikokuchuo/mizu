@@ -45,7 +45,6 @@ reference:
       - mizu_call
       - mizu_launcher
       - mizu_py_launcher
-      - mizu_py_pool_launcher
   - title: Conditions and sentinels
     contents:
       - mizu_error

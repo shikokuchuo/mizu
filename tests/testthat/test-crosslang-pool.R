@@ -1,6 +1,6 @@
 test_that("an R submitter drives a Python worker pool (both kinds)", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -31,7 +31,7 @@ test_that("an R submitter drives a Python worker pool (both kinds)", {
 
 test_that("errors cross with remote_type, and result portability is gated", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(1L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -105,7 +105,7 @@ test_that("a nested submit keeps the outer task's identity (Python host)", {
 
 test_that("a dead Python worker surfaces as the died condition", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(1L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
@@ -120,7 +120,7 @@ test_that("a dead Python worker surfaces as the died condition", {
 
 test_that("a large array argument crosses to Python workers by reference", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -159,7 +159,7 @@ test_that("a large array argument crosses to Python workers by reference", {
 
 test_that("multiple ref args and a nested view cross to Python workers", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -202,7 +202,7 @@ test_that("multiple ref args and a nested view cross to Python workers", {
 
 test_that("a list-tree view arg resolves to the element view on Python workers", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(1L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -220,7 +220,7 @@ test_that("a list-tree view arg resolves to the element view on Python workers",
 
 test_that("a worker killed mid-task leaks one bounded count, REFHELD set", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -252,7 +252,7 @@ test_that("a worker killed mid-task leaks one bounded count, REFHELD set", {
 
 test_that("a view x crosses to foreign map workers as a ref (D6)", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 

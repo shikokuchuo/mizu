@@ -3,7 +3,7 @@
 
 test_that("name and source kinds return elements in order", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -32,7 +32,7 @@ test_that("name and source kinds return elements in order", {
 
 test_that("template and view collect work across languages", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -58,7 +58,7 @@ test_that("template and view collect work across languages", {
 
 test_that("a per-element error crosses with its element index", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -74,7 +74,7 @@ test_that("a per-element error crosses with its element index", {
 
 test_that("seed invariance holds within a worker language", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -93,7 +93,7 @@ test_that("seed invariance holds within a worker language", {
 
 test_that("a prepared spec map re-runs under fresh seeds without restaging", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -113,7 +113,7 @@ test_that("a prepared spec map re-runs under fresh seeds without restaging", {
 
 test_that("a killed Python worker's lost-set scan reports the elements", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(1L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -140,7 +140,7 @@ test_that("a killed Python worker's lost-set scan reports the elements", {
 
 test_that("a spec map streams over foreign workers", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -162,7 +162,7 @@ test_that("a spec map streams over foreign workers", {
 
 test_that("a streaming spec map keeps seed invariance across chunkings", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -178,7 +178,7 @@ test_that("a streaming spec map keeps seed invariance across chunkings", {
 
 test_that("a streaming spec map reports the global element index", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -196,7 +196,7 @@ test_that("a streaming spec map reports the global element index", {
 
 test_that("a streaming spec map raises the minimum element index", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(1L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 
@@ -217,7 +217,7 @@ test_that("a streaming spec map raises the minimum element index", {
 
 test_that("a streaming spec map gathers per-chunk output areas", {
   py <- skip_if_no_pymizu()
-  launcher <- mizu_py_pool_launcher(py, stdout = FALSE, stderr = FALSE)
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
   p <- mizu_pool(2L, launcher = launcher)
   on.exit(mizu_pool_stop(p))
 

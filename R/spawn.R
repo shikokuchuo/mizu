@@ -277,26 +277,36 @@ py_module_launcher <- function(python, module, stdout, stderr) {
   }
 }
 
-#' Python Channel Peer Launcher
+#' Python Launcher
 #'
-#' Returns a launcher for [mizu_channel()] that spawns the peer as a
-#' Python process running `python -m pymizu.child`, the peer entry of
+#' Returns a launcher that spawns Python processes running
 #' [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
-#' the same shared-memory core. The mirror of pymizu's `r_launcher()`,
-#' which spawns an R peer from a Python host.
+#' the same shared-memory core: `python -m pymizu.child` for the channel
+#' peer of [mizu_channel()], `python -m pymizu.worker` for the pool
+#' workers of [mizu_pool()] and [mizu_spawn_workers()]. The mirror of
+#' pymizu's `r_launcher()`, which spawns R processes from a Python host.
+#'
+#' The first worker's join records the workers' language in the pool, so
+#' the launcher carries no language attribute: a pool of Python workers
+#' takes [mizu_call()] specifications through [mizu_submit_call()], and a
+#' plain [mizu_submit()] fails at once with an error naming
+#' [mizu_submit_call()]. A launcher that spawns the wrong language fails
+#' at join, not at the first task.
 #'
 #' The interpreter is probed for pymizu when the launcher is created, so a
-#' missing interpreter or package raises here, before the channel exists.
-#' The payload rules for a non-R peer apply: only vectors and strings
-#' cross (see [mizu_send()]).
+#' missing interpreter or package raises here, before anything exists.
+#' The payload rules for a non-R channel peer apply: only vectors and
+#' strings cross (see [mizu_send()]).
 #'
 #' @param python path to the Python interpreter. The default looks up
 #'   `python3` on the `PATH`.
-#' @param stdout,stderr forwarded to [system2()] for the peer process, as
-#'   in [mizu_launcher()].
+#' @param stdout,stderr forwarded to [system2()] for the spawned process,
+#'   as in [mizu_launcher()].
 #'
-#' @return A `function(token)` that spawns the peer process, for the
-#'   `launcher` argument of [mizu_channel()].
+#' @return A `function(token, slot)`. [mizu_channel()] calls it with
+#'   `token` alone to spawn the peer. [mizu_pool()] and
+#'   [mizu_spawn_workers()] call it with both arguments to spawn the
+#'   worker for `slot`.
 #'
 #' @examples
 #' \dontrun{
@@ -314,47 +324,19 @@ py_module_launcher <- function(python, module, stdout, stderr) {
 #' mizu_send(ch, c(1.5, 2.5, 3.5))
 #' mizu_recv(ch, timeout = 5)
 #' mizu_close(ch)
-#' }
 #'
-#' @export
-mizu_py_launcher <- function(python = NULL, stdout = "", stderr = "") {
-  python <- py_resolve(python, "child", "mizu_py_launcher")
-  py_module_launcher(python, "pymizu.child", stdout, stderr)
-}
-
-#' Python Pool Worker Launcher
-#'
-#' Returns a launcher for [mizu_pool()] that spawns each worker as a
-#' Python process running `python -m pymizu.worker`, the worker entry of
-#' [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
-#' the same shared-memory core. The mirror of pymizu's
-#' `r_pool_launcher()`, which spawns R workers from a Python host.
-#'
-#' The first worker's join records the workers' language in the pool, so
-#' the launcher carries no language attribute: a pool of Python workers
-#' takes [mizu_call()] specifications through [mizu_submit_call()], and a
-#' plain [mizu_submit()] fails at once with an error naming
-#' [mizu_submit_call()]. A launcher that spawns the wrong language fails
-#' at join, not at the first task.
-#'
-#' The interpreter is probed for pymizu when the launcher is created, so a
-#' missing interpreter or package raises here, before any pool exists.
-#'
-#' @inheritParams mizu_py_launcher
-#'
-#' @return A `function(token, slot)` that spawns one worker process, for
-#'   the `launcher` argument of [mizu_pool()] and [mizu_spawn_workers()].
-#'
-#' @examples
-#' \dontrun{
-#' p <- mizu_pool(2, launcher = mizu_py_pool_launcher())
+#' p <- mizu_pool(2, launcher = mizu_py_launcher())
 #' t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
 #' mizu_collect(t)
 #' mizu_pool_stop(p)
 #' }
 #'
 #' @export
-mizu_py_pool_launcher <- function(python = NULL, stdout = "", stderr = "") {
-  python <- py_resolve(python, "worker", "mizu_py_pool_launcher")
-  py_module_launcher(python, "pymizu.worker", stdout, stderr)
+mizu_py_launcher <- function(python = NULL, stdout = "", stderr = "") {
+  python <- py_resolve(python, "child", "mizu_py_launcher")
+  child <- py_module_launcher(python, "pymizu.child", stdout, stderr)
+  worker <- py_module_launcher(python, "pymizu.worker", stdout, stderr)
+  function(token, slot) {
+    if (missing(slot)) child(token) else worker(token, slot)
+  }
 }

@@ -22,9 +22,9 @@ Initial release.
   travel as one shared-memory frame, converting back with
   `mizu_as_arrow()` without copying.
 * Python interop — channels and pools mix with Python processes running
-  pymizu: `mizu_py_launcher()` / `mizu_py_pool_launcher()` spawn peers
-  and workers, and `mizu_call()` task specs drive them, data frames
-  crossing with full type fidelity.
+  pymizu: `mizu_py_launcher()` spawns peers and workers, and
+  `mizu_call()` task specs drive them, data frames crossing with full
+  type fidelity.
 * Event-driven async — `mizu_recv_async()`, `mizu_recv_handler()`, and
   `as.promise()` methods for channels, tasks, and maps over later and
   promises, ready for Shiny.

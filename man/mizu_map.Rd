@@ -212,7 +212,7 @@ controller) at most 7 workers can nest concurrently. Raise
 
 \code{.f} may be a \code{\link[=mizu_call]{mizu_call()}} specification instead of a function — the
 way to map over a foreign pool (one spawned with
-\code{\link[=mizu_py_pool_launcher]{mizu_py_pool_launcher()}}, or any pool whose workers are not R). A spec
+\code{\link[=mizu_py_launcher]{mizu_py_launcher()}}, or any pool whose workers are not R). A spec
 \code{.f} always stages a shared map region: the descriptor crosses in the
 interchange format and each runner task carries a region reference any
 worker language reads. The map element fills the spec's first
