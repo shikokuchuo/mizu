@@ -288,7 +288,7 @@ mono_time <- function() .Call(mizu_now_call)
 #'   bounding shared-memory use by the window times the slice size.
 #'   See the Streaming maps section. A streaming map handle collects
 #'   with [mizu_collect()] only (it cannot be promise-armed).
-#' @param .collect `"value"` (the default) gathers template results into
+#' @param .collect `"copy"` (the default) gathers template results into
 #'   an owning R vector at [mizu_collect()]. `"view"` instead returns an
 #'   ALTREP view over the map's shared output area — no gather copy — for
 #'   pipelines that immediately reduce. Requires an atomic `.template`.
@@ -332,7 +332,7 @@ mizu_map <- function(
   .seed = NULL,
   .timeout = Inf,
   .stream = FALSE,
-  .collect = "value"
+  .collect = "copy"
 ) {
   ident <- map_check_native(.pool, .f)
   dots <- list(...)
@@ -393,7 +393,7 @@ map_empty_result <- function(st) {
 # collection through mizu_collect(), event-driven through as.promise(),
 # mizu_cancel() to stop it, and a GC finalizer cancels a dropped
 # uncollected map, so no run of .f is wasted.
-map_submit_handle <- function(pool, st, timeout, collect = "value") {
+map_submit_handle <- function(pool, st, timeout, collect = "copy") {
   # as mizu_r_timeout_arg: an NA/NaN would read as an indefinite wait
   if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
     stop("mizu: .timeout must be a number of seconds, not NA", call. = FALSE)
@@ -604,7 +604,7 @@ mizu_map_run <- function(
   .x = NULL,
   .seed = NULL,
   .timeout = Inf,
-  .collect = "value"
+  .collect = "copy"
 ) {
   if (!inherits(pm, "mizu_map_prepared")) {
     stop("mizu: not a prepared-map handle", call. = FALSE)
@@ -970,11 +970,11 @@ map_check_f <- function(f, dots) {
 }
 
 map_collect_check <- function(collect, template) {
-  if (identical(collect, "value")) {
+  if (identical(collect, "copy")) {
     return(invisible())
   }
   if (!identical(collect, "view")) {
-    stop("mizu: .collect must be \"value\" or \"view\"", call. = FALSE)
+    stop("mizu: .collect must be \"copy\" or \"view\"", call. = FALSE)
   }
   if (is.null(template) || !typeof(template) %in% map_template_types) {
     stop(
@@ -1626,7 +1626,7 @@ map_submit_stream <- function(pool, st, deadline) {
   invisible(st)
 }
 
-map_collect_stream <- function(st, deadline, collect = "value") {
+map_collect_stream <- function(st, deadline, collect = "copy") {
   while (length(st[["oi"]]) && !st[["timed_out"]]) {
     map_stream_turn(st[["pool"]], st, deadline)
   }
@@ -1766,7 +1766,7 @@ map_workers_gone <- function(pool) {
 map_collect <- function(
   st,
   deadline = Inf,
-  collect = "value",
+  collect = "copy",
   doomed0 = FALSE
 ) {
   out <- if (!st[["direct"]]) vector("list", st[["n"]])
@@ -1983,7 +1983,7 @@ map_collect <- function(
 # setters would duplicate the view and the default ALTREP duplicate
 # materializes. The view pins the region, so the state is marked consumed
 # and a prepared re-run restages rather than overwriting it
-map_assemble <- function(st, out, collect = "value") {
+map_assemble <- function(st, out, collect = "copy") {
   if (!st[["direct"]] && is.null(st[["template"]])) {
     names(out) <- st[["nms"]]
     return(out)

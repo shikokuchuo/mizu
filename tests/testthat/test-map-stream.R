@@ -9,7 +9,7 @@
 
 # in-process streaming driver: one step-drain per turn keeps a published
 # result ahead of every collect, so turns never park
-run_stream <- function(p, st, collect = "value") {
+run_stream <- function(p, st, collect = "copy") {
   mizu:::map_stream_prime(p[["ctrl"]], st, Inf)
   while (length(st[["oi"]]) && !st[["timed_out"]]) {
     while (pool_step(p) == 1L) {

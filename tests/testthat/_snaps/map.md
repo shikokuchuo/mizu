@@ -37,7 +37,7 @@
       mizu_collect(mizu_map(p[["ctrl"]], 1:4, identity, .collect = "all"))
     Condition
       Error:
-      ! mizu: .collect must be "value" or "view"
+      ! mizu: .collect must be "copy" or "view"
 
 ---
 

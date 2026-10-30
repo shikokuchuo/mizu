@@ -15,7 +15,7 @@ mizu_map_prepare(
   .stream = FALSE
 )
 
-mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "value")
+mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "copy")
 }
 \arguments{
 \item{.pool}{a pool handle from \code{\link[=mizu_pool]{mizu_pool()}} or \code{\link[=mizu_pool_attach]{mizu_pool_attach()}};
@@ -60,7 +60,7 @@ tasks already in, and returns the \code{mizu_timeout} sentinel (class
 indefinitely. Submission blocks only while an injection ring is full;
 the collection deadline is \code{\link[=mizu_collect]{mizu_collect()}}'s \code{timeout}.}
 
-\item{.collect}{\code{"value"} (the default) gathers template results into
+\item{.collect}{\code{"copy"} (the default) gathers template results into
 an owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an
 ALTREP view over the map's shared output area — no gather copy — for
 pipelines that immediately reduce. Requires an atomic \code{.template}.

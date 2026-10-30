@@ -14,7 +14,7 @@ mizu_map(
   .seed = NULL,
   .timeout = Inf,
   .stream = FALSE,
-  .collect = "value"
+  .collect = "copy"
 )
 }
 \arguments{
@@ -58,7 +58,7 @@ bounding shared-memory use by the window times the slice size.
 See the Streaming maps section. A streaming map handle collects
 with \code{\link[=mizu_collect]{mizu_collect()}} only (it cannot be promise-armed).}
 
-\item{.collect}{\code{"value"} (the default) gathers template results into
+\item{.collect}{\code{"copy"} (the default) gathers template results into
 an owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an
 ALTREP view over the map's shared output area — no gather copy — for
 pipelines that immediately reduce. Requires an atomic \code{.template}.
