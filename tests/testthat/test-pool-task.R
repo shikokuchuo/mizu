@@ -824,3 +824,16 @@ test_that("cancel is FALSE once collected and once the pool is gone", {
 test_that("task_state rejects non-task handles", {
   expect_error(.Call(mizu:::mizu_pool_task_state, NULL), "not a task handle")
 })
+
+test_that("the collective collect entries reject a non-list at the C gate", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  expect_error(
+    .Call(mizu:::mizu_pool_collect_any, "x", 1),
+    "non-empty list of task handles"
+  )
+  expect_error(
+    .Call(mizu:::mizu_pool_collect_all, list(), 1),
+    "non-empty list of task handles"
+  )
+})

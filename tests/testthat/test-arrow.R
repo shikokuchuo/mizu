@@ -444,6 +444,21 @@ test_that("a caps-less foreign peer takes the conversion bail", {
   expect_false(is_view(out$x))
 })
 
+test_that("the conversion bail re-marks an ordered dictionary column", {
+  skip_if_not_installed("arrow")
+  # past the region gate with a peer short of the frame conjunction: the
+  # held batches convert — the ordered column's flag strips for the
+  # nanoarrow conversion and the rebuilt factor re-marks ordered
+  p <- foreign_pair(caps = 258L) # ATTRS + ORDERED, no MIZL
+  on.exit(channel_end(p))
+  df <- data.frame(
+    o = ordered(rep(c("a", "b", "c"), length.out = 10000)),
+    n = seq_len(10000)
+  )
+  mizu_send(p$host, arrow::arrow_table(df))
+  expect_identical(mizu_recv(p$peer, 5), df)
+})
+
 test_that("mizu_as_arrow borrows the borrowable columns", {
   skip_if_not_installed("arrow")
   p <- channel_pair()

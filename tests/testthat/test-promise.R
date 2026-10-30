@@ -799,6 +799,136 @@ test_that("a pending task registers at the enroll and the drain unlinks it", {
   expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
 })
 
+test_that("a removed first waiter leaves the rest of the registry settling", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ctrl <- p[["ctrl"]]
+  t1 <- mizu_submit(ctrl, 1L)
+  t2 <- mizu_submit(ctrl, 2L)
+  o1 <- observe(promises::as.promise(t1))
+  o2 <- observe(mizu_collect_any_async(list(t2)))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 2L)
+  # a removal that matches nothing keeps the registry
+  expect_false(.Call(mizu:::mizu_pool_notify_remove, ctrl, new.env()))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 2L)
+  # removing the FIRST enrolled waiter shifts the second down the registry
+  w1 <- .Call(mizu:::mizu_pool_notify_find, t1)
+  expect_true(.Call(mizu:::mizu_pool_notify_remove, ctrl, w1))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 1L)
+  expect_null(.Call(mizu:::mizu_pool_notify_find, t1))
+  # t1 returns to blocking-collectible; t2's waiter still settles
+  pool_step(p)
+  pool_step(p)
+  expect_true(pump_until(function() settled(o2)))
+  expect_identical(o2$value, list(index = 1L, value = 2L))
+  expect_false(settled(o1))
+  expect_identical(mizu_collect(t1, 5), 1L)
+})
+
+test_that("bulk waiters hash the conflict check: disjoint coexist, overlapping error", {
+  skip_if_no_promises()
+  # 50 x 50 crosses the linear/hash crossover of the conflict check
+  p <- pool_pair(
+    max_submitters = 1L,
+    result_slots = 128L,
+    injection_cap = 128L
+  )
+  on.exit(pool_end(p))
+  ctrl <- p[["ctrl"]]
+  ts <- lapply(seq_len(100L), function(i) mizu_submit(ctrl, j, j = i))
+  o1 <- observe(mizu_collect_all_async(ts[1:50]))
+  expect_error(mizu_collect_all_async(ts[1:50]), "pending consumer")
+  o2 <- observe(mizu_collect_all_async(ts[51:100]))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 2L)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o1) && settled(o2)))
+  expect_identical(o1$value, as.list(1:50))
+  expect_identical(o2$value, as.list(51:100))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
+})
+
+test_that("a map waiter's dropped runners announce only the live tasks", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ctrl <- p[["ctrl"]]
+  st <- mizu:::notify_pool_state(ctrl)
+  # every runner dropped (never submitted): nothing can publish — terminal
+  expect_true(.Call(
+    mizu:::mizu_pool_notify_enroll,
+    ctrl,
+    st,
+    new.env(),
+    list(NULL, NULL),
+    3L,
+    NULL
+  ))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 0L)
+  # a live runner announces alone; dropped words carry no announce
+  t <- mizu_submit(ctrl, 1L)
+  w <- new.env()
+  expect_false(.Call(
+    mizu:::mizu_pool_notify_enroll,
+    ctrl,
+    st,
+    w,
+    list(t, NULL),
+    3L,
+    NULL
+  ))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, ctrl), 1L)
+  expect_identical(.Call(mizu:::mizu_pool_notify_find, t), w)
+  expect_true(.Call(mizu:::mizu_pool_notify_remove, ctrl, w))
+  mizu_cancel(t)
+})
+
+test_that("collect_any_async settles an already-terminal task from the call site", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ts <- list(mizu_submit(p[["ctrl"]], 41L), mizu_submit(p[["ctrl"]], 42L))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  o <- observe(mizu_collect_any_async(ts))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, p[["ctrl"]]), 0L)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, list(index = 1L, value = 41L))
+  expect_identical(mizu_collect(ts[[2L]], 5), 42L)
+})
+
+test_that("a map promise settles an already-terminal map from the call site", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  o <- observe(promises::as.promise(m))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, p[["ctrl"]]), 0L)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, as.list((1:4) * 2L))
+})
+
+test_that("a timed-out middle waiter leaves the FIFO, the rest resolve in order", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o1 <- observe(mizu_recv_async(p[["host"]], timeout = 30))
+  o2 <- observe(mizu_recv_async(p[["host"]], timeout = 0.05))
+  o3 <- observe(mizu_recv_async(p[["host"]], timeout = 30))
+  expect_true(pump_until(function() settled(o2)))
+  expect_s3_class(o2$error, "mizu_timeout")
+  mizu_send(p[["peer"]], 1L)
+  mizu_send(p[["peer"]], 2L)
+  expect_true(pump_until(function() settled(o1) && settled(o3)))
+  expect_identical(o1$value, 1L)
+  expect_identical(o3$value, 2L)
+})
+
 test_that("the notify .Call entries validate their handles", {
   p <- pool_pair()
   on.exit(pool_end(p))

@@ -56,6 +56,20 @@ test_that("a large integer64 crosses as a classed view (SHM_VEC)", {
   channel_end(p)
 })
 
+test_that("an integer64 view carrying NA claims its validity", {
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  x <- bit64::as.integer64(seq_len(65536L))
+  x[5L] <- bit64::NA_integer64_
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(.Call(mizu:::mizu_zc_view_check, y))
+  expect_identical(class(y), "integer64")
+  expect_identical(y, x)
+  expect_true(is.na(y[5L]))
+  channel_end(p)
+})
+
 test_that("a re-sent integer64 view resolves by reference with its class", {
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -195,7 +209,12 @@ test_that("an integer64 template gathers classed results", {
   expect_identical(res, expected)
   # an empty map short-circuits before any region exists, still classed
   expect_identical(
-    mizu_collect(mizu_map(p[["ctrl"]], integer(0), identity, .template = bit64::integer64(1))),
+    mizu_collect(mizu_map(
+      p[["ctrl"]],
+      integer(0),
+      identity,
+      .template = bit64::integer64(1)
+    )),
     bit64::integer64(0)
   )
   pool_end(p)

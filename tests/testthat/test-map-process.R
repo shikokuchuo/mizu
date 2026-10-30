@@ -219,6 +219,99 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   expect_true(mizu_pool_stop(p))
 })
 
+test_that("a lone worker's death fails its claimed blob chunk as died", {
+  skip_if_no_child_mizu()
+  # one worker: host + worker fits the two-process budget — no skip_on_cran
+  p <- mizu_pool(n_workers = 1L, slot_size = 1024L)
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
+  f <- function(i) {
+    if (i > 2L) {
+      Sys.sleep(30)
+    }
+    i
+  }
+  environment(f) <- globalenv()
+  st <- mizu:::map_stage(p, 1:4, f, list(), chunks = 2)
+  expect_type(st[["blob"]], "raw")
+  mizu:::map_submit(p, st)
+  # the first chunk completes; the second is claimed when the kill lands
+  expect_true(wait_until(
+    {
+      d <- mizu_pool_dump(p)
+      any(d[["tasks"]][["status"]] == "ok") &&
+        any(
+          d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L
+        )
+    },
+    timeout = 10
+  ))
+  pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
+  kill_hard(pid)
+  e <- tryCatch(
+    mizu:::map_collect(st, deadline = mizu:::mono_time() + 30),
+    error = identity
+  )
+  expect_s3_class(e, "mizu_error_worker_died")
+  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_true(mizu_pool_stop(p))
+})
+
+test_that("a streaming map's first failed turn reports a worker death", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 1L)
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
+  f <- function(i) {
+    if (i <= 2L) {
+      Sys.sleep(30)
+    }
+    i
+  }
+  environment(f) <- globalenv()
+  m <- mizu_map(p, 1:4, f, .stream = TRUE, .n_chunks = 2L)
+  expect_true(wait_until(any(
+    mizu_pool_dump(p)[["workers"]][["in_flight"]] != -1L
+  )))
+  pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
+  kill_hard(pid)
+  e <- tryCatch(mizu_collect(m, timeout = 30), error = identity)
+  expect_s3_class(e, "mizu_error_worker_died")
+  expect_identical(e[["elements"]], cbind(lo = 1, hi = 2))
+  expect_true(mizu_pool_stop(p))
+})
+
+test_that("a streaming map's sweep reports a sibling's death over the error", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 1L)
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
+  f <- function(i) {
+    if (i <= 2L) {
+      stop("boom")
+    }
+    Sys.sleep(30)
+  }
+  environment(f) <- globalenv()
+  m <- mizu_map(p, 1:4, f, .stream = TRUE, .n_chunks = 2L)
+  # the erroring chunk is published and the next claimed when the kill lands
+  expect_true(wait_until(
+    {
+      d <- mizu_pool_dump(p)
+      any(d[["tasks"]][["status"]] == "err") &&
+        any(
+          d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L
+        )
+    },
+    timeout = 10
+  ))
+  pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
+  kill_hard(pid)
+  # the verdict must have failed the sibling before the sweep probes it
+  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
+  e <- tryCatch(mizu_collect(m, timeout = 30), error = identity)
+  expect_s3_class(e, "mizu_error_worker_died")
+  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_true(mizu_pool_stop(p))
+})
+
 test_that("worker death on the template path never exposes partial output", {
   skip_on_cran()
   skip_if_no_child_mizu()

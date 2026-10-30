@@ -222,10 +222,34 @@
 ---
 
     Code
+      .Call(mizu:::mizu_interop_runner_call, "nm", 1, c(1.5, 0), 2L, 1)
+    Condition
+      Error:
+      ! mizu: expected integral (seed, offset) elements within int64 range
+
+---
+
+    Code
+      .Call(mizu:::mizu_interop_runner_call, "nm", 1, c(2^63, 0), 2L, 1)
+    Condition
+      Error:
+      ! mizu: expected integral (seed, offset) elements within int64 range
+
+---
+
+    Code
       .Call(mizu:::mizu_interop_runner_call, 42, 1, NULL, 2L, 1)
     Condition
       Error:
       ! mizu: expected a length-1 non-NA region name
+
+---
+
+    Code
+      .Call(mizu:::mizu_interop_runner_call, "nm", 1:2, NULL, 2L, 1)
+    Condition
+      Error:
+      ! mizu: expected a length-1 numeric generation field
 
 ---
 

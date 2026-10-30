@@ -670,3 +670,23 @@ test_that("attach probes past a dead submitter's missing and recreated lock", {
   rm(s2, s3, s4)
   gc()
 })
+
+test_that("a killed worker's claimed task reads died at the state verb", {
+  skip_if_no_child_mizu()
+  # one worker: host + worker fits the two-process budget — no skip_on_cran
+  p <- mizu_pool(n_workers = 1L)
+  t <- mizu_submit(p, {
+    Sys.sleep(30)
+    "never"
+  })
+  expect_true(wait_until(any(
+    mizu_pool_dump(p)[["workers"]][["in_flight"]] != -1L
+  )))
+  d <- mizu_pool_dump(p)
+  kill_hard(d[["workers"]][["pid"]][[1L]])
+  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
+  expect_identical(.Call(mizu:::mizu_pool_task_state, t), "died")
+  err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
+  expect_s3_class(err, "mizu_error_worker_died")
+  expect_true(mizu_pool_stop(p, timeout = 10))
+})

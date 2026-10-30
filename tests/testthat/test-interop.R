@@ -1212,6 +1212,9 @@ test_that("the runner stream writes and rejects as a plain task", {
   expect_identical(w[[3L]], as.raw(0x12)) # the task tag
   expect_identical(w[[5L]], as.raw(0x02)) # kind 2: a map runner
   expect_error(ix_read_task(ix_raw_to_hex(w)), "mizu:")
+  # a valid (seed, offset) pair writes
+  w2 <- .Call(mizu:::mizu_interop_runner_call, "/mizu_1_2", 1, c(7, 3), 2L, 1)
+  expect_identical(w2[[1L]], as.raw(0x49))
   # the hook mirrors the submit veneer's validation (the writer cannot
   # decline): a short seed read out of bounds before
   expect_snapshot(
@@ -1223,7 +1226,19 @@ test_that("the runner stream writes and rejects as a plain task", {
     error = TRUE
   )
   expect_snapshot(
+    .Call(mizu:::mizu_interop_runner_call, "nm", 1, c(1.5, 0), 2L, 1),
+    error = TRUE
+  )
+  expect_snapshot(
+    .Call(mizu:::mizu_interop_runner_call, "nm", 1, c(2^63, 0), 2L, 1),
+    error = TRUE
+  )
+  expect_snapshot(
     .Call(mizu:::mizu_interop_runner_call, 42, 1, NULL, 2L, 1),
+    error = TRUE
+  )
+  expect_snapshot(
+    .Call(mizu:::mizu_interop_runner_call, "nm", 1:2, NULL, 2L, 1),
     error = TRUE
   )
   expect_snapshot(
@@ -1273,6 +1288,30 @@ test_that("the foreign string gate declines latin1 and bytes marks", {
     mizu_send(p$host, c("ok", bv)),
     class = "mizu_error_not_portable"
   )
+})
+
+test_that("a POSIXlt column declines the frame, naming the column", {
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(n = 1:3)
+  df$t <- as.POSIXlt(.POSIXct(1:3, tz = "UTC"))
+  expect_error(
+    mizu_send(p$host, df),
+    "a POSIXlt column has no portable home",
+    class = "mizu_error_not_portable"
+  )
+})
+
+test_that("a labeled dimnames list crosses as the attr form", {
+  p <- foreign_pair(caps = 130L) # ATTRS + LABELED
+  on.exit(channel_end(p))
+  m <- matrix(1:6, 2L, 3L)
+  dimnames(m) <- structure(
+    list(c("a", "b"), c("x", "y", "z")),
+    names = c("rows", "cols")
+  )
+  mizu_send(p$host, m)
+  expect_identical(mizu_recv(p$peer, 5), m)
 })
 
 test_that("temporal qualification declines unknown or missing units", {
@@ -2098,4 +2137,12 @@ test_that("a lazy ALTREP leaf in a foreign tree copies through", {
   on.exit(channel_end(p))
   mizu_send(p$host, x)
   expect_identical(mizu_recv(p$peer, 5)[], x)
+})
+
+test_that("a nested compact sequence crosses foreign by value", {
+  p <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL
+  on.exit(channel_end(p))
+  x <- list(s = 1:200000L, l = letters)
+  mizu_send(p$host, x)
+  expect_identical(mizu_recv(p$peer, 5), x)
 })
