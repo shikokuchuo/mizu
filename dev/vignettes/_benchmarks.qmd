@@ -57,7 +57,7 @@ roundtrip
 
 End to end, mizu is **`r speedup(roundtrip, 2L, 1L)`x** faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).
 
-**Two thousand small tasks.**
+**Five thousand small tasks.**
 Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece.
 mirai sends one task per element through its dispatcher, whose per-task cost alone exceeds the task.
 mizu stages the map once, and the workers self-schedule element ranges off a shared cursor.
@@ -70,9 +70,9 @@ winsum <- evalq(function(i) {
 }, baseenv())
 
 tasks <- bench::mark(
-  serial = lapply(1:2000, winsum),
-  mizu = mizu_collect(mizu_map(p, 1:2000, winsum)),
-  mirai = collect_mirai(mirai_map(1:2000, winsum))
+  serial = lapply(1:5000, winsum),
+  mizu = mizu_collect(mizu_map(p, 1:5000, winsum)),
+  mirai = collect_mirai(mirai_map(1:5000, winsum))
 )
 tasks
 ```
