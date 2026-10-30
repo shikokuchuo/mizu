@@ -20,3 +20,4 @@
 ^pkgdown$
 ^vignettes/\.quarto$
 ^\.ruff_cache$
+^\.pytest_cache$
