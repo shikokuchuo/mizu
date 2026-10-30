@@ -4,26 +4,26 @@
 \alias{mizu_pool_attach}
 \title{Attach to a Pool as a Submitter}
 \usage{
-mizu_pool_attach(name)
+mizu_pool_attach(token)
 }
 \arguments{
-\item{name}{the region name of the pool, or its suffix (the part after
-the platform prefix).}
+\item{token}{the join token of the pool. The full region name
+(\code{mizu_pool_status(p)$name}) is also accepted.}
 }
 \value{
 A pool handle (class \code{"mizu_pool"}) holding a submitter slot.
 }
 \description{
 Joins an existing pool from another process, claiming a free submitter
-slot with its own injection ring and result slots. You pass the name
-of the pool to the joining process yourself: it is
-\code{mizu_pool_status(p)$name} on the creator.
+slot with its own injection ring and result slots. You pass the join
+token of the pool to the joining process yourself: it is
+\code{mizu_pool_status(p)$token} on the creator.
 }
 \examples{
 p <- mizu_pool()
-name <- mizu_pool_status(p)[["name"]]
-# pass `name` to the joining process yourself. There, run:
-# pa <- mizu_pool_attach(name)
+token <- mizu_pool_status(p)[["token"]]
+# pass `token` to the joining process yourself. There, run:
+# pa <- mizu_pool_attach(token)
 # mizu_collect(mizu_submit(pa, runif(3)))
 mizu_pool_stop(p)
 

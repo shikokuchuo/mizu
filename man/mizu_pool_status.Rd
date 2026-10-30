@@ -12,7 +12,9 @@ inside a task, the evaluating worker's own handle from
 \code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 }
 \value{
-A list with elements \code{name}, \code{role}, \code{max_workers},
+A list with elements \code{token} (the join identity: pass it to
+\code{\link[=mizu_pool_attach]{mizu_pool_attach()}}), \code{name} (the platform region name, kept for
+debugging), \code{role}, \code{max_workers},
 \code{max_submitters}, \code{injection_cap}, \code{result_slots}, \code{slot_size},
 \code{workers} (per-slot states), \code{parked}, \code{submitters} (per-slot states),
 \code{injection} (entries queued and unclaimed), \code{tasks} (result slots by

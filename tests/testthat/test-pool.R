@@ -99,6 +99,8 @@ test_that("a fresh pool reports its layout and registry state", {
     "/mizu_"
   }
   expect_true(startsWith(st[["name"]], prefix))
+  expect_identical(st[["token"]], sub(prefix, "", st[["name"]], fixed = TRUE))
+  expect_identical(mizu_pool_dump(p[["ctrl"]])[["token"]], st[["token"]])
   expect_identical(st[["role"]], "controller")
   expect_identical(st[["max_workers"]], 1L)
   expect_identical(st[["max_submitters"]], 4L)
@@ -115,7 +117,7 @@ test_that("a fresh pool reports its layout and registry state", {
   pool_end(p)
 })
 
-test_that("mizu_pool_attach validates the name", {
+test_that("mizu_pool_attach validates the token", {
   expect_error(mizu_pool_attach(42), "must be a character string")
   expect_error(mizu_pool_attach(c("a", "b")), "must be a character string")
   expect_error(mizu_pool_attach(NA_character_), "must be a character string")

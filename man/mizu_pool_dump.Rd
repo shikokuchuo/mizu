@@ -12,7 +12,8 @@ inside a task, the evaluating worker's own handle from
 \code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 }
 \value{
-A list with elements \code{name}, \code{shutdown}, \code{workers} (data frame:
+A list with elements \code{token} and \code{name} (as in
+\code{\link[=mizu_pool_status]{mizu_pool_status()}}), \code{shutdown}, \code{workers} (data frame:
 slot, status, pid, park_state, parked, deque \code{top} and \code{bottom}, and
 the in-flight result slot), \code{submitters} (data frame: slot, status,
 pid, result-slot subrange, queued injection entries, ready and

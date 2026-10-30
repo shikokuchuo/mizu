@@ -212,29 +212,29 @@ mizu_retire_worker <- function(pool, slot) {
 #' Attach to a Pool as a Submitter
 #'
 #' Joins an existing pool from another process, claiming a free submitter
-#' slot with its own injection ring and result slots. You pass the name
-#' of the pool to the joining process yourself: it is
-#' `mizu_pool_status(p)$name` on the creator.
+#' slot with its own injection ring and result slots. You pass the join
+#' token of the pool to the joining process yourself: it is
+#' `mizu_pool_status(p)$token` on the creator.
 #'
-#' @param name the region name of the pool, or its suffix (the part after
-#'   the platform prefix).
+#' @param token the join token of the pool. The full region name
+#'   (`mizu_pool_status(p)$name`) is also accepted.
 #'
 #' @return A pool handle (class `"mizu_pool"`) holding a submitter slot.
 #'
 #' @examples
 #' p <- mizu_pool()
-#' name <- mizu_pool_status(p)[["name"]]
-#' # pass `name` to the joining process yourself. There, run:
-#' # pa <- mizu_pool_attach(name)
+#' token <- mizu_pool_status(p)[["token"]]
+#' # pass `token` to the joining process yourself. There, run:
+#' # pa <- mizu_pool_attach(token)
 #' # mizu_collect(mizu_submit(pa, runif(3)))
 #' mizu_pool_stop(p)
 #'
 #' @export
-mizu_pool_attach <- function(name) {
-  if (!is_scalar_string(name)) {
-    stop("mizu: name must be a character string", call. = FALSE)
+mizu_pool_attach <- function(token) {
+  if (!is_scalar_string(token)) {
+    stop("mizu: token must be a character string", call. = FALSE)
   }
-  .Call(mizu_pool_attach_call, sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", name))
+  .Call(mizu_pool_attach_call, sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", token))
 }
 
 #' Submit a Task and Collect Its Result
@@ -762,7 +762,9 @@ slot_frame <- function(x, states) {
 #'
 #' @inheritParams mizu_pool_stop
 #'
-#' @return A list with elements `name`, `role`, `max_workers`,
+#' @return A list with elements `token` (the join identity: pass it to
+#'   [mizu_pool_attach()]), `name` (the platform region name, kept for
+#'   debugging), `role`, `max_workers`,
 #'   `max_submitters`, `injection_cap`, `result_slots`, `slot_size`,
 #'   `workers` (per-slot states), `parked`, `submitters` (per-slot states),
 #'   `injection` (entries queued and unclaimed), `tasks` (result slots by
@@ -777,6 +779,7 @@ slot_frame <- function(x, states) {
 #' @export
 mizu_pool_status <- function(pool) {
   st <- .Call(mizu_pool_status_call, pool)
+  st[["token"]] <- sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", st[["name"]])
   st[["workers"]] <- recode_states(st[["workers"]], worker_states)
   st[["submitters"]] <- recode_states(st[["submitters"]], submitter_states)
   names(st[["tasks"]]) <- slot_states[-1L]
@@ -795,7 +798,8 @@ mizu_pool_status <- function(pool) {
 #'
 #' @inheritParams mizu_pool_stop
 #'
-#' @return A list with elements `name`, `shutdown`, `workers` (data frame:
+#' @return A list with elements `token` and `name` (as in
+#'   [mizu_pool_status()]), `shutdown`, `workers` (data frame:
 #'   slot, status, pid, park_state, parked, deque `top` and `bottom`, and
 #'   the in-flight result slot), `submitters` (data frame: slot, status,
 #'   pid, result-slot subrange, queued injection entries, ready and
@@ -822,6 +826,7 @@ mizu_pool_status <- function(pool) {
 #' @export
 mizu_pool_dump <- function(pool) {
   d <- .Call(mizu_pool_dump_call, pool)
+  d[["token"]] <- sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", d[["name"]])
   lang <- d[["language"]]
   d[["language"]] <- if (is.null(lang)) {
     "none"
