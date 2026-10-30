@@ -24,7 +24,7 @@ if (dir.exists(venv)) {
 }
 ```
 
-# mizu 水
+# mizu ミズ
 
 <!-- badges: start -->
 [![R-CMD-check](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml)
@@ -37,7 +37,7 @@ if (dir.exists(venv)) {
   ________
  /\       \
 /  \  mizu \
-\  /   水  /
+\  /  ミズ  /
  \/_______/
 ```
 

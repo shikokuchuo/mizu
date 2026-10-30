@@ -1,7 +1,7 @@
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
-# mizu 水
+# mizu ミズ
 
 <!-- badges: start -->
 
@@ -14,7 +14,7 @@
       ________
      /\       \
     /  \  mizu \
-    \  /   水  /
+    \  /  ミズ  /
      \/_______/
 
 mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.
