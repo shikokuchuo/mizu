@@ -42,15 +42,15 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu        546.2µs 737.08µs      868.  483.41KB      0  
-#> 2 mirai        7.25ms   7.83ms      124.    3.81MB     18.4
+#> 1 mizu        502.7µs 604.59µs     1084.  483.41KB      0  
+#> 2 mirai         5.9ms   7.42ms      138.    3.81MB     15.9
 ```
 
-End to end, mizu is **11x** faster: every timed run stages the frame,
+End to end, mizu is **12x** faster: every timed run stages the frame,
 runs the task — computing the new column over all 53,940 rows — and
 returns the enriched frame (medians).
 
-**Two thousand small tasks.** Each task summarizes a sliding window of
+**Five thousand small tasks.** Each task summarizes a sliding window of
 1,000 prices — mean and standard deviation, about 10µs of work apiece.
 mirai sends one task per element through its dispatcher, whose per-task
 cost alone exceeds the task. mizu stages the map once, and the workers
@@ -66,21 +66,23 @@ winsum <- evalq(function(i) {
 }, baseenv())
 
 tasks <- bench::mark(
-  serial = lapply(1:2000, winsum),
-  mizu = mizu_collect(mizu_map(p, 1:2000, winsum)),
-  mirai = collect_mirai(mirai_map(1:2000, winsum))
+  serial = lapply(1:5000, winsum),
+  mizu = mizu_collect(mizu_map(p, 1:5000, winsum)),
+  mirai = collect_mirai(mirai_map(1:5000, winsum))
 )
+#> Warning: Some expressions had a GC in every iteration; so filtering is
+#> disabled.
 tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial         19ms  19.66ms     50.9     30.8MB   509.  
-#> 2 mizu          5.1ms   6.16ms    131.     517.1KB     2.02
-#> 3 mirai       206.3ms 206.27ms      4.85      19MB     9.70
+#> 1 serial       44.5ms     49ms     17.2       77MB    34.4 
+#> 2 mizu         12.7ms     15ms     54.5    532.6KB     0   
+#> 3 mirai       525.8ms    526ms      1.90    47.4MB     1.90
 ```
 
-mizu turns the four workers into a **3.2x** gain over the serial loop,
-and runs **33x** ahead of mirai (medians).
+mizu turns the four workers into a **3.3x** gain over the serial loop,
+and runs **35x** ahead of mirai (medians).
 
 ``` r
 

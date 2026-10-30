@@ -50,10 +50,22 @@
 
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="development version" id="mizu-development-version">mizu (development version)<a class="anchor" aria-label="anchor" href="#mizu-development-version"></a></h2>
-</div>
+<p>Initial release.</p>
+<ul><li>
+<code><a href="../reference/mizu_channel.html">mizu_channel()</a></code>: lock-free SPSC channels between R processes — or between R and a Python peer — over POSIX shared memory or Win32 file mappings, with batching, serialization-free raw tiers, sentinel outcomes for a full ring, timeout, close or peer death, and peer death delivered as an OS event.</li>
+<li>
+<code><a href="../reference/mizu_pool.html">mizu_pool()</a></code>: work-stealing task pools over spawned workers — <code><a href="../reference/mizu_submit.html">mizu_submit()</a></code> / <code><a href="../reference/mizu_submit.html">mizu_collect()</a></code>, batch submission, <code><a href="../reference/mizu_collect_any.html">mizu_collect_any()</a></code> / <code><a href="../reference/mizu_collect_all.html">mizu_collect_all()</a></code>, worker retirement and respawn, nested submission from inside a task, and classed remote errors transported with their fields intact.</li>
+<li>
+<code><a href="../reference/mizu_map.html">mizu_map()</a></code>: a parallel map over one shared staging region — adaptive morsel scheduling, streaming and prepared maps, <code>.template</code> output areas with a zero-copy <code>.collect = "view"</code>, and reproducible per-element random streams (<code>.seed</code>).</li>
+<li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages, and a view sent on again crosses by reference.</li>
+<li>Zero-copy Arrow interchange — ‘arrow’ tables and record batches travel as one shared-memory frame, converting back with <code><a href="../reference/mizu_as_arrow.html">mizu_as_arrow()</a></code> without copying.</li>
+<li>Python interop — channels and pools mix with Python processes running pymizu: <code><a href="../reference/mizu_py_launcher.html">mizu_py_launcher()</a></code> / <code><a href="../reference/mizu_py_pool_launcher.html">mizu_py_pool_launcher()</a></code> spawn peers and workers, and <code><a href="../reference/mizu_call.html">mizu_call()</a></code> task specs drive them, data frames crossing with full type fidelity.</li>
+<li>Event-driven async — <code><a href="../reference/mizu_recv_async.html">mizu_recv_async()</a></code>, <code><a href="../reference/mizu_recv_async.html">mizu_recv_handler()</a></code>, and <code><a href="https://rstudio.github.io/promises/reference/is.promise.html" class="external-link">as.promise()</a></code> methods for channels, tasks, and maps over later and promises, ready for Shiny.</li>
+<li>Housekeeping — <code><a href="../reference/mizu_prune.html">mizu_prune()</a></code> reclaims shared memory orphaned by dead processes; <code><a href="../reference/mizu_pool_dump.html">mizu_pool_dump()</a></code> introspects a running or hung pool.</li>
+</ul></div>
     <div class="section level2">
-<h2 class="pkg-version" data-toc-text="0.0.0" id="mizu-000">mizu 0.0.0<a class="anchor" aria-label="anchor" href="#mizu-000"></a></h2>
-<ul><li>Initial release.</li>
+<h2 class="pkg-version" data-toc-text="0.0.1" id="mizu-001">mizu 0.0.1<a class="anchor" aria-label="anchor" href="#mizu-001"></a></h2><p class="text-muted">CRAN release: 2026-09-30</p>
+<ul><li>Initial CRAN release.</li>
 </ul></div>
   </main><aside class="col-md-3"><nav id="toc" aria-label="Table of contents"><h2>On this page</h2>
     </nav></aside></div>

@@ -111,10 +111,10 @@
 <span><span class="co">#&gt; # A tibble: 2 × 6</span></span>
 <span><span class="co">#&gt;   expression      min   median `itr/sec` mem_alloc `gc/sec`</span></span>
 <span><span class="co">#&gt;   &lt;bch:expr&gt; &lt;bch:tm&gt; &lt;bch:tm&gt;     &lt;dbl&gt; &lt;bch:byt&gt;    &lt;dbl&gt;</span></span>
-<span><span class="co">#&gt; 1 mizu        546.2µs 737.08µs      868.  483.41KB      0  </span></span>
-<span><span class="co">#&gt; 2 mirai        7.25ms   7.83ms      124.    3.81MB     18.4</span></span></code></pre></div>
-<p>End to end, mizu is <strong>11x</strong> faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).</p>
-<p><strong>Two thousand small tasks.</strong> Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece. mirai sends one task per element through its dispatcher, whose per-task cost alone exceeds the task. mizu stages the map once, and the workers self-schedule element ranges off a shared cursor. The serial <code><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply()</a></code> row is the baseline a parallel map must beat:</p>
+<span><span class="co">#&gt; 1 mizu        502.7µs 604.59µs     1084.  483.41KB      0  </span></span>
+<span><span class="co">#&gt; 2 mirai         5.9ms   7.42ms      138.    3.81MB     15.9</span></span></code></pre></div>
+<p>End to end, mizu is <strong>12x</strong> faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).</p>
+<p><strong>Five thousand small tasks.</strong> Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece. mirai sends one task per element through its dispatcher, whose per-task cost alone exceeds the task. mizu stages the map once, and the workers self-schedule element ranges off a shared cursor. The serial <code><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply()</a></code> row is the baseline a parallel map must beat:</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">winsum</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/eval.html" class="external-link">evalq</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">i</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">w</span> <span class="op">&lt;-</span> <span class="fu">ggplot2</span><span class="fu">::</span><span class="va">diamonds</span><span class="op">$</span><span class="va">price</span><span class="op">[</span><span class="va">i</span><span class="op">:</span><span class="op">(</span><span class="va">i</span> <span class="op">+</span> <span class="fl">999L</span><span class="op">)</span><span class="op">]</span></span>
@@ -122,18 +122,20 @@
 <span><span class="op">}</span>, <span class="fu"><a href="https://rdrr.io/r/base/environment.html" class="external-link">baseenv</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">tasks</span> <span class="op">&lt;-</span> <span class="fu">bench</span><span class="fu">::</span><span class="fu">mark</span><span class="op">(</span></span>
-<span>  serial <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">2000</span>, <span class="va">winsum</span><span class="op">)</span>,</span>
-<span>  mizu <span class="op">=</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="fu"><a href="../reference/mizu_map.html">mizu_map</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span><span class="op">:</span><span class="fl">2000</span>, <span class="va">winsum</span><span class="op">)</span><span class="op">)</span>,</span>
-<span>  mirai <span class="op">=</span> <span class="fu">collect_mirai</span><span class="op">(</span><span class="fu">mirai_map</span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">2000</span>, <span class="va">winsum</span><span class="op">)</span><span class="op">)</span></span>
+<span>  serial <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">5000</span>, <span class="va">winsum</span><span class="op">)</span>,</span>
+<span>  mizu <span class="op">=</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="fu"><a href="../reference/mizu_map.html">mizu_map</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span><span class="op">:</span><span class="fl">5000</span>, <span class="va">winsum</span><span class="op">)</span><span class="op">)</span>,</span>
+<span>  mirai <span class="op">=</span> <span class="fu">collect_mirai</span><span class="op">(</span><span class="fu">mirai_map</span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">5000</span>, <span class="va">winsum</span><span class="op">)</span><span class="op">)</span></span>
 <span><span class="op">)</span></span>
+<span><span class="co">#&gt; Warning: Some expressions had a GC in every iteration; so filtering is</span></span>
+<span><span class="co">#&gt; disabled.</span></span>
 <span><span class="va">tasks</span></span>
 <span><span class="co">#&gt; # A tibble: 3 × 6</span></span>
 <span><span class="co">#&gt;   expression      min   median `itr/sec` mem_alloc `gc/sec`</span></span>
 <span><span class="co">#&gt;   &lt;bch:expr&gt; &lt;bch:tm&gt; &lt;bch:tm&gt;     &lt;dbl&gt; &lt;bch:byt&gt;    &lt;dbl&gt;</span></span>
-<span><span class="co">#&gt; 1 serial         19ms  19.66ms     50.9     30.8MB   509.  </span></span>
-<span><span class="co">#&gt; 2 mizu          5.1ms   6.16ms    131.     517.1KB     2.02</span></span>
-<span><span class="co">#&gt; 3 mirai       206.3ms 206.27ms      4.85      19MB     9.70</span></span></code></pre></div>
-<p>mizu turns the four workers into a <strong>3.2x</strong> gain over the serial loop, and runs <strong>33x</strong> ahead of mirai (medians).</p>
+<span><span class="co">#&gt; 1 serial       44.5ms     49ms     17.2       77MB    34.4 </span></span>
+<span><span class="co">#&gt; 2 mizu         12.7ms     15ms     54.5    532.6KB     0   </span></span>
+<span><span class="co">#&gt; 3 mirai       525.8ms    526ms      1.90    47.4MB     1.90</span></span></code></pre></div>
+<p>mizu turns the four workers into a <strong>3.3x</strong> gain over the serial loop, and runs <strong>35x</strong> ahead of mirai (medians).</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu">daemons</span><span class="op">(</span><span class="fl">0L</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></code></pre></div>
