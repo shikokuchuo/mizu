@@ -73,7 +73,7 @@
 <div class="sourceCode" id="cb1"><pre class="sourceCode R"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a>  ________</span>
 <span id="cb1-2"><a href="#cb1-2" tabindex="-1"></a> <span class="sc">/</span>\       \</span>
 <span id="cb1-3"><a href="#cb1-3" tabindex="-1"></a><span class="sc">/</span>  \  mizu \</span>
-<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>\  <span class="sc">/</span> ミズ  <span class="sc">/</span></span>
+<span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>\  <span class="sc">/</span>  ミズ  <span class="sc">/</span></span>
 <span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a> \<span class="sc">/</span>_______<span class="sc">/</span></span></code></pre></div>
 <p>mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.</p>
 <p>Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>). The hot path never enters the kernel and data is never copied through a system socket.</p>
