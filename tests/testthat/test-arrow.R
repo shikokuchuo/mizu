@@ -371,7 +371,8 @@ test_that("the conversion bail keeps the ordered class", {
 })
 
 test_that("mizu_as_arrow exports an ordered factor with the flag", {
-  skip_if_not_installed(c("arrow", "nanoarrow"))
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
   df <- data.frame(o = ordered(c("b", "a", "b")), n = 1:3)
