@@ -236,6 +236,20 @@ cstack_trigger_depth <- local({
   }
 })
 
+# A read failure the C read guard catches (src/stage_r.c) is first raised
+# under R_ToplevelExec, and R prints the error to stderr at that toplevel
+# jump before expect_error() catches the re-raised condition. Hush the
+# printer for the calling test so intentional-corruption tests stay quiet.
+hush_error_print <- function() {
+  old <- options(show.error.messages = FALSE)
+  do.call(
+    "on.exit",
+    list(substitute(options(x), list(x = old)), add = TRUE),
+    envir = parent.frame()
+  )
+  invisible(old)
+}
+
 # In-process channel pair: both ends of one region attached from this
 # process — the deterministic harness for ring mechanics, with no process
 # management involved. The host end produces on the same ring the peer end

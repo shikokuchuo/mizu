@@ -339,6 +339,7 @@ test_that("a REF-sent view is not retained across later stages (R-09)", {
 })
 
 test_that("an unknown layout flags word rejects as corrupt, the ring flows on (R-16, R-21)", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], runif(2e5))
   v <- mizu_recv(p[["peer"]], 5)
@@ -355,6 +356,7 @@ test_that("an unknown layout flags word rejects as corrupt, the ring flows on (R
 })
 
 test_that("a REF re-wrap validates the region's layout header", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], runif(2e5))
   v <- mizu_recv(p[["peer"]], 5)
@@ -387,6 +389,7 @@ test_that("a REF re-wrap validates the region's layout header", {
 })
 
 test_that("a REF re-wrap validates the string layout header", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], sprintf("value-%06d", seq_len(5000L)))
   v <- mizu_recv(p[["peer"]], 5)
@@ -404,6 +407,7 @@ test_that("a REF re-wrap validates the string layout header", {
 })
 
 test_that("a REF slot validates its identifier at read", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], runif(2e5))
   v <- mizu_recv(p[["peer"]], 5)
@@ -443,6 +447,7 @@ test_that("a REF slot validates its identifier at read", {
 })
 
 test_that("a SHM_VEC slot cross-checks its header against the aux word", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
   mizu_send(p[["host"]], x)
@@ -461,6 +466,7 @@ test_that("a SHM_VEC slot cross-checks its header against the aux word", {
 })
 
 test_that("SHM_VEC string and list slots cross-check the aux word too", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], sprintf("value-%06d", seq_len(5000L))) # MIZS
   rw <- .Call(
@@ -491,6 +497,7 @@ test_that("SHM_VEC string and list slots cross-check the aux word too", {
 })
 
 test_that("a SHM_VEC slot validates its region-name length", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], runif(2e5)) # SHM_VEC into slot 0
   rw <- .Call(
@@ -556,6 +563,7 @@ test_that("a data.frame that is itself a view declines the foreign frame gate", 
 })
 
 test_that("a REF slot with len past inline_max is rejected before reading", {
+  hush_error_print()
   p <- channel_pair(slot_size = 64L, arena_size = 0) # inline_max = 48
   x <- runif(10000)
   mizu_send(p[["host"]], x)
@@ -1294,6 +1302,7 @@ test_that("a corrupt directory entry rejects at element extraction", {
 })
 
 test_that("the wrap-time remote-leaf walk rejects corrupt entries", {
+  hush_error_print()
   # REF re-wrap re-runs the loan walk over the region as it is now
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
@@ -1324,6 +1333,7 @@ test_that("the wrap-time remote-leaf walk rejects corrupt entries", {
 })
 
 test_that("the wrap-time remote-leaf walk validates nested regions", {
+  hush_error_print()
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
   mizu_send(p[["host"]], x)

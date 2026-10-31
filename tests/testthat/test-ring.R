@@ -367,6 +367,7 @@ test_that("mori-shared payloads ride the hooks and map zero-copy", {
 })
 
 test_that("corrupt slot headers reject at read, the ring flows on", {
+  hush_error_print()
   poke_hdr <- function(p, off, bytes) {
     nm <- .Call(mizu:::mizu_channel_stat, p[["host"]])[["name"]]
     rw <- .Call(mizu:::mizu_region_open, nm, TRUE)

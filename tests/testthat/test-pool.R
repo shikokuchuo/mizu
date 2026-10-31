@@ -1406,6 +1406,7 @@ test_that("a spec task past the inline budget spills its stream", {
 })
 
 test_that("collect_all attaches the consumed prefix to a mid-batch read failure", {
+  hush_error_print()
   p <- pool_pair()
   t1 <- mizu_submit(p[["ctrl"]], 1L)
   t2 <- mizu_submit(p[["ctrl"]], list(1, 2))
@@ -1511,6 +1512,7 @@ test_that("the lame-duck probe answers on live and dead handles", {
 })
 
 test_that("a malformed ref identifier in a result fails the read", {
+  hush_error_print()
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], 1L)
   pool_step(p)
