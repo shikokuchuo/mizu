@@ -24,6 +24,7 @@ test_that("spec constant names never collide with the formals ahead of ...", {
 })
 
 test_that("spec tasks run on a same-language pool, errors stay rich", {
+  skip_on_cran()
   p <- mizu_pool(1L)
   on.exit(mizu_pool_stop(p))
   t <- mizu_submit_call(
@@ -40,6 +41,7 @@ test_that("spec tasks run on a same-language pool, errors stay rich", {
 })
 
 test_that("spec name resolution: unloaded package, ::: internal, missing fn", {
+  skip_on_cran()
   p <- mizu_pool(1L)
   on.exit(mizu_pool_stop(p))
   t <- mizu_submit_call(p, mizu_call("parallel::detectCores"))

@@ -220,6 +220,7 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
 })
 
 test_that("a lone worker's death fails its claimed blob chunk as died", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   # one worker: host + worker fits the two-process budget — no skip_on_cran
   p <- mizu_pool(n_workers = 1L, slot_size = 1024L)
@@ -257,6 +258,7 @@ test_that("a lone worker's death fails its claimed blob chunk as died", {
 })
 
 test_that("a streaming map's first failed turn reports a worker death", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
@@ -280,6 +282,7 @@ test_that("a streaming map's first failed turn reports a worker death", {
 })
 
 test_that("a streaming map's sweep reports a sibling's death over the error", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
@@ -369,6 +372,7 @@ test_that("worker death on the template path never exposes partial output", {
 })
 
 test_that("a lone worker's death reports the whole issued range as lost", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   # single worker: the only runner dies unpublished, so no history survives
   # — the died branch must still raise mizu_error_worker_died (regression:
@@ -411,6 +415,7 @@ test_that("a lone worker's death reports the whole issued range as lost", {
 })
 
 test_that("a map queued behind a doomed worker fails as died, not a hang", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   # the lone worker is inside the blocker, so the map's runners only ever
   # queue: the kill strands them with no claimant and no announce, so no
@@ -448,6 +453,7 @@ test_that("a map queued behind a doomed worker fails as died, not a hang", {
 })
 
 test_that("a runner's announce lost to a help beat still fails as died", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   # a help beat's nested claim overwrites the runner's announce and its
   # publish clears it, so the reaper's in-flight branch finds -1: only the
@@ -490,6 +496,7 @@ test_that("a runner's announce lost to a help beat still fails as died", {
 })
 
 test_that(".timeout under executing chunks returns the sentinel, cleans up", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   r <- mizu_collect(

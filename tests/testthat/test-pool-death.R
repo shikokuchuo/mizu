@@ -43,6 +43,7 @@ test_that("a worker killed mid-task fails exactly that task", {
 })
 
 test_that("death inside a nested help-collect fails outer and inner", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   # the nested claim's announce replaced the outer task's, so the reaper's
   # in-flight branch fails only the inner: the worker_slot sweep is what
@@ -70,6 +71,7 @@ test_that("death inside a nested help-collect fails outer and inner", {
 })
 
 test_that("a worker killed while parked frees its slot for respawn", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L, max_workers = 1L)
   expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
@@ -83,6 +85,7 @@ test_that("a worker killed while parked frees its slot for respawn", {
 })
 
 test_that("collect's backstop probe reaps with no listener registered", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   # controller built without ready_wait: no death watches exist, so the
   # only reaper is the probe piggybacked on collect's PENDING wakes
@@ -341,6 +344,7 @@ test_that("retire frees the slot; the pool keeps working and respawns", {
 })
 
 test_that("a retiree lingers as the anchor for its uncollected result", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   t <- mizu_submit(p, runif(100000L)) # a spilled result needs its anchor
@@ -358,6 +362,7 @@ test_that("a retiree lingers as the anchor for its uncollected result", {
 })
 
 test_that("a retiree with only inline results exits without lingering", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   t <- mizu_submit(p, Sys.getpid())
@@ -372,6 +377,7 @@ test_that("a retiree with only inline results exits without lingering", {
 })
 
 test_that("attach and join fail fast on a dead pool owner", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -404,6 +410,7 @@ test_that("attach and join fail fast on a dead pool owner", {
 })
 
 test_that("an attached submitter observes owner death at submit", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -432,6 +439,7 @@ test_that("an attached submitter observes owner death at submit", {
 })
 
 test_that("an attach reaps a killed submitter's slot before claiming", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   f <- tfile()
@@ -455,6 +463,7 @@ test_that("an attach reaps a killed submitter's slot before claiming", {
 })
 
 test_that("a collect waiting on owner death ends cancelled", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -491,6 +500,7 @@ test_that("a collect waiting on owner death ends cancelled", {
 })
 
 test_that("an attached submitter's batch observes owner death first", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -529,6 +539,7 @@ test_that("an attached submitter's batch observes owner death first", {
 })
 
 test_that("a submitter parked on a full ring wakes to owner death", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -559,6 +570,7 @@ test_that("a submitter parked on a full ring wakes to owner death", {
 })
 
 test_that("a batch parked on a full ring wakes to owner death", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -589,6 +601,7 @@ test_that("a batch parked on a full ring wakes to owner death", {
 })
 
 test_that("a claim wakes a submitter parked on a full ring", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- pool_pair(injection_cap = 2L)
   on.exit(pool_end(p))
@@ -623,6 +636,7 @@ test_that("a claim wakes a submitter parked on a full ring", {
 })
 
 test_that("attach probes past a dead submitter's missing and recreated lock", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   skip_on_os("windows") # the controller holds the lock files open there
   # the lock directory varies by platform otherwise (/dev/shm on Linux)
@@ -672,6 +686,7 @@ test_that("attach probes past a dead submitter's missing and recreated lock", {
 })
 
 test_that("a killed worker's claimed task reads died at the state verb", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   # one worker: host + worker fits the two-process budget — no skip_on_cran
   p <- mizu_pool(n_workers = 1L)

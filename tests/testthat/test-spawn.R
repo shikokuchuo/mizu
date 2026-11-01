@@ -2,6 +2,7 @@
 # host's .libPaths() carried hex-encoded in argv — no host state mutated.
 
 test_that("mizu_spawn propagates the host library paths via argv", {
+  skip_on_cran()
   f <- tfile()
   old <- Sys.getenv("R_LIBS", unset = NA)
 
@@ -23,6 +24,7 @@ test_that("mizu_spawn propagates the host library paths via argv", {
 })
 
 test_that("a path separator in a library path survives the child spawn", {
+  skip_on_cran()
   lib <- tempfile(paste0("lib", .Platform[["path.sep"]], "dir"))
   dir.create(lib)
   old <- .libPaths()
@@ -46,6 +48,7 @@ test_that("a path separator in a library path survives the child spawn", {
 })
 
 test_that("mizu_spawn runs a static script instead of Rscript -e", {
+  skip_on_cran()
   f <- tfile()
   mizu:::mizu_spawn(sprintf("writeLines(commandArgs(FALSE), %s)", deparse(f)))
   expect_true(wait_for_file(f))
@@ -55,6 +58,7 @@ test_that("mizu_spawn runs a static script instead of Rscript -e", {
 })
 
 test_that("mizu_spawn round-trips expressions with quoting hazards", {
+  skip_on_cran()
   f <- tfile()
   payload <- "a'b\"c\\d e\tf $PATH `id` %x% é"
   mizu:::mizu_spawn(sprintf("writeLines(%s, %s)", deparse(payload), deparse(f)))
@@ -92,6 +96,7 @@ test_that("the child runner resolves to inst/ in a source layout", {
 })
 
 test_that("a cached pymizu probe revalidates against the package file", {
+  skip_on_cran()
   skip_on_os("windows")
   python3 <- unname(Sys.which("python3"))
   skip_if_not(nzchar(python3), "python3 unavailable")
@@ -134,6 +139,7 @@ test_that("a cached pymizu probe revalidates against the package file", {
 })
 
 test_that("an interpreter path containing a space still spawns", {
+  skip_on_cran()
   skip_on_os("windows")
   python3 <- unname(Sys.which("python3"))
   skip_if_not(nzchar(python3), "python3 unavailable")

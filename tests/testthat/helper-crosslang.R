@@ -18,6 +18,7 @@ pymizu_ok <- local({
 })
 
 skip_if_no_pymizu <- function() {
+  testthat::skip_on_cran()
   py <- Sys.which("python3")
   testthat::skip_if_not(
     pymizu_ok(py),
@@ -45,6 +46,7 @@ pyarrow_ok <- local({
 })
 
 skip_if_no_pyarrow <- function(py) {
+  testthat::skip_on_cran()
   testthat::skip_if_not(pyarrow_ok(py), "pyarrow not available")
 }
 
@@ -77,6 +79,7 @@ py_r_host_ok <- local({
 # Dogfoods pymizu's own probe (its suite's discipline: one home for the
 # probe logic) so an environment without a resolvable R host skips.
 skip_if_no_py_r_host <- function(py) {
+  testthat::skip_on_cran()
   testthat::skip_if_not(
     py_r_host_ok(py),
     "pymizu's r_launcher() cannot resolve R with an installed mizu"

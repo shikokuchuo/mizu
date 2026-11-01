@@ -3,6 +3,7 @@
 # only ever a wake trigger — the liveness lock is the verdict.
 
 test_that("watching an already-dead pid fires immediately", {
+  skip_on_cran()
   skip_on_os("windows")
   dead <- as.integer(system("echo $$", intern = TRUE)) # shell already exited
   w <- .Call(mizu:::mizu_death_watch_call, dead, NULL, 0L, FALSE)
@@ -19,6 +20,7 @@ test_that("death-watch stop validates its handle", {
 })
 
 test_that("a live process's exit sets the fired flag", {
+  skip_on_cran()
   skip_on_os("windows")
   pid <- as.integer(system("sleep 30 >/dev/null 2>&1 & echo $!", intern = TRUE))
   w <- .Call(mizu:::mizu_death_watch_call, pid, NULL, 0L, FALSE)
@@ -30,6 +32,7 @@ test_that("a live process's exit sets the fired flag", {
 })
 
 test_that("peer death unparks a parked waiter", {
+  skip_on_cran()
   skip_on_os("windows")
   pid <- as.integer(system("sleep 30 >/dev/null 2>&1 & echo $!", intern = TRUE))
   xp <- .Call(mizu:::mizu_region_create, 4096)
@@ -45,6 +48,7 @@ test_that("peer death unparks a parked waiter", {
 })
 
 test_that("stopped watches are inert and handles single-shot", {
+  skip_on_cran()
   skip_on_os("windows")
   pid <- as.integer(system("sleep 30 >/dev/null 2>&1 & echo $!", intern = TRUE))
   w <- .Call(mizu:::mizu_death_watch_call, pid, NULL, 0L, FALSE)

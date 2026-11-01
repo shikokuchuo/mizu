@@ -1,5 +1,6 @@
 # Async-test plumbing: the later/promises guard and the event-loop pump.
 skip_if_no_promises <- function() {
+  testthat::skip_on_cran() # a listener thread and wall-clock timers
   testthat::skip_if_not_installed("later")
   testthat::skip_if_not_installed("promises")
 }

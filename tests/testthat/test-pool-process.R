@@ -4,6 +4,7 @@
 # publish, cross-process submitter attach, and orderly stop.
 
 test_that("a spawned worker round-trips every payload kind", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool()
   tasks <- list(
@@ -27,6 +28,7 @@ test_that("a spawned worker round-trips every payload kind", {
 })
 
 test_that("an untransportable task error flattens instead of killing the worker", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool()
   t <- mizu_submit(p, {
@@ -45,6 +47,7 @@ test_that("an untransportable task error flattens instead of killing the worker"
 })
 
 test_that("submit captures expr and args through forwarding wrappers", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool()
   g <- function(...) mizu_submit(p, ...)
@@ -60,6 +63,7 @@ test_that("submit captures expr and args through forwarding wrappers", {
 })
 
 test_that("submit capture matches substitute() non-chase and edge cases", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool()
   w <- function(e) mizu_submit(p, e) # base substitute() does not chase
@@ -75,6 +79,7 @@ test_that("submit capture matches substitute() non-chase and edge cases", {
 })
 
 test_that("collect_all round-trips a heterogeneous set across processes", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(2L)
   tasks <- list(
@@ -91,6 +96,7 @@ test_that("collect_all round-trips a heterogeneous set across processes", {
 })
 
 test_that("a blocked collect is woken by the worker's publish", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool()
   t <- mizu_submit(p, {
@@ -103,6 +109,7 @@ test_that("a blocked collect is woken by the worker's publish", {
 })
 
 test_that("a task error carries its condition across processes", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool()
   t <- mizu_submit(p, stop("worker-side ", x), x = "failure")
@@ -173,6 +180,7 @@ test_that("two processes submit concurrently to one pool", {
 })
 
 test_that("mori-shared task arguments map zero-copy in the worker", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   skip_if_not_installed("mori")
   p <- mizu_pool()
@@ -194,6 +202,7 @@ test_that("mori-shared task arguments map zero-copy in the worker", {
 })
 
 test_that("the startup deadline walks the pool back", {
+  skip_on_cran()
   err <- tryCatch(
     mizu_pool(launcher = function(token, slot) NULL, startup_timeout = 0.5),
     error = identity
@@ -203,6 +212,7 @@ test_that("the startup deadline walks the pool back", {
 })
 
 test_that("a custom launcher receives the token and slot", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   seen <- NULL
   p <- mizu_pool(launcher = function(token, slot) {
@@ -217,6 +227,7 @@ test_that("a custom launcher receives the token and slot", {
 })
 
 test_that("stop cancels a pending task and the worker exits cleanly", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool()
   t <- mizu_submit(p, Sys.sleep(0.2))
@@ -286,6 +297,7 @@ test_that("nested fan-out runs with help mode and stealing live", {
 })
 
 test_that("a trace-hook error takes the worker down as infrastructure", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   errfile <- tfile()
   p <- mizu_pool(launcher = mizu_launcher(stderr = errfile))
@@ -316,6 +328,7 @@ test_that("a trace-hook error takes the worker down as infrastructure", {
 })
 
 test_that("a full ring parks the submitter until a worker's pop wakes it", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(injection_cap = 4L, result_slots = 256L)
   # 32 submissions through a 4-slot ring: most block on full_waiters and

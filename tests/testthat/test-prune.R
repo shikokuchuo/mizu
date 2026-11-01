@@ -7,6 +7,7 @@ test_that("mizu_prune returns NULL when there is nothing to reap", {
 })
 
 test_that("mizu_prune reaps the orphans of a hard-killed process", {
+  skip_on_cran()
   skip_on_os("windows") # Win32 mappings cannot outlive their creator
   skip_if_no_child_mizu()
   skip_if_no_reaper() # a zombie's PID is not free for the reaper

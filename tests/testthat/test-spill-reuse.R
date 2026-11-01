@@ -152,6 +152,7 @@ test_that("consumer mapping caches skip the open once names repeat", {
 })
 
 test_that("surrender past the free list's byte cap evicts the oldest", {
+  skip_on_cran() # ~96 MB of regions: past a small /dev/shm
   p <- pool_pair()
   v <- big_obj(3e6) # a ~24 MB stream lands in the 32 MB size class
   # the submits find an empty list, so three distinct regions exist at once
@@ -222,6 +223,7 @@ test_that("a seventeenth distinct region evicts from the mapping cache", {
 })
 
 test_that("eviction between equal-size regions takes the older stamp", {
+  skip_on_cran() # ~80 MB of regions: past a small /dev/shm
   p <- pool_pair()
   v <- big_obj(1.5e6) # ~12 MB stream: the 16 MB size class, four fit the cap
   t1 <- mizu_submit(p[["ctrl"]], sum(v[[1]]), v = v)

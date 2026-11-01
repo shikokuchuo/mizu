@@ -52,6 +52,7 @@ test_that("MIZU_LIVENESS_DIR overrides the default, read-through", {
 })
 
 test_that("a holder's death releases the lock to a probing survivor", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   lf <- tfile()
   pidfile <- tfile()

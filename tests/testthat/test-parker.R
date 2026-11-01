@@ -34,6 +34,7 @@ test_that("entities outside the layout are rejected", {
 })
 
 test_that("a directed unpark from another process wakes a parked waiter", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   xp <- .Call(mizu:::mizu_region_create, 4096)
   nm <- .Call(mizu:::mizu_region_name, xp)

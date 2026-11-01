@@ -75,6 +75,7 @@ test_that("prepared handles print their region and staleness", {
 })
 
 test_that("prepared runs reuse the region and match mizu_map exactly", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   f <- function(i) rnorm(2L)
@@ -96,6 +97,7 @@ test_that("prepared runs reuse the region and match mizu_map exactly", {
 })
 
 test_that("an unclean run marks the handle stale; the next run restages", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   pm <- mizu_map_prepare(p, 1:4 + 0, function(i) {
@@ -208,6 +210,7 @@ test_that("a prepared run whose submission times out returns the sentinel", {
 })
 
 test_that("phase B: mizu_map_run(pm, .x =) round-trips end to end", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   x1 <- runif(64)

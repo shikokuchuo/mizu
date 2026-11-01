@@ -696,6 +696,7 @@ test_that("a deadline expiring mid-run cancels the window, sentinel returned", {
 })
 
 test_that("mizu_map(.stream) end-to-end and out-of-order completion", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   # chunk 1's first element sleeps, so chunks 2+ complete first — the
@@ -747,6 +748,7 @@ test_that("mizu_map(.stream) end-to-end and out-of-order completion", {
 })
 
 test_that("mizu_map(.stream) needs no pool round-trip for empty x", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   expect_identical(
@@ -926,6 +928,7 @@ test_that("deaths on both workers accumulate every lost range", {
 })
 
 test_that("prepared streaming re-arms and matches mizu_map exactly", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   x <- 1:16 + 0
@@ -949,6 +952,7 @@ test_that("prepared streaming re-arms and matches mizu_map exactly", {
 })
 
 test_that("an unclean prepared run restages into a fresh region", {
+  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   pm <- mizu_map_prepare(

@@ -708,6 +708,7 @@ test_that("a corrupt task payload is the task's ERR, not worker death", {
 })
 
 test_that("a raise inside the OK publish is the task's error, not worker death (R-03)", {
+  skip_on_cran() # deliberately drives serialize to the C-stack limit
   n <- cstack_trigger_depth()
   skip_if(n == 0L, "serialize recursion does not hit the C-stack limit here")
   p <- pool_pair()
@@ -737,6 +738,7 @@ test_that("a raise inside the OK publish is the task's error, not worker death (
 })
 
 test_that("a deeply nested task argument raises at the guarded walkers (R-04)", {
+  skip_on_cran() # deliberately drives serialize to the C-stack limit
   n <- cstack_trigger_depth()
   skip_if(n == 0L, "serialize recursion does not hit the C-stack limit here")
   p <- pool_pair()

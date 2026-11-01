@@ -175,6 +175,7 @@ child_mizu_ok <- local({
 })
 
 skip_if_no_child_mizu <- function() {
+  testthat::skip_on_cran()
   testthat::skip_if_not(
     child_mizu_ok(),
     "mizu not loadable from child processes"
@@ -209,6 +210,7 @@ reaper_ok <- local({
 })
 
 skip_if_no_reaper <- function() {
+  testthat::skip_on_cran()
   testthat::skip_if_not(reaper_ok(), "PID 1 does not reap orphans")
 }
 
@@ -237,6 +239,7 @@ on_valgrind <- function() {
 }
 
 skip_if_no_fork <- function() {
+  testthat::skip_on_cran()
   testthat::skip_if(
     on_valgrind(),
     "forked children report inherited thread TLS as lost under valgrind"
