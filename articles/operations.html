@@ -84,6 +84,7 @@
     <p>Deployment settings for mizu processes, and what happens when one of them dies.</p>
 <section class="level2"><h2 id="deploying-on-linux">Deploying on Linux<a class="anchor" aria-label="anchor" href="#deploying-on-linux"></a>
 </h2>
+<p>mizu requires Linux kernel 5.3 or later. The death of a peer is detected through <code>pidfd_open</code>, with no fallback for older kernels.</p>
 <p>On Linux, POSIX shared memory is <code>/dev/shm</code>, a bounded tmpfs mount. Everything mizu creates must fit in it: the pool and channel regions, plus a region per payload too large for a slot. Container runtimes set it to 64 MB by default. Use <code>docker run --shm-size=4g</code>, or the equivalent in your orchestrator. Size it to your peak in-flight payload traffic.</p>
 </section><section class="level2"><h2 id="linux-memory-allocator">Linux memory allocator<a class="anchor" aria-label="anchor" href="#linux-memory-allocator"></a>
 </h2>

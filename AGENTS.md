@@ -62,10 +62,8 @@ library. Under a bare `load_all()` they skip via
 different code than the test process. **After changing `src/` or `R/`,
 run `R CMD INSTALL .` before the test suite.**
 
-`compile_commands.json` for clangd is regenerated on install
-(`Config/build/compilation-database` in DESCRIPTION). All files are
-air-formatted — the IDE formats on save; accept its \>80-col rewraps in
-test files you touch, don’t fight them.
+All files are air-formatted — the IDE formats on save; accept its
+\>80-col rewraps in test files you touch, don’t fight them.
 
 The vignettes are pre-computed (mirai-style, but quarto instead of
 litedown): `precompile.R` renders each `dev/vignettes/_{name}.qmd` to
@@ -843,7 +841,7 @@ no network, no file access outside the working directory) or
 
 ## Git
 
-- Commit messages: single-line subject only, no body.
-- `NEWS.md` is a stub (a dev header + “0.0.0 Initial release”) — don’t
-  add change bullets.
+- Commit messages: a short single-line summary, no body — describe the
+  change, don’t enumerate every file or edit.
+- PR descriptions: brief, tidyverse-style plain English.
 - Only push when the user explicitly requests it.

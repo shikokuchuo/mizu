@@ -5,6 +5,9 @@ them dies.
 
 ## Deploying on Linux
 
+mizu requires Linux kernel 5.3 or later. The death of a peer is detected
+through `pidfd_open`, with no fallback for older kernels.
+
 On Linux, POSIX shared memory is `/dev/shm`, a bounded tmpfs mount.
 Everything mizu creates must fit in it: the pool and channel regions,
 plus a region per payload too large for a slot. Container runtimes set

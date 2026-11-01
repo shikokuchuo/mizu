@@ -78,7 +78,7 @@
 <span><span class="co"># Run complete R CMD check</span></span>
 <span><span class="fu">devtools</span><span class="fu">::</span><span class="fu">check</span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 <p>Cross-process tests spawn fresh <code>Rscript</code> children that <code><a href="https://shikokuchuo.net/mizu/">library(mizu)</a></code> from the <em>installed</em> library. Under a bare <code>load_all()</code> they skip via <code>skip_if_no_child_mizu()</code>; with a stale installed copy the children run different code than the test process. <strong>After changing <code>src/</code> or <code>R/</code>, run <code>R CMD INSTALL .</code> before the test suite.</strong></p>
-<p><code>compile_commands.json</code> for clangd is regenerated on install (<code>Config/build/compilation-database</code> in DESCRIPTION). All files are air-formatted — the IDE formats on save; accept its &gt;80-col rewraps in test files you touch, don’t fight them.</p>
+<p>All files are air-formatted — the IDE formats on save; accept its &gt;80-col rewraps in test files you touch, don’t fight them.</p>
 <p>The vignettes are pre-computed (mirai-style, but quarto instead of litedown): <code>precompile.R</code> renders each <code>dev/vignettes/_{name}.qmd</code> to static markdown as <code>vignettes/{name}.qmd</code> (engine <code>quarto::html</code>; no chunks execute at build time, but the quarto CLI must be present). Re-run it after editing a <code>_</code>-prefixed source; it needs the installed package (it spawns children) plus bench/mirai/ggplot2 for the benchmark chunks. The set splits along pymizu’s docs page boundaries (decided 2026-10): <code>mizu</code> (slim overview hub linking the rest), <code>channels</code>, <code>pools</code>, <code>map</code>, <code>interop</code>, <code>benchmarks</code>, <code>operations</code>; keep the <code>_pkgdown.yml</code> <code>articles:</code> grouping in sync when adding one (each section needs a <code>navbar:</code> field — without one on any section, pkgdown renders the navbar “Articles” entry as a flat link instead of a dropdown).</p>
 </div>
 <div class="section level3">
@@ -151,9 +151,8 @@
 </div>
 <div class="section level2">
 <h2 id="git">Git<a class="anchor" aria-label="anchor" href="#git"></a></h2>
-<ul><li>Commit messages: single-line subject only, no body.</li>
-<li>
-<code>NEWS.md</code> is a stub (a dev header + “0.0.0 Initial release”) — don’t add change bullets.</li>
+<ul><li>Commit messages: a short single-line summary, no body — describe the change, don’t enumerate every file or edit.</li>
+<li>PR descriptions: brief, tidyverse-style plain English.</li>
 <li>Only push when the user explicitly requests it.</li>
 </ul></div>
 

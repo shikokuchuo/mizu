@@ -76,8 +76,8 @@
 <span id="cb1-4"><a href="#cb1-4" tabindex="-1"></a>\  <span class="sc">/</span>  ミズ  <span class="sc">/</span></span>
 <span id="cb1-5"><a href="#cb1-5" tabindex="-1"></a> \<span class="sc">/</span>_______<span class="sc">/</span></span></code></pre></div>
 <p>mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.</p>
-<p>Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>). The hot path never enters the kernel and data is never copied through a system socket.</p>
-<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting, and peer death delivered as an OS event.</p>
+<p>Task round trips drop from ~100 µs over sockets to &lt; 1 µs — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.</p>
+<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting with the hot path bypassing the kernel, and peer death delivered as an OS event.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <ul>
 <li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages</li>
@@ -87,7 +87,7 @@
 <li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>
 </ul>
 <blockquote>
-<p><strong>Pre-release.</strong> The API is not stable and can change at any time before a release.</p>
+<p><strong>Lifecycle: experimental.</strong> The API is not yet stable and we may make changes to improve the package.</p>
 </blockquote>
 <div class="section level2">
 <h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
@@ -95,7 +95,7 @@
 <p>Install the development version from GitHub:</p>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu">pak</span><span class="fu">::</span><span class="fu"><a href="https://pak.r-lib.org/reference/pak.html" class="external-link">pak</a></span><span class="op">(</span><span class="st">"shikokuchuo/mizu"</span><span class="op">)</span></span></code></pre></div>
-<p>Requires R 4.3 or later on a 64-bit platform (Linux: kernel 5.3 or later).</p>
+<p>Requires R 4.3 or later.</p>
 </div>
 <div class="section level2">
 <h2 id="quickstart">Quickstart<a class="anchor" aria-label="anchor" href="#quickstart"></a>
@@ -160,7 +160,7 @@
 <div class="section level2">
 <h2 id="parallel-map">Parallel map<a class="anchor" aria-label="anchor" href="#parallel-map"></a>
 </h2>
-<p><code><a href="reference/mizu_map.html">mizu_map()</a></code> maps a function over a vector or list on the pool and returns a map handle immediately, like <code><a href="reference/mizu_submit.html">mizu_submit()</a></code> returns a task. <code><a href="reference/mizu_submit.html">mizu_collect()</a></code> on the handle waits and returns the results in order; <code>as.promise()</code> (or <code>then()</code> directly) collects through the event loop instead. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor.</p>
+<p><code><a href="reference/mizu_map.html">mizu_map()</a></code> maps a function over a vector or list on the pool and returns a map handle immediately, just as <code><a href="reference/mizu_submit.html">mizu_submit()</a></code> returns a task. <code><a href="reference/mizu_submit.html">mizu_collect()</a></code> on the handle waits and returns the results in order. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor.</p>
 <p>A map also nests — the mapped function can map over its own pool with <code>mizu_map(mizu_current_pool(), ...)</code>, deadlock-free.</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span><span class="op">)</span></span>

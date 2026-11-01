@@ -11,15 +11,16 @@
 mizu uses shared memory to make communication between R processes fast
 enough to parallelize work at thread granularity.
 
-Task round trips drop from around 100 µs over sockets to under a
-microsecond — two orders of magnitude (see [Benchmarks](#benchmarks)).
-The hot path never enters the kernel and data is never copied through a
-system socket.
+Task round trips drop from ~100 µs over sockets to \< 1 µs — two orders
+of magnitude (see [Benchmarks](#benchmarks)). Common data structures
+like vectors, matrices, data frames, and Arrow tables can be shared
+between R and Python as zero-copy views.
 
 Channels and work-stealing task pools run over POSIX shared memory
 (Linux, macOS) or Win32 file mappings (Windows): lock-free
 single-producer single-consumer rings with batched publication,
-spin-then-park waiting, and peer death delivered as an OS event.
+spin-then-park waiting with the hot path bypassing the kernel, and peer
+death delivered as an OS event.
 
 mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C
 library for lock-free shared-memory IPC.
@@ -37,8 +38,8 @@ Python, so R and Python can talk to each other.
   any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 
-> **Pre-release.** The API is not stable and can change at any time
-> before a release.
+> **Lifecycle: experimental.** The API is not yet stable and we may make
+> changes to improve the package.
 
 ## Installation
 
@@ -49,8 +50,7 @@ Install the development version from GitHub:
 pak::pak("shikokuchuo/mizu")
 ```
 
-Requires R 4.3 or later on a 64-bit platform (Linux: kernel 5.3 or
-later).
+Requires R 4.3 or later.
 
 ## Quickstart
 
@@ -86,14 +86,13 @@ which shared memory cannot reach.
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) maps
 a function over a vector or list on the pool and returns a map handle
-immediately, like
+immediately, just as
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 returns a task.
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-on the handle waits and returns the results in order; `as.promise()` (or
-`then()` directly) collects through the event loop instead. The function
-and data cross into shared memory once. Workers divide the elements
-among themselves, claiming ranges from a shared cursor.
+on the handle waits and returns the results in order. The function and
+data cross into shared memory once. Workers divide the elements among
+themselves, claiming ranges from a shared cursor.
 
 A map also nests — the mapped function can map over its own pool with
 `mizu_map(mizu_current_pool(), ...)`, deadlock-free.
