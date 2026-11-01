@@ -472,8 +472,22 @@ ix_read <- function(hex) {
   .Call(mizu:::mizu_interop_read_call, ix_hex_to_raw(hex))
 }
 
+# Raw err-frame forms: byte-level writes/reads under ix_write_err / ix_read,
+# and the write -> read round-trip to the condition's value form
+ix_write_err_raw <- function(x, budget = 240L) {
+  .Call(mizu:::mizu_interop_write_err_call, x, budget)
+}
+
+ix_read_raw <- function(r) {
+  .Call(mizu:::mizu_interop_read_call, r)
+}
+
+ix_err_rt <- function(x, budget = 240L) {
+  ix_read_raw(ix_write_err_raw(x, budget))
+}
+
 ix_write_err <- function(x, budget = 240L) {
-  ix_raw_to_hex(.Call(mizu:::mizu_interop_write_err_call, x, budget))
+  ix_raw_to_hex(ix_write_err_raw(x, budget))
 }
 
 ix_write <- function(x) {

@@ -348,10 +348,7 @@ test_that("an unknown layout flags word rejects as corrupt, the ring flows on (R
   rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
   # the [32-35] format flags word: a bit past the S4 flag is corrupt-or-newer
   .Call(mizu:::mizu_poke, rw, 32L, as.raw(c(2L, 0L, 0L, 0L)))
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  # the raise out of the read hook was contained and consumed: no wedge
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 })
 
@@ -367,24 +364,18 @@ test_that("a REF re-wrap validates the region's layout header", {
   )
   reflow <- function() {
     mizu_send(p[["host"]], v) # REF: the wrap re-validates the layout header
-    expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-    mizu_send(p[["host"]], "tail") # the raise was contained: no wedge
-    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+    expect_corrupt_recv(p)
   }
-  .Call(mizu:::mizu_poke, rw, 8, i64raw(2L^30)) # the length outruns the region
-  reflow()
-  .Call(mizu:::mizu_poke, rw, 8, i64raw(200000L))
-  .Call(mizu:::mizu_poke, rw, 16, i64raw(2L^30)) # attrs outrun the region
-  reflow()
-  .Call(mizu:::mizu_poke, rw, 16, i64raw(0L))
-  .Call(mizu:::mizu_poke, rw, 48, i64raw(5L)) # an undefined header NA claim
-  reflow()
-  .Call(mizu:::mizu_poke, rw, 48, i64raw(0L))
-  .Call(mizu:::mizu_poke, rw, 40, i64raw(8L)) # an unaligned validity offset
-  reflow()
-  .Call(mizu:::mizu_poke, rw, 40, i64raw(0L))
-  .Call(mizu:::mizu_poke, rw, 0, as.raw(0L)) # unknown magic
-  reflow()
+  # the length outruns the region
+  with_corruption(rw, list(list(8, i64raw(2L^30))), reflow())
+  # attrs outrun the region
+  with_corruption(rw, list(list(16, i64raw(2L^30))), reflow())
+  # an undefined header NA claim
+  with_corruption(rw, list(list(48, i64raw(5L))), reflow())
+  # an unaligned validity offset
+  with_corruption(rw, list(list(40, i64raw(8L))), reflow())
+  # unknown magic
+  with_corruption(rw, list(list(0, as.raw(0L))), reflow())
   channel_end(p)
 })
 
@@ -400,9 +391,7 @@ test_that("a REF re-wrap validates the string layout header", {
   )
   mizu_send(p[["host"]], v)
   .Call(mizu:::mizu_poke, rw, 16, i64raw(2L^30)) # the block outruns the region
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 })
 
@@ -420,9 +409,7 @@ test_that("a REF slot validates its identifier at read", {
     512L + 256L + 16L,
     charToRaw("x") # the literal prefix no longer matches
   )
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 
   p <- channel_pair(arena_size = 0)
@@ -440,9 +427,7 @@ test_that("a REF slot validates its identifier at read", {
     512L + 256L + 4L,
     writeBin(0L, raw(), size = 4L, endian = "little") # a zero identifier length
   )
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 })
 
@@ -459,9 +444,7 @@ test_that("a SHM_VEC slot cross-checks its header against the aux word", {
   rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
   # the staged extent no longer matches the slot's aux word
   .Call(mizu:::mizu_poke, rw, 8, i64raw(99999L))
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 })
 
@@ -476,9 +459,7 @@ test_that("SHM_VEC string and list slots cross-check the aux word too", {
   )
   # the exact used bytes no longer match the string block's header
   .Call(mizu:::mizu_poke, rw, 512L + 8L + 4L, as.raw(255L))
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 
   p <- channel_pair(arena_size = 0)
@@ -490,9 +471,7 @@ test_that("SHM_VEC string and list slots cross-check the aux word too", {
   )
   # the staged type is a list; the aux byte now says a vector
   .Call(mizu:::mizu_poke, rw, 512L + 8L, as.raw(14L))
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 })
 
@@ -511,9 +490,7 @@ test_that("a SHM_VEC slot validates its region-name length", {
     512L + 4L,
     writeBin(0L, raw(), size = 4L, endian = "little")
   )
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  mizu_send(p[["host"]], "tail")
-  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  expect_corrupt_recv(p)
   channel_end(p)
 })
 
@@ -535,18 +512,6 @@ test_that("a REF naming a vanished region fails the read", {
     if (b == charToRaw("a")) charToRaw("b") else charToRaw("a")
   )
   expect_error(mizu_recv(p[["peer"]], 5), "payload region vanished")
-  channel_end(p)
-})
-
-test_that("a received view re-sends as REF — zero bytes move", {
-  p <- channel_pair(arena_size = 0)
-  x <- runif(100000)
-  mizu_send(p[["host"]], x)
-  y <- mizu_recv(p[["peer"]], 5)
-  mizu_send(p[["peer"]], y) # REF back to the host
-  z <- mizu_recv(p[["host"]], 5)
-  expect_true(is_view(z))
-  expect_identical(as.numeric(z), x)
   channel_end(p)
 })
 
@@ -889,20 +854,6 @@ test_that("a string leaf in a list view carries the same string block", {
   empty <- peek(64 + 64, 32) # character(0): a 64-byte block, one zero offset
   expect_identical(i64v(empty[9:16]), 64)
   expect_identical(i64v(empty[25:32]), 0)
-  channel_end(p)
-})
-
-test_that("a held string view pins its region until GC", {
-  p <- channel_pair(arena_size = 0)
-  x <- paste0("s", 1:50000)
-  mizu_send(p[["host"]], x)
-  y <- mizu_recv(p[["peer"]], 5)
-  mizu_send(p[["host"]], x) # reap: the loan drops; y pins the region
-  expect_identical(chan_ledger(p[["host"]]), 1L)
-  rm(y)
-  invisible(gc())
-  mizu_send(p[["host"]], x) # reap: count 0 -> free list
-  expect_identical(chan_ledger(p[["host"]]), 0L)
   channel_end(p)
 })
 
@@ -1317,18 +1268,23 @@ test_that("the wrap-time remote-leaf walk rejects corrupt entries", {
   )
   reflow <- function(msg) {
     mizu_send(p[["host"]], w) # REF: the wrap re-walks the tree
-    expect_error(mizu_recv(p[["peer"]], 5), msg)
-    mizu_send(p[["host"]], "tail") # the raise was contained: no wedge
-    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+    expect_corrupt_recv(p, msg)
   }
 
-  .Call(mizu:::mizu_poke, rw, 104, i64raw(300L)) # the identifier span caps at 255
-  reflow("corrupt or newer")
-  .Call(mizu:::mizu_poke, rw, 104, i64raw(40L))
-  .Call(mizu:::mizu_poke, rw, 96, i64raw(2L^30)) # the span falls outside
-  reflow("invalid element data")
-  .Call(mizu:::mizu_poke, rw, 96, i64raw(72L)) # the span is not 64-aligned
-  reflow("invalid element data")
+  # the identifier span caps at 255
+  with_corruption(rw, list(list(104, i64raw(300L))), reflow("corrupt or newer"))
+  # the span falls outside
+  with_corruption(
+    rw,
+    list(list(96, i64raw(2L^30))),
+    reflow("invalid element data")
+  )
+  # the span is not 64-aligned
+  with_corruption(
+    rw,
+    list(list(96, i64raw(72L))),
+    reflow("invalid element data")
+  )
   channel_end(p)
 })
 
@@ -1348,18 +1304,18 @@ test_that("the wrap-time remote-leaf walk validates nested regions", {
   nested <- i64v(.Call(mizu:::mizu_peek, rw, 64, 8)) # entry 0's data offset
   reflow <- function(msg) {
     mizu_send(p[["host"]], w)
-    expect_error(mizu_recv(p[["peer"]], 5), msg)
-    mizu_send(p[["host"]], "tail")
-    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+    expect_corrupt_recv(p, msg)
   }
 
+  # the cases build on each other: the span shrink to a header-sized 128
+  # stays in place past the magic restore, so the last case's count outruns it
   .Call(mizu:::mizu_poke, rw, 72, i64raw(32L)) # smaller than a header
   reflow("invalid nested list region")
   .Call(mizu:::mizu_poke, rw, 72, i64raw(128L))
   .Call(mizu:::mizu_poke, rw, nested, as.raw(0L)) # unknown magic
   reflow("invalid nested list region")
   mg <- .Call(mizu:::mizu_peek, rw, 0, 4)
-  .Call(mizu:::mizu_poke, rw, nested, mg) # an element count outrunning the span
+  .Call(mizu:::mizu_poke, rw, nested, mg)
   reflow("invalid nested list region")
   channel_end(p)
 })

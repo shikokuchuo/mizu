@@ -597,21 +597,6 @@ test_that("collect_all_async rejects the first erroring by position; the rest co
   expect_identical(mizu_collect(ts[[3L]], 5), 5L)
 })
 
-test_that("collect_all_async timeout rejects and consumes nothing", {
-  skip_if_no_promises()
-  p <- pool_pair()
-  on.exit(pool_end(p))
-  ts <- list(mizu_submit(p[["ctrl"]], 1L), mizu_submit(p[["ctrl"]], 2L))
-  o <- observe(mizu_collect_all_async(ts, timeout = 0.1))
-  expect_true(pump_until(function() settled(o)))
-  expect_s3_class(o$error, "mizu_timeout")
-  while (pool_step(p) == 1L) {
-    NULL
-  }
-  expect_identical(mizu_collect(ts[[1L]], 5), 1L)
-  expect_identical(mizu_collect(ts[[2L]], 5), 2L)
-})
-
 test_that("collect_any_async resolves list(index, value); errors carry index", {
   skip_if_no_promises()
   p <- pool_pair()

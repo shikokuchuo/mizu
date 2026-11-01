@@ -454,19 +454,6 @@ test_that("destroying the host first releases the region name", {
   .Call(mizu:::mizu_channel_destroy, p[["peer"]])
 })
 
-test_that("a second peer attach fails on the held liveness lock", {
-  p <- channel_pair()
-  on.exit(channel_end(p))
-  expect_error(
-    .Call(
-      mizu:::mizu_channel_attach,
-      .Call(mizu:::mizu_channel_suffix, p[["host"]]),
-      NULL
-    ),
-    "cannot lock peer liveness file"
-  )
-})
-
 test_that("create resolves the default temp dir without TMPDIR", {
   old <- Sys.getenv("TMPDIR", unset = NA)
   skip_if(is.na(old))

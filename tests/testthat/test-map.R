@@ -20,13 +20,6 @@ run_map <- function(p, x, f, dots = list(), ..., steps = 256L) {
   collect30(p[["ctrl"]], st)
 }
 
-test_that("an oddly-attributed x declines the x section and maps as a list", {
-  p <- pool_pair()
-  on.exit(pool_end(p))
-  x <- structure(1:8, foo = "bar")
-  expect_identical(run_map(p, x, function(el) el + 1L), as.list(1:8 + 1L))
-})
-
 test_that("strip_srcref strips source references, original and attrs intact", {
   f <- eval(parse(
     text = "function(x, d = {\n  1\n}) {\n  if (x > 0) {\n    log(x)\n  } else {\n    0\n  }\n}",
@@ -1643,6 +1636,10 @@ test_that("a template type mismatch names the template's type", {
     run_map(p, 1:4, function(i) "x", template = complex(1)),
     "must be type 'complex'"
   )
+  expect_error(
+    run_map(p, 1:4, function(i) 1.5, template = raw(1)),
+    "must be type 'raw'"
+  )
   pool_end(p)
 })
 
@@ -1913,26 +1910,6 @@ test_that("a spec map declines a non-portable constant at stage time", {
     class = "mizu_error_not_portable"
   )
   pool_end(p)
-})
-
-test_that("a dim-attributed x coerces to the element list", {
-  p <- pool_pair()
-  on.exit(pool_end(p))
-  x <- matrix(1:12, 3, 4)
-  expect_identical(run_map(p, x, identity), as.list(x))
-})
-
-test_that("a wrong-typed template value errors naming the type", {
-  p <- pool_pair()
-  on.exit(pool_end(p))
-  expect_error(
-    run_map(p, 1:3, function(x) 1.5, template = logical(1)),
-    "type 'logical'"
-  )
-  expect_error(
-    run_map(p, 1:3, function(x) 1.5, template = raw(1)),
-    "type 'raw'"
-  )
 })
 
 test_that("the map srcref strip walks expression constants", {

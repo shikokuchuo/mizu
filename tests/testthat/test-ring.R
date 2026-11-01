@@ -376,12 +376,6 @@ test_that("corrupt slot headers reject at read, the ring flows on", {
   i32 <- function(x) {
     writeBin(as.integer(x), raw(), size = 4L, endian = "little")
   }
-  reflow <- function(p) {
-    mizu_send(p[["host"]], "tail") # the raise was contained: no wedge
-    expect_identical(mizu_recv(p[["peer"]], 5), "tail")
-    channel_end(p)
-  }
-
   # the trivial tiers read unguarded (wire corruption there is only ever
   # in-process sabotage): their raises stay in place, no reflow
   p <- channel_pair()
@@ -393,8 +387,8 @@ test_that("corrupt slot headers reject at read, the ring flows on", {
   p <- channel_pair()
   mizu_send(p[["host"]], list(1)) # INLINE: a zero length is nonsense
   poke_hdr(p, 4L, i32(0L))
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  reflow(p)
+  expect_corrupt_recv(p)
+  channel_end(p)
 
   p <- channel_pair()
   mizu_send(p[["host"]], as.raw(1:8)) # RAWVEC: the aux word is the wire type
@@ -405,16 +399,16 @@ test_that("corrupt slot headers reject at read, the ring flows on", {
   p <- channel_pair()
   mizu_send(p[["host"]], 42L) # an unknown kind
   poke_hdr(p, 0L, i32(99L))
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  reflow(p)
+  expect_corrupt_recv(p)
+  channel_end(p)
 
   p <- channel_pair(arena_size = 0)
   e <- new.env()
   e$x <- runif(100)
   mizu_send(p[["host"]], e) # SHM_RAW: a zero region-name length
   poke_hdr(p, 4L, i32(0L))
-  expect_error(mizu_recv(p[["peer"]], 5), "corrupt payload slot")
-  reflow(p)
+  expect_corrupt_recv(p)
+  channel_end(p)
 
   p <- channel_pair(arena_size = 262144L) # RAWSPILL: a zero wire type
   mizu_send(p[["host"]], as.raw(rep(1L, 100000)))

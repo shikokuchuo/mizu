@@ -35,8 +35,15 @@ test_that("lock files land in the resolved per-platform directory", {
 test_that("MIZU_LIVENESS_DIR overrides the default, read-through", {
   d <- tempfile("livedir")
   dir.create(d)
+  old <- Sys.getenv("MIZU_LIVENESS_DIR", NA_character_)
   Sys.setenv(MIZU_LIVENESS_DIR = d)
-  on.exit(Sys.unsetenv("MIZU_LIVENESS_DIR"))
+  on.exit(
+    if (is.na(old)) {
+      Sys.unsetenv("MIZU_LIVENESS_DIR")
+    } else {
+      Sys.setenv(MIZU_LIVENESS_DIR = old)
+    }
+  )
   expect_identical(.Call(mizu:::mizu_live_dir_call), d)
   p <- channel_pair()
   suffix <- .Call(mizu:::mizu_channel_suffix, p[["host"]])

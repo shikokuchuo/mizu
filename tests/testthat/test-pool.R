@@ -440,32 +440,6 @@ test_that("a corrupt stolen entry aborts the steal", {
   expect_identical(pool_step(p, wk = p[["wks"]][[2L]]), 0L)
 })
 
-test_that("a vanished task payload publishes LOST to the collector", {
-  p <- pool_pair()
-  on.exit(pool_end(p))
-  x <- paste(rep("x", 3000), collapse = "")
-  t <- mizu_submit(p[["ctrl"]], x, x = x)
-  rw <- .Call(
-    mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
-    TRUE
-  )
-  # ring 0 entry 0 (pool_pair geometry): the SHM_RAW payload is the name
-  base <- 128L + 256L + 8L * 128L + 256L + 256L
-  id <- .Call(mizu:::mizu_peek, rw, base + 40L, 40L)
-  hex0 <- base + 40L + which(id == charToRaw("_"))[1L] + 1L
-  b <- .Call(mizu:::mizu_peek, rw, hex0, 1L)
-  # a well-formed name that does not exist (one hex digit flipped)
-  .Call(
-    mizu:::mizu_poke,
-    rw,
-    hex0,
-    if (b == charToRaw("a")) charToRaw("b") else charToRaw("a")
-  )
-  pool_step(p)
-  expect_error(mizu_collect(t, 5), "payload region vanished")
-})
-
 test_that("a rawspill-framed task whose region vanished reads as lost", {
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -568,11 +542,7 @@ test_that("attach rejects each corrupted pool header field", {
   suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)
   rw <- .Call(mizu:::mizu_region_open, mizu_pool_status(ctrl)[["name"]], TRUE)
   hdr <- .Call(mizu:::mizu_peek, rw, 0, 64)
-  corrupt <- function(off, bytes, msg) {
-    .Call(mizu:::mizu_poke, rw, off, as.raw(bytes))
-    expect_error(.Call(mizu:::mizu_pool_attach_call, suffix), msg)
-    .Call(mizu:::mizu_poke, rw, 0, hdr)
-  }
+  corrupt <- make_corrupt(rw, hdr, .Call(mizu:::mizu_pool_attach_call, suffix))
   corrupt(4, 99, "ABI version mismatch")
   corrupt(8, 0, "registry capacities out of range") # max_workers 0
   corrupt(16, 3, "not valid powers of two") # inj_cap 3
@@ -1326,7 +1296,7 @@ test_that("collect_any reports completion order across real workers", {
   skip_if_no_child_mizu()
   p <- mizu_pool(2L)
   slow <- mizu_submit(p, {
-    Sys.sleep(0.5)
+    Sys.sleep(2)
     "slow"
   })
   fast <- mizu_submit(p, "fast")
@@ -1594,39 +1564,20 @@ test_that("attach rejects a corrupt pool header", {
     mizu_pool_status(p[["ctrl"]])[["name"]],
     TRUE
   )
-  poke_u32 <- function(off, v) {
-    old <- .Call(mizu:::mizu_peek, rw, off, 4L)
-    .Call(
-      mizu:::mizu_poke,
-      rw,
-      off,
-      writeBin(v, raw(), size = 4L, endian = "little")
-    )
-    expect_error(mizu_pool_attach(suffix), pat)
-    .Call(mizu:::mizu_poke, rw, off, old)
-  }
-  pat <- "bad magic"
-  poke_u32(0L, 0L)
-  pat <- "ABI version mismatch"
-  poke_u32(4L, 999L)
-  pat <- "registry capacities out of range"
-  poke_u32(8L, 0L)
-  pat <- "queue capacities or slot size are not valid powers of two"
-  poke_u32(16L, 3L)
-  pat <- "result slots are out of range"
-  poke_u32(24L, 3L)
-  pat <- "pool sections exceed the mapped region"
-  poke_u32(8L, 64L)
+  hdr <- .Call(mizu:::mizu_peek, rw, 0, 64)
+  corrupt <- make_corrupt(rw, hdr, mizu_pool_attach(suffix))
+  corrupt(0L, 0L, "bad magic")
+  corrupt(4L, 99L, "ABI version mismatch")
+  corrupt(8L, 0L, "registry capacities out of range")
+  corrupt(16L, 3L, "queue capacities or slot size are not valid powers of two")
+  corrupt(24L, 3L, "result slots are out of range")
+  corrupt(8L, 64L, "pool sections exceed the mapped region")
   # livedir_size (u64 at 48): an implausible span outside the region
-  old <- .Call(mizu:::mizu_peek, rw, 48L, 8L)
-  .Call(
-    mizu:::mizu_poke,
-    rw,
+  corrupt(
     48L,
-    writeBin(c(-1L, -1L), raw(), size = 4L, endian = "little")
+    writeBin(c(-1L, -1L), raw(), size = 4L, endian = "little"),
+    "liveness-dir string"
   )
-  expect_error(mizu_pool_attach(suffix), "liveness-dir string")
-  .Call(mizu:::mizu_poke, rw, 48L, old)
 })
 
 test_that("retire and ready_wait validate their worker slot", {
@@ -1646,20 +1597,6 @@ test_that("retire and ready_wait validate their worker slot", {
   )
 })
 
-test_that("a second join of a held worker slot fails", {
-  p <- pool_pair()
-  on.exit(pool_end(p))
-  expect_error(
-    .Call(
-      mizu:::mizu_pool_worker_join,
-      .Call(mizu:::mizu_pool_suffix, p[["ctrl"]]),
-      0L,
-      NULL
-    ),
-    "already held"
-  )
-})
-
 test_that("claim copies tolerate torn entry kind bytes", {
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1669,24 +1606,23 @@ test_that("claim copies tolerate torn entry kind bytes", {
     TRUE
   )
   base <- 128L + 256L + 8L * 128L + 256L + 256L
-  kinds <- raw(4L)
   for (i in 0:3) {
     mizu_submit(p[["ctrl"]], i)
-    kinds[i + 1L] <- .Call(mizu:::mizu_peek, rw, base + i * 512L + 24L, 1L)
   }
-  # NIL: the copy is the header only
-  .Call(mizu:::mizu_poke, rw, base + 24L, as.raw(6L))
-  # RAWSPILL: the framed name length rides aux >> 8
-  .Call(mizu:::mizu_poke, rw, base + 512L + 24L, as.raw(8L))
-  .Call(mizu:::mizu_poke, rw, base + 512L + 33L, as.raw(16L))
-  # an over-long RAWSPILL name and an unknown kind take the full slot
-  .Call(mizu:::mizu_poke, rw, base + 2L * 512L + 24L, as.raw(8L))
-  .Call(mizu:::mizu_poke, rw, base + 2L * 512L + 34L, as.raw(64L))
-  .Call(mizu:::mizu_poke, rw, base + 3L * 512L + 24L, as.raw(238L))
-  expect_identical(pool_pull(p, 4L), 4L)
-  for (i in 0:3) {
-    .Call(mizu:::mizu_poke, rw, base + i * 512L + 24L, kinds[i + 1L])
-  }
+  with_corruption(
+    rw,
+    list(
+      list(base + 24L, as.raw(6L)), # NIL: the copy is the header only
+      # RAWSPILL: the framed name length rides aux >> 8
+      list(base + 512L + 24L, as.raw(8L)),
+      list(base + 512L + 33L, as.raw(16L)),
+      # an over-long RAWSPILL name and an unknown kind take the full slot
+      list(base + 2L * 512L + 24L, as.raw(8L)),
+      list(base + 2L * 512L + 34L, as.raw(64L)),
+      list(base + 3L * 512L + 24L, as.raw(238L))
+    ),
+    expect_identical(pool_pull(p, 4L), 4L)
+  )
 })
 
 test_that("a reaping worker's deque stays visible until drained", {

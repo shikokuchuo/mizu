@@ -268,7 +268,8 @@ test_that("a view x crosses to foreign map workers as a ref (D6)", {
   # the workers' resolved x views release at their idle sweep (pymizu's
   # ctx cache clears there — the deterministic balance row is the
   # in-process R-worker row in test-call.R)
-  wait_until(.Call(mizu:::mizu_zc_refcount, xv)[1L] == rc0[1L])
-  expect_identical(.Call(mizu:::mizu_zc_refcount, xv)[1L], rc0[1L])
+  expect_true(
+    wait_until(.Call(mizu:::mizu_zc_refcount, xv)[1L] == rc0[1L], 30)
+  )
   channel_end(ch)
 })

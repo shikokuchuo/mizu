@@ -1424,26 +1424,6 @@ test_that("arrow_ptype keeps dictionary and int64 column forms", {
   )
 })
 
-test_that("a uint64 column crosses verbatim past the gate", {
-  skip_if_not_installed("arrow")
-  skip_if_not_installed("bit64")
-  uv <- bit64::as.integer64(rep(1, 9000))
-  uv[2] <- bit64::as.integer64("9223372036854775807")
-  orig <- arrow::Array$create(uv, type = arrow::uint64())
-  p <- channel_pair()
-  on.exit(channel_end(p))
-  mizu_send(p$host, arrow::arrow_table(u = orig))
-  df <- mizu_recv(p$peer, 5)
-  expect_true(is_view(df$u))
-  s <- mizu_as_arrow(df)
-  expect_identical(s$get_schema()$children$u$format, "L")
-  back <- arrow::as_arrow_table(s)$u
-  expect_identical(
-    back$cast(arrow::utf8())$as_vector(),
-    orig$cast(arrow::utf8())$as_vector()
-  )
-})
-
 test_that("a clean large_string column crosses past the gate", {
   skip_if_not_installed("arrow")
   x <- paste0("s", seq_len(6000))

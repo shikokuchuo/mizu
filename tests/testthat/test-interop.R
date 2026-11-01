@@ -1025,24 +1025,24 @@ test_that("the err framer writes class, message and call text, bounded", {
     call = quote(f(x)),
     class = c("mizu_error_shm", "mizu_error")
   )
-  e <- ix_read(ix_write_err(cond))
+  e <- ix_err_rt(cond)
   expect_identical(e[["remote_type"]], "mizu_error_shm")
   expect_identical(e[["message"]], "region create failed")
   expect_identical(e[["detail"]], "f(x)")
   # the frame fits the slot by construction: strings truncate at shares
   long <- errorCondition(strrep("m", 500L), class = "custom_error")
-  b <- .Call(mizu:::mizu_interop_write_err_call, long, 48L)
+  b <- ix_write_err_raw(long, 48L)
   expect_lte(length(b), 48L)
-  e2 <- .Call(mizu:::mizu_interop_read_call, b)
+  e2 <- ix_read_raw(b)
   expect_identical(e2[["remote_type"]], "custom_error")
   expect_identical(nchar(e2[["message"]], type = "bytes"), 11L)
   # a multibyte string cuts at a character boundary
   uni <- errorCondition(strrep("é", 100L), class = "custom_error")
-  b3 <- .Call(mizu:::mizu_interop_write_err_call, uni, 60L)
+  b3 <- ix_write_err_raw(uni, 60L)
   expect_lte(length(b3), 60L)
-  expect_identical(e2[["remote_type"]], "custom_error")
-  m <- .Call(mizu:::mizu_interop_read_call, b3)[["message"]]
-  expect_identical(m, strrep("é", 11L))
+  e3 <- ix_read_raw(b3)
+  expect_identical(e3[["remote_type"]], "custom_error")
+  expect_identical(e3[["message"]], strrep("é", 11L))
 })
 
 test_that("a remote error re-frames keeping its origin fields", {
@@ -1161,29 +1161,44 @@ test_that("dict keys and task fields decline at the writer", {
 })
 
 test_that("the err writer degrades and annotates", {
-  e1 <- ix_read(ix_write_err(errorCondition("boom", call = NULL)))
+  e1 <- ix_err_rt(errorCondition("boom", call = NULL))
   expect_identical(e1[["remote_type"]], "error")
   expect_identical(e1[["detail"]], "")
-  e2 <- ix_read(ix_write_err(structure(
+  e2 <- ix_err_rt(structure(
     list(message = "m", call = NULL),
     class = character(0)
-  )))
+  ))
   expect_identical(e2[["remote_type"]], "error")
-  e3 <- ix_read(ix_write_err(structure(
+  e3 <- ix_err_rt(structure(
     list(message = "m", call = NULL),
     class = c(NA_character_, "error", "condition")
-  )))
+  ))
   expect_identical(e3[["remote_type"]], "error")
-  e4 <- ix_read(ix_write_err(structure(
+  e4 <- ix_err_rt(structure(
     list(message = "m", call = NULL, mizu_map_index = 4L),
     class = c("error", "condition")
-  )))
+  ))
   expect_identical(e4[["index"]], 4L)
-  e5 <- ix_read(ix_write_err(structure(
+  e5 <- ix_err_rt(structure(
     list(message = "m", call = NULL),
     class = c("mizu_error_remote", "mizu_error", "error", "condition")
-  )))
+  ))
   expect_identical(e5[["remote_type"]], "mizu_error_remote")
+  # odd class shapes fall back rather than failing the write
+  odd <- structure(list(message = "odd"), class = NA_character_)
+  expect_true(length(ix_write_err_raw(odd)) > 0)
+  k <- "héllo"
+  Encoding(k) <- "bytes"
+  b <- ix_write_err_raw(structure(list(message = "odd"), class = k))
+  expect_true(grepRaw("error", b, fixed = TRUE) > 0)
+  # call text frames verbatim; a non-language call homes as empty detail
+  cl <- ix_err_rt(errorCondition("boom", call = quote(worker_fn(1:3))))
+  expect_identical(cl[["detail"]], "worker_fn(1:3)")
+  nl <- ix_err_rt(structure(
+    list(message = "x", call = 42L),
+    class = c("error", "condition")
+  ))
+  expect_identical(nl[["detail"]], "")
 })
 
 test_that("malformed task streams reject informatively", {
@@ -1441,15 +1456,6 @@ test_that("the map descriptor writer validates its arguments", {
     .Call(mizu:::mizu_interop_map_desc_call, spec, 42, 2L),
     "malformed map descriptor x"
   )
-})
-
-test_that("the err writer frames call text and falls back on odd classes", {
-  cond <- errorCondition("boom", call = quote(worker_fn(1:3)))
-  s <- .Call(mizu:::mizu_interop_write_err_call, cond, 240L)
-  expect_true(grepRaw("worker_fn", s, fixed = TRUE) > 0)
-  odd <- structure(list(message = "odd"), class = NA_character_)
-  s2 <- .Call(mizu:::mizu_interop_write_err_call, odd, 240L)
-  expect_true(length(s2) > 0)
 })
 
 test_that("a zero-row frame's blob row.names normalize", {
@@ -1953,14 +1959,6 @@ test_that("an ALTREP header at the inline boundary flips to the count pass", {
   expect_identical(mizu_recv(p$peer, 5), x)
 })
 
-test_that("the err writer falls back when a class string is not UTF-8", {
-  k <- "héllo"
-  Encoding(k) <- "bytes"
-  cond <- structure(list(message = "odd"), class = k)
-  s <- .Call(mizu:::mizu_interop_write_err_call, cond, 240L)
-  expect_true(grepRaw("error", s, fixed = TRUE) > 0)
-})
-
 test_that("a remote error's index past int32 crosses as a double", {
   fx <- ix_hex_to_raw(ix_corpus()[["err-index"]])
   pos <- which(fx == as.raw(0x29))[1L]
@@ -2059,15 +2057,6 @@ test_that("the cursor rejects malformed streams", {
   expect_error(rd(0x12, 0x02, 0x00), "truncated") # task, short header
   expect_error(rd(0x13), "truncated") # ref, no length
   expect_error(rd(0x99), "unsupported interop tag")
-})
-
-test_that("the err framer homes a non-language call as empty detail", {
-  cond <- structure(
-    list(message = "x", call = 42L),
-    class = c("error", "condition")
-  )
-  b <- .Call(mizu:::mizu_interop_write_err_call, cond, 240L)
-  expect_identical(.Call(mizu:::mizu_interop_read_call, b)[["detail"]], "")
 })
 
 test_that("an integer64 matrix crosses a foreign channel with its dim", {

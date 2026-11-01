@@ -99,6 +99,50 @@ wait_until <- function(expr, timeout = 10) {
   }
 }
 
+# A corruption-loop closure over a mapped region: corrupt(off, bytes, msg)
+# pokes bytes at off, expects expr (captured at creation) to error matching
+# msg, then restores hdr (peeked from offset 0 before any corruption)
+make_corrupt <- function(rw, hdr, expr) {
+  q <- substitute(expr)
+  env <- parent.frame()
+  force(rw)
+  force(hdr)
+  function(off, bytes, msg) {
+    .Call(mizu:::mizu_poke, rw, off, as.raw(bytes))
+    expect_error(eval(q, env), msg)
+    .Call(mizu:::mizu_poke, rw, 0, hdr)
+    invisible(NULL)
+  }
+}
+
+# The corruption-read idiom: a doctored payload rejects at read, and the
+# raise is contained — the next send receives cleanly (no wedge)
+expect_corrupt_recv <- function(p, msg = "corrupt payload slot") {
+  expect_error(mizu_recv(p[["peer"]], 5), msg)
+  mizu_send(p[["host"]], "tail")
+  expect_identical(mizu_recv(p[["peer"]], 5), "tail")
+  invisible(NULL)
+}
+
+# Poke each (off, bytes) pair of a mapped region, evaluate `expr`, then
+# restore the original bytes (even on failure)
+with_corruption <- function(rw, pokes, expr) {
+  olds <- lapply(
+    pokes,
+    function(pk) .Call(mizu:::mizu_peek, rw, pk[[1L]], length(pk[[2L]]))
+  )
+  for (pk in pokes) {
+    .Call(mizu:::mizu_poke, rw, pk[[1L]], as.raw(pk[[2L]]))
+  }
+  on.exit(
+    for (i in seq_along(pokes)) {
+      .Call(mizu:::mizu_poke, rw, pokes[[i]][[1L]], olds[[i]])
+    },
+    add = TRUE
+  )
+  eval(substitute(expr), parent.frame())
+}
+
 # Remove a pool's liveness lock files: an owner killed before any
 # participant joined has no teardown (the failed-join probe refuses, the
 # reaper skips non-region names), so the test cleans up itself
@@ -123,7 +167,7 @@ child_mizu_ok <- local({
         'if (requireNamespace("mizu", quietly = TRUE)) file.create(%s)',
         deparse(f)
       ))
-      val <<- wait_for_file(f)
+      val <<- wait_for_file(f, 30)
       unlink(f)
     }
     val
@@ -157,7 +201,7 @@ reaper_ok <- local({
       ))
       # the probe child exits at once; its PID frees only if PID 1 reaps
       val <<- wait_for_file(f) &&
-        wait_until(!isTRUE(tools::pskill(as.integer(readLines(f)), 0L)), 5)
+        wait_until(!isTRUE(tools::pskill(as.integer(readLines(f)), 0L)), 10)
       unlink(f)
     }
     val

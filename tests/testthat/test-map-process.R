@@ -638,24 +638,26 @@ test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
   p <- mizu_pool(n_workers = 2L)
   st <- mizu:::map_stage(
     p,
-    1:40,
+    1:100,
     function(i) {
       Sys.sleep(0.05)
       i
     },
     list()
   )
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
   mizu:::map_submit(p, st)
-  Sys.sleep(0.3) # both workers deep inside the map
+  # both workers deep inside the map
+  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 0L))
   t0 <- mizu:::mono_time()
   h <- mizu_submit(p, "quick")
   expect_identical(mizu_collect(h, timeout = 30), "quick")
   # picked up at a batch boundary (~one 50 ms element via the doorbell),
-  # not at map end (~0.7 s away)
-  expect_lt(mizu:::mono_time() - t0, 0.5)
+  # not at map end (~2 s away)
+  expect_lt(mizu:::mono_time() - t0, 1)
   expect_identical(
     mizu:::map_collect(st, deadline = mizu:::mono_time() + 30),
-    as.list(1:40)
+    as.list(1:100)
   )
   expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
   expect_gte(sum(mizu_pool_stats(p)[["workers"]][["helps"]]), 1)

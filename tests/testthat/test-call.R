@@ -520,6 +520,10 @@ test_that("the emitted set keeps loans: attribute and condition-field probes", {
 test_that("a task that keeps its argument view keeps the loan (R-01)", {
   p <- pool_pair()
   on.exit(pool_end(p))
+  on.exit(
+    if (exists("keep", envir = globalenv())) rm(keep, envir = globalenv()),
+    add = TRUE
+  )
   x1 <- as.double(sample(1e5))
   t1 <- mizu_submit_call(
     p$ctrl,

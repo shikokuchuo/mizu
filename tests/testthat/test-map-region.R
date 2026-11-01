@@ -71,11 +71,7 @@ test_that("attach validates each corrupted map header field", {
   nm <- st[[1L]]
   rw <- .Call(mizu:::mizu_region_open, nm, TRUE)
   hdr <- .Call(mizu:::mizu_peek, rw, 0, 128)
-  corrupt <- function(off, bytes, msg) {
-    .Call(mizu:::mizu_poke, rw, off, as.raw(bytes))
-    expect_error(.Call(mizu:::mizu_map_open, nm, TRUE), msg)
-    .Call(mizu:::mizu_poke, rw, 0, hdr)
-  }
+  corrupt <- make_corrupt(rw, hdr, .Call(mizu:::mizu_map_open, nm, TRUE))
   corrupt(0, 0, "bad magic")
   corrupt(4, 99, "ABI version mismatch")
   corrupt(32, 0, "element count out of range") # n -> 0

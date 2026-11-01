@@ -184,9 +184,7 @@ test_that("event-driven consumers report against the sync rows", {
         want <- min(4096L, n - sent)
         sent <- sent + mizu_send_batch(ch, batch[seq_len(want)])
       }
-      while (got$n - base < j * n) {
-        later::run_now(1)
-      }
+      expect_true(pump_until(function() got$n - base >= j * n, 60))
     }
   }
   handler() # warm-up
@@ -208,9 +206,7 @@ test_that("event-driven consumers report against the sync rows", {
       v <- NULL
       pr <- mizu_collect_all_async(mizu_submit_batch(p, exprs))
       promises::then(pr, function(x) v <<- x)
-      while (is.null(v)) {
-        later::run_now(1)
-      }
+      expect_true(pump_until(function() !is.null(v), 60))
     }
   }
   coll() # warm-up
