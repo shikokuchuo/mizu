@@ -1,7 +1,7 @@
 
 <!-- README.md is generated from README.Rmd. Please edit that file -->
 
-# mizu ミズ
+# mizu <a href="https://shikokuchuo.net/mizu/" alt="mizu"><img src="man/figures/logo.svg" alt="mizu logo" align="right" width="120"/></a>
 
 <!-- badges: start -->
 
@@ -10,12 +10,6 @@
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 <!-- badges: end -->
-
-      ________
-     /\       \
-    /  \  mizu \
-    \  /  ミズ  /
-     \/_______/
 
 mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.
 
