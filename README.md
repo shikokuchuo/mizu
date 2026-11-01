@@ -19,10 +19,9 @@
 
 mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.
 
-Task round trips drop from around 100 µs over sockets to under a microsecond — two orders of magnitude (see [Benchmarks](#benchmarks)).
-The hot path never enters the kernel and data is never copied through a system socket.
+Task round trips drop from ~100 µs over sockets to \< 1 µs — two orders of magnitude (see [Benchmarks](#benchmarks)). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.
 
-Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting, and peer death delivered as an OS event.
+Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting with the hot path bypassing the kernel, and peer death delivered as an OS event.
 
 mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library for lock-free shared-memory IPC.
 [pymizu](https://github.com/shikokuchuo/pymizu) binds the same core for Python, so R and Python can talk to each other.
@@ -33,7 +32,7 @@ mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library 
 - Reproducible parallel random numbers (`.seed`) — identical results for any worker count or steal order
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 
-> **Pre-release.** The API is not stable and can change at any time before a release.
+> **Lifecycle: experimental.** The API is not yet stable and we may make changes in response to feedback.
 
 ## Installation
 
@@ -43,7 +42,7 @@ Install the development version from GitHub:
 pak::pak("shikokuchuo/mizu")
 ```
 
-Requires R 4.3 or later on a 64-bit platform (Linux: kernel 5.3 or later).
+Requires R 4.3 or later.
 
 ## Quickstart
 
@@ -74,7 +73,7 @@ Note: mirai also serves workers on remote machines and HPC clusters, which share
 
 ## Parallel map
 
-`mizu_map()` maps a function over a vector or list on the pool and returns a map handle immediately, like `mizu_submit()` returns a task. `mizu_collect()` on the handle waits and returns the results in order; `as.promise()` (or `then()` directly) collects through the event loop instead.
+`mizu_map()` maps a function over a vector or list on the pool and returns a map handle immediately, just as `mizu_submit()` returns a task. `mizu_collect()` on the handle waits and returns the results in order.
 The function and data cross into shared memory once.
 Workers divide the elements among themselves, claiming ranges from a shared cursor.
 
@@ -102,7 +101,7 @@ mizu_pool_stop(p)
 ## Python interop
 
 Pool workers can be Python processes that run [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of the same core.
-`mizu_py_launcher()` spawns them and `mizu_call()` describes the task — here R’s built-in `mtcars` summarized by polars:
+`mizu_py_launcher()` spawns them and `mizu_call()` specifies the task. Here, R’s built-in `mtcars` is summarized by polars in Python:
 
 ``` r
 p <- mizu_pool(n_workers = 4L, launcher = mizu_py_launcher())
@@ -133,7 +132,7 @@ The pymizu README shows the reverse direction: a Python host that drives R worke
 ## Vignettes
 
 `vignette("mizu", package = "mizu")` is the main overview.
-Topic vignettes cover benchmarks against mirai, channels, task pools, the parallel map, Python interop, and operations (sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and crash semantics).
+Topic vignettes cover benchmarks, channels, task pools, the parallel map, Python interop, and operations (Linux memory tuning and crash semantics).
 The [pkgdown site](https://shikokuchuo.net/mizu/) has the function reference and the rendered vignettes.
 
 ------------------------------------------------------------------------
