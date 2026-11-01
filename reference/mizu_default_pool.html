@@ -11,7 +11,7 @@ default — or clears it, with NULL — and invisibly returns the
 previous one, so callers can save and restore. mizu_with_pool()
 evaluates expr with pool as the default and restores the previous
 default on exit, including on error. mizu_local_pool() sets the
-default until the calling frame exits (the withr local_* pattern)."><meta property="og:image" content="https://shikokuchuo.net/mizu/logo.svg"></head><body>
+default until the calling frame exits (the withr local_* pattern)."><meta property="og:image" content="https://shikokuchuo.net/mizu/og-image.png"><meta property="og:image:alt" content="mizu: zero-copy async and parallel IPC across R and Python"></head><body>
     <a href="#container" class="visually-hidden-focusable">Skip to content</a>
 
 
@@ -150,7 +150,7 @@ pool is user-set state and never overrides it.</p>
 <span class="r-in"><span><span class="fu">mizu_with_pool</span><span class="op">(</span><span class="cn">NULL</span>, <span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> NULL</span>
 <span class="r-in"><span><span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1a7b_4fe6e375: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1a7d_4b835be4: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="fu">mizu_set_default_pool</span><span class="op">(</span><span class="va">old</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
