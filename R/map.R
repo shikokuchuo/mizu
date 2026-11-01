@@ -394,10 +394,7 @@ map_empty_result <- function(st) {
 # mizu_cancel() to stop it, and a GC finalizer cancels a dropped
 # uncollected map, so no run of .f is wasted.
 map_submit_handle <- function(pool, st, timeout, collect = "copy") {
-  # as mizu_r_timeout_arg: an NA/NaN would read as an indefinite wait
-  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
-    stop("mizu: .timeout must be a number of seconds, not NA", call. = FALSE)
-  }
+  check_timeout(timeout, ".timeout")
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
   ok <- FALSE
   on.exit(if (!ok) map_cancel(st))
@@ -462,9 +459,7 @@ map_collect_handle <- function(m, timeout) {
       call. = FALSE
     )
   }
-  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
-    stop("mizu: timeout must be a number of seconds, not NA", call. = FALSE)
-  }
+  check_timeout(timeout)
   if (isTRUE(m[["cancelled"]])) {
     stop(map_cond_cancelled())
   }

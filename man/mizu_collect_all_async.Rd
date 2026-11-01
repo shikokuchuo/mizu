@@ -58,11 +58,14 @@ When a collection finishes — resolved, rejected, or timed out —
 every handle in it is released: handles whose results were not
 consumed become blocking-collectible again.
 
-A task with a promise attached — or part of a pending collection —
-refuses \code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_collect_any]{mizu_collect_any()}}, \code{\link[=mizu_collect_all]{mizu_collect_all()}},
-and a second promise, with an error naming the pending consumer.
-\code{\link[=mizu_cancel]{mizu_cancel()}} stays allowed: the cancel publishes, and the pending
-promise rejects with \code{mizu_error_cancelled}.
+One consumer per result: a task result belongs to exactly one
+consumer. A task with a promise attached — or part of a pending
+collection — refuses \code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_collect_any]{mizu_collect_any()}},
+\code{\link[=mizu_collect_all]{mizu_collect_all()}}, and a second promise, with an error naming the
+pending consumer. \code{\link[=mizu_cancel]{mizu_cancel()}} stays allowed: the cancel
+publishes, and the pending promise rejects with
+\code{mizu_error_cancelled}. (A channel message instead belongs to whoever
+takes it first — see \code{\link[=mizu_recv_async]{mizu_recv_async()}}.)
 
 Requires the \pkg{later} and \pkg{promises} packages.
 }

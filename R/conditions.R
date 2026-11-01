@@ -158,6 +158,39 @@ stop_startup <- function(what, timeout) {
   )
 }
 
+# Guards the '...' separator of the constructor signatures: whatever lands
+# there is a typo or a positional leftover, never an intended argument.
+check_dots_empty <- function(...) {
+  n <- ...length()
+  if (n == 0L) {
+    return(invisible())
+  }
+  nms <- ...names()
+  what <- if (!is.null(nms) && all(nzchar(nms))) {
+    paste0(": '", paste(nms, collapse = "', '"), "'")
+  } else {
+    ""
+  }
+  stop(
+    "mizu: unused argument(s)",
+    what,
+    " \u2014 options after '...' must be given by name",
+    call. = FALSE
+  )
+}
+
+# The seconds validation shared by every wait: one number, never NA — an
+# NA/NaN would read as an indefinite wait (as mizu_r_timeout_arg).
+check_timeout <- function(x, arg = "timeout") {
+  if (!is.numeric(x) || length(x) != 1L || is.na(x)) {
+    stop(
+      sprintf("mizu: %s must be a number of seconds, not NA", arg),
+      call. = FALSE
+    )
+  }
+  invisible()
+}
+
 #' Test for a mizu Sentinel
 #'
 #' Tests identity against the four sentinel values — `mizu_full`,

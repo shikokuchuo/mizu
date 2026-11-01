@@ -20,43 +20,37 @@
 notify_quantum_n <- 2048L
 notify_quantum_secs <- 0.001
 
-# the requireNamespace probes memoize (they ran twice per async verb
-# call); the env's fields mutate where a namespace binding could not
+# The async verbs' package guards: the requireNamespace probes memoize
+# (they ran twice per async verb call); the env's fields mutate where a
+# namespace binding could not.
 notify_pkgs <- new.env(parent = emptyenv())
 
-notify_requires <- function() {
-  if (!isTRUE(notify_pkgs[["later"]])) {
-    if (!requireNamespace("later", quietly = TRUE)) {
-      stop(
-        "mizu: the async verbs require the 'later' package to be installed",
-        call. = FALSE
-      )
+notify_require_pkg <- function(pkg, msg) {
+  if (!isTRUE(notify_pkgs[[pkg]])) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop(msg, call. = FALSE)
     }
-    notify_pkgs[["later"]] <- TRUE
-  }
-  if (!isTRUE(notify_pkgs[["promises"]])) {
-    if (!requireNamespace("promises", quietly = TRUE)) {
-      stop(
-        "mizu: the async verbs require the 'promises' package to be installed",
-        call. = FALSE
-      )
-    }
-    notify_pkgs[["promises"]] <- TRUE
+    notify_pkgs[[pkg]] <- TRUE
   }
   invisible()
 }
 
+notify_requires <- function() {
+  notify_require_pkg(
+    "later",
+    "mizu: the async verbs require the 'later' package to be installed"
+  )
+  notify_require_pkg(
+    "promises",
+    "mizu: the async verbs require the 'promises' package to be installed"
+  )
+}
+
 notify_requires_later <- function() {
-  if (!isTRUE(notify_pkgs[["later"]])) {
-    if (!requireNamespace("later", quietly = TRUE)) {
-      stop(
-        "mizu: mizu_recv_handler() requires the 'later' package to be installed",
-        call. = FALSE
-      )
-    }
-    notify_pkgs[["later"]] <- TRUE
-  }
-  invisible()
+  notify_require_pkg(
+    "later",
+    "mizu: mizu_recv_handler() requires the 'later' package to be installed"
+  )
 }
 
 # Cancel a waiter's later() timer, if one is armed. later() returns its
@@ -317,14 +311,16 @@ chan_drain <- function(state) {
 #' error raised by `fn` removes the handler and propagates at the event
 #' loop. `mizu_recv_handler(ch, NULL)` removes the handler.
 #'
-#' A channel holds at most one of the two consumer forms at a time:
-#' installing a handler with promises pending, or requesting a promise
-#' with a handler installed, is an error. Mixing a blocking
+#' One consumer per message: a channel message belongs to whoever takes
+#' it first. A channel holds at most one of the two consumer forms at a
+#' time: installing a handler with promises pending, or requesting a
+#' promise with a handler installed, is an error. Mixing a blocking
 #' [mizu_recv()] with either consumer form consumes in arrival order —
 #' the blocking call may take a message a promise or the handler was
 #' waiting on. A close or peer death it observes is observed by the
 #' consumer too: both are channel state, re-read on every receive, never
-#' consumed.
+#' consumed. (A task result instead belongs to exactly one consumer —
+#' see [mizu_collect_all_async()].)
 #'
 #' Every main-thread drain is bounded per event-loop turn and
 #' re-scheduled, so a saturated ring starves neither Shiny nor
@@ -362,9 +358,7 @@ chan_drain <- function(state) {
 #' @export
 mizu_recv_async <- function(ch, timeout = Inf) {
   notify_requires()
-  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
-    stop("mizu: timeout must be a number of seconds, not NA", call. = FALSE)
-  }
+  check_timeout(timeout)
   state <- notify_chan_state(ch)
   if (identical(state[["mode"]], "handler")) {
     stop(
@@ -619,11 +613,14 @@ pool_drain <- function(state) {
 #' every handle in it is released: handles whose results were not
 #' consumed become blocking-collectible again.
 #'
-#' A task with a promise attached — or part of a pending collection —
-#' refuses [mizu_collect()], [mizu_collect_any()], [mizu_collect_all()],
-#' and a second promise, with an error naming the pending consumer.
-#' [mizu_cancel()] stays allowed: the cancel publishes, and the pending
-#' promise rejects with `mizu_error_cancelled`.
+#' One consumer per result: a task result belongs to exactly one
+#' consumer. A task with a promise attached — or part of a pending
+#' collection — refuses [mizu_collect()], [mizu_collect_any()],
+#' [mizu_collect_all()], and a second promise, with an error naming the
+#' pending consumer. [mizu_cancel()] stays allowed: the cancel
+#' publishes, and the pending promise rejects with
+#' `mizu_error_cancelled`. (A channel message instead belongs to whoever
+#' takes it first — see [mizu_recv_async()].)
 #'
 #' Requires the \pkg{later} and \pkg{promises} packages.
 #'
@@ -653,9 +650,7 @@ pool_drain <- function(state) {
 #' @export
 mizu_collect_all_async <- function(tasks, timeout = Inf) {
   notify_requires()
-  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
-    stop("mizu: timeout must be a number of seconds, not NA", call. = FALSE)
-  }
+  check_timeout(timeout)
   if (!is.list(tasks) || !length(tasks)) {
     stop("mizu: tasks must be a non-empty list of task handles", call. = FALSE)
   }
@@ -689,9 +684,7 @@ mizu_collect_all_async <- function(tasks, timeout = Inf) {
 #' @export
 mizu_collect_any_async <- function(tasks, timeout = Inf) {
   notify_requires()
-  if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout)) {
-    stop("mizu: timeout must be a number of seconds, not NA", call. = FALSE)
-  }
+  check_timeout(timeout)
   if (!is.list(tasks) || !length(tasks)) {
     stop("mizu: tasks must be a non-empty list of task handles", call. = FALSE)
   }

@@ -1,24 +1,3 @@
-# Guards the '...' separator of the constructor signatures: whatever lands
-# there is a typo or a positional leftover, never an intended argument.
-check_dots_empty <- function(...) {
-  n <- ...length()
-  if (n == 0L) {
-    return(invisible())
-  }
-  nms <- ...names()
-  what <- if (!is.null(nms) && all(nzchar(nms))) {
-    paste0(": '", paste(nms, collapse = "', '"), "'")
-  } else {
-    ""
-  }
-  stop(
-    "mizu: unused argument(s)",
-    what,
-    " \u2014 options after '...' must be given by name",
-    call. = FALSE
-  )
-}
-
 #' Create a Task Pool and Spawn Its Workers
 #'
 #' Creates a shared-memory task pool and spawns its worker processes.
