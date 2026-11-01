@@ -157,7 +157,7 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   # the elements the dead worker was executing (3-4), may include the
   # dead runner's completed batches (its history died unpublished), and
   # never a surviving runner's published batches or anything outside n
-  el <- e[["elements"]]
+  el <- e[["lost"]]
   expect_true(is.matrix(el) && ncol(el) == 2L)
   lost <- unlist(lapply(seq_len(nrow(el)), function(r) {
     seq.int(el[r, 1L], el[r, 2L])
@@ -215,7 +215,7 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   )
   expect_s3_class(e, "mizu_error_worker_died")
   # blob chunks are fixed ranges: the lost set is the dead chunk, exactly
-  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_identical(e[["lost"]], cbind(lo = 3, hi = 4))
   expect_true(mizu_pool_stop(p))
 })
 
@@ -253,7 +253,7 @@ test_that("a lone worker's death fails its claimed blob chunk as died", {
     error = identity
   )
   expect_s3_class(e, "mizu_error_worker_died")
-  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_identical(e[["lost"]], cbind(lo = 3, hi = 4))
   expect_true(mizu_pool_stop(p))
 })
 
@@ -277,7 +277,7 @@ test_that("a streaming map's first failed turn reports a worker death", {
   kill_hard(pid)
   e <- tryCatch(mizu_collect(m, timeout = 30), error = identity)
   expect_s3_class(e, "mizu_error_worker_died")
-  expect_identical(e[["elements"]], cbind(lo = 1, hi = 2))
+  expect_identical(e[["lost"]], cbind(lo = 1, hi = 2))
   expect_true(mizu_pool_stop(p))
 })
 
@@ -311,7 +311,7 @@ test_that("a streaming map's sweep reports a sibling's death over the error", {
   expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
   e <- tryCatch(mizu_collect(m, timeout = 30), error = identity)
   expect_s3_class(e, "mizu_error_worker_died")
-  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_identical(e[["lost"]], cbind(lo = 3, hi = 4))
   expect_true(mizu_pool_stop(p))
 })
 
@@ -363,7 +363,7 @@ test_that("worker death on the template path never exposes partial output", {
     error = identity
   )
   expect_match(conditionMessage(e), "worker died while executing map elements")
-  el <- e[["elements"]]
+  el <- e[["lost"]]
   lost <- unlist(lapply(seq_len(nrow(el)), function(r) {
     seq.int(el[r, 1L], el[r, 2L])
   }))
@@ -407,7 +407,7 @@ test_that("a lone worker's death reports the whole issued range as lost", {
   expect_identical(e[["slot"]], 0L)
   expect_identical(e[["pid"]], pid)
   # with no history the lost set is the whole issued range, in one block
-  el <- e[["elements"]]
+  el <- e[["lost"]]
   expect_true(is.matrix(el) && nrow(el) == 1L)
   expect_equal(el[[1L, 1L]], 1)
   expect_equal(el[[1L, 2L]], min(40, cur * st[["ms"]]))
@@ -860,7 +860,7 @@ test_that("a mid-map worker death reports the gap between survivor batches", {
     error = identity
   )
   expect_s3_class(e, "mizu_error_worker_died")
-  el <- e[["elements"]]
+  el <- e[["lost"]]
   lost <- unlist(lapply(seq_len(nrow(el)), function(r) {
     seq.int(el[r, 1L], el[r, 2L])
   }))

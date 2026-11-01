@@ -132,7 +132,7 @@ test_that("a killed Python worker's lost-set scan reports the elements", {
     mizu_error_worker_died = function(c) c
   )
   expect_s3_class(cnd, "mizu_error_worker_died")
-  elts <- cnd[["elements"]]
+  elts <- cnd[["lost"]]
   expect_gte(nrow(elts), 1)
   expect_gte(min(elts[, "lo"]), 1)
   expect_lte(max(elts[, "hi"]), 40)

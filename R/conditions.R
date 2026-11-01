@@ -26,9 +26,10 @@
 #'   read at collect time. This is informational, racy against slot reuse
 #'   exactly as [mizu_pool_dump()] is, and `NA` where no claim was
 #'   recorded. [mizu_map()] signals this class again with the lost elements
-#'   as an additional `elements` field: a two-column matrix of inclusive
+#'   as an additional `lost` field: a two-column matrix of inclusive
 #'   `lo, hi` ranges, runner-granular and conservative (see the Errors
-#'   section of [mizu_map()]).
+#'   section of [mizu_map()]). pymizu's `WorkerDiedError.lost` carries
+#'   the same set as a list of 0-based half-open `[lo, hi)` spans.
 #' * `mizu_error_task_lost` — [mizu_collect()] on a task whose payload
 #'   region vanished before any worker could read it (its submitter died
 #'   or released the pool with the task still queued). Unlike
@@ -101,7 +102,7 @@
 #' cannot be named in `dropped_fields` and is dropped silently.
 #'
 #' @name mizu_error
-#' @aliases mizu_error_submit_timeout mizu_error_slots_exhausted mizu_error_stopped mizu_error_cancelled mizu_error_worker_died mizu_error_task_lost mizu_error_startup mizu_error_shm mizu_error_python_payload mizu_error_remote
+#' @aliases mizu_error_submit_timeout mizu_error_slots_exhausted mizu_error_stopped mizu_error_cancelled mizu_error_worker_died mizu_error_task_lost mizu_error_startup mizu_error_shm mizu_error_not_portable mizu_error_python_payload mizu_error_remote
 NULL
 
 # Raise a classed mizu error — class c(subclass, "mizu_error", "error",

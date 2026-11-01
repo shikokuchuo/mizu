@@ -809,7 +809,7 @@ test_that("worker death fails a streaming map with the chunk's exact range", {
   expect_s3_class(e, "mizu_error_worker_died")
   # streaming chunks are fixed ranges: the lost set is the dead chunk,
   # exactly (the blob-path shape)
-  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_identical(e[["lost"]], cbind(lo = 3, hi = 4))
   # the pool remains serviceable on the survivor
   expect_identical(
     mizu_collect(mizu_map(
@@ -875,7 +875,7 @@ test_that("a drained worker death wins over the observed error", {
     error = identity
   )
   expect_s3_class(e, "mizu_error_worker_died")
-  expect_identical(e[["elements"]], cbind(lo = 3, hi = 4))
+  expect_identical(e[["lost"]], cbind(lo = 3, hi = 4))
   expect_true(mizu_pool_stop(p))
 })
 
@@ -923,7 +923,7 @@ test_that("deaths on both workers accumulate every lost range", {
     error = identity
   )
   expect_s3_class(e, "mizu_error_worker_died")
-  expect_identical(e[["elements"]], cbind(lo = c(1, 3), hi = c(2, 4)))
+  expect_identical(e[["lost"]], cbind(lo = c(1, 3), hi = c(2, 4)))
   expect_true(mizu_pool_stop(p))
 })
 

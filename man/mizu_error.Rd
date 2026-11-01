@@ -10,6 +10,7 @@
 \alias{mizu_error_task_lost}
 \alias{mizu_error_startup}
 \alias{mizu_error_shm}
+\alias{mizu_error_not_portable}
 \alias{mizu_error_python_payload}
 \alias{mizu_error_remote}
 \title{Error Conditions}
@@ -41,9 +42,10 @@ worker died. Fields \code{slot} (worker registry slot, 0-based as in
 read at collect time. This is informational, racy against slot reuse
 exactly as \code{\link[=mizu_pool_dump]{mizu_pool_dump()}} is, and \code{NA} where no claim was
 recorded. \code{\link[=mizu_map]{mizu_map()}} signals this class again with the lost elements
-as an additional \code{elements} field: a two-column matrix of inclusive
+as an additional \code{lost} field: a two-column matrix of inclusive
 \verb{lo, hi} ranges, runner-granular and conservative (see the Errors
-section of \code{\link[=mizu_map]{mizu_map()}}).
+section of \code{\link[=mizu_map]{mizu_map()}}). pymizu's \code{WorkerDiedError.lost} carries
+the same set as a list of 0-based half-open \verb{[lo, hi)} spans.
 \item \code{mizu_error_task_lost} — \code{\link[=mizu_collect]{mizu_collect()}} on a task whose payload
 region vanished before any worker could read it (its submitter died
 or released the pool with the task still queued). Unlike

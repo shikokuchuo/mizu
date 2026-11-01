@@ -147,7 +147,7 @@ mono_time <- function() .Call(mizu_now_call)
 #' its error, so every other runner stops within about one batch instead
 #' of finishing the remaining elements. If a worker dies mid-map, the map
 #' raises `mizu_error_worker_died` (see [mizu_error]), carrying the lost
-#' elements as an `elements` field: a two-column matrix of inclusive
+#' elements as a `lost` field: a two-column matrix of inclusive
 #' `lo, hi` ranges. Loss is reported conservatively, per runner: a dead
 #' runner's results publish only at the end, so everything it completed
 #' counts as lost alongside what it was executing, never the reverse. On
@@ -879,7 +879,7 @@ stop_worker_died <- function(slot, pid, elts) {
     ),
     slot = slot,
     pid = pid,
-    elements = elts
+    lost = elts
   )
 }
 

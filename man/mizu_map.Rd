@@ -165,7 +165,7 @@ erroring runner sets the map's shared cancel word before publishing
 its error, so every other runner stops within about one batch instead
 of finishing the remaining elements. If a worker dies mid-map, the map
 raises \code{mizu_error_worker_died} (see \link{mizu_error}), carrying the lost
-elements as an \code{elements} field: a two-column matrix of inclusive
+elements as a \code{lost} field: a two-column matrix of inclusive
 \verb{lo, hi} ranges. Loss is reported conservatively, per runner: a dead
 runner's results publish only at the end, so everything it completed
 counts as lost alongside what it was executing, never the reverse. On
