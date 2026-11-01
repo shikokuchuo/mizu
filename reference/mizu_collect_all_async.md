@@ -70,6 +70,7 @@ finishes — resolved, rejected, or timed out — every handle in it is
 released: handles whose results were not consumed become
 blocking-collectible again.
 
+One consumer per result: a task result belongs to exactly one consumer.
 A task with a promise attached — or part of a pending collection —
 refuses
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
@@ -78,7 +79,9 @@ refuses
 and a second promise, with an error naming the pending consumer.
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
 stays allowed: the cancel publishes, and the pending promise rejects
-with `mizu_error_cancelled`.
+with `mizu_error_cancelled`. (A channel message instead belongs to
+whoever takes it first — see
+[`mizu_recv_async()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md).)
 
 Requires the later and promises packages.
 

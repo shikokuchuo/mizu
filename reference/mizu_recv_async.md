@@ -86,14 +86,17 @@ delivered as its `mizu_error_python_payload` condition and the handler
 continues. An error raised by `fn` removes the handler and propagates at
 the event loop. `mizu_recv_handler(ch, NULL)` removes the handler.
 
-A channel holds at most one of the two consumer forms at a time:
+One consumer per message: a channel message belongs to whoever takes it
+first. A channel holds at most one of the two consumer forms at a time:
 installing a handler with promises pending, or requesting a promise with
 a handler installed, is an error. Mixing a blocking
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
 with either consumer form consumes in arrival order — the blocking call
 may take a message a promise or the handler was waiting on. A close or
 peer death it observes is observed by the consumer too: both are channel
-state, re-read on every receive, never consumed.
+state, re-read on every receive, never consumed. (A task result instead
+belongs to exactly one consumer — see
+[`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md).)
 
 Every main-thread drain is bounded per event-loop turn and re-scheduled,
 so a saturated ring starves neither Shiny nor

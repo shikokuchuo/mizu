@@ -127,11 +127,14 @@ rejects with the <code>mizu_timeout</code> classed error and consumes nothing.
 When a collection finishes — resolved, rejected, or timed out —
 every handle in it is released: handles whose results were not
 consumed become blocking-collectible again.</p>
-<p>A task with a promise attached — or part of a pending collection —
-refuses <code><a href="mizu_submit.html">mizu_collect()</a></code>, <code><a href="mizu_collect_any.html">mizu_collect_any()</a></code>, <code><a href="mizu_collect_all.html">mizu_collect_all()</a></code>,
-and a second promise, with an error naming the pending consumer.
-<code><a href="mizu_cancel.html">mizu_cancel()</a></code> stays allowed: the cancel publishes, and the pending
-promise rejects with <code>mizu_error_cancelled</code>.</p>
+<p>One consumer per result: a task result belongs to exactly one
+consumer. A task with a promise attached — or part of a pending
+collection — refuses <code><a href="mizu_submit.html">mizu_collect()</a></code>, <code><a href="mizu_collect_any.html">mizu_collect_any()</a></code>,
+<code><a href="mizu_collect_all.html">mizu_collect_all()</a></code>, and a second promise, with an error naming the
+pending consumer. <code><a href="mizu_cancel.html">mizu_cancel()</a></code> stays allowed: the cancel
+publishes, and the pending promise rejects with
+<code>mizu_error_cancelled</code>. (A channel message instead belongs to whoever
+takes it first — see <code><a href="mizu_recv_async.html">mizu_recv_async()</a></code>.)</p>
 <p>Requires the <span class="pkg">later</span> and <span class="pkg">promises</span> packages.</p>
     </div>
 
