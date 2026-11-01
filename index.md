@@ -1,12 +1,4 @@
-# mizu ミズ
-
-``` R
-  ________
- /\       \
-/  \  mizu \
-\  /  ミズ  /
- \/_______/
-```
+# mizu
 
 mizu uses shared memory to make communication between R processes fast
 enough to parallelize work at thread granularity.
