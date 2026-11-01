@@ -3,6 +3,10 @@ url: https://shikokuchuo.net/mizu/
 template:
   package: tidytemplate
   bootstrap: 5
+  opengraph:
+    image:
+      src: og-image.png
+      alt: "mizu: zero-copy async and parallel IPC across R and Python"
 
 reference:
   - title: Channels
