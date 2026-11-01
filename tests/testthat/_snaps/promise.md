@@ -22,6 +22,14 @@
       Error:
       ! mizu: fn must be a function or NULL
 
+# mizu_collect_async validates and names the pending consumer
+
+    Code
+      mizu_collect_async(t, NA)
+    Condition
+      Error:
+      ! mizu: timeout must be a number of seconds, not NA
+
 # the collective async verbs validate their arguments
 
     Code

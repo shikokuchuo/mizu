@@ -3,6 +3,7 @@
 \name{mizu_collect_all_async}
 \alias{mizu_collect_all_async}
 \alias{mizu_collect_any_async}
+\alias{mizu_collect_async}
 \alias{as.promise.mizu_task}
 \alias{is.promising.mizu_task}
 \alias{as.promise.mizu_map}
@@ -12,6 +13,8 @@
 mizu_collect_all_async(tasks, timeout = Inf)
 
 mizu_collect_any_async(tasks, timeout = Inf)
+
+mizu_collect_async(task, timeout = Inf)
 
 \method{as.promise}{mizu_task}(x)
 
@@ -29,13 +32,16 @@ the same pool handle.}
 \code{mizu_timeout} classed error; nothing is consumed. \code{Inf} (the
 default) waits indefinitely.}
 
+\item{task}{a task handle from \code{\link[=mizu_submit]{mizu_submit()}}.}
+
 \item{x}{for the \code{as.promise} methods: a task handle, or a map handle
 from \code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}.}
 }
 \value{
-A \code{\link[promises:promise]{promises::promise()}}: collect-all resolves a plain list of
-the task values in the order of \code{tasks} (names carried); collect-any
-resolves \code{list(index, value)}.
+A \code{\link[promises:promise]{promises::promise()}}: \code{mizu_collect_async()} resolves the
+task's value; collect-all resolves a plain list of the task values
+in the order of \code{tasks} (names carried); collect-any resolves
+\code{list(index, value)}.
 }
 \description{
 \code{mizu_collect_all_async()} and \code{mizu_collect_any_async()} are the
@@ -47,6 +53,18 @@ completes the sync version's result assembly runs once and resolves
 the promise.
 }
 \details{
+\code{mizu_collect_async()} is the single-task form — the async
+counterpart of \code{\link[=mizu_collect]{mizu_collect()}}: it returns immediately with a
+\code{\link[promises:promise]{promises::promise()}} resolving with the task's value and rejecting
+with the same classed condition a blocking collect would raise. One
+promise stands per task: while the task pends the promise is cached,
+so a repeated call and \code{as.promise()} on the handle (what
+\code{\link[promises:then]{promises::then()}} calls) return the same promise — \code{timeout}
+applies only to the call that arms it. Once settled the task is
+collected, and a further call errors (one consumer per result,
+below). A \code{timeout} rejects with the \code{mizu_timeout} classed error
+and consumes nothing: the task returns to blocking-collectible.
+
 The behavior mirrors the sync functions. Collect-all resolves in
 input order with names carried; the first erroring handle by position
 rejects
@@ -60,12 +78,16 @@ consumed become blocking-collectible again.
 
 One consumer per result: a task result belongs to exactly one
 consumer. A task with a promise attached — or part of a pending
-collection — refuses \code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_collect_any]{mizu_collect_any()}},
-\code{\link[=mizu_collect_all]{mizu_collect_all()}}, and a second promise, with an error naming the
-pending consumer. \code{\link[=mizu_cancel]{mizu_cancel()}} stays allowed: the cancel
-publishes, and the pending promise rejects with
-\code{mizu_error_cancelled}. (A channel message instead belongs to whoever
-takes it first — see \code{\link[=mizu_recv_async]{mizu_recv_async()}}.)
+collection — refuses \code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_collect_any]{mizu_collect_any()}} and
+\code{\link[=mizu_collect_all]{mizu_collect_all()}} with an error naming the pending consumer; a
+task enrolled in a collection likewise refuses a promise.
+\code{\link[=mizu_cancel]{mizu_cancel()}} stays allowed and is the destructive option: the
+cancel publishes, the result is gone for every consumer, and the
+pending promise rejects with \code{mizu_error_cancelled}. A \code{timeout} is
+the non-destructive counterpart: it only detaches the promise — the
+task keeps running and its result stays collectible. (A channel
+message instead belongs to whoever takes it first — see
+\code{\link[=mizu_recv_async]{mizu_recv_async()}}.)
 
 Requires the \pkg{later} and \pkg{promises} packages.
 }
@@ -73,6 +95,8 @@ Requires the \pkg{later} and \pkg{promises} packages.
 \dontshow{if (interactive() && requireNamespace("promises", quietly = TRUE)) withAutoprint(\{ # examplesIf}
 library(promises)
 p <- mizu_pool(2L)
+t <- mizu_submit(p, sum(runif(10)))
+mizu_collect_async(t, timeout = 5) \%...>\% print()
 ts <- list(
   total = mizu_submit(p, sum(x), x = runif(10)),
   label = mizu_submit(p, "done")

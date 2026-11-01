@@ -58,8 +58,8 @@ typedef struct ntfy_ent_s {
 enum { NTFY_TASK = 0, NTFY_ANY = 1, NTFY_ALL = 2, NTFY_MAP = 3 };
 
 static const char *const ntfy_labels[4] = {
-  "as.promise()", "mizu_collect_any_async()", "mizu_collect_all_async()",
-  "a map promise"
+  "mizu_collect_async()", "mizu_collect_any_async()",
+  "mizu_collect_all_async()", "a map promise"
 };
 
 static void ntfy_reg_free(mizu_r_notify *rec);

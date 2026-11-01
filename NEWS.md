@@ -25,9 +25,9 @@ Initial release.
   pymizu: `mizu_py_launcher()` spawns peers and workers, and
   `mizu_call()` task specs drive them, data frames crossing with full
   type fidelity.
-* Event-driven async — `mizu_recv_async()`, `mizu_recv_handler()`, and
-  `as.promise()` methods for channels, tasks, and maps over later and
-  promises, ready for Shiny.
+* Event-driven async — `mizu_recv_async()`, `mizu_recv_handler()`,
+  `mizu_collect_async()`, and `as.promise()` methods for channels,
+  tasks, and maps over later and promises, ready for Shiny.
 * Housekeeping — `mizu_prune()` reclaims shared memory orphaned by dead
   processes; `mizu_pool_dump()` introspects a running or hung pool.
 

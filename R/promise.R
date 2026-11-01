@@ -602,6 +602,18 @@ pool_drain <- function(state) {
 #' completes the sync version's result assembly runs once and resolves
 #' the promise.
 #'
+#' `mizu_collect_async()` is the single-task form — the async
+#' counterpart of [mizu_collect()]: it returns immediately with a
+#' [promises::promise()] resolving with the task's value and rejecting
+#' with the same classed condition a blocking collect would raise. One
+#' promise stands per task: while the task pends the promise is cached,
+#' so a repeated call and `as.promise()` on the handle (what
+#' [promises::then()] calls) return the same promise — `timeout`
+#' applies only to the call that arms it. Once settled the task is
+#' collected, and a further call errors (one consumer per result,
+#' below). A `timeout` rejects with the `mizu_timeout` classed error
+#' and consumes nothing: the task returns to blocking-collectible.
+#'
 #' The behavior mirrors the sync functions. Collect-all resolves in
 #' input order with names carried; the first erroring handle by position
 #' rejects
@@ -615,15 +627,20 @@ pool_drain <- function(state) {
 #'
 #' One consumer per result: a task result belongs to exactly one
 #' consumer. A task with a promise attached — or part of a pending
-#' collection — refuses [mizu_collect()], [mizu_collect_any()],
-#' [mizu_collect_all()], and a second promise, with an error naming the
-#' pending consumer. [mizu_cancel()] stays allowed: the cancel
-#' publishes, and the pending promise rejects with
-#' `mizu_error_cancelled`. (A channel message instead belongs to whoever
-#' takes it first — see [mizu_recv_async()].)
+#' collection — refuses [mizu_collect()], [mizu_collect_any()] and
+#' [mizu_collect_all()] with an error naming the pending consumer; a
+#' task enrolled in a collection likewise refuses a promise.
+#' [mizu_cancel()] stays allowed and is the destructive option: the
+#' cancel publishes, the result is gone for every consumer, and the
+#' pending promise rejects with `mizu_error_cancelled`. A `timeout` is
+#' the non-destructive counterpart: it only detaches the promise — the
+#' task keeps running and its result stays collectible. (A channel
+#' message instead belongs to whoever takes it first — see
+#' [mizu_recv_async()].)
 #'
 #' Requires the \pkg{later} and \pkg{promises} packages.
 #'
+#' @param task a task handle from [mizu_submit()].
 #' @param tasks a non-empty list of task handles from [mizu_submit()] on
 #'   the same pool handle.
 #' @param timeout seconds after which the promise rejects with the
@@ -632,13 +649,16 @@ pool_drain <- function(state) {
 #' @param x for the `as.promise` methods: a task handle, or a map handle
 #'   from [mizu_map()] / [mizu_map_run()].
 #'
-#' @return A [promises::promise()]: collect-all resolves a plain list of
-#'   the task values in the order of `tasks` (names carried); collect-any
-#'   resolves `list(index, value)`.
+#' @return A [promises::promise()]: `mizu_collect_async()` resolves the
+#'   task's value; collect-all resolves a plain list of the task values
+#'   in the order of `tasks` (names carried); collect-any resolves
+#'   `list(index, value)`.
 #'
 #' @examplesIf interactive() && requireNamespace("promises", quietly = TRUE)
 #' library(promises)
 #' p <- mizu_pool(2L)
+#' t <- mizu_submit(p, sum(runif(10)))
+#' mizu_collect_async(t, timeout = 5) %...>% print()
 #' ts <- list(
 #'   total = mizu_submit(p, sum(x), x = runif(10)),
 #'   label = mizu_submit(p, "done")
@@ -715,34 +735,52 @@ mizu_collect_any_async <- function(tasks, timeout = Inf) {
 }
 
 #' @rdname mizu_collect_all_async
-#' @exportS3Method promises::as.promise
-as.promise.mizu_task <- function(x) {
+#' @export
+mizu_collect_async <- function(task, timeout = Inf) {
   notify_requires()
-  # the cached promise of an already-promised task; a task enrolled in a
-  # collection refuses at the enroll, naming it
-  existing <- .Call(mizu_pool_notify_find, x)
+  check_timeout(timeout)
+  # the cached promise of an already-promised task (either spelling); a
+  # task enrolled in a collection refuses at the enroll, naming it
+  existing <- .Call(mizu_pool_notify_find, task)
   if (!is.null(existing) && existing[["kind"]] == "task") {
     return(existing[["promise"]])
   }
-  tstate <- .Call(mizu_pool_task_state, x)
+  tstate <- .Call(mizu_pool_task_state, task)
   if (tstate == "collected" || tstate == "dropped") {
     stop("mizu: task handle is already collected", call. = FALSE)
   }
-  state <- notify_pool_state(.Call(mizu_task_pool, x))
+  pool <- .Call(mizu_task_pool, task)
+  state <- notify_pool_state(pool)
   w <- new.env(parent = emptyenv())
   w[["kind"]] <- "task"
-  w[["tasks"]] <- list(x)
+  w[["tasks"]] <- list(task)
   ready <- pool_enroll(state, w, w[["tasks"]])
   promise <- promises::promise(function(resolve, reject) {
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject
     if (ready) {
       settle_waiter(w)
+    } else if (is.finite(timeout)) {
+      # as on the collections: the removal withdraws the announce, so
+      # the task returns to blocking-collectible; FALSE means the drain
+      # settled it first
+      w[["timer"]] <- later::later(
+        function() {
+          if (.Call(mizu_pool_notify_remove, pool, w)) {
+            reject(cond_timeout())
+          }
+        },
+        timeout
+      )
     }
   })
   w[["promise"]] <- promise
   promise
 }
+
+#' @rdname mizu_collect_all_async
+#' @exportS3Method promises::as.promise
+as.promise.mizu_task <- function(x) mizu_collect_async(x)
 
 #' @rdname mizu_collect_all_async
 #' @exportS3Method promises::is.promising

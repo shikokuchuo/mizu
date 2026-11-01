@@ -544,6 +544,54 @@ test_that("as.promise on an already-collected task errors", {
   expect_error(promises::as.promise(t), "already collected")
 })
 
+test_that("mizu_collect_async resolves; one promise stands for both spellings", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 42L)
+  pr <- mizu_collect_async(t)
+  expect_identical(pr, mizu_collect_async(t))
+  expect_identical(pr, promises::as.promise(t))
+  o <- observe(pr)
+  pool_step(p)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, 42L)
+  # the rejection carries the task's own error
+  t2 <- mizu_submit(p[["ctrl"]], stop("boom"))
+  o2 <- observe(mizu_collect_async(t2))
+  pool_step(p)
+  expect_true(pump_until(function() settled(o2)))
+  expect_s3_class(o2$error, "simpleError")
+  expect_match(conditionMessage(o2$error), "boom")
+})
+
+test_that("mizu_collect_async timeout rejects; the task returns to blocking-collectible", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1L) # unstepped: stays pending
+  o <- observe(mizu_collect_async(t, timeout = 0.1))
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_timeout")
+  pool_step(p)
+  expect_identical(mizu_collect(t, 5), 1L)
+  expect_error(mizu_collect_async(t), "already collected")
+})
+
+test_that("mizu_collect_async validates and names the pending consumer", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  t <- mizu_submit(p[["ctrl"]], 1L)
+  expect_snapshot(error = TRUE, mizu_collect_async(t, NA))
+  o <- observe(mizu_collect_async(t))
+  expect_error(mizu_collect_all_async(list(t)), "mizu_collect_async")
+  expect_error(mizu_collect(t, 0), "mizu_collect_async")
+  pool_step(p)
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, 1L)
+})
+
 test_that("collect_all_async resolves once, input order with names carried", {
   skip_if_no_promises()
   p <- pool_pair()
