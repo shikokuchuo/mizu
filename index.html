@@ -87,7 +87,7 @@
 <li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>
 </ul>
 <blockquote>
-<p><strong>Lifecycle: experimental.</strong> The API is not yet stable and we may make changes to improve the package.</p>
+<p><strong>Lifecycle: experimental.</strong> The API is not yet stable and we may make changes in response to feedback.</p>
 </blockquote>
 <div class="section level2">
 <h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
@@ -183,7 +183,7 @@
 <div class="section level2">
 <h2 id="python-interop">Python interop<a class="anchor" aria-label="anchor" href="#python-interop"></a>
 </h2>
-<p>Pool workers can be Python processes that run <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a>, the Python binding of the same core. <code><a href="reference/mizu_py_launcher.html">mizu_py_launcher()</a></code> spawns them and <code><a href="reference/mizu_call.html">mizu_call()</a></code> describes the task — here R’s built-in <code>mtcars</code> summarized by polars:</p>
+<p>Pool workers can be Python processes that run <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a>, the Python binding of the same core. <code><a href="reference/mizu_py_launcher.html">mizu_py_launcher()</a></code> spawns them and <code><a href="reference/mizu_call.html">mizu_call()</a></code> specifies the task. Here, R’s built-in <code>mtcars</code> is summarized by polars in Python:</p>
 <div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span>, launcher <span class="op">=</span> <span class="fu"><a href="reference/mizu_py_launcher.html">mizu_py_launcher</a></span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
@@ -213,7 +213,7 @@
 <div class="section level2">
 <h2 id="vignettes">Vignettes<a class="anchor" aria-label="anchor" href="#vignettes"></a>
 </h2>
-<p><code><a href="articles/mizu.html">vignette("mizu", package = "mizu")</a></code> is the main overview. Topic vignettes cover benchmarks against mirai, channels, task pools, the parallel map, Python interop, and operations (sizing <code>/dev/shm</code> on Linux, tuning the Linux memory allocator, and crash semantics). The <a href="https://shikokuchuo.net/mizu/">pkgdown site</a> has the function reference and the rendered vignettes.</p>
+<p><code><a href="articles/mizu.html">vignette("mizu", package = "mizu")</a></code> is the main overview. Topic vignettes cover benchmarks, channels, task pools, the parallel map, Python interop, and operations (Linux memory tuning and crash semantics). The <a href="https://shikokuchuo.net/mizu/">pkgdown site</a> has the function reference and the rendered vignettes.</p>
 <hr>
 <p>Please note that this project is released with a <a href="https://github.com/shikokuchuo/mizu/blob/main/.github/CODE_OF_CONDUCT.md" class="external-link">Contributor Code of Conduct</a>. By participating in this project you agree to abide by its terms.</p>
 </div>

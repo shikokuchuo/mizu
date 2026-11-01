@@ -39,7 +39,7 @@ Python, so R and Python can talk to each other.
 - Nested parallel maps — a task can map over its own pool, deadlock-free
 
 > **Lifecycle: experimental.** The API is not yet stable and we may make
-> changes to improve the package.
+> changes in response to feedback.
 
 ## Installation
 
@@ -125,7 +125,8 @@ the same core.
 [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
 spawns them and
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-describes the task — here R’s built-in `mtcars` summarized by polars:
+specifies the task. Here, R’s built-in `mtcars` is summarized by polars
+in Python:
 
 ``` r
 
@@ -161,11 +162,11 @@ R workers with `pymizu.r_launcher()`.
 ## Vignettes
 
 [`vignette("mizu", package = "mizu")`](https://shikokuchuo.net/mizu/articles/mizu.md)
-is the main overview. Topic vignettes cover benchmarks against mirai,
-channels, task pools, the parallel map, Python interop, and operations
-(sizing `/dev/shm` on Linux, tuning the Linux memory allocator, and
-crash semantics). The [pkgdown site](https://shikokuchuo.net/mizu/) has
-the function reference and the rendered vignettes.
+is the main overview. Topic vignettes cover benchmarks, channels, task
+pools, the parallel map, Python interop, and operations (Linux memory
+tuning and crash semantics). The [pkgdown
+site](https://shikokuchuo.net/mizu/) has the function reference and the
+rendered vignettes.
 
 ------------------------------------------------------------------------
 
