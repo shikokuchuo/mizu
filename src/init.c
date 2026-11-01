@@ -133,7 +133,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_pool_cancel",            (DL_FUNC) &mizu_pool_cancel_call,          1},
   {"mizu_pool_task_state",        (DL_FUNC) &mizu_pool_task_state_call,      1},
   {"mizu_pool_stop_call",         (DL_FUNC) &mizu_pool_stop_call,            2},
-  {"mizu_pool_status_call",       (DL_FUNC) &mizu_pool_status_call,          1},
+  {"mizu_pool_info_call",       (DL_FUNC) &mizu_pool_info_call,          1},
   {"mizu_pool_stats_call",        (DL_FUNC) &mizu_pool_stats_call,           1},
   {"mizu_pool_map_caps",          (DL_FUNC) &mizu_pool_map_caps_call,        1},
   {"mizu_pool_map_cache",         (DL_FUNC) &mizu_pool_map_cache,            1},

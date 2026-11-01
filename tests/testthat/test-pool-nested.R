@@ -9,13 +9,13 @@
 test_that("a direct nested submit lands on the deque and help-collects", {
   p <- pool_pair()
   sub <- mizu_submit(p[["wk"]], "direct")
-  st <- mizu_pool_status(p[["ctrl"]])
+  st <- mizu_pool_info(p[["ctrl"]])
   expect_identical(st[["deque"]], 1)
   # the worker claimed a submitter slot on first nested use
   expect_identical(sum(st[["submitters"]] == "live"), 2L)
   # a poll collect makes progress through help mode: pop, execute, return
   expect_identical(mizu_collect(sub, timeout = 0), "direct")
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["deque"]], 0)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]], 0)
   pool_end(p)
 })
 
@@ -88,7 +88,7 @@ test_that("a full deque runs nested subtasks inline (work-first)", {
   expect_identical(pool_step(p), 1L)
   expect_identical(mizu_collect(t, timeout = 5), 100L)
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -109,7 +109,7 @@ test_that("help mode contains an erroring subtask at its own boundary", {
   expect_identical(pool_step(p), 1L)
   expect_identical(mizu_collect(t, timeout = 5), "caught: sub boom")
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -135,7 +135,7 @@ test_that("a full deque's inline execution contains subtask errors", {
   expect_identical(pool_step(p), 1L)
   expect_identical(mizu_collect(t, timeout = 5), paste("boom", 1:4))
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -157,7 +157,7 @@ test_that("a task error after nested activity publishes to its own slot", {
   expect_s3_class(err, "simpleError")
   expect_identical(conditionMessage(err), "outer boom")
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -247,10 +247,10 @@ test_that("a cancelled nested entry frees at its later pop", {
     "mizu: task cancelled or pool stopped"
   )
   # the cancelled entry still queues on the deque; the next pop frees it
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["deque"]], 1)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]], 1)
   expect_identical(pool_step(p), 1L)
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)

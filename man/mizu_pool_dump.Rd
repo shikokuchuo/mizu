@@ -13,7 +13,7 @@ inside a task, the evaluating worker's own handle from
 }
 \value{
 A list with elements \code{token} and \code{name} (as in
-\code{\link[=mizu_pool_status]{mizu_pool_status()}}), \code{shutdown}, \code{workers} (data frame:
+\code{\link[=mizu_pool_info]{mizu_pool_info()}}), \code{shutdown}, \code{workers} (data frame:
 slot, status, pid, park_state, parked, deque \code{top} and \code{bottom}, and
 the in-flight result slot), \code{submitters} (data frame: slot, status,
 pid, result-slot subrange, queued injection entries, ready and
@@ -32,7 +32,7 @@ this handle parked waiting for a result), and \code{ledger_entries}
 }
 \description{
 A read-only debugging snapshot of the entire pool region, one level
-deeper than \code{\link[=mizu_pool_status]{mizu_pool_status()}}. It shows per-slot registry detail
+deeper than \code{\link[=mizu_pool_info]{mizu_pool_info()}}. It shows per-slot registry detail
 and every occupied result slot. State is distributed across processes
 and execution is non-deterministic, so reach for this tool first when
 a pool hangs. The scan takes no locks and can race in-flight

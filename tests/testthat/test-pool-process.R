@@ -20,7 +20,7 @@ test_that("a spawned worker round-trips every payload kind", {
     mizu_collect(tasks[[4L]], timeout = 30),
     as.double(seq_len(100000L))
   )
-  st <- mizu_pool_status(p)
+  st <- mizu_pool_info(p)
   expect_identical(st[["workers"]], "live")
   expect_identical(unname(st[["tasks"]]), rep(0L, 6L))
   expect_true(mizu_pool_stop(p, timeout = 10))
@@ -241,7 +241,7 @@ test_that("a second worker picks up tasks while the first is busy", {
   skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
-  expect_identical(mizu_pool_status(p)[["workers"]], c("live", "live"))
+  expect_identical(mizu_pool_info(p)[["workers"]], c("live", "live"))
   slow <- mizu_submit(p, {
     Sys.sleep(1)
     Sys.getpid()
@@ -265,7 +265,7 @@ test_that("repeated submit/collect cycles park and wake without loss", {
   p <- mizu_pool(n_workers = 2L)
   # an idle pool parks both workers; each cycle below is a fresh wake —
   # a lost wake in the handshake surfaces as a collect timeout
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   for (i in 1:50) {
     t <- mizu_submit(p, x + 1L, x = i)
     expect_identical(mizu_collect(t, timeout = 10), i + 1L)
@@ -321,7 +321,7 @@ test_that("a trace-hook error takes the worker down as infrastructure", {
   ))
   # the dying worker released its slot on the way out
   expect_true(wait_until(
-    mizu_pool_status(p)[["workers"]] == "free",
+    mizu_pool_info(p)[["workers"]] == "free",
     timeout = 30
   ))
   expect_true(mizu_pool_stop(p, timeout = 10))

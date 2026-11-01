@@ -1348,7 +1348,7 @@ test_that("a killed worker rejects its promise-armed tasks; survivors unaffected
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   on.exit(mizu_pool_stop(p), add = TRUE)
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   t1 <- mizu_submit(p, {
     Sys.sleep(3)
     1L
@@ -1362,8 +1362,8 @@ test_that("a killed worker rejects its promise-armed tasks; survivors unaffected
   # wait for the claims: one in-flight task per worker, so the kill below
   # deterministically fails exactly one task (a worker holds one claim)
   expect_true(wait_until(
-    mizu_pool_status(p)[["injection"]] == 0L &&
-      mizu_pool_status(p)[["parked"]] == 0L
+    mizu_pool_info(p)[["injection"]] == 0L &&
+      mizu_pool_info(p)[["parked"]] == 0L
   ))
   d <- mizu_pool_dump(p)[["workers"]]
   victim <- as.integer(d[d[["status"]] == "live", "pid"][[1L]])
@@ -1404,7 +1404,7 @@ test_that("a map promise rejects when every worker dies before any claim", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   on.exit(mizu_pool_stop(p), add = TRUE)
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   lapply(1:2, function(i) {
     mizu_submit(p, {
       Sys.sleep(10)

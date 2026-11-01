@@ -166,7 +166,7 @@ mizu_spawn_workers <- function(
   }
   # gate the role before the launcher runs: a non-controller's spawn would
   # error only at ready_wait, after real worker processes had started
-  st <- mizu_pool_status(pool)
+  st <- mizu_pool_info(pool)
   if (!identical(st[["role"]], "controller")) {
     stop("mizu: only the controller can resize a pool", call. = FALSE)
   }
@@ -193,16 +193,16 @@ mizu_retire_worker <- function(pool, slot) {
 #' Joins an existing pool from another process, claiming a free submitter
 #' slot with its own injection ring and result slots. You pass the join
 #' token of the pool to the joining process yourself: it is
-#' `mizu_pool_status(p)$token` on the creator.
+#' `mizu_pool_info(p)$token` on the creator.
 #'
 #' @param token the join token of the pool. The full region name
-#'   (`mizu_pool_status(p)$name`) is also accepted.
+#'   (`mizu_pool_info(p)$name`) is also accepted.
 #'
 #' @return A pool handle (class `"mizu_pool"`) holding a submitter slot.
 #'
 #' @examples
 #' p <- mizu_pool()
-#' token <- mizu_pool_status(p)[["token"]]
+#' token <- mizu_pool_info(p)[["token"]]
 #' # pass `token` to the joining process yourself. There, run:
 #' # pa <- mizu_pool_attach(token)
 #' # mizu_collect(mizu_submit(pa, runif(3)))
@@ -752,12 +752,12 @@ slot_frame <- function(x, states) {
 #'
 #' @examples
 #' p <- mizu_pool()
-#' mizu_pool_status(p)
+#' mizu_pool_info(p)
 #' mizu_pool_stop(p)
 #'
 #' @export
-mizu_pool_status <- function(pool) {
-  st <- .Call(mizu_pool_status_call, pool)
+mizu_pool_info <- function(pool) {
+  st <- .Call(mizu_pool_info_call, pool)
   st[["token"]] <- sub(".*?([0-9a-f]+_[0-9a-f]+)$", "\\1", st[["name"]])
   st[["workers"]] <- recode_states(st[["workers"]], worker_states)
   st[["submitters"]] <- recode_states(st[["submitters"]], submitter_states)
@@ -768,7 +768,7 @@ mizu_pool_status <- function(pool) {
 #' Dump the Distributed State of a Pool
 #'
 #' A read-only debugging snapshot of the entire pool region, one level
-#' deeper than [mizu_pool_status()]. It shows per-slot registry detail
+#' deeper than [mizu_pool_info()]. It shows per-slot registry detail
 #' and every occupied result slot. State is distributed across processes
 #' and execution is non-deterministic, so reach for this tool first when
 #' a pool hangs. The scan takes no locks and can race in-flight
@@ -778,7 +778,7 @@ mizu_pool_status <- function(pool) {
 #' @inheritParams mizu_pool_stop
 #'
 #' @return A list with elements `token` and `name` (as in
-#'   [mizu_pool_status()]), `shutdown`, `workers` (data frame:
+#'   [mizu_pool_info()]), `shutdown`, `workers` (data frame:
 #'   slot, status, pid, park_state, parked, deque `top` and `bottom`, and
 #'   the in-flight result slot), `submitters` (data frame: slot, status,
 #'   pid, result-slot subrange, queued injection entries, ready and
@@ -828,7 +828,7 @@ mizu_pool_dump <- function(pool) {
 #'
 #' Per-worker and per-submitter counters, accumulated since each
 #' participant joined. They complement the point-in-time snapshots of
-#' [mizu_pool_status()] and [mizu_pool_dump()]. Keeping them costs the
+#' [mizu_pool_info()] and [mizu_pool_dump()]. Keeping them costs the
 #' pool nothing. The submitter counts ride the injection ring's own
 #' positions: submission writes nothing extra, and the spill counter
 #' moves only on the spill path, whose region create already costs far

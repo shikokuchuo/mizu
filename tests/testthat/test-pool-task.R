@@ -13,7 +13,7 @@ test_that("a task round-trips every result payload kind", {
     inline = mizu_submit(p[["ctrl"]], list(a = x, b = "y"), x = 1), # INLINE
     shm = mizu_submit(p[["ctrl"]], seq_len(n) + 0, n = 100000L) # SHM_RAW
   )
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["injection"]], 6)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["injection"]], 6)
   while (pool_step(p) == 1L) {
     NULL
   }
@@ -108,7 +108,7 @@ test_that("a task error is published and re-signalled at collect", {
   expect_identical(conditionMessage(err), "boom today")
   # the slot released with the collect: reusable immediately
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -556,11 +556,11 @@ test_that("cancel discards a still-queued task; the worker frees the slot", {
   expect_true(mizu_cancel(t))
   expect_false(mizu_cancel(t)) # already cancelled
   expect_error(mizu_collect(t, timeout = 5), "cancelled")
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["tasks"]][["cancel"]], 1L)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["tasks"]][["cancel"]], 1L)
   # the queued entry is consumed later; only then does CANCEL become FREE
   pool_step(p)
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -580,10 +580,10 @@ test_that("a dropped handle cancels its pending task at finalization", {
   t <- mizu_submit(p[["ctrl"]], "orphaned")
   rm(t)
   gc()
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["tasks"]][["cancel"]], 1L)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["tasks"]][["cancel"]], 1L)
   pool_step(p) # consume + free
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -593,11 +593,11 @@ test_that("a dropped handle frees an uncollected published result", {
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], "never collected")
   pool_step(p)
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["tasks"]][["ok"]], 1L)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["tasks"]][["ok"]], 1L)
   rm(t)
   gc() # OK -> FREE without mapping
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)

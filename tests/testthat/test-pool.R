@@ -92,7 +92,7 @@ test_that("a fresh pool reports its layout and registry state", {
     result_slots = 32L,
     slot_size = 512L
   )
-  st <- mizu_pool_status(p[["ctrl"]])
+  st <- mizu_pool_info(p[["ctrl"]])
   prefix <- if (.Platform[["OS.type"]] == "windows") {
     "Local\\mizu_"
   } else {
@@ -112,7 +112,7 @@ test_that("a fresh pool reports its layout and registry state", {
   expect_identical(st[["injection"]], 0)
   expect_identical(unname(st[["tasks"]]), rep(0L, 6L))
   expect_false(st[["shutdown"]])
-  expect_identical(mizu_pool_status(p[["wk"]])[["role"]], "worker")
+  expect_identical(mizu_pool_info(p[["wk"]])[["role"]], "worker")
   expect_s3_class(p[["ctrl"]], "mizu_pool")
   pool_end(p)
 })
@@ -220,7 +220,7 @@ test_that("the last worker's leave finalizes an orphaned deque for respawn", {
   # and frees the slot instead of wedging it REAPING forever
   expect_error(mizu_collect(t1, timeout = 5), class = "mizu_error_worker_died")
   expect_error(mizu_collect(t2, timeout = 5), class = "mizu_error_worker_died")
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["workers"]], "free")
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["workers"]], "free")
   wk2 <- .Call(mizu:::mizu_pool_worker_join, suffix, 0L, NULL)
   .Call(mizu:::mizu_pool_set_eval, wk2)
   t3 <- mizu_submit(p[["ctrl"]], 3 + 3)
@@ -235,14 +235,14 @@ test_that("submitters claim distinct slots and subranges", {
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
   s1 <- .Call(mizu:::mizu_pool_attach_call, suffix)
   s2 <- .Call(mizu:::mizu_pool_attach_call, suffix)
-  st <- mizu_pool_status(p[["ctrl"]])
+  st <- mizu_pool_info(p[["ctrl"]])
   expect_identical(st[["submitters"]], c("live", "live", "live", "free"))
-  expect_identical(mizu_pool_status(s1)[["role"]], "submitter")
+  expect_identical(mizu_pool_info(s1)[["role"]], "submitter")
 
   # each submitter's tasks flow through its own ring to the same worker
   t1 <- mizu_submit(s1, i + 1L, i = 10L)
   t2 <- mizu_submit(s2, i + 2L, i = 20L)
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["injection"]], 2)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["injection"]], 2)
   while (pool_step(p) == 1L) {
     NULL
   }
@@ -385,7 +385,7 @@ test_that("a corrupt ring entry is skipped without a claim", {
   mizu_submit(p[["ctrl"]], 1 + 1)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   # ring 0 entry 0 (pool_pair geometry): the rs_index word
@@ -406,7 +406,7 @@ test_that("a corrupt deque entry is skipped without a claim", {
   pool_pull(p, 1L) # the injection entry rides the worker's own deque now
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   # wk[0]'s deque_buf_off is its slot word at 152; entry 0's rs_index word
@@ -427,7 +427,7 @@ test_that("a corrupt stolen entry aborts the steal", {
   pool_pull(p, 1L, wk = p[["wks"]][[1L]])
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   doff <- i64v(.Call(mizu:::mizu_peek, rw, 152, 8))
@@ -446,7 +446,7 @@ test_that("a rawspill-framed task whose region vanished reads as lost", {
   t <- mizu_submit(p[["ctrl"]], 1L)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   # ring 0 entry 0 reframed as RAWSPILL: the claim's byte resolve skips the
@@ -492,7 +492,7 @@ test_that("the submitter registry reports full", {
 test_that("destroy releases the region name and poisons late attaches", {
   skip_on_os("windows") # kernel objects have no unlink step to observe
   p <- pool_pair()
-  nm <- mizu_pool_status(p[["ctrl"]])[["name"]]
+  nm <- mizu_pool_info(p[["ctrl"]])[["name"]]
   expect_no_error(.Call(mizu:::mizu_region_open, nm, FALSE))
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
   .Call(mizu:::mizu_pool_leave, p[["wk"]])
@@ -505,7 +505,7 @@ test_that("a stopped or destroyed handle is dead across the verb surface", {
   p <- pool_pair()
   pool_end(p)
   expect_error(mizu_submit(p[["ctrl"]], 1), "pool handle is closed")
-  expect_error(mizu_pool_status(p[["ctrl"]]), "pool handle is closed")
+  expect_error(mizu_pool_info(p[["ctrl"]]), "pool handle is closed")
   # stop is idempotent on a released handle
   expect_true(.Call(mizu:::mizu_pool_stop_call, p[["ctrl"]], 0))
 })
@@ -513,7 +513,7 @@ test_that("a stopped or destroyed handle is dead across the verb surface", {
 test_that("pool introspection on a stopped pool names the closed handle", {
   ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
   mizu_pool_stop(ctrl, timeout = 0)
-  expect_error(mizu_pool_status(ctrl), "pool handle is closed")
+  expect_error(mizu_pool_info(ctrl), "pool handle is closed")
   expect_error(mizu_pool_stats(ctrl), "pool handle is closed")
   expect_error(mizu_pool_dump(ctrl), "pool handle is closed")
   expect_error(.Call(mizu:::mizu_pool_suffix, ctrl), "pool handle is closed")
@@ -531,7 +531,7 @@ test_that("an attached submitter observes shutdown at its next verb", {
 
 test_that("non-pool handles are rejected across the verb surface", {
   expect_error(mizu_submit(new.env(), 1), "not a pool handle")
-  expect_error(mizu_pool_status("x"), "not a pool handle")
+  expect_error(mizu_pool_info("x"), "not a pool handle")
   expect_error(mizu_pool_stop(42), "not a pool handle")
   expect_error(mizu_collect(NULL), "not a task handle")
   expect_error(mizu_cancel(1L), "not a task handle")
@@ -540,7 +540,7 @@ test_that("non-pool handles are rejected across the verb surface", {
 test_that("attach rejects each corrupted pool header field", {
   ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
   suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)
-  rw <- .Call(mizu:::mizu_region_open, mizu_pool_status(ctrl)[["name"]], TRUE)
+  rw <- .Call(mizu:::mizu_region_open, mizu_pool_info(ctrl)[["name"]], TRUE)
   hdr <- .Call(mizu:::mizu_peek, rw, 0, 64)
   corrupt <- make_corrupt(rw, hdr, .Call(mizu:::mizu_pool_attach_call, suffix))
   corrupt(4, 99, "ABI version mismatch")
@@ -723,13 +723,13 @@ test_that("mizu_spawn_workers validates n and walks back a failed startup", {
     class = "mizu_error_startup"
   )
   # the slot was never claimed: a later spawn can still take it
-  expect_identical(mizu_pool_status(ctrl)[["workers"]], c("free", "free"))
+  expect_identical(mizu_pool_info(ctrl)[["workers"]], c("free", "free"))
   .Call(mizu:::mizu_pool_destroy, ctrl)
 })
 
 test_that("mizu_spawn_workers is controller-only, spawning nothing otherwise (L36)", {
   ctrl <- .Call(mizu:::mizu_pool_create, 2L, 8L, 64L, 64L, 64L, 256L)
-  sub <- mizu_pool_attach(mizu_pool_status(ctrl)[["name"]])
+  sub <- mizu_pool_attach(mizu_pool_info(ctrl)[["name"]])
   spawned <- FALSE
   expect_snapshot(
     error = TRUE,
@@ -741,7 +741,7 @@ test_that("mizu_spawn_workers is controller-only, spawning nothing otherwise (L3
     )
   )
   expect_false(spawned)
-  expect_identical(mizu_pool_status(ctrl)[["workers"]], c("free", "free"))
+  expect_identical(mizu_pool_info(ctrl)[["workers"]], c("free", "free"))
   mizu_pool_stop(ctrl, timeout = 0)
 })
 
@@ -1388,7 +1388,7 @@ test_that("collect_all attaches the consumed prefix to a mid-batch read failure"
   pool_step(p)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   # result slots follow the header, worker/submitter tables, the injection
@@ -1422,7 +1422,7 @@ test_that("corrupt rawspill result slots reject at collect", {
   pool_step(p)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   .Call(mizu:::mizu_poke, rw, off + 24L + 8L, raw(8L)) # aux: a zero wire type
@@ -1434,7 +1434,7 @@ test_that("corrupt rawspill result slots reject at collect", {
   pool_step(p)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   .Call(
@@ -1492,7 +1492,7 @@ test_that("a malformed ref identifier in a result fails the read", {
   pool_step(p)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p$ctrl)[["name"]],
+    mizu_pool_info(p$ctrl)[["name"]],
     TRUE
   )
   off <- 128L + 256L + 8L * 128L + 256L + 8L * (256L + 64L * 512L) + 64L * 512L
@@ -1565,7 +1565,7 @@ test_that("attach rejects a corrupt pool header", {
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   hdr <- .Call(mizu:::mizu_peek, rw, 0, 64)
@@ -1606,7 +1606,7 @@ test_that("claim copies tolerate torn entry kind bytes", {
   on.exit(pool_end(p))
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   base <- 128L + 256L + 8L * 128L + 256L + 256L
@@ -1648,7 +1648,7 @@ test_that("a lost task reports its state before collect", {
   t <- mizu_submit(p[["ctrl"]], x, x = x)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   base <- 128L + 256L + 8L * 128L + 256L + 256L
@@ -1675,7 +1675,7 @@ test_that("the task finalizer leaves a cancelled slot alone", {
   rm(t)
   gc()
   expect_identical(
-    mizu_pool_status(p[["ctrl"]])[["tasks"]][["cancel"]],
+    mizu_pool_info(p[["ctrl"]])[["tasks"]][["cancel"]],
     1L
   )
 })

@@ -34,7 +34,7 @@ a new joiner reuses a slot.
 \description{
 Per-worker and per-submitter counters, accumulated since each
 participant joined. They complement the point-in-time snapshots of
-\code{\link[=mizu_pool_status]{mizu_pool_status()}} and \code{\link[=mizu_pool_dump]{mizu_pool_dump()}}. Keeping them costs the
+\code{\link[=mizu_pool_info]{mizu_pool_info()}} and \code{\link[=mizu_pool_dump]{mizu_pool_dump()}}. Keeping them costs the
 pool nothing. The submitter counts ride the injection ring's own
 positions: submission writes nothing extra, and the spill counter
 moves only on the spill path, whose region create already costs far

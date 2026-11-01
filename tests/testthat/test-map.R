@@ -168,7 +168,7 @@ test_that("a map returns results in input order with names reapplied", {
   # one runner per live worker, not one task per morsel
   expect_identical(st[["R"]], 1L)
   mizu:::map_submit(p[["ctrl"]], st)
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["injection"]], 1)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["injection"]], 1)
   while (pool_step(p) == 1L) {
     NULL
   }
@@ -725,7 +725,7 @@ test_that("a runner error stores the cancel word before its ERR publish", {
     NULL
   }
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -752,7 +752,7 @@ test_that("a doorbell help beat re-homes a runner instead of nesting it", {
   # the pre-fix swallow ran both runners on wk1 (tasks 2,0)
   expect_identical(pool_step(p), 1L)
   expect_identical(length(ev), 1L)
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["deque"]][[1L]], 1)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]][[1L]], 1)
   d <- mizu_pool_dump(p[["ctrl"]])
   expect_identical(d[["tasks"]][["status"]], c("ok", "pending"))
   # the re-homed runner is stealable: wk2 claims and completes it
@@ -785,7 +785,7 @@ test_that("help re-homes runners but executes ordinary tasks inline", {
   expect_identical(pool_step(p), 1L)
   d <- mizu_pool_dump(p[["ctrl"]])
   expect_identical(d[["tasks"]][["status"]], c("ok", "pending", "ok"))
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["deque"]][[1L]], 1)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]][[1L]], 1)
   expect_identical(mizu_collect(h), "ordinary")
   # drain wk1's re-homed runner; the closing empty step mirrors the
   # counters — helps counted the ordinary execute only, not the re-home
@@ -820,7 +820,7 @@ test_that("a full deque falls back to executing the claimed runner inline", {
   # into: the inline fallback executes it nested, announce intact
   expect_true(.Call(mizu:::mizu_pool_help_once, p[["wk"]]))
   expect_identical(.Call(mizu:::mizu_map_info, st[["wrap"]])[["cursor"]], 2)
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["deque"]][[1L]], 2)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]][[1L]], 2)
   while (pool_step(p) == 1L) {
     NULL
   }
@@ -828,7 +828,7 @@ test_that("a full deque falls back to executing the claimed runner inline", {
   expect_identical(mizu_collect(h2), 2L)
   expect_identical(collect30(p[["ctrl"]], st), list(10L, 20L))
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -879,7 +879,7 @@ test_that("collect trims never-claimed runners once the cursor exhausts", {
     NULL
   }
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -912,7 +912,7 @@ test_that("n = 0, n = 1, and n < chunks all behave", {
     vapply(integer(), identity, c(a = 0L, b = 0L))
   )
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   expect_identical(run_map(p, 5, function(i) i * 2), list(10))
@@ -966,7 +966,7 @@ test_that("zero live workers floors R at 1; a rejoined worker drains it", {
   p <- pool_pair()
   suffix <- .Call(mizu:::mizu_pool_suffix, p[["ctrl"]])
   .Call(mizu:::mizu_pool_leave, p[["wk"]])
-  expect_identical(mizu_pool_status(p[["ctrl"]])[["workers"]], "free")
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["workers"]], "free")
   st <- mizu:::map_stage(p[["ctrl"]], 1:6, function(i) i + 1L, list())
   expect_identical(st[["R"]], 1L)
   mizu:::map_submit(p[["ctrl"]], st) # queues in the injection ring
@@ -1130,7 +1130,7 @@ test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
   } # filler runs, dropped chunks free
   expect_identical(mizu_collect(filler, timeout = 5), "filler")
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -1149,7 +1149,7 @@ test_that(".timeout expiring in collect cancels the outstanding chunks", {
     NULL
   }
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -1165,7 +1165,7 @@ test_that(".timeout expiring in a region map's collect cancels the runners", {
     NULL
   }
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -1370,11 +1370,11 @@ test_that("a nested map runs on the worker's own deque, help-collected", {
   expect_identical(mizu_collect(t, timeout = 5), as.list(2:7))
   # the worker claimed a submitter slot on first nested use
   expect_identical(
-    sum(mizu_pool_status(p[["ctrl"]])[["submitters"]] == "live"),
+    sum(mizu_pool_info(p[["ctrl"]])[["submitters"]] == "live"),
     2L
   )
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -1395,7 +1395,7 @@ test_that("a deadline already expired at submit stages no tasks", {
   expect_true(st[["timed_out"]])
   expect_true(all(vapply(st[["handles"]], is.null, NA)))
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -1445,7 +1445,7 @@ test_that("blob-path collect times out, cancels, and re-signals f's errors", {
   expect_identical(e[["mizu_map_index"]], 1)
   gc() # chunk 2's discarded ERR result frees with its dropped handle
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -2030,7 +2030,7 @@ test_that("malformed runner streams fail the runner with the decode error", {
     mizu:::map_submit(p[["ctrl"]], st)
     rw <- .Call(
       mizu:::mizu_region_open,
-      mizu_pool_status(p[["ctrl"]])[["name"]],
+      mizu_pool_info(p[["ctrl"]])[["name"]],
       TRUE
     )
     # ring 0 entry 0 (pool_pair geometry): payload header at +24, payload +40
@@ -2076,7 +2076,7 @@ test_that("malformed runner streams fail the runner with the decode error", {
   mizu:::map_submit(p[["ctrl"]], st)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   base <- 128L + 256L + 8L * 128L + 256L + 256L
@@ -2100,7 +2100,7 @@ test_that("malformed runner streams fail the runner with the decode error", {
   mizu:::map_submit(p[["ctrl"]], st)
   rw <- .Call(
     mizu:::mizu_region_open,
-    mizu_pool_status(p[["ctrl"]])[["name"]],
+    mizu_pool_info(p[["ctrl"]])[["name"]],
     TRUE
   )
   base <- 128L + 256L + 8L * 128L + 256L + 256L

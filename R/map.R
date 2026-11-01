@@ -1746,7 +1746,7 @@ map_hist_ix <- function(runs, ms) {
 # as live — a joining worker is about to claim; "leaving" and "reaping"
 # do not, as neither takes new work.
 map_workers_gone <- function(pool) {
-  pst <- mizu_pool_status(pool)
+  pst <- mizu_pool_info(pool)
   !pst[["shutdown"]] && !any(pst[["workers"]] %in% c("live", "claiming"))
 }
 

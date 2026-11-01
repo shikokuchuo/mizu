@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="e3036ba03f49c056297f11055ccca0fad7f907b4"  # libmizu: Pool and listener hygiene: claim reset, slot geometry checks, atomic notify tx, off-lock abnormal fire
+PIN="452be453149a40150ce38254437e3f84a69ad57a"  # libmizu: Rename mizu_pool_status to mizu_pool_info
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

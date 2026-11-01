@@ -290,6 +290,30 @@ mizu_close <- function(ch, timeout = 5) {
 #' @export
 mizu_alive <- function(ch) .Call(mizu_channel_alive, ch)
 
+#' Inspect a Channel
+#'
+#' A read-only snapshot of the channel region and the handle-local
+#' counters: ring geometry and watermarks, the free-list and open
+#' caches, and the notify signals sent to an armed async consumer.
+#'
+#' @inheritParams mizu_send
+#'
+#' @return A list with elements `name` (the platform region name, kept
+#'   for debugging), `side`, `capacity`, `slot_size`, `arena_size`,
+#'   `inline_max`, `spin`, `ready`, `closed`, `peer_pid`, `tx_sent`,
+#'   `tx_published`, `tx_consumed`, `rx_consumed`, `rx_published`,
+#'   `fl_entries`, `fl_hits`, `open_hits`, `open_misses`,
+#'   `ledger_entries`, `zc_open_hits`, `zc_open_misses`, and
+#'   `notify_sends`.
+#'
+#' @examples
+#' ch <- mizu_channel(quote(mizu_recv(ch)))
+#' mizu_channel_info(ch)
+#' mizu_close(ch)
+#'
+#' @export
+mizu_channel_info <- function(ch) .Call(mizu_channel_stat, ch)
+
 # Peer entry point: invoked through the Rscript child runner by the launcher.
 # Rebuilds the region name from the compiled-in prefix plus the token (the
 # name's suffix), attaches writable, validates the preamble, takes its liveness

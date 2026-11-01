@@ -40,7 +40,7 @@ prints its region name, the role of this handle, live workers out of
 registry capacity, and pending (uncompleted) tasks. A task handle
 prints its state, probed without consuming the result. The state is
 \code{pending}, \code{ok}, \code{err}, \code{cancel}, \code{died}, or \code{lost} in the result-slot
-vocabulary of \code{\link[=mizu_pool_status]{mizu_pool_status()}}. It is \code{collected} once the result is
+vocabulary of \code{\link[=mizu_pool_info]{mizu_pool_info()}}. It is \code{collected} once the result is
 taken, or \code{dropped} when its pool is gone. Sentinels print as their
 class. The handle methods never error and never touch the rings. A
 handle whose resources are released (a closed channel, a stopped pool)

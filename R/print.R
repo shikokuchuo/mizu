@@ -7,7 +7,7 @@
 #' registry capacity, and pending (uncompleted) tasks. A task handle
 #' prints its state, probed without consuming the result. The state is
 #' `pending`, `ok`, `err`, `cancel`, `died`, or `lost` in the result-slot
-#' vocabulary of [mizu_pool_status()]. It is `collected` once the result is
+#' vocabulary of [mizu_pool_info()]. It is `collected` once the result is
 #' taken, or `dropped` when its pool is gone. Sentinels print as their
 #' class. The handle methods never error and never touch the rings. A
 #' handle whose resources are released (a closed channel, a stopped pool)
@@ -54,7 +54,7 @@ print.mizu_channel <- function(x, ...) {
 #' @rdname print.mizu_channel
 #' @export
 print.mizu_pool <- function(x, ...) {
-  st <- tryCatch(mizu_pool_status(x), error = function(e) NULL)
+  st <- tryCatch(mizu_pool_info(x), error = function(e) NULL)
   cat(
     if (is.null(st)) {
       "<mizu_pool: closed>\n"

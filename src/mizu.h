@@ -812,7 +812,7 @@ SEXP mizu_pool_collect_all_call(SEXP, SEXP);
 SEXP mizu_pool_cancel_call(SEXP);
 SEXP mizu_pool_task_state_call(SEXP);
 SEXP mizu_pool_stop_call(SEXP, SEXP);
-SEXP mizu_pool_status_call(SEXP);
+SEXP mizu_pool_info_call(SEXP);
 SEXP mizu_pool_stats_call(SEXP);
 SEXP mizu_pool_map_caps_call(SEXP);
 SEXP mizu_pool_map_cache(SEXP);

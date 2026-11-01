@@ -27,7 +27,7 @@ test_that("result-slot exhaustion raises mizu_error_slots_exhausted", {
 
 test_that("submitting to a stopped pool raises mizu_error_stopped", {
   ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
-  sub <- mizu_pool_attach(mizu_pool_status(ctrl)[["name"]])
+  sub <- mizu_pool_attach(mizu_pool_info(ctrl)[["name"]])
   mizu_pool_stop(ctrl, timeout = 0)
   expect_error(mizu_submit(sub, 1L), class = "mizu_error_stopped")
 })

@@ -28,8 +28,8 @@ test_that("a worker killed mid-task fails exactly that task", {
 
   # the listener's callback reap runs off the R thread: DIED appears and
   # the empty-dequed slot frees without this process calling anything
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
-  expect_true(wait_until(mizu_pool_status(p)[["workers"]][claimant] == "free"))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["died"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["workers"]][claimant] == "free"))
   expect_identical(.Call(mizu:::mizu_pool_task_state, t), "died")
   err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
   expect_s3_class(err, "mizu_error_worker_died")
@@ -61,7 +61,7 @@ test_that("death inside a nested help-collect fails outer and inner", {
   }))
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
   kill_hard(pid)
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["died"]] == 2L))
   err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
   expect_s3_class(err, "mizu_error_worker_died")
   expect_identical(err[["slot"]], 0L)
@@ -74,9 +74,9 @@ test_that("a worker killed while parked frees its slot for respawn", {
   skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L, max_workers = 1L)
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 1L))
   kill_hard(mizu_pool_dump(p)[["workers"]][["pid"]][1L])
-  expect_true(wait_until(mizu_pool_status(p)[["workers"]] == "free"))
+  expect_true(wait_until(mizu_pool_info(p)[["workers"]] == "free"))
   # elastic respawn reclaims the reaped slot
   expect_identical(mizu_spawn_workers(p, 1L), 0L)
   t <- mizu_submit(p, "respawned")
@@ -91,7 +91,7 @@ test_that("collect's backstop probe reaps with no listener registered", {
   # only reaper is the probe piggybacked on collect's PENDING wakes
   ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
   mizu:::spawn_worker(.Call(mizu:::mizu_pool_suffix, ctrl), 0L)
-  expect_true(wait_until(mizu_pool_status(ctrl)[["workers"]] == "live"))
+  expect_true(wait_until(mizu_pool_info(ctrl)[["workers"]] == "live"))
   t <- mizu_submit(ctrl, Sys.sleep(30))
   expect_true(wait_until(
     mizu_pool_dump(ctrl)[["workers"]][["in_flight"]][1L] != -1L
@@ -100,7 +100,7 @@ test_that("collect's backstop probe reaps with no listener registered", {
   err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
   expect_s3_class(err, "mizu_error_worker_died")
   expect_match(conditionMessage(err), "worker died")
-  expect_identical(mizu_pool_status(ctrl)[["workers"]], "free")
+  expect_identical(mizu_pool_info(ctrl)[["workers"]], "free")
   .Call(mizu:::mizu_pool_destroy, ctrl)
 })
 
@@ -147,12 +147,12 @@ test_that("a dead worker's queued deque work is consumed in place", {
 
   # the reap has run once the in-flight task fails; with the survivor still
   # gated, the deque is REAPING with all three entries orphaned
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["died"]] == 1L))
   file.create(g)
   # the released survivor drains the orphaned REAPING deque through
   # ordinary steals
   expect_true(wait_until(length(dir(d)) == 3L, timeout = 15))
-  expect_true(wait_until(mizu_pool_status(p)[["workers"]][victim] == "free"))
+  expect_true(wait_until(mizu_pool_info(p)[["workers"]][victim] == "free"))
   err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
   expect_match(conditionMessage(err), "worker died")
   expect_identical(mizu_collect(blocker, timeout = 10), NULL)
@@ -210,7 +210,7 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
 
   # the reap has run once the in-flight task fails; with the survivor still
   # gated, the deque is REAPING with all three entries orphaned
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["died"]] == 1L))
   file.create(g)
   # POSIX regions outlive their creator, so the drain executes the orphans;
   # on Windows they vanished with the victim and the drain fails each as
@@ -220,7 +220,7 @@ test_that("orphaned entries with spilled payloads drain without thief loss", {
     expect_true(wait_until(length(dir(d)) == 3L, timeout = 15))
   }
   expect_true(wait_until(
-    mizu_pool_status(p)[["workers"]][victim] == "free",
+    mizu_pool_info(p)[["workers"]][victim] == "free",
     timeout = 15
   ))
   err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
@@ -270,11 +270,11 @@ test_that("a worker's failed publish reaps the dead submitter", {
   # by the child's orderly release or the publish's in-line reap
   file.create(k)
   expect_true(wait_until(
-    all(mizu_pool_status(p)[["submitters"]][-1L] == "free"),
+    all(mizu_pool_info(p)[["submitters"]][-1L] == "free"),
     timeout = 20
   ))
   expect_true(wait_until(
-    all(unname(mizu_pool_status(p)[["tasks"]]) == 0L),
+    all(unname(mizu_pool_info(p)[["tasks"]]) == 0L),
     timeout = 20
   ))
   expect_true(mizu_pool_stop(p, timeout = 10))
@@ -297,7 +297,7 @@ test_that("the stop sweep reaps a killed submitter's published results", {
     deparse(f)
   ))
   expect_true(wait_for_file(f, timeout = 30))
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["ok"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["ok"]] == 1L))
   kill_hard(as.integer(readLines(f)[1L]))
   # nothing rides on submitter death until the teardown sweep frees its
   # slots and releases the producing worker's keeper
@@ -333,11 +333,11 @@ test_that("retire frees the slot; the pool keeps working and respawns", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   mizu_retire_worker(p, 1L)
-  expect_true(wait_until(mizu_pool_status(p)[["workers"]][2L] == "free"))
+  expect_true(wait_until(mizu_pool_info(p)[["workers"]][2L] == "free"))
   t <- mizu_submit(p, "still works")
   expect_identical(mizu_collect(t, timeout = 10), "still works")
   expect_identical(mizu_spawn_workers(p, 1L), 1L)
-  expect_identical(mizu_pool_status(p)[["workers"]], c("live", "live"))
+  expect_identical(mizu_pool_info(p)[["workers"]], c("live", "live"))
   expect_error(mizu_retire_worker(p, 5L), "out of range")
   expect_error(mizu_spawn_workers(p, 1L), "not enough free worker slots")
   expect_true(mizu_pool_stop(p, timeout = 10))
@@ -348,10 +348,10 @@ test_that("a retiree lingers as the anchor for its uncollected result", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   t <- mizu_submit(p, runif(100000L)) # a spilled result needs its anchor
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["ok"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["ok"]] == 1L))
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
   mizu_retire_worker(p, 0L)
-  expect_true(wait_until(mizu_pool_status(p)[["workers"]] == "free"))
+  expect_true(wait_until(mizu_pool_info(p)[["workers"]] == "free"))
   # slot released, but the process anchors the uncollected result's region
   Sys.sleep(2)
   expect_true(pid_alive(pid))
@@ -366,10 +366,10 @@ test_that("a retiree with only inline results exits without lingering", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   t <- mizu_submit(p, Sys.getpid())
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["ok"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["ok"]] == 1L))
   pid <- mizu_pool_dump(p)[["workers"]][["pid"]][1L]
   mizu_retire_worker(p, 0L)
-  expect_true(wait_until(mizu_pool_status(p)[["workers"]] == "free"))
+  expect_true(wait_until(mizu_pool_info(p)[["workers"]] == "free"))
   # inline results live in the pool region itself: nothing to anchor
   expect_true(wait_until(!pid_alive(pid), timeout = 15))
   expect_identical(mizu_collect(t, timeout = 10), as.integer(pid))
@@ -699,7 +699,7 @@ test_that("a killed worker's claimed task reads died at the state verb", {
   )))
   d <- mizu_pool_dump(p)
   kill_hard(d[["workers"]][["pid"]][[1L]])
-  expect_true(wait_until(mizu_pool_status(p)[["tasks"]][["died"]] == 1L))
+  expect_true(wait_until(mizu_pool_info(p)[["tasks"]][["died"]] == 1L))
   expect_identical(.Call(mizu:::mizu_pool_task_state, t), "died")
   err <- tryCatch(mizu_collect(t, timeout = 10), error = identity)
   expect_s3_class(err, "mizu_error_worker_died")

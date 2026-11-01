@@ -16,6 +16,7 @@ reference:
       - mizu_send_batch
       - mizu_close
       - mizu_alive
+      - mizu_channel_info
   - title: Pools
     contents:
       - mizu_pool
@@ -40,7 +41,7 @@ reference:
       - mizu_collect_all_async
   - title: Monitoring and debugging
     contents:
-      - mizu_pool_status
+      - mizu_pool_info
       - mizu_pool_stats
       - mizu_pool_dump
       - mizu_pool_trace

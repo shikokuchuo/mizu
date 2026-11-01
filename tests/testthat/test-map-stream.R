@@ -689,7 +689,7 @@ test_that("a deadline expiring mid-run cancels the window, sentinel returned", {
     NULL
   }
   expect_identical(
-    unname(mizu_pool_status(p[["ctrl"]])[["tasks"]]),
+    unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
     rep(0L, 6L)
   )
   pool_end(p)
@@ -764,7 +764,7 @@ test_that("worker death fails a streaming map with the chunk's exact range", {
   p <- mizu_pool(n_workers = 2L)
   # parked before submit, as the blob-path death test: exactly one chunk
   # ends up sleeping in elements 3-4 while the other publishes ok
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   st <- mizu:::map_stage_stream(
     p,
     1:4,
@@ -829,7 +829,7 @@ test_that("a drained worker death wins over the observed error", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   # chunk 1 errors fast; chunk 2 sleeps in elements 3-4 until killed below
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   st <- mizu:::map_stage_stream(
     p,
     1:4,
@@ -884,7 +884,7 @@ test_that("deaths on both workers accumulate every lost range", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   # both chunks sleep: each worker holds one when both die
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   st <- mizu:::map_stage_stream(
     p,
     1:4,
@@ -1129,7 +1129,7 @@ test_that("a worker death in a streaming spec map fails with its range", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   on.exit(mizu_pool_stop(p))
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   st <- mizu:::map_stage_stream(
     p,
     1:8,
@@ -1174,7 +1174,7 @@ test_that("a death drained beside an error takes the death verdict", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   on.exit(mizu_pool_stop(p))
-  expect_true(wait_until(mizu_pool_status(p)[["parked"]] == 2L))
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
   st <- mizu:::map_stage_stream(
     p,
     1:8,

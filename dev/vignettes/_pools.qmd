@@ -149,13 +149,13 @@ mizu_spawn_workers(p, n = 2L)     # two more workers join the pool
 mizu_retire_worker(p, slot = 0L)  # worker 0 exits after its current task
 
 # in another R process — submit and collect exactly as the creator does:
-p2 <- mizu_pool_attach(token)     # token: mizu_pool_status(p)$token on the creator
+p2 <- mizu_pool_attach(token)     # token: mizu_pool_info(p)$token on the creator
 ```
 
 Four read-only tools observe a running pool without disturbing it:
 
 ``` r
-mizu_pool_status(p)  # snapshot: worker states, queued tasks, result slots
+mizu_pool_info(p)  # snapshot: worker states, queued tasks, result slots
 mizu_pool_stats(p)   # cumulative counters: tasks run, steals, parks per worker
 mizu_pool_dump(p)    # every slot in full detail — the first tool when a pool hangs
 mizu_pool_trace(p, \(event, id) message(event, " ", id))  # task lifecycle hook

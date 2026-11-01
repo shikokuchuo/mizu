@@ -1023,10 +1023,10 @@ SEXP mizu_pool_stop_call(SEXP xp, SEXP timeout) {
   return Rf_ScalarLogical(st == MIZU_OK);
 }
 
-SEXP mizu_pool_status_call(SEXP xp) {
+SEXP mizu_pool_info_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
-  mizu_pool_status st;
-  if (mizu_pool_status_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
+  mizu_pool_info st;
+  if (mizu_pool_info_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
   const char *names[] = {"name", "role", "max_workers", "max_submitters",
                          "injection_cap", "result_slots", "slot_size",
                          "workers", "parked", "submitters", "injection",
@@ -1081,7 +1081,7 @@ SEXP mizu_pool_stats_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
   mizu_pool_dump d;
   if (mizu_pool_dump_get(p, &d) != MIZU_OK) mizu_r_raise_tls();
-  uint32_t mw = d.status.max_workers, ms = d.status.max_submitters;
+  uint32_t mw = d.info.max_workers, ms = d.info.max_submitters;
   const char *names[] = {"workers", "submitters", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
 
@@ -1131,13 +1131,13 @@ SEXP mizu_pool_dump_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
   mizu_pool_dump d;
   if (mizu_pool_dump_get(p, &d) != MIZU_OK) mizu_r_raise_tls();
-  uint32_t mw = d.status.max_workers, ms = d.status.max_submitters;
+  uint32_t mw = d.info.max_workers, ms = d.info.max_submitters;
   const char *names[] = {"name", "shutdown", "workers", "submitters",
                          "tasks", "local", "help", "language",
                          "capabilities", ""};
   SEXP out = PROTECT(Rf_mkNamed(VECSXP, names));
-  SET_VECTOR_ELT(out, 0, Rf_mkString(d.status.name));
-  SET_VECTOR_ELT(out, 1, Rf_ScalarLogical(d.status.shutdown));
+  SET_VECTOR_ELT(out, 0, Rf_mkString(d.info.name));
+  SET_VECTOR_ELT(out, 1, Rf_ScalarLogical(d.info.shutdown));
   SET_VECTOR_ELT(out, 6, Rf_ScalarLogical(d.help_wanted));
   /* the pool word: the workers' language and reader capabilities (0
      while no worker has joined) */
@@ -1178,7 +1178,7 @@ SEXP mizu_pool_dump_call(SEXP xp) {
     INTEGER(VECTOR_ELT(wk, 0))[i] = w->status;
     REAL(VECTOR_ELT(wk, 1))[i] = (double) w->pid;
     INTEGER(VECTOR_ELT(wk, 2))[i] = w->park_state;
-    LOGICAL(VECTOR_ELT(wk, 3))[i] = (int) (d.status.parked_mask >> i) & 1;
+    LOGICAL(VECTOR_ELT(wk, 3))[i] = (int) (d.info.parked_mask >> i) & 1;
     REAL(VECTOR_ELT(wk, 4))[i] = (double) w->deque_top;
     REAL(VECTOR_ELT(wk, 5))[i] = (double) w->deque_bottom;
     INTEGER(VECTOR_ELT(wk, 6))[i] = w->in_flight_rs;
@@ -1205,7 +1205,7 @@ SEXP mizu_pool_dump_call(SEXP xp) {
 
   /* every non-FREE result slot, paged in one call (result_slots rows is
      always enough) */
-  uint32_t rs_total = d.status.result_slots;
+  uint32_t rs_total = d.info.result_slots;
   mizu_rs_row *rows = (mizu_rs_row *) R_alloc(rs_total, sizeof(mizu_rs_row));
   uint32_t n = 0;
   if (mizu_pool_tasks_get(p, rows, rs_total, &n) != MIZU_OK)
@@ -1238,8 +1238,8 @@ SEXP mizu_pool_map_caps_call(SEXP xp) {
   /* map_caps records on the handle (pool_get); status_get thread-locally */
   if (mizu_pool_map_caps(p, &free_rs, &inj_cap, &inline_entry) != 0)
     pool_raise(p);
-  mizu_pool_status st;
-  if (mizu_pool_status_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
+  mizu_pool_info st;
+  if (mizu_pool_info_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
   int live = 0;
   for (uint32_t i = 0; i < st.max_workers; i++)
     live += st.worker_state[i] == MIZU_WK_LIVE;

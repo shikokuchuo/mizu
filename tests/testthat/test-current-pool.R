@@ -26,7 +26,7 @@ test_that("a task sees a pool handle that submits onto its worker's deque", {
     s <- mizu_submit(pool, "nested")
     list(
       is_pool = inherits(pool, "mizu_pool"),
-      deque = mizu_pool_status(pool)[["deque"]],
+      deque = mizu_pool_info(pool)[["deque"]],
       value = mizu_collect(s, timeout = 5)
     )
   })
