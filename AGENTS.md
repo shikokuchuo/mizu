@@ -591,13 +591,21 @@ protection surfaces an escaping error at the `run_now()` site.
 [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
 (the stream form — `batch = TRUE` collects a burst into one VECSXP in C
 for a single `fn(list)` call; terminal conditions delivered as the final
-call; the two consumer forms are exclusive), `as.promise.mizu_task` /
-`mizu_channel` / `mizu_map`, and
+call; the two consumer forms are exclusive),
+[`mizu_collect_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+(the single-task form — one promise stands per task: cached on the
+waiter while pending, so repeated calls and `as.promise()` return the
+same promise and `timeout` applies only to the arming call; a timeout
+rejects and withdraws the announce, returning the task to
+blocking-collectible; post-settlement a repeated call errors “already
+collected”),
 [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
 /
 [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
 (exactly one promise per collection, the sync verb’s own gather once at
-settle). The pool waiter registry is C-side (`notify_r.c`, hung off the
+settle), and the `as.promise` methods for channel / task (forwards to
+[`mizu_collect_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md))
+/ map. The pool waiter registry is C-side (`notify_r.c`, hung off the
 handle’s `mizu_r_notify` record): one entry per enrolled consumer
 caching its task words (the scan never re-reads the extptrs —
 `mizu_pool_task_state` is total on a stale word), the waiter envs in a
@@ -612,21 +620,21 @@ waking publish cleared, then up to `max` settled waiters in registry
 order, unlinked with announces withdrawn, disarming when the registry
 empties — the R drain loops scan → settle → scan until an empty scan
 proves the re-armed word saw nothing); `mizu_pool_notify_remove` (a
-timeout) and `mizu_pool_notify_find` (as.promise’s cached-promise
-lookup). The map kind’s verdict is `mizu_map_runners_done` (map.c:
-terminal or abandonable per runner). The blocking collect verbs’ refusal
-(“one consumer per result”) is `mizu_r_notify_refuse` inside the C
-veneers — one pointer test when nothing is enrolled, so the sync rows
-pay nothing. The task kind settles through `mizu_pool_collect_settle`
-(every failure boxed `mizu_caught`, no handler frame per task); the
-collective forms keep one tryCatch per collection. Discipline: the
-enroll runs ahead of `promise()`’s action (it converts action errors
-into rejections, but a conflict, a spin channel or a stale task is a
-call-site error), the settle of an already-terminal waiter inside it;
-every drain is bounded per callback (`notify_quantum_n` = 2048 items or
-~1 ms, whichever first — 256 left the batch handler 2.2x off the sync
-row; the pool drain scans in batches of 64 so the clock check between
-batches is honest) and re-scheduled with `later(secs = 0)`;
+timeout) and `mizu_pool_notify_find` (the cached-promise lookup). The
+map kind’s verdict is `mizu_map_runners_done` (map.c: terminal or
+abandonable per runner). The blocking collect verbs’ refusal (“one
+consumer per result”) is `mizu_r_notify_refuse` inside the C veneers —
+one pointer test when nothing is enrolled, so the sync rows pay nothing.
+The task kind settles through `mizu_pool_collect_settle` (every failure
+boxed `mizu_caught`, no handler frame per task); the collective forms
+keep one tryCatch per collection. Discipline: the enroll runs ahead of
+`promise()`’s action (it converts action errors into rejections, but a
+conflict, a spin channel or a stale task is a call-site error), the
+settle of an already-terminal waiter inside it; every drain is bounded
+per callback (`notify_quantum_n` = 2048 items or ~1 ms, whichever first
+— 256 left the batch handler 2.2x off the sync row; the pool drain scans
+in batches of 64 so the clock check between batches is honest) and
+re-scheduled with `later(secs = 0)`;
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
 stays allowed throughout (the cancel publishes, the drain rejects).
 later and promises sit in Suggests, guarded with informative errors; the
@@ -634,7 +642,15 @@ S3 methods defer-register through `S3method(promises::as.promise, *)`
 (mirai’s pattern). later’s own semantics to know: callbacks scheduled
 from within a callback run on the next loop turn (the registry’s `now`
 is captured once per batch), so a resolve’s fulfillment fires a tick
-after the drain.
+after the drain. The surface mirrors pymizu’s async verbs one-for-one
+(`mizu_recv_async` / `mizu_recv_handler` ≈ `recv_async` / `async for`,
+`mizu_collect_async` ≈ `Task.collect_async` / `await task`, the
+collective forms, the map await) with three deliberate idiom
+adaptations: terminal states reject with classed errors where pymizu
+resolves sentinels as values, the per-task promise is cached where
+pymizu refuses a second enrollment, and the timeout timer is the detach
+where asyncio cancels the Future; the one pymizu piece without an R
+analog is the `PoolExecutor` concurrent.futures adapter.
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
 (`R/map.R`, `src/map.c`, `src/rng.c`) stages f/`...`/x once per call —

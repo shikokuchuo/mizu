@@ -18,6 +18,8 @@ mizu_collect_all_async(tasks, timeout = Inf)
 
 mizu_collect_any_async(tasks, timeout = Inf)
 
+mizu_collect_async(task, timeout = Inf)
+
 # S3 method for class 'mizu_task'
 as.promise(x)
 
@@ -45,6 +47,11 @@ is.promising(x)
   classed error; nothing is consumed. `Inf` (the default) waits
   indefinitely.
 
+- task:
+
+  a task handle from
+  [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
+
 - x:
 
   for the `as.promise` methods: a task handle, or a map handle from
@@ -55,10 +62,28 @@ is.promising(x)
 
 A
 [`promises::promise()`](https://rstudio.github.io/promises/reference/promise.html):
-collect-all resolves a plain list of the task values in the order of
-`tasks` (names carried); collect-any resolves `list(index, value)`.
+`mizu_collect_async()` resolves the task's value; collect-all resolves a
+plain list of the task values in the order of `tasks` (names carried);
+collect-any resolves `list(index, value)`.
 
 ## Details
+
+`mizu_collect_async()` is the single-task form — the async counterpart
+of
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md):
+it returns immediately with a
+[`promises::promise()`](https://rstudio.github.io/promises/reference/promise.html)
+resolving with the task's value and rejecting with the same classed
+condition a blocking collect would raise. One promise stands per task:
+while the task pends the promise is cached, so a repeated call and
+[`as.promise()`](https://rstudio.github.io/promises/reference/is.promise.html)
+on the handle (what
+[`promises::then()`](https://rstudio.github.io/promises/reference/then.html)
+calls) return the same promise — `timeout` applies only to the call that
+arms it. Once settled the task is collected, and a further call errors
+(one consumer per result, below). A `timeout` rejects with the
+`mizu_timeout` classed error and consumes nothing: the task returns to
+blocking-collectible.
 
 The behavior mirrors the sync functions. Collect-all resolves in input
 order with names carried; the first erroring handle by position rejects
@@ -74,13 +99,18 @@ One consumer per result: a task result belongs to exactly one consumer.
 A task with a promise attached — or part of a pending collection —
 refuses
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
-[`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md),
-[`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md),
-and a second promise, with an error naming the pending consumer.
+[`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md)
+and
+[`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
+with an error naming the pending consumer; a task enrolled in a
+collection likewise refuses a promise.
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
-stays allowed: the cancel publishes, and the pending promise rejects
-with `mizu_error_cancelled`. (A channel message instead belongs to
-whoever takes it first — see
+stays allowed and is the destructive option: the cancel publishes, the
+result is gone for every consumer, and the pending promise rejects with
+`mizu_error_cancelled`. A `timeout` is the non-destructive counterpart:
+it only detaches the promise — the task keeps running and its result
+stays collectible. (A channel message instead belongs to whoever takes
+it first — see
 [`mizu_recv_async()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md).)
 
 Requires the later and promises packages.
@@ -91,6 +121,8 @@ Requires the later and promises packages.
 if (FALSE) { # interactive() && requireNamespace("promises", quietly = TRUE)
 library(promises)
 p <- mizu_pool(2L)
+t <- mizu_submit(p, sum(runif(10)))
+mizu_collect_async(t, timeout = 5) %...>% print()
 ts <- list(
   total = mizu_submit(p, sum(x), x = runif(10)),
   label = mizu_submit(p, "done")

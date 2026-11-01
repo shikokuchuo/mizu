@@ -62,6 +62,7 @@
   : Receive Channel Messages as a Promise or a Stream
 - [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
   [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
+  [`mizu_collect_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
   [`as.promise(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
   [`is.promising(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
   [`as.promise(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)

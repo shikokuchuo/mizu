@@ -41,6 +41,7 @@ Initial release.
 - Event-driven async —
   [`mizu_recv_async()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md),
   [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md),
+  [`mizu_collect_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md),
   and
   [`as.promise()`](https://rstudio.github.io/promises/reference/is.promise.html)
   methods for channels, tasks, and maps over later and promises, ready
