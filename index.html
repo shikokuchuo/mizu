@@ -81,12 +81,12 @@
 <!-- badges: start -->
 
 <p>Async and parallel R at thread speed over shared memory.</p>
-<p>Task round trips drop from ~100 µs over sockets to &lt; 1 µs, fast enough to parallelize work at thread granularity (see <a href="#benchmarks">Benchmarks</a>). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.</p>
-<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting with the hot path bypassing the kernel, and peer death delivered as an OS event.</p>
+<p>A task round trip drops from ~100 µs over sockets to &lt; 1 µs, so you can divide work as finely as you would with threads (see <a href="#benchmarks">Benchmarks</a>). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.</p>
+<p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting that stays out of the kernel on the hot path, and OS notification when a peer dies.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <ul>
 <li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages</li>
-<li>Zero-copy Arrow interchange — <code>arrow</code> tables and record batches travel as one frame, converting back without copying</li>
+<li>Zero-copy Arrow interchange — <code>arrow</code> tables and record batches travel as one frame and convert back without copying</li>
 <li>Event-driven async — messages stream into a <code>later</code> event loop without polling, and channels, tasks, and maps plug into <code>promises</code> pipelines, ready for Shiny</li>
 <li>Reproducible parallel random numbers (<code>.seed</code>) — identical results for any worker count or steal order</li>
 <li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>

@@ -2,8 +2,8 @@
 
 Async and parallel R at thread speed over shared memory.
 
-Task round trips drop from ~100 µs over sockets to \< 1 µs, fast enough
-to parallelize work at thread granularity (see
+A task round trip drops from ~100 µs over sockets to \< 1 µs, so you can
+divide work as finely as you would with threads (see
 [Benchmarks](#benchmarks)). Common data structures like vectors,
 matrices, data frames, and Arrow tables can be shared between R and
 Python as zero-copy views.
@@ -11,8 +11,8 @@ Python as zero-copy views.
 Channels and work-stealing task pools run over POSIX shared memory
 (Linux, macOS) or Win32 file mappings (Windows): lock-free
 single-producer single-consumer rings with batched publication,
-spin-then-park waiting with the hot path bypassing the kernel, and peer
-death delivered as an OS event.
+spin-then-park waiting that stays out of the kernel on the hot path, and
+OS notification when a peer dies.
 
 mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C
 library for lock-free shared-memory IPC.
@@ -22,7 +22,7 @@ Python, so R and Python can talk to each other.
 - Zero-copy vectors and data frames — received as ALTREP views over the
   shared pages
 - Zero-copy Arrow interchange — `arrow` tables and record batches travel
-  as one frame, converting back without copying
+  as one frame and convert back without copying
 - Event-driven async — messages stream into a `later` event loop without
   polling, and channels, tasks, and maps plug into `promises` pipelines,
   ready for Shiny
