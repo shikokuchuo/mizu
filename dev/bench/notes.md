@@ -1947,3 +1947,35 @@ pre-existing lines, identical without the change); mizu full suite green
 (5405 pass, 0 fail, 7 skips, pymizu venv on PATH); pymizu 1033 pass, 7
 skips. Vendored as 786ed89 into both bindings. Best-known table
 untouched — no row moved.
+
+## 2026-11-02 — async enroll lost wake: arm-cycle drain gate + recv-verdict arm report (libmizu 5b6c968)
+
+The arm-devel per-task promises stall traced to the core arm draining a
+publish's in-flight signal on every re-arm (the word's observed state
+cannot tell "disarmed" from "a publish cleared it"); libmizu 5b6c968 keys
+the arm-time drain on a per-handle arm-cycle flag and has the channel arm
+report the zero-timeout recv's verdict (data, closed, peer gone), and the
+pool enroll now calls the core arm once per cycle (a fence while armed).
+Expected cost: minus one core call per enrollment on the per-task row,
+plus two acquire loads per enrollment on the deep-FIFO row — neither
+registers. A/B (the two suite rows extracted to a standalone harness, 3
+interleaved rounds, medians of 5 with the rep spread; host under Zoom /
+Positron load):
+
+| Row | before (4b92063) | after | d |
+|---|---|---|---|
+| deep FIFO (4000 pending recvs) | 275.0 / 278.5 / 273.2 us/msg | 272.0 / 274.5 / 274.8 us/msg | within 1% |
+| per-task promises (2000) | 10.9k / 13.2k / 10.9k tasks/s | 10.3k / 11.7k / 11.4k tasks/s | bands overlap (reps 8.3k-13.4k either side) |
+
+Suite-row reads on the final build (nothing else running): deep FIFO
+291.5 us/msg, many waiters 283k tasks/s, per-task 9.9k tasks/s,
+collect_all_async 1.30M tasks/s, batch handler 183k msg/s.
+
+Status: libmizu unit + ext + integration tiers green with the three new
+notify tests (the first fails against the pre-change arms); tidy
+identical minus the pool struct's padding finding, gone with the flag
+placed beside ntfy_lock; exports unchanged (201). mizu full suite green
+(5962 pass, 0 fail, 7 skips); the three regression tests plus the three
+in-process reproduction scripts at 0 hung (pre-fix on this host: pool
+3/200, channel close race 3/100, after-the-fact enroll 100%). Best-known
+table untouched — no row moved.

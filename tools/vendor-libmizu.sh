@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="491591656f824f54b0659ad3ac860468a0f0da2c"  # libmizu: Fallback-define MADV_POPULATE_WRITE and MADV_COLLAPSE for old libc headers
+PIN="5b6c9683674968af854a7220fc59db71625b02be"  # libmizu: Fix the notify arm: drain once per cycle, report the recv verdict
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

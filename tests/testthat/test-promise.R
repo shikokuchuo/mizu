@@ -346,6 +346,41 @@ test_that("close rejects a pending promise and delivers a handler's terminal", {
   expect_s3_class(o2$error, "mizu_closed")
 })
 
+test_that("a consumer enrolled after the peer's close gets the terminal", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  .Call(mizu:::mizu_channel_close_signal, p[["peer"]])
+  o <- observe(mizu_recv_async(p[["host"]]))
+  expect_true(pump_until(function() settled(o), 2))
+  expect_s3_class(o$error, "mizu_closed")
+  # the handler form, with a close behind ring data: the data, then the
+  # terminal
+  p2 <- channel_pair()
+  on.exit(channel_end(p2), add = TRUE)
+  mizu_send(p2[["peer"]], 42L)
+  .Call(mizu:::mizu_channel_close_signal, p2[["peer"]])
+  got <- list()
+  mizu_recv_handler(p2[["host"]], function(x) got[[length(got) + 1L]] <<- x)
+  expect_true(pump_until(function() length(got) == 2L, 2))
+  expect_identical(got[[1L]], 42L)
+  expect_s3_class(got[[2L]], "mizu_closed")
+})
+
+test_that("enrolling while the peer's close signal is in flight still rejects", {
+  skip_if_no_promises()
+  for (i in 1:100) {
+    p <- channel_pair()
+    oa <- observe(mizu_recv_async(p[["host"]])) # armed, FIFO: A
+    .Call(mizu:::mizu_channel_close_signal, p[["peer"]]) # clears the word, signals
+    ob <- observe(mizu_recv_async(p[["host"]])) # the enroll must not drain it
+    expect_true(pump_until(function() settled(oa) && settled(ob), 2))
+    expect_s3_class(oa$error, "mizu_closed")
+    expect_s3_class(ob$error, "mizu_closed")
+    channel_end(p)
+  }
+})
+
 test_that("a notify record freed mid-registry leaves the list intact", {
   skip_if_no_promises()
   p1 <- channel_pair()
@@ -506,6 +541,24 @@ test_that("a task promise resolves, is cached, and rejects with the sync classes
   o3 <- observe(promises::as.promise(t3))
   expect_true(pump_until(function() settled(o3)))
   expect_identical(o3$value, 9L)
+})
+
+test_that("enrolling while a signal is in flight does not lose the wake", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  for (i in 1:20) {
+    ta <- mizu_submit(p[["ctrl"]], 1L)
+    oa <- observe(promises::as.promise(ta)) # armed, registered pending
+    tf <- mizu_submit(p[["ctrl"]], 2L)
+    pool_step(p) # A publishes: clears the word, signals the endpoint
+    of <- observe(promises::as.promise(tf)) # the enroll must not drain it
+    expect_true(pump_until(function() settled(oa), 2))
+    expect_identical(oa$value, 1L)
+    pool_step(p)
+    expect_true(pump_until(function() settled(of), 2))
+    expect_identical(of$value, 2L)
+  }
 })
 
 test_that("then() dispatches on a task handle directly", {

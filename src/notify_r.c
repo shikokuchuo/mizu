@@ -561,7 +561,11 @@ void mizu_r_notify_refuse(mizu_r_handle *h, const mizu_task *ts, size_t n) {
    (a publish that already landed: no arm, no entry) -> arm -> register
    -> re-check (the parker transplant: a publish between the probe and
    the arm saw the word unarmed and signalled nothing, so it is found
-   here and the entry popped again). */
+   here and the entry popped again). The core arm runs once per arm
+   cycle, on the first enrollment; while armed the enroll fences instead
+   (the word either stands, or a publish cleared it with its signal in
+   flight, and that signal's drain re-arms and scans the whole
+   registry). */
 SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
                              SEXP mode_sexp, SEXP wrap) {
   mizu_r_handle *h = mizu_r_handle_get(pool_xp, mizu_ntfy_pool_tag, "pool");
@@ -607,21 +611,37 @@ SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
     return Rf_ScalarLogical(1);
   }
   const int was_armed = h->notify != NULL && h->notify->armed;
-  mizu_r_notify_ensure_armed(h, state, 1);
-  mizu_r_notify *rec = h->notify;
+  /* the reserve is the allocating step, ahead of the R-side arm: a raise
+     here leaves the record as found — never marked armed with the core
+     arm still to run, a mismatch the once-per-cycle arm below would not
+     heal */
+  mizu_r_notify *rec = h->notify != NULL ? h->notify :
+    mizu_r_notify_alloc(h, 1);
   ntfy_reg_reserve(rec);
-  if (mizu_pool_notify_arm(p, 1) != MIZU_OK) {
-    ent_withdraw(p, &ent);
-    /* roll a fresh arm cycle back: its preserved state env must not pin
-       the pool handle past this raise */
-    if (!was_armed) mizu_r_notify_disarm(h);
-    ntfy_pool_raise(p);
+  mizu_r_notify_ensure_armed(h, state, 1);
+  if (!was_armed) {
+    if (mizu_pool_notify_arm(p, 1) != MIZU_OK) {
+      ent_withdraw(p, &ent);
+      /* roll a fresh arm cycle back: its preserved state env must not pin
+         the pool handle past this raise */
+      mizu_r_notify_disarm(h);
+      ntfy_pool_raise(p);
+    }
+  } else {
+    /* already armed: the word either stands, or a publish cleared it with
+       its signal in flight, and that signal's drain re-arms and scans the
+       whole registry (only the new entry is re-checked below). The fence
+       keeps the announce -> re-check pairing the core arm provided: the
+       announce stores above must order before the re-check's state loads
+       against the publisher's CAS -> waiter_slot load. */
+    atomic_thread_fence(memory_order_seq_cst);
   }
   if (n > 1) {
     ent.words = malloc((size_t) n * sizeof(uint64_t));
     if (ent.words == NULL) {
       ent.words = words;
       ent_withdraw(p, &ent);
+      if (!was_armed) mizu_r_notify_disarm(h);
       Rf_error("mizu: allocation failure");
     }
     memcpy(ent.words, words, (size_t) n * sizeof(uint64_t));
