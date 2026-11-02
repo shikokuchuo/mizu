@@ -21,23 +21,23 @@ worker for \code{slot}.
 }
 \description{
 Returns a launcher that spawns Python processes running
-\href{https://github.com/shikokuchuo/pymizu}{pymizu}, the Python binding of
-the same shared-memory core: \verb{python -m pymizu.child} for the channel
-peer of \code{\link[=mizu_channel]{mizu_channel()}}, \verb{python -m pymizu.worker} for the pool
-workers of \code{\link[=mizu_pool]{mizu_pool()}} and \code{\link[=mizu_spawn_workers]{mizu_spawn_workers()}}. The mirror of
-pymizu's \code{r_launcher()}, which spawns R processes from a Python host.
+\href{https://github.com/shikokuchuo/pymizu}{pymizu}, the Python binding of the
+same shared-memory core: \verb{python -m pymizu.child} for the channel peer of
+\code{\link[=mizu_channel]{mizu_channel()}}, and \verb{python -m pymizu.worker} for the pool workers of
+\code{\link[=mizu_pool]{mizu_pool()}} and \code{\link[=mizu_spawn_workers]{mizu_spawn_workers()}}. It is the counterpart of pymizu's
+\code{r_launcher()}, which spawns R processes from a Python host.
 }
 \details{
-The first worker's join records the workers' language in the pool, so
-the launcher carries no language attribute: a pool of Python workers
-takes \code{\link[=mizu_call]{mizu_call()}} specifications through \code{\link[=mizu_submit_call]{mizu_submit_call()}}, and a
-plain \code{\link[=mizu_submit]{mizu_submit()}} fails at once with an error naming
-\code{\link[=mizu_submit_call]{mizu_submit_call()}}. A launcher that spawns the wrong language fails
-at join, not at the first task.
+The first worker to join records the workers' language in the pool, so the
+launcher carries no language attribute. A pool of Python workers takes
+\code{\link[=mizu_call]{mizu_call()}} specifications through \code{\link[=mizu_submit_call]{mizu_submit_call()}}, and a plain
+\code{\link[=mizu_submit]{mizu_submit()}} fails immediately with an error naming \code{\link[=mizu_submit_call]{mizu_submit_call()}}.
+A launcher that spawns the wrong language fails at join, not at the first
+task.
 
 The interpreter is probed for pymizu when the launcher is created, so a
-missing interpreter or package raises here, before anything exists.
-The payload rules for a non-R channel peer apply: only vectors and
+missing interpreter or package errors here, before any channel or pool is
+created. The payload rules for a non-R channel peer apply: only vectors and
 strings cross (see \code{\link[=mizu_send]{mizu_send()}}).
 }
 \examples{

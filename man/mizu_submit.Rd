@@ -30,14 +30,13 @@ when the ring is full (back-pressure) and returns immediately
 otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
 
 \item{task}{a task handle from \code{mizu_submit()}, or a map handle from
-\code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}. A map handle collects the whole
-map: the gathered list (or templated vector), an element error
-re-signalled with its \code{mizu_map_index}, or a worker death as
-\code{mizu_error_worker_died} with the lost element ranges — the same
-rules as in \code{\link[=mizu_map]{mizu_map()}}'s Errors section. A task or map handle
-with a pending promise (or enrolled in a pending
-\code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}} / \code{\link[=mizu_collect_any_async]{mizu_collect_any_async()}} collection)
-refuses a blocking collect: one consumer per result.}
+\code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}. A map handle collects the whole map: the
+gathered list (or templated vector), an element error re-signalled with its
+\code{mizu_map_index}, or a worker death as \code{mizu_error_worker_died} with the
+lost element ranges, following the rules in \code{\link[=mizu_map]{mizu_map()}}'s Errors section.
+A task or map handle with a pending promise (or enrolled in a pending
+\code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}} / \code{\link[=mizu_collect_any_async]{mizu_collect_any_async()}} collection) refuses
+a blocking collect: one consumer per result.}
 
 \item{timeout}{seconds to wait for the result before the call returns
 the \code{mizu_timeout} sentinel. \code{Inf} (the default) waits indefinitely;
@@ -59,20 +58,19 @@ task raised an error, \code{mizu_collect()} signals that condition again in
 the collecting process.
 }
 \details{
-Submission blocks only when the submitter's own injection ring is
-full: one submitter waiting never slows another. On \code{.timeout} expiry,
-submission raises \code{mizu_error_submit_timeout} instead of stalling. If
-no result arrives within \code{timeout}, collection returns the
-\code{mizu_timeout} sentinel (class \code{c("mizu_timeout", "mizu_sentinel")}).
-Collecting a task whose handle was cancelled (or whose pool was
-stopped) raises \code{mizu_error_cancelled}. Collecting a task whose
-executing worker died raises \code{mizu_error_worker_died}, carrying the
-slot and pid of the worker (see \link{mizu_error}). Worker death is
-detected as soon as the operating system reports it: each worker holds
-a lock that the kernel releases the moment its process exits, with no
-heartbeats and no polling. The death fails exactly the tasks that the
-dead worker claimed, and the surviving workers consume the work still
-queued on its deque.
+Submission blocks only when the submitter's own injection ring is full, so
+one waiting submitter never slows another. On \code{.timeout} expiry, submission
+raises \code{mizu_error_submit_timeout} instead of stalling. If no result arrives
+within \code{timeout}, collection returns the \code{mizu_timeout} sentinel (class
+\code{c("mizu_timeout", "mizu_sentinel")}). Collecting a task whose handle was
+cancelled (or whose pool was stopped) raises \code{mizu_error_cancelled}.
+Collecting a task whose executing worker died raises
+\code{mizu_error_worker_died}, carrying the slot and pid of the worker (see
+\link{mizu_error}). Worker death is detected as soon as the operating system
+reports it. Each worker holds a lock that the kernel releases when its
+process exits, so there are no heartbeats and no polling. Only the tasks the
+dead worker had claimed fail, and the surviving workers take over the work
+still queued on its deque.
 }
 \section{Outcomes}{
 
@@ -97,16 +95,14 @@ payload codec can carry within the result slot's inline budget, with
 anything it cannot carry dropped and named in a \code{dropped_fields}
 field. See the Task error transport section of \link{mizu_error}.
 
-Inside a task, \code{\link[=mizu_current_pool]{mizu_current_pool()}} returns the handle of the
-worker running it, so a task can submit nested subtasks.
-\code{mizu_submit(mizu_current_pool(), ...)} inside a task pushes onto the
-work-stealing deque of the worker itself: no ring, no wait. A full
-deque runs the subtask inline instead. A worker blocked in
-\code{mizu_collect()} on a nested handle helps instead of sleeping. It
-executes work from its own deque (and steals from peers) until the
-awaited result is published. So nested fan-outs cost almost nothing
-and never deadlock the pool. A nested submission claims a submitter
-slot for the worker on first use.
+Inside a task, \code{\link[=mizu_current_pool]{mizu_current_pool()}} returns the handle of the worker running
+it, so a task can submit nested subtasks. \code{mizu_submit(mizu_current_pool(), ...)} inside a task pushes onto the worker's own work-stealing deque, with no
+ring and no wait. If the deque is full, the subtask runs inline instead. A
+worker blocked in \code{mizu_collect()} on a nested handle helps instead of
+sleeping: it executes work from its own deque (and steals from peers) until
+the awaited result is published. Nested fan-outs therefore cost very little
+and cannot deadlock the pool. A nested submission claims a submitter slot for
+the worker on first use.
 
 A handle can be collected exactly once: the result slot is released to
 the pool as the value is returned. If an uncollected handle goes to the

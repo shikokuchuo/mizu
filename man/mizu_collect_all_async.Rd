@@ -44,50 +44,45 @@ in the order of \code{tasks} (names carried); collect-any resolves
 \code{list(index, value)}.
 }
 \description{
-\code{mizu_collect_all_async()} and \code{mizu_collect_any_async()} are the
-async counterparts of \code{\link[=mizu_collect_all]{mizu_collect_all()}} and \code{\link[=mizu_collect_any]{mizu_collect_any()}}:
-each returns immediately with exactly \strong{one} \code{\link[promises:promise]{promises::promise()}}
-per collection — no per-task promise is ever allocated. On each wake
-the pool checks for newly finished tasks, and when the collection
-completes the sync version's result assembly runs once and resolves
-the promise.
+\code{mizu_collect_all_async()} and \code{mizu_collect_any_async()} are the async
+counterparts of \code{\link[=mizu_collect_all]{mizu_collect_all()}} and \code{\link[=mizu_collect_any]{mizu_collect_any()}}. Each returns
+immediately with one \code{\link[promises:promise]{promises::promise()}} for the whole collection, and no
+per-task promise is allocated. On each wake the pool checks for newly
+finished tasks, and when the collection completes, the result is assembled
+once as in the blocking version and the promise resolves.
 }
 \details{
-\code{mizu_collect_async()} is the single-task form — the async
-counterpart of \code{\link[=mizu_collect]{mizu_collect()}}: it returns immediately with a
-\code{\link[promises:promise]{promises::promise()}} resolving with the task's value and rejecting
-with the same classed condition a blocking collect would raise. One
-promise stands per task: while the task pends the promise is cached,
-so a repeated call and \code{as.promise()} on the handle (what
-\code{\link[promises:then]{promises::then()}} calls) return the same promise — \code{timeout}
-applies only to the call that arms it. Once settled the task is
-collected, and a further call errors (one consumer per result,
-below). A \code{timeout} rejects with the \code{mizu_timeout} classed error
-and consumes nothing: the task returns to blocking-collectible.
+\code{mizu_collect_async()} is the single-task form, the async counterpart of
+\code{\link[=mizu_collect]{mizu_collect()}}. It returns immediately with a \code{\link[promises:promise]{promises::promise()}} that
+resolves with the task's value and rejects with the same classed condition a
+blocking collect would raise. There is one promise per task. While the task
+is pending the promise is cached, so a repeated call, or \code{as.promise()} on
+the handle (which \code{\link[promises:then]{promises::then()}} calls), returns the same promise, and
+\code{timeout} applies only to the call that created it. Once settled the task is
+collected, and a further call errors (one consumer per result, below). A
+\code{timeout} rejects with the \code{mizu_timeout} classed error and consumes nothing,
+so the task can be collected with a blocking call again.
 
-The behavior mirrors the sync functions. Collect-all resolves in
-input order with names carried; the first erroring handle by position
-rejects
-with \code{index} (only that handle consumed, the rest collectible).
-Collect-any resolves \code{list(index, value)} for the first terminal
-task, a raised outcome rejecting with the \code{index} field. A timeout
-rejects with the \code{mizu_timeout} classed error and consumes nothing.
-When a collection finishes — resolved, rejected, or timed out —
-every handle in it is released: handles whose results were not
-consumed become blocking-collectible again.
+The behavior mirrors the blocking functions. Collect-all resolves in input
+order with names carried over, and the first erroring handle by position
+rejects with \code{index} (only that handle is consumed, the rest stay
+collectible). Collect-any resolves \code{list(index, value)} for the first
+terminal task, and a raised outcome rejects with the \code{index} field. A timeout
+rejects with the \code{mizu_timeout} classed error and consumes nothing. When a
+collection finishes, whether resolved, rejected, or timed out, every handle
+in it is released, and handles whose results were not consumed can be
+collected with a blocking call again.
 
-One consumer per result: a task result belongs to exactly one
-consumer. A task with a promise attached — or part of a pending
-collection — refuses \code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_collect_any]{mizu_collect_any()}} and
-\code{\link[=mizu_collect_all]{mizu_collect_all()}} with an error naming the pending consumer; a
-task enrolled in a collection likewise refuses a promise.
-\code{\link[=mizu_cancel]{mizu_cancel()}} stays allowed and is the destructive option: the
-cancel publishes, the result is gone for every consumer, and the
-pending promise rejects with \code{mizu_error_cancelled}. A \code{timeout} is
-the non-destructive counterpart: it only detaches the promise — the
-task keeps running and its result stays collectible. (A channel
-message instead belongs to whoever takes it first — see
-\code{\link[=mizu_recv_async]{mizu_recv_async()}}.)
+A task result belongs to exactly one consumer. A task with a promise
+attached, or one that is part of a pending collection, refuses
+\code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_collect_any]{mizu_collect_any()}} and \code{\link[=mizu_collect_all]{mizu_collect_all()}} with an error
+naming the pending consumer, and a task enrolled in a collection likewise
+refuses a promise. \code{\link[=mizu_cancel]{mizu_cancel()}} is still allowed and is the destructive
+option: the cancel publishes, the result is gone for every consumer, and the
+pending promise rejects with \code{mizu_error_cancelled}. A \code{timeout} is the
+non-destructive counterpart. It only detaches the promise, and the task keeps
+running with its result still collectible. (A channel message instead belongs
+to whoever takes it first; see \code{\link[=mizu_recv_async]{mizu_recv_async()}}.)
 
 Requires the \pkg{later} and \pkg{promises} packages.
 }

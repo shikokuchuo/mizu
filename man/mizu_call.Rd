@@ -10,18 +10,16 @@ mizu_call(.name = NULL, ..., .source = NULL)
 mizu_submit_call(pool, spec, .timeout = Inf)
 }
 \arguments{
-\item{.name}{[character(1)] a qualified function name: \code{"pkg::fn"}
-(or \code{"pkg:::fn"}) for R workers, \code{"mod.fn"} for Python workers. The
-qualifier is required: a worker's global namespace is the runner
-module, never the submitter's, so the name resolves through the
-worker's own namespace.}
+\item{.name}{[character(1)] a qualified function name: \code{"pkg::fn"} (or
+\code{"pkg:::fn"}) for R workers, \code{"mod.fn"} for Python workers. The qualifier
+is required because the name resolves in the worker's own namespace, which
+is the runner module rather than the submitter's global environment.}
 
-\item{...}{the constant arguments. Unnamed arguments map to the
-positional argument list and named ones to the named argument dict,
-matching Python's \verb{*args} and \verb{**kwargs}. Arguments must be portable
-values (the interchange subset documented in \code{\link[=mizu_send]{mizu_send()}}): a
-non-portable argument raises \code{mizu_error_not_portable} at submit,
-never a fallback.}
+\item{...}{the constant arguments. Unnamed arguments map to the positional
+argument list and named ones to the named argument dict, matching Python's
+\verb{*args} and \verb{**kwargs}. Arguments must be portable values (the interchange
+subset documented in \code{\link[=mizu_send]{mizu_send()}}). A non-portable argument raises
+\code{mizu_error_not_portable} at submit.}
 
 \item{.source}{[character(1)] source code in the workers' language.
 Evaluated in a fresh namespace (parented on the global environment in
@@ -44,31 +42,29 @@ when the source ends with a statement.}
 \description{
 \code{mizu_call()} builds a task specification: a qualified name or a source
 string in the pool workers' language, plus the constant arguments.
-\code{\link[=mizu_submit_call]{mizu_submit_call()}} stages it as a neutral task stream any worker
-language reads. This is how you drive a foreign pool: spawn the workers
-with \code{\link[=mizu_py_launcher]{mizu_py_launcher()}} and submit specs to them.
+\code{\link[=mizu_submit_call]{mizu_submit_call()}} stages it as a neutral task stream that any worker
+language reads. This is how you drive a pool of workers in another language:
+spawn the workers with \code{\link[=mizu_py_launcher]{mizu_py_launcher()}} and submit specs to them.
 }
 \details{
-The spec describes a call. It is not a value. The language never
-appears at the call site: \code{mizu_submit_call()} resolves the workers'
-language from the pool itself, for attached submitters too, and a bare
-(unqualified) name errors at submit, not at spec construction.
+The spec describes a call, not a value. The language is not named at the call
+site: \code{mizu_submit_call()} reads the workers' language from the pool itself
+(for attached submitters too), and a bare unqualified name errors at submit
+rather than when the spec is built.
 
-Results and errors cross in the submitter's own formats: a
-task error arrives as a \code{mizu_error_remote} condition (see
-\code{\link[=mizu_is_remote_error]{mizu_is_remote_error()}}), and a result that has no portable home
-fails the task with one naming the value's type. On a same-language
-pool, \code{mizu_submit_call()} keeps the full same-language error
-format.
+Results and errors cross in the submitter's own formats. A task
+error arrives as a \code{mizu_error_remote} condition (see
+\code{\link[=mizu_is_remote_error]{mizu_is_remote_error()}}), and a result that is not portable fails the task
+with a condition naming the value's type. On a same-language pool,
+\code{mizu_submit_call()} keeps the full same-language error format.
 
-Large arguments cross to foreign workers by reference rather than by
-copy: a fresh value past the zero-copy floor is written once into a
-shared region (the worker reads a view over it), and an argument
-that is already a shared view (received from a channel, a pool
-result, or a \code{mori::share()}d vector) crosses as its identifier
-alone — zero payload bytes. On a pool whose workers are too old to
-read a reference, such a task fails at submit with an error naming
-the fix.
+Large arguments cross to foreign workers by reference rather than by copy. A
+fresh value past the zero-copy floor is written once into a shared region,
+and the worker reads a view over it. An argument that is already a shared
+view (received from a channel, a pool result, or a \code{mori::share()}d vector)
+crosses as its identifier alone, with no payload bytes. On a pool whose
+workers are too old to read a reference, such a task fails at submit with an
+error naming the fix.
 }
 \examples{
 p <- mizu_pool()

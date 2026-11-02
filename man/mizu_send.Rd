@@ -25,9 +25,9 @@ sentinel otherwise. \code{mizu_recv()} returns the received payload or a
 sentinel.
 }
 \description{
-\code{mizu_send()} publishes a message to the peer. The message is visible the
-moment the call returns, with no separate flush step. \code{mizu_recv()}
-returns the next message, and waits up to \code{timeout} seconds for it.
+\code{mizu_send()} publishes a message to the peer. The message is visible as soon
+as the call returns, with no separate flush step. \code{mizu_recv()} returns the
+next message, and waits up to \code{timeout} seconds for it.
 }
 \details{
 Sends never block for ring space. Receives report every terminal state
@@ -39,47 +39,46 @@ or drop the message.
 \item \code{mizu_timeout} — no message arrived within \code{timeout} (recv).
 \item \code{mizu_closed} — the other side closed the channel. A receive drains all
 published messages before it reports this.
-\item \code{mizu_peer_gone} — the peer died without closing. The verdict comes
-from the kernel-released liveness lock, at OS death-notification
-latency. A receive drains first here too: the published messages of a
-dead peer are complete and valid. Sticky once returned.
+\item \code{mizu_peer_gone} — the peer died without closing. Death is detected through
+the liveness lock that the kernel releases, as soon as the OS reports it. A
+receive drains first here too, since the published messages of a dead peer
+are complete and valid. Sticky once returned.
 }
 
-\code{NULL} is a legal payload. Sentinels are ordinary values, identifiable
-by class alone, and never signalled conditions. \code{\link[=mizu_is_sentinel]{mizu_is_sentinel()}}
-checks identity where payloads are untrusted.
-\code{NULL} crosses as an immediate: no serialization and no receive-side
-allocation. Length-1 character vectors that fit the inline budget cross
-with a single byte copy, encoding mark preserved. Attribute-free
-non-ALTREP atomic vectors — and \code{integer64} vectors whose only
-attribute is the class — ride a serialization-free fast path with a
-byte-identical round-trip — inline within the budget, and past it as
-bare bytes in the arena or a spill region (no serialize, no parse).
-Other plain values — attributed vectors, strings, lists, calls — cross
-as a compact binary stream written and read without R's serializer.
-Anything else is R-serialized. Mori-shared objects reduce to identifier
-wire forms through the mori hooks.
+\code{NULL} is a legal payload. Sentinels are ordinary values identified by their
+class, never signalled conditions. \code{\link[=mizu_is_sentinel]{mizu_is_sentinel()}} checks identity where
+payloads are untrusted.
 
-Cross-language, a numpy \code{int64} array (or an Arrow one) from a Python
-peer lands as an \code{integer64} vector — bit64's exact layout, constructed
-without bit64: with bit64 loaded the result is fully functional, and
-without it the bits round-trip but print as raw doubles. The missing
-sentinel is shared both directions: a genuine \code{INT64_MIN} reads as
-\code{NA_integer64_} in R, and an \code{NA_integer64_} arrives as \code{INT64_MIN} in
-Python.
+\code{NULL} crosses as an immediate, with no serialization and no allocation on
+receive. A length-1 character vector that fits the inline budget crosses with
+a single byte copy, encoding mark preserved. Attribute-free non-ALTREP atomic
+vectors, and \code{integer64} vectors whose only attribute is the class, take a
+serialization-free path with a byte-identical round trip: inline within the
+budget, and past it as bare bytes in the arena or a spill region. Other plain
+values (attributed vectors, strings, lists, calls) cross as a compact binary
+stream written and read without R's serializer. Anything else is
+R-serialized. Mori-shared objects reduce to their identifiers through the
+mori hooks.
 
-From a non-R peer, only vectors and strings are legal payloads. Anything
-else (a pymizu codec stream or a pickle) is declined: the receive raises
-a classed \code{mizu_error_python_payload} error (see \link{mizu_error}). The
-declined message is consumed, so the channel keeps flowing.
+A NumPy or Arrow \code{int64} array from a Python peer arrives as an \code{integer64}
+vector in bit64's layout, constructed without bit64. With bit64 loaded the
+result is fully functional, and without it the bits round-trip but print as
+raw doubles. The missing-value sentinel is shared in both directions: a
+genuine \code{INT64_MIN} reads as \code{NA_integer64_} in R, and an \code{NA_integer64_}
+arrives as \code{INT64_MIN} in Python.
 
-Large payloads can arrive as zero-copy views over shared memory: the view
-is a small R object pinning memory the garbage collector cannot see. To
-return those loans promptly, the receive functions (and worker task
-boundaries) run a minor garbage collection once 8 MiB of released view
-memory has accumulated — an occasional ~0.2 ms pause, the largest
-latency outlier in the system. Set \code{options(mizu.gc_boundary)} (bytes; \code{0}
-disables) before loading the package to tune the threshold.
+From a non-R peer, only vectors and strings are legal payloads. Anything else
+(a pymizu codec stream or a pickle) is declined, and the receive raises a
+classed \code{mizu_error_python_payload} error (see \link{mizu_error}). The declined
+message is consumed, so the channel keeps flowing.
+
+Large payloads can arrive as zero-copy views over shared memory. A view is a
+small R object that pins memory the garbage collector cannot see. To return
+that memory promptly, the receive functions (and worker task boundaries) run
+a minor garbage collection once 8 MiB of released view memory has
+accumulated. This is an occasional pause of about 0.2 ms, the largest latency
+outlier in the system. Set \code{options(mizu.gc_boundary)} (in bytes; \code{0}
+disables it) before loading the package to tune the threshold.
 }
 \examples{
 ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))

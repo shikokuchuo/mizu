@@ -25,9 +25,9 @@ when the ring is full (back-pressure) and returns immediately
 otherwise. \code{Inf} (the default) waits indefinitely; \code{0} does not wait.}
 }
 \value{
-A list of task handles (class \code{"mizu_task"}), one per
-accepted task — shorter than \code{.exprs} when the ring filled past
-\code{.timeout} mid-batch.
+A list of task handles (class \code{"mizu_task"}), one per accepted task.
+The list is shorter than \code{.exprs} when the ring filled past \code{.timeout}
+mid-batch.
 }
 \description{
 \code{mizu_submit_batch()} submits one task per element of \code{.exprs} in a
@@ -44,12 +44,11 @@ the batch. Unlike \code{mizu_submit()}, expressions are not captured:
 the elements of \code{.exprs} are pre-quoted (or plain values, which
 evaluate to themselves).
 
-Submission behaves per task as in \code{\link[=mizu_submit]{mizu_submit()}}, with one
-difference: if the injection ring fills past \code{.timeout} mid-batch,
-the call returns the handles accepted so far instead of raising
-\code{mizu_error_submit_timeout}. Fatal outcomes (pool stopped, result
-slots exhausted) still raise; tasks already submitted stay valid and
-collectible.
+Submission behaves per task as in \code{\link[=mizu_submit]{mizu_submit()}}, with one difference: if
+the injection ring fills past \code{.timeout} mid-batch, the call returns the
+handles accepted so far instead of raising \code{mizu_error_submit_timeout}. Fatal
+outcomes (pool stopped, result slots exhausted) still raise, and tasks
+already submitted stay valid and collectible.
 }
 \examples{
 p <- mizu_pool()

@@ -22,16 +22,16 @@ inside a peer expression).}
 \code{0} does not wait.}
 }
 \value{
-\code{mizu_send_batch()} returns the number of messages accepted. This
-is less than \code{length(xs)} when the ring filled or the channel closed
-midway. Send the next element with \code{\link[=mizu_send]{mizu_send()}} to learn which.
+\code{mizu_send_batch()} returns the number of messages accepted. This is
+less than \code{length(xs)} when the ring filled or the channel closed midway.
+Send the next element with \code{\link[=mizu_send]{mizu_send()}} to learn which.
 \code{mizu_recv_batch()} waits for the first message like \code{\link[=mizu_recv]{mizu_recv()}} and
-returns its sentinels on timeout, close, or peer death. It then
-returns a list of 1 to \code{n} already-published messages without waiting
-further. A batch that reaches a message it cannot read (a foreign
-Python payload) returns what it read before it, and the failure
-surfaces on the next receive, which raises like \code{\link[=mizu_recv]{mizu_recv()}} — as
-does the batch itself when the first message is the one declined.
+returns its sentinels on timeout, close, or peer death. It then returns a
+list of 1 to \code{n} already-published messages without waiting further. A
+batch that reaches a message it cannot read (a foreign Python payload)
+returns what it read before it, and the failure surfaces on the next
+receive, which raises as \code{\link[=mizu_recv]{mizu_recv()}} does. The batch itself raises when
+the first message is the one declined.
 }
 \description{
 At high message rates the cost of each R call matters.

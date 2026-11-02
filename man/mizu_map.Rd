@@ -26,10 +26,10 @@ inside a task, the evaluating worker's own handle from
 coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
 
 \item{.f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
-\code{.f(.x[[i]], ...)}. Serialized once with its enclosing environment.
-Keep that environment small, as with any cross-process map. A
-\code{\link[=mizu_call]{mizu_call()}} specification maps over a pool of any worker language —
-see the Cross-language maps section.}
+\code{.f(.x[[i]], ...)}. Serialized once with its enclosing environment. Keep
+that environment small, as with any cross-process map. A \code{\link[=mizu_call]{mizu_call()}}
+specification maps over a pool of any worker language; see the
+Cross-language maps section.}
 
 \item{...}{further constant arguments to \code{.f}, staged once. As in
 \code{\link[=mizu_submit]{mizu_submit()}}, the formals ahead of \code{...} are dot-prefixed, so an
@@ -58,234 +58,214 @@ bounding shared-memory use by the window times the slice size.
 See the Streaming maps section. A streaming map handle collects
 with \code{\link[=mizu_collect]{mizu_collect()}} only (it cannot be promise-armed).}
 
-\item{.collect}{\code{"copy"} (the default) gathers template results into
-an owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an
-ALTREP view over the map's shared output area — no gather copy — for
-pipelines that immediately reduce. Requires an atomic \code{.template}.
-The view is copy-on-write: the first write materializes a private
-copy. It keeps the map region alive until released, and re-sending
-it through a channel or pool crosses as a full copy, not by
-reference. The choice is stored on the handle.}
+\item{.collect}{\code{"copy"} (the default) gathers template results into an
+owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an ALTREP
+view over the map's shared output area, with no gather copy, for pipelines
+that reduce it immediately. Requires an atomic \code{.template}. The view is
+copy-on-write: the first write materializes a private copy. It keeps the
+map region alive until released, and re-sending it through a channel or
+pool crosses as a full copy, not by reference. The choice is stored on the
+handle.}
 }
 \value{
-A map handle (class \code{"mizu_map"}). \code{\link[=mizu_collect]{mizu_collect()}} on it
-returns a list of the results of \code{.f} in the order of \code{.x}, with
-\code{names(.x)} reapplied. With \code{.template}, an atomic vector of type
-\code{typeof(.template)} (an \code{m * length(.x)} matrix when
-\code{length(.template) > 1}) — an owning vector, or a copy-on-write view
-over the shared output area with \code{.collect = "view"}. On \code{.timeout}
-expiry mid-submission, \code{mizu_map()} itself returns the
-\code{mizu_timeout} sentinel; \code{\link[=mizu_collect]{mizu_collect()}} returns it on its own
-\code{timeout} expiry. A length-0 \code{.x} returns a handle whose collect
-yields the empty result, as \code{\link[=lapply]{lapply()}} — no region or tasks are
-created.
+A map handle (class \code{"mizu_map"}). \code{\link[=mizu_collect]{mizu_collect()}} on it returns a
+list of the results of \code{.f} in the order of \code{.x}, with \code{names(.x)}
+reapplied. With \code{.template}, an atomic vector of type \code{typeof(.template)},
+or an \code{m * length(.x)} matrix when \code{length(.template) > 1}. This is an
+owning vector, or a copy-on-write view over the shared output area with
+\code{.collect = "view"}. On \code{.timeout} expiry mid-submission, \code{mizu_map()}
+itself returns the \code{mizu_timeout} sentinel, and \code{\link[=mizu_collect]{mizu_collect()}} returns it
+on its own \code{timeout} expiry. A length-0 \code{.x} returns a handle whose collect
+yields the empty result, as \code{\link[=lapply]{lapply()}} does, and creates no region or
+tasks.
 }
 \description{
 Maps \code{.f} over the elements of \code{.x} on a pool and returns a map handle
-immediately — as \code{\link[=mizu_submit]{mizu_submit()}} returns a task. \code{\link[=mizu_collect]{mizu_collect()}} on
-the handle waits for completion and returns the results in input
-order: a list by default, or an atomic vector (or matrix) with
-\code{\link[=vapply]{vapply()}}-style results when \code{.template} is given. \code{\link[=mizu_cancel]{mizu_cancel()}}
-stops it. \code{as.promise()} (or \code{then()} directly) collects it through
-the event loop instead — see \code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}}. Unlike
-mapping with per-element \code{\link[=mizu_submit]{mizu_submit()}} calls, one \code{mizu_map()} call
-serializes \code{.f}, the constant arguments in \code{...}, and \code{.x} exactly once.
-It submits one \emph{runner} task per live worker, and each worker
-materializes that map context at most once. The remaining per-element
-cost is one R function call, as in \code{\link[=lapply]{lapply()}}. Runners self-schedule:
-they claim contiguous element batches off a shared cursor in the map
-region and size each batch adaptively toward a fixed time target. A
-trivial \code{.f} runs in large batches at near-zero scheduling overhead. An
-expensive or skewed \code{.f} self-limits to fine claims that keep the
-workers balanced. An atomic, non-ALTREP \code{.x} with no attributes beyond
-names also travels as bare bytes. The workers slice their batches
-straight from shared memory without deserializing \code{.x}, and no worker
-ever materializes more than a batch of it.
+immediately, just as \code{\link[=mizu_submit]{mizu_submit()}} returns a task. \code{\link[=mizu_collect]{mizu_collect()}} on the
+handle waits for completion and returns the results in input order: a list by
+default, or an atomic vector (or matrix) in the style of \code{\link[=vapply]{vapply()}} when
+\code{.template} is given. \code{\link[=mizu_cancel]{mizu_cancel()}} stops it. \code{as.promise()} (or \code{then()}
+directly) collects it through the event loop instead; see
+\code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}}.
 }
 \details{
-Runners are ordinary pool tasks: they are stolen and balanced like any
-other work. Worker death is detected and reported (see Errors), and
-every pool invariant applies unchanged. Between batches, a runner also
-answers a pool-wide doorbell: when another submitter's task arrives
-while every worker is busy inside a map, one runner picks it up at
-its next batch boundary. Pickup latency is bounded and independent of
-\code{length(.x)}. A map runner picked up this way is not executed on the
-spot: the helper moves it onto its own deque instead, where the next
-free worker steals it and joins that map.
+Unlike a loop of per-element \code{\link[=mizu_submit]{mizu_submit()}} calls, one \code{mizu_map()} call
+serializes \code{.f}, the constant arguments in \code{...}, and \code{.x} once. It submits
+one \emph{runner} task per live worker, and each worker sets up that map context
+at most once. The remaining per-element cost is one R function call, as in
+\code{\link[=lapply]{lapply()}}. Runners schedule themselves: they claim contiguous batches of
+elements from a shared cursor in the map region and size each batch
+adaptively toward a fixed time target. A trivial \code{.f} runs in large batches
+with near-zero scheduling overhead, while an expensive or skewed \code{.f} settles
+on fine claims that keep the workers balanced. An atomic, non-ALTREP \code{.x}
+with no attributes beyond names travels as bare bytes: the workers slice
+their batches directly from shared memory without deserializing \code{.x}, and no
+worker holds more than a batch of it at a time.
+
+Runners are ordinary pool tasks, stolen and balanced like any other work.
+Worker death is detected and reported (see Errors), and every pool invariant
+applies unchanged. Between batches, a runner also answers a pool-wide
+doorbell. When another submitter's task arrives while every worker is busy
+inside a map, one runner picks it up at its next batch boundary, so pickup
+latency is bounded and independent of \code{length(.x)}. A map runner picked up
+this way is not executed on the spot. The helper moves it onto its own deque,
+where the next free worker steals it and joins that map.
 }
 \section{Granularity}{
 
-Elements are claimed in \emph{morsels}: contiguous ranges of
-\code{max(1, min(n \%/\% (workers * 256), 256))} elements. The morsel is the
-granularity floor for cancellation, help, and loss reporting. Morsels
-go to runners in adaptively sized batches of consecutive morsels.
-\code{.n_chunks} overrides the morsel count outright (\code{min(length(.x), .n_chunks)}
-morsels). With no per-morsel shared state, \code{.n_chunks = length(x)} is
-admissible at zero memory cost for extremely skewed element times. A
-map submitted while no worker is live queues a single runner in the
-injection ring and runs when a worker joins. If no worker has ever
-joined the pool, \code{mizu_map()} errors instead, as \code{mizu_submit_call()}
-does. If the result-slot subrange of the submitter is fully occupied
-by outstanding tasks, \code{mizu_map()} errors immediately, before it
-stages anything.
+Elements are claimed in \emph{morsels}: contiguous ranges of \code{max(1, min(n \%/\% (workers * 256), 256))} elements. The morsel is the granularity floor for
+cancellation, help, and loss reporting. Morsels go to runners in adaptively
+sized batches of consecutive morsels. \code{.n_chunks} overrides the morsel count
+(giving \code{min(length(.x), .n_chunks)} morsels). There is no per-morsel shared
+state, so \code{.n_chunks = length(x)} costs no extra memory and suits extremely
+skewed element times. A map submitted while no worker is live queues a single
+runner in the injection ring and runs when a worker joins. If no worker has
+ever joined the pool, \code{mizu_map()} errors instead, as \code{mizu_submit_call()}
+does. If the submitter's result slots are all occupied by outstanding tasks,
+\code{mizu_map()} errors immediately, before it stages anything.
 }
 
 \section{Templates}{
 
-\code{.template} is \code{\link[=vapply]{vapply()}}'s \code{FUN.VALUE}: every result must match its
-type and length exactly, or coerce upward (logical -> integer ->
-double -> complex, checked on the workers per element). A classed
-\code{integer64} template (bit64's layout) is also supported: results must
-be \code{integer64} of the template's length — an int64 result never
-widens to double — and the gathered vector or view keeps the class.
-Results are written directly into a shared output area and gathered
-in one copy: zero result serializations. With \code{.collect = "view"},
-the gather copy is skipped as well: the result is a copy-on-write
-view over the shared output area itself, for pipelines that
-immediately reduce. A template of length \code{m > 1} gathers an
-\code{m * length(.x)} matrix, with the names of the template as row names, as
-\code{vapply()} does. Character templates are assembled through the generic
-result path instead. Their type checks then surface at assembly, not
-per element on the workers. Big results of a consistent shape belong
-on the template path: a runner's generic results accumulate on the
-worker and publish once, so \code{.template} both caps worker memory and
-moves the values across processes without serialization. Note for
-readers of \code{\link[=mizu_pool_stats]{mizu_pool_stats()}}: a map with large \emph{generic} results
-publishes them through the ordinary result path. Such a map can add a
-few result-slot \code{spills} per call even when the \code{slot_size} of the
-pool is right for its usual traffic.
+\code{.template} works like \code{\link[=vapply]{vapply()}}'s \code{FUN.VALUE}: every result must match its
+type and length exactly, or coerce upward (logical -> integer -> double ->
+complex, checked on the workers per element). A classed \code{integer64} template
+(bit64's layout) is also supported. Results must then be \code{integer64} of the
+template's length, since an int64 result never widens to double, and the
+gathered vector or view keeps the class. Results are written directly into a
+shared output area and gathered in one copy, so no result is serialized. With
+\code{.collect = "view"}, the gather copy is skipped as well, and the result is a
+copy-on-write view over the shared output area itself, for pipelines that
+reduce it immediately. A template of length \code{m > 1} gathers an \code{m * length(.x)} matrix with the names of the template as row names, as \code{vapply()}
+does. Character templates are assembled through the generic result path
+instead, so their type checks surface at assembly rather than per element on
+the workers. Large results of a consistent shape belong on the template path.
+A runner's generic results accumulate on the worker and publish once, so
+\code{.template} both caps worker memory and moves the values across processes
+without serialization. For readers of \code{\link[=mizu_pool_stats]{mizu_pool_stats()}}: a map with large
+\emph{generic} results publishes them through the ordinary result path, and can
+add a few result-slot \code{spills} per call even when the pool's \code{slot_size} is
+right for its usual traffic.
 }
 
 \section{Errors, timeout, and cleanup}{
 
-An error raised by \code{.f} signals again in the caller as the original
-condition. A \code{mizu_map_index} field names the failing element: the first
-by element index among the elements that ran. Failure is fail-fast: the
-erroring runner sets the map's shared cancel word before publishing
-its error, so every other runner stops within about one batch instead
-of finishing the remaining elements. If a worker dies mid-map, the map
-raises \code{mizu_error_worker_died} (see \link{mizu_error}), carrying the lost
-elements as a \code{lost} field: a two-column matrix of inclusive
-\verb{lo, hi} ranges. Loss is reported conservatively, per runner: a dead
-runner's results publish only at the end, so everything it completed
-counts as lost alongside what it was executing, never the reverse. On
-\code{.timeout} expiry, mid-submit or mid-collect, the outstanding work is
-cancelled and the \code{mizu_timeout} sentinel is returned, never raised.
-Executing runners observe cancellation within about one batch (one
-element where \code{.f} is expensive), independent of \code{length(.x)}. The
-slot of a published-uncollected result is released only when the
-dropped handle's finalizer runs at the next garbage collection. The
-map's staging region is likewise deleted at garbage collection. A
-later map absorbs these temporarily occupied slots by using fewer
+An error raised by \code{.f} is signalled again in the caller as the original
+condition, with a \code{mizu_map_index} field naming the failing element (the
+lowest index among the elements that ran). Failure is fail-fast: the erroring
+runner sets the map's shared cancel word before publishing its error, so
+every other runner stops within about one batch instead of finishing the
+remaining elements. If a worker dies mid-map, the map raises
+\code{mizu_error_worker_died} (see \link{mizu_error}) with the lost elements in a
+\code{lost} field, a two-column matrix of inclusive \verb{lo, hi} ranges. Loss is
+reported conservatively, per runner. A dead runner's results publish only at
+the end, so everything it completed is reported as lost along with what it
+was executing, and a lost element is never reported as completed. On
+\code{.timeout} expiry, during submit or collect, the outstanding work is
+cancelled and the \code{mizu_timeout} sentinel is returned, not raised. Executing
+runners observe cancellation within about one batch (one element where \code{.f}
+is expensive), independent of \code{length(.x)}. The slot of a published but
+uncollected result is released only when the dropped handle's finalizer runs
+at the next garbage collection, and the map's staging region is deleted then
+too. A later map absorbs these temporarily occupied slots by using fewer
 runners.
 }
 
 \section{Reproducible RNG}{
 
-By default nothing is guaranteed about random draws inside \code{.f}: the
-workers seed lazily and independently, and the fast path pays nothing
-for the option. \code{.seed} opts into reproducible per-element
-L'Ecuyer-CMRG streams: element \code{i} runs under the stream \code{i} jumps of
-2^127 steps from the base state that \code{set.seed(.seed, "L'Ecuyer-CMRG")}
-installs. The caller's own \code{.Random.seed} is not touched, and the
-RNG state of each worker is saved and restored around its batches.
-Because the streams are per-element, the results are identical for any
-\code{.n_chunks} value, batch sizing, worker count, or steal order. With
-\code{c(seed, offset)}, element \code{i} runs under the stream of element
-\code{i + offset} of an unoffset run, so a map split across runs or
-processes reproduces the streams of one uninterrupted run.
+By default, nothing is guaranteed about random draws inside \code{.f}. The workers
+seed lazily and independently, and the fast path pays nothing for the option.
+\code{.seed} gives every element a reproducible L'Ecuyer-CMRG stream: element \code{i}
+runs under the stream \code{i} jumps of 2^127 steps from the base state that
+\code{set.seed(.seed, "L'Ecuyer-CMRG")} installs. The caller's own \code{.Random.seed}
+is not touched, and the RNG state of each worker is saved and restored around
+its batches. Because the streams are per-element, the results are identical
+for any \code{.n_chunks} value, batch sizing, worker count, or steal order. With
+\code{c(seed, offset)}, element \code{i} runs under the stream of element \code{i + offset}
+of an unoffset run, so a map split across runs or processes reproduces the
+streams of one uninterrupted run.
 }
 
 \section{Nested maps}{
 
-\code{mizu_map(mizu_current_pool(), ...)} inside a task expression uses the
-handle of the worker running it. Runner submissions push onto the
-worker's own deque. The blocked collect executes its own
-runners while idle peers steal the rest: nested parallelism at minimal
-overhead. The first nested map of a worker claims a
-submitter slot. So at the default \code{max_submitters = 8} (one held by the
-controller) at most 7 workers can nest concurrently. Raise
-\code{max_submitters} for wider nested fan-outs.
+\code{mizu_map(mizu_current_pool(), ...)} inside a task expression uses the handle
+of the worker running it. Runner submissions push onto the worker's own
+deque. The blocked collect executes its own runners while idle peers steal
+the rest, so nested parallelism has little overhead. The first nested map on
+a worker claims a submitter slot, so with the default \code{max_submitters = 8}
+(one held by the controller) at most 7 workers can nest at the same time.
+Raise \code{max_submitters} for wider nested fan-outs.
 }
 
 \section{Cross-language maps}{
 
-\code{.f} may be a \code{\link[=mizu_call]{mizu_call()}} specification instead of a function — the
-way to map over a foreign pool (one spawned with
-\code{\link[=mizu_py_launcher]{mizu_py_launcher()}}, or any pool whose workers are not R). A spec
-\code{.f} always stages a shared map region: the descriptor crosses in the
-interchange format and each runner task carries a region reference any
-worker language reads. The map element fills the spec's first
-positional argument (name kind) or binds as \code{x} (source kind), and the
-spec's own constant arguments ride with it — so \code{...} must be empty
+\code{.f} may be a \code{\link[=mizu_call]{mizu_call()}} specification instead of a function. This is how
+you map over a pool whose workers are not R, such as one spawned with
+\code{\link[=mizu_py_launcher]{mizu_py_launcher()}}. A spec \code{.f} always stages a shared map region: the
+descriptor crosses in the interchange format, and each runner task carries a
+region reference that any worker language reads. The map element fills the
+spec's first positional argument (name kind) or binds as \code{x} (source kind),
+and the spec's own constant arguments travel with it, so \code{...} must be empty
 with a spec \code{.f}. Constants and elements must be portable values (the
-interchange subset documented in \code{\link[=mizu_send]{mizu_send()}}); a non-portable one
-raises \code{mizu_error_not_portable} at stage time. \code{.template} and
-\code{.collect} work unchanged — the results are gathered (or
-view-wrapped) by the submitter's own language — and a
-per-element error crosses with its element index. \code{.seed} carries as
-the language-neutral \verb{(seed, offset)} pair and each worker language
-derives its own per-element streams: batching- and steal-order
-invariance holds within a worker language, but the draws are not
-identical across languages. A spec map runs on a same-language pool
-too, subject to the same portability rules.
+interchange subset documented in \code{\link[=mizu_send]{mizu_send()}}), and a non-portable one
+raises \code{mizu_error_not_portable} at stage time. \code{.template} and \code{.collect}
+work unchanged, with the results gathered (or view-wrapped) by the
+submitter's own language, and a per-element error crosses with its element
+index. \code{.seed} crosses as the language-neutral \verb{(seed, offset)} pair and each
+worker language derives its own per-element streams. Batching and steal-order
+invariance holds within a worker language, but the draws are not identical
+across languages. A spec map runs on a same-language pool too, subject to the
+same portability rules.
 }
 
 \section{Streaming maps}{
 
-With \code{.stream = TRUE}, the map never stages the whole of \code{.x} into
-shared memory: it streams slices of \code{.x} to workers as they take work;
-the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
-under a sliding submit/collect window of at most
-\verb{min(.n_chunks, 2 * live workers, free result slots)} outstanding tasks,
-so shared-memory use is bounded by \verb{window x slice} instead of the
-size of \code{.x} — with the default chunk count that is roughly
-\code{(2 * workers) / .n_chunks} of the serialized \code{.x}. The chunk count
-defaults to \verb{min(length(.x), 32 * live workers)} and \code{.n_chunks}
-overrides it outright (\code{.n_chunks = length(.x)} is the mirai-style
-extreme of one element per task). Everything else — result order,
-\code{.template} and \code{.collect}, \code{.seed} invariance, the error behavior —
-is exactly the non-streaming map's. Fail-fast latency grows from
-about one adaptive morsel batch to about one chunk: the outstanding
-work at any time is bounded by the window, so the bound moves with
-\code{.n_chunks}. Two trade-offs come with fixed chunks: the adaptive batch
-sizing of the morsel scheduler is lost (to mitigate skew, raise
-\code{.n_chunks}), and slices cross serialized, so each chunk pays an
-ordinary submit's serialization instead of the non-streaming map's
-serialization-free slicing. A streaming map with R
-workers shares one description of the map with every worker, and each
-worker reads that description at most once. A \code{\link[=mizu_call]{mizu_call()}} spec as
-\code{.f} streams too, over workers of any language. Each chunk in the
-window then stages a small shared region of its own (the slice plus
-the task that runs on it, one runner task per chunk), removed as soon
-as the chunk completes. Shared-memory use stays bounded by the window
-plus a small per-worker cache (up to 8 recent slices per worker)
-rather than by the size of \code{.x}. Each chunk also writes its results
-separately, so they cannot combine into one view:
-\code{.collect = "view"} errors on a streaming spec map, as does preparing
-one with \code{\link[=mizu_map_prepare]{mizu_map_prepare()}}.
+With \code{.stream = TRUE}, the map does not stage the whole of \code{.x} into shared
+memory. It streams slices of \code{.x} to workers as they take work, and the
+return value is unchanged. Fixed slices of \code{.x} ride ordinary chunk tasks
+under a sliding submit/collect window of at most \verb{min(.n_chunks, 2 * live workers, free result slots)} outstanding tasks, so shared-memory use is
+bounded by the window times the slice size instead of the size of \code{.x}. With
+the default chunk count that is roughly \code{(2 * workers) / .n_chunks} of the
+serialized \code{.x}. The chunk count defaults to \verb{min(length(.x), 32 * live workers)}, and \code{.n_chunks} overrides it (\code{.n_chunks = length(.x)} is the
+mirai-style extreme of one element per task). Everything else (result order,
+\code{.template} and \code{.collect}, \code{.seed} invariance, the error behavior) is the
+same as for the non-streaming map. Fail-fast latency grows from about one
+adaptive morsel batch to about one chunk, because the outstanding work at any
+time is bounded by the window, so the bound moves with \code{.n_chunks}. Fixed
+chunks have two costs: the adaptive batch sizing of the morsel scheduler is
+lost (raise \code{.n_chunks} to mitigate skew), and slices cross serialized, so
+each chunk pays an ordinary submit's serialization instead of the
+non-streaming map's serialization-free slicing. A streaming map with R
+workers shares one description of the map with every worker, and each worker
+reads that description at most once. A \code{\link[=mizu_call]{mizu_call()}} spec as \code{.f} streams
+too, over workers of any language. Each chunk in the window then stages a
+small shared region of its own (the slice plus the task that runs on it, one
+runner task per chunk), removed as soon as the chunk completes. Shared-memory
+use stays bounded by the window plus a small per-worker cache (up to 8 recent
+slices per worker) rather than by the size of \code{.x}. Each chunk also writes
+its results separately, so they cannot combine into one view: \code{.collect = "view"} errors on a streaming spec map, as does preparing one with
+\code{\link[=mizu_map_prepare]{mizu_map_prepare()}}.
 }
 
 \section{Very large x}{
 
-The serialized runner wrapper needs a little over 200 bytes of entry
-inline budget, so pools created with \code{slot_size = 256L} (224-byte
-budget) fit it. The exception is \code{.seed}: its 6-word RNG state pushes
-the wrapper to about 270 bytes. Seeded maps on such pools work but
-spill a region per runner, so keep the default \code{slot_size} on pools
-meant for seeded maps. For a very large \code{.x}, two paths avoid
-materializing it per worker. If the shared-memory use is acceptable,
-share it first: a zero-copy view received from a channel or a pool
-result, or a \code{mori::share()}d vector, reduces to its ~30-byte
-identifier inside the staged descriptor, and workers read elements
-straight off the shared pages with OS demand paging — no worker copies
-any part of \code{.x} (\code{mizu_map} itself never calls mori). If \code{.x} must
-not be staged wholesale at all, \code{.stream = TRUE} keeps only a window
-of slices in shared memory — see the Streaming maps section.
+The serialized runner wrapper needs a little over 200 bytes of entry inline
+budget, so pools created with \code{slot_size = 256L} (224-byte budget) fit it.
+The exception is \code{.seed}: its 6-word RNG state pushes the wrapper to about
+270 bytes. Seeded maps on such pools work but spill a region per runner, so
+keep the default \code{slot_size} on pools meant for seeded maps. For a very large
+\code{.x}, two paths avoid materializing it on every worker. If the shared-memory
+use is acceptable, share it first: a zero-copy view received from a channel
+or a pool result, or a \code{mori::share()}d vector, reduces to its 30-byte
+identifier inside the staged descriptor, and workers read elements directly
+off the shared pages with OS demand paging, so no worker copies any part of
+\code{.x} (\code{mizu_map()} itself never calls mori). If \code{.x} must not be staged
+wholesale at all, \code{.stream = TRUE} keeps only a window of slices in shared
+memory; see the Streaming maps section.
 
 As in \code{\link[=lapply]{lapply()}}, \code{.x} is indexed with \code{[[} on the workers after an
-\code{as.list()} coercion of anything that is not a plain vector. So a
-data.frame maps over its columns, and a factor over its elements.
+\code{as.list()} coercion of anything that is not a plain vector, so a
+data.frame maps over its columns and a factor over its elements.
 }
 
 \examples{

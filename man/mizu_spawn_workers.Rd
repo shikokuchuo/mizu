@@ -52,9 +52,9 @@ linger briefly to keep alive the results it produced that are not yet
 collected.
 }
 \details{
-Slots free up when workers retire, exit at shutdown, or die and are
-reaped. So a pool can cycle workers within its registry capacity for
-its whole lifetime. Only the creating process can resize a pool.
+Slots free up when workers retire, exit at shutdown, or die and are reaped,
+so a pool can cycle workers within its registry capacity for its whole
+lifetime. Only the creating process can resize a pool.
 }
 \examples{
 \dontshow{if (interactive()) withAutoprint(\{ # examplesIf}

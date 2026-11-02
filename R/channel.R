@@ -1,31 +1,28 @@
 #' Create a Channel and Spawn Its Peer
 #'
-#' Creates a shared-memory SPSC channel — one lock-free ring per direction —
-#' and spawns a child R process connected to the other end. The channel is
-#' two-way once the peer is spawned: the returned handle produces on the
-#' host-to-peer ring and consumes the peer-to-host ring. Setup is
-#' one-sided: only a short join token (the suffix of the region name)
-#' crosses the process boundary, as a command-line argument.
+#' Creates a shared-memory single-producer single-consumer channel, with one
+#' lock-free ring per direction, and spawns a child R process connected to the
+#' other end. The returned handle sends on the host-to-peer ring and receives on
+#' the peer-to-host ring. Only a short join token (the suffix of the region
+#' name) is passed to the child, as a command-line argument.
 #'
-#' `expr` is a quoted expression, not a closure. It captures nothing, and
-#' unlike [mizu_submit()] mizu does not capture it for you: pass it
-#' pre-quoted. The peer evaluates it in a fresh environment whose parent is
-#' the global environment of the child. `ch` (the peer-side channel handle)
-#' is the only binding that mizu provides. Data crosses the ring, and the
-#' expression itself loads any packages it needs. When the expression
-#' returns or errors, the peer signals an orderly close and exits. An error
-#' message goes to the stderr of the child.
+#' `expr` is a quoted expression, not a closure. It captures nothing, and unlike
+#' [mizu_submit()], mizu does not quote it for you. The peer evaluates it in a
+#' fresh environment whose parent is the child's global environment, with `ch`
+#' (the peer-side channel handle) as the only binding that mizu provides. The
+#' expression must load any packages it needs. When the expression returns or
+#' errors, the peer signals an orderly close and exits. An error message goes to
+#' the child's standard error.
 #'
-#' Payload contents interoperate transparently with mori. A `mori::share()`d
-#' object anywhere inside a payload serializes to its short identifier wire
-#' form through the mori hooks, and maps zero-copy on the other side.
+#' Payloads interoperate with mori. A `mori::share()`d object anywhere inside a
+#' payload is serialized as its short identifier through the mori hooks, and is
+#' mapped zero-copy on the other side.
 #'
-#' The two liveness lock files of the channel (the death-detection verdict)
-#' live in a per-platform directory chosen at create time. This is
-#' `/dev/shm` on Linux, and the per-user temporary directory on macOS and
-#' Windows. The chosen path is recorded in the region, so both sides use
-#' the same files. The environment variable `MIZU_LIVENESS_DIR`, read in
-#' the creating process, overrides the default.
+#' The channel's two liveness lock files, which detect the death of either side,
+#' are created in a per-platform directory: `/dev/shm` on Linux, and the
+#' per-user temporary directory on macOS and Windows. The path is recorded in
+#' the region, so both sides use the same files. The environment variable
+#' `MIZU_LIVENESS_DIR`, read in the creating process, overrides the default.
 #'
 #' @param expr a quoted expression (for example `quote({ ... })`), evaluated
 #'   in the peer process with `ch` bound to the peer-side channel handle.
@@ -37,27 +34,25 @@
 #' @param slot_size bytes per slot. A power of two between 64 and 2^20. The
 #'   inline payload budget is `slot_size - 16`. Payloads that serialize
 #'   larger spill to the arena, and past it to a fresh region.
-#' @param arena_size spill-arena bytes per direction. A multiple of 128, or 0
-#'   to disable (every spill then creates a region). This bounds the
-#'   in-flight spill. An undersized arena falls back to creating a region
-#'   per payload, never to errors.
-#' @param spin opts the channel into pure-spin waiting: consumers never park
-#'   and producers skip the wake check on publish. Use this only when the
-#'   consumer never yields. If a spin-mode consumer parks, the producer
-#'   never wakes it.
+#' @param arena_size spill-arena bytes per direction. A multiple of 128, or 0 to
+#'   disable (every spill then creates a region). This bounds the in-flight
+#'   spill. An undersized arena falls back to creating a region per payload, and
+#'   never errors.
+#' @param spin `TRUE` makes the channel spin-wait: consumers never park and
+#'   producers skip the wake check on publish. Use this only when the consumer
+#'   never yields, because a spin-mode consumer that parks is never woken.
 #' @param startup_timeout seconds to wait for the peer to attach and signal
 #'   ready. On expiry, mizu releases the channel and raises
 #'   `mizu_error_startup` (see [mizu_error]).
-#' @param launcher a `function(token)` that spawns the peer process. For an
-#'   R peer, it arranges for a process to call `mizu:::peer_main(token)`. The
-#'   default [mizu_launcher()] spawns `Rscript` and propagates the
-#'   `.libPaths()` of the host. Its `stdout` and `stderr` arguments direct
-#'   the peer output, including the error epilogue. A custom launcher must
-#'   arrange the library paths itself. For a peer in another language (a
-#'   source-string `expr`), it spawns a program that attaches with `token`
-#'   and speaks the wire protocol, such as `python3 -m pymizu.child` for a
-#'   Python peer — [mizu_py_launcher()] is the ready-made launcher for
-#'   that case.
+#' @param launcher a `function(token)` that spawns the peer process. For an R
+#'   peer, it arranges for a process to call `mizu:::peer_main(token)`. The
+#'   default [mizu_launcher()] spawns `Rscript` and propagates the `.libPaths()`
+#'   of the host. Its `stdout` and `stderr` arguments direct the peer output,
+#'   including the error message. A custom launcher must arrange the library
+#'   paths itself. For a peer in another language (a source-string `expr`), it
+#'   spawns a program that attaches with `token` and speaks the wire protocol,
+#'   such as `python3 -m pymizu.child` for a Python peer. [mizu_py_launcher()]
+#'   is the ready-made launcher for that case.
 #'
 #' @return A channel handle (class `"mizu_channel"`). Handles are
 #'   process-private and do not survive `fork()`.
@@ -109,9 +104,9 @@ mizu_channel <- function(
 
 #' Send and Receive over a Channel
 #'
-#' `mizu_send()` publishes a message to the peer. The message is visible the
-#' moment the call returns, with no separate flush step. `mizu_recv()`
-#' returns the next message, and waits up to `timeout` seconds for it.
+#' `mizu_send()` publishes a message to the peer. The message is visible as soon
+#' as the call returns, with no separate flush step. `mizu_recv()` returns the
+#' next message, and waits up to `timeout` seconds for it.
 #'
 #' Sends never block for ring space. Receives report every terminal state
 #' as a class-tagged sentinel, not an error. Test for them with
@@ -122,46 +117,45 @@ mizu_channel <- function(
 #' * `mizu_timeout` — no message arrived within `timeout` (recv).
 #' * `mizu_closed` — the other side closed the channel. A receive drains all
 #'   published messages before it reports this.
-#' * `mizu_peer_gone` — the peer died without closing. The verdict comes
-#'   from the kernel-released liveness lock, at OS death-notification
-#'   latency. A receive drains first here too: the published messages of a
-#'   dead peer are complete and valid. Sticky once returned.
+#' * `mizu_peer_gone` — the peer died without closing. Death is detected through
+#'   the liveness lock that the kernel releases, as soon as the OS reports it. A
+#'   receive drains first here too, since the published messages of a dead peer
+#'   are complete and valid. Sticky once returned.
 #'
-#' `NULL` is a legal payload. Sentinels are ordinary values, identifiable
-#' by class alone, and never signalled conditions. [mizu_is_sentinel()]
-#' checks identity where payloads are untrusted.
-#' `NULL` crosses as an immediate: no serialization and no receive-side
-#' allocation. Length-1 character vectors that fit the inline budget cross
-#' with a single byte copy, encoding mark preserved. Attribute-free
-#' non-ALTREP atomic vectors — and `integer64` vectors whose only
-#' attribute is the class — ride a serialization-free fast path with a
-#' byte-identical round-trip — inline within the budget, and past it as
-#' bare bytes in the arena or a spill region (no serialize, no parse).
-#' Other plain values — attributed vectors, strings, lists, calls — cross
-#' as a compact binary stream written and read without R's serializer.
-#' Anything else is R-serialized. Mori-shared objects reduce to identifier
-#' wire forms through the mori hooks.
+#' `NULL` is a legal payload. Sentinels are ordinary values identified by their
+#' class, never signalled conditions. [mizu_is_sentinel()] checks identity where
+#' payloads are untrusted.
 #'
-#' Cross-language, a numpy `int64` array (or an Arrow one) from a Python
-#' peer lands as an `integer64` vector — bit64's exact layout, constructed
-#' without bit64: with bit64 loaded the result is fully functional, and
-#' without it the bits round-trip but print as raw doubles. The missing
-#' sentinel is shared both directions: a genuine `INT64_MIN` reads as
-#' `NA_integer64_` in R, and an `NA_integer64_` arrives as `INT64_MIN` in
-#' Python.
+#' `NULL` crosses as an immediate, with no serialization and no allocation on
+#' receive. A length-1 character vector that fits the inline budget crosses with
+#' a single byte copy, encoding mark preserved. Attribute-free non-ALTREP atomic
+#' vectors, and `integer64` vectors whose only attribute is the class, take a
+#' serialization-free path with a byte-identical round trip: inline within the
+#' budget, and past it as bare bytes in the arena or a spill region. Other plain
+#' values (attributed vectors, strings, lists, calls) cross as a compact binary
+#' stream written and read without R's serializer. Anything else is
+#' R-serialized. Mori-shared objects reduce to their identifiers through the
+#' mori hooks.
 #'
-#' From a non-R peer, only vectors and strings are legal payloads. Anything
-#' else (a pymizu codec stream or a pickle) is declined: the receive raises
-#' a classed `mizu_error_python_payload` error (see [mizu_error]). The
-#' declined message is consumed, so the channel keeps flowing.
+#' A NumPy or Arrow `int64` array from a Python peer arrives as an `integer64`
+#' vector in bit64's layout, constructed without bit64. With bit64 loaded the
+#' result is fully functional, and without it the bits round-trip but print as
+#' raw doubles. The missing-value sentinel is shared in both directions: a
+#' genuine `INT64_MIN` reads as `NA_integer64_` in R, and an `NA_integer64_`
+#' arrives as `INT64_MIN` in Python.
 #'
-#' Large payloads can arrive as zero-copy views over shared memory: the view
-#' is a small R object pinning memory the garbage collector cannot see. To
-#' return those loans promptly, the receive functions (and worker task
-#' boundaries) run a minor garbage collection once 8 MiB of released view
-#' memory has accumulated — an occasional ~0.2 ms pause, the largest
-#' latency outlier in the system. Set `options(mizu.gc_boundary)` (bytes; `0`
-#' disables) before loading the package to tune the threshold.
+#' From a non-R peer, only vectors and strings are legal payloads. Anything else
+#' (a pymizu codec stream or a pickle) is declined, and the receive raises a
+#' classed `mizu_error_python_payload` error (see [mizu_error]). The declined
+#' message is consumed, so the channel keeps flowing.
+#'
+#' Large payloads can arrive as zero-copy views over shared memory. A view is a
+#' small R object that pins memory the garbage collector cannot see. To return
+#' that memory promptly, the receive functions (and worker task boundaries) run
+#' a minor garbage collection once 8 MiB of released view memory has
+#' accumulated. This is an occasional pause of about 0.2 ms, the largest latency
+#' outlier in the system. Set `options(mizu.gc_boundary)` (in bytes; `0`
+#' disables it) before loading the package to tune the threshold.
 #'
 #' @param ch a channel handle from [mizu_channel()] (or the `ch` binding
 #'   inside a peer expression).
@@ -199,16 +193,16 @@ mizu_recv <- function(ch, timeout = Inf) .Call(mizu_channel_recv, ch, timeout)
 #' @param xs a list of payloads.
 #' @param n maximum number of messages to return.
 #'
-#' @return `mizu_send_batch()` returns the number of messages accepted. This
-#'   is less than `length(xs)` when the ring filled or the channel closed
-#'   midway. Send the next element with [mizu_send()] to learn which.
+#' @return `mizu_send_batch()` returns the number of messages accepted. This is
+#'   less than `length(xs)` when the ring filled or the channel closed midway.
+#'   Send the next element with [mizu_send()] to learn which.
 #'   `mizu_recv_batch()` waits for the first message like [mizu_recv()] and
-#'   returns its sentinels on timeout, close, or peer death. It then
-#'   returns a list of 1 to `n` already-published messages without waiting
-#'   further. A batch that reaches a message it cannot read (a foreign
-#'   Python payload) returns what it read before it, and the failure
-#'   surfaces on the next receive, which raises like [mizu_recv()] — as
-#'   does the batch itself when the first message is the one declined.
+#'   returns its sentinels on timeout, close, or peer death. It then returns a
+#'   list of 1 to `n` already-published messages without waiting further. A
+#'   batch that reaches a message it cannot read (a foreign Python payload)
+#'   returns what it read before it, and the failure surfaces on the next
+#'   receive, which raises as [mizu_recv()] does. The batch itself raises when
+#'   the first message is the one declined.
 #'
 #' @examples
 #' ch <- mizu_channel(quote(mizu_send_batch(ch, mizu_recv_batch(ch, 3L))))
@@ -227,13 +221,12 @@ mizu_recv_batch <- function(ch, n = 256L, timeout = Inf) {
 
 #' Close a Channel
 #'
-#' Orderly shutdown. Signals close to the peer, then waits up to `timeout`
-#' seconds for the peer's close (or its death). Waiting for the peer is
-#' what makes it safe to release the resources held by sent payloads: the
-#' peer confirms only after it has finished reading its messages. On that
-#' confirmation, all resources are released and the region name is
-#' deleted. The handle is dead afterwards, and closing it again is a
-#' no-op. On timeout the handle stays usable, and the resources release
+#' Signals close to the peer, then waits up to `timeout` seconds for the peer to
+#' close (or die). The peer confirms only after it has finished reading its
+#' messages, which is what makes it safe to release the resources held by sent
+#' payloads. On that confirmation, all resources are released and the region
+#' name is deleted. The handle is dead afterwards, and closing it again does
+#' nothing. On timeout the handle stays usable, and the resources are released
 #' at garbage collection, which runs the same check again.
 #'
 #' After either side signals close, sends on both sides return the

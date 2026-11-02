@@ -281,53 +281,49 @@ chan_drain <- function(state) {
 
 #' Receive Channel Messages as a Promise or a Stream
 #'
-#' `mizu_recv_async()` returns immediately with a
-#' [promises::promise()] — it never blocks — resolving with the next
-#' received payload: the identical R object a blocking [mizu_recv()]
-#' would have returned, zero-copy ALTREP views included. Chain with
-#' [promises::then()] or the promise pipe `%...>%`.
+#' `mizu_recv_async()` returns a [promises::promise()] immediately, without
+#' blocking. The promise resolves with the next received payload, the same R
+#' object a blocking [mizu_recv()] would have returned, zero-copy ALTREP views
+#' included. Chain it with [promises::then()] or the promise pipe `%...>%`.
 #'
-#' The promise rejects on `mizu_closed`, `mizu_peer_gone`, and on
-#' `timeout` expiry — as classed *error* conditions carrying the same
-#' class names as the sentinels, so `inherits(x, "mizu_closed")` works on
-#' either form. Close and peer death wake the event loop directly, so
-#' the rejection is prompt, never timeout-driven.
+#' The promise rejects on `mizu_closed`, `mizu_peer_gone`, and `timeout` expiry
+#' with classed *error* conditions that carry the same class names as the
+#' sentinels, so `inherits(x, "mizu_closed")` works on either form. Close and
+#' peer death wake the event loop directly, so the rejection is prompt rather
+#' than waiting for the timeout.
 #'
 #' Several outstanding calls on one channel resolve in FIFO call order,
 #' one message each. No message is lost: messages already in the ring
 #' resolve immediately (still asynchronously, as promises require), and
 #' only messages yet to arrive wait on the event.
 #'
-#' `mizu_recv_handler()` is the stream form: it installs `fn` on the
-#' channel and each burst of messages is delivered to it from the event
-#' loop — no promise is allocated per message. With `batch = TRUE` each
-#' drained burst is delivered as one list in a single `fn(list)` call
-#' (the throughput form: one R call per burst); with `batch = FALSE`,
-#' `fn(value)` is called per message. Close and peer death are delivered
-#' to `fn` as the classed error conditions (`mizu_closed`,
-#' `mizu_peer_gone`), after which the handler is removed. A declined
-#' foreign payload (see [mizu_send()]) is delivered as its
-#' `mizu_error_python_payload` condition and the handler continues. An
-#' error raised by `fn` removes the handler and propagates at the event
-#' loop. `mizu_recv_handler(ch, NULL)` removes the handler.
+#' `mizu_recv_handler()` is the stream form. It installs `fn` on the channel,
+#' and the event loop delivers each burst of messages to it without allocating a
+#' promise per message. With `batch = TRUE`, each drained burst is delivered as
+#' one list in a single `fn(list)` call, which is the high-throughput form. With
+#' `batch = FALSE`, `fn(value)` is called once per message. Close and peer death
+#' are delivered to `fn` as the classed error conditions (`mizu_closed`,
+#' `mizu_peer_gone`), after which the handler is removed. A declined foreign
+#' payload (see [mizu_send()]) is delivered as its `mizu_error_python_payload`
+#' condition and the handler continues. An error raised by `fn` removes the
+#' handler and propagates at the event loop. `mizu_recv_handler(ch, NULL)`
+#' removes the handler.
 #'
-#' One consumer per message: a channel message belongs to whoever takes
-#' it first. A channel holds at most one of the two consumer forms at a
-#' time: installing a handler with promises pending, or requesting a
-#' promise with a handler installed, is an error. Mixing a blocking
-#' [mizu_recv()] with either consumer form consumes in arrival order —
-#' the blocking call may take a message a promise or the handler was
-#' waiting on. A close or peer death it observes is observed by the
-#' consumer too: both are channel state, re-read on every receive, never
-#' consumed. (A task result instead belongs to exactly one consumer —
+#' A channel message belongs to whoever takes it first. A channel can have only
+#' one of the two consumer forms at a time: installing a handler while promises
+#' are pending, or requesting a promise while a handler is installed, is an
+#' error. A blocking [mizu_recv()] mixed with either consumer form consumes in
+#' arrival order, so the blocking call may take a message that a promise or the
+#' handler was waiting on. A close or peer death that it observes is observed by
+#' the consumer too, because both are channel state, re-read on every receive
+#' and never consumed. (A task result instead belongs to exactly one consumer;
 #' see [mizu_collect_all_async()].)
 #'
 #' Every main-thread drain is bounded per event-loop turn and
 #' re-scheduled, so a saturated ring starves neither Shiny nor
 #' [later::run_now()].
 #'
-#' Requires the \pkg{later} package (and \pkg{promises} for
-#' `mizu_recv_async()`), both of which must be installed.
+#' Requires the \pkg{later} package, and \pkg{promises} for `mizu_recv_async()`.
 #'
 #' @param ch a channel handle from [mizu_channel()] (or the `ch` binding
 #'   inside a peer expression). Arming a `spin` channel errors: its
@@ -594,49 +590,44 @@ pool_drain <- function(state) {
 
 #' Collect Pool Results as Promises
 #'
-#' `mizu_collect_all_async()` and `mizu_collect_any_async()` are the
-#' async counterparts of [mizu_collect_all()] and [mizu_collect_any()]:
-#' each returns immediately with exactly **one** [promises::promise()]
-#' per collection — no per-task promise is ever allocated. On each wake
-#' the pool checks for newly finished tasks, and when the collection
-#' completes the sync version's result assembly runs once and resolves
-#' the promise.
+#' `mizu_collect_all_async()` and `mizu_collect_any_async()` are the async
+#' counterparts of [mizu_collect_all()] and [mizu_collect_any()]. Each returns
+#' immediately with one [promises::promise()] for the whole collection, and no
+#' per-task promise is allocated. On each wake the pool checks for newly
+#' finished tasks, and when the collection completes, the result is assembled
+#' once as in the blocking version and the promise resolves.
 #'
-#' `mizu_collect_async()` is the single-task form — the async
-#' counterpart of [mizu_collect()]: it returns immediately with a
-#' [promises::promise()] resolving with the task's value and rejecting
-#' with the same classed condition a blocking collect would raise. One
-#' promise stands per task: while the task pends the promise is cached,
-#' so a repeated call and `as.promise()` on the handle (what
-#' [promises::then()] calls) return the same promise — `timeout`
-#' applies only to the call that arms it. Once settled the task is
-#' collected, and a further call errors (one consumer per result,
-#' below). A `timeout` rejects with the `mizu_timeout` classed error
-#' and consumes nothing: the task returns to blocking-collectible.
+#' `mizu_collect_async()` is the single-task form, the async counterpart of
+#' [mizu_collect()]. It returns immediately with a [promises::promise()] that
+#' resolves with the task's value and rejects with the same classed condition a
+#' blocking collect would raise. There is one promise per task. While the task
+#' is pending the promise is cached, so a repeated call, or `as.promise()` on
+#' the handle (which [promises::then()] calls), returns the same promise, and
+#' `timeout` applies only to the call that created it. Once settled the task is
+#' collected, and a further call errors (one consumer per result, below). A
+#' `timeout` rejects with the `mizu_timeout` classed error and consumes nothing,
+#' so the task can be collected with a blocking call again.
 #'
-#' The behavior mirrors the sync functions. Collect-all resolves in
-#' input order with names carried; the first erroring handle by position
-#' rejects
-#' with `index` (only that handle consumed, the rest collectible).
-#' Collect-any resolves `list(index, value)` for the first terminal
-#' task, a raised outcome rejecting with the `index` field. A timeout
-#' rejects with the `mizu_timeout` classed error and consumes nothing.
-#' When a collection finishes — resolved, rejected, or timed out —
-#' every handle in it is released: handles whose results were not
-#' consumed become blocking-collectible again.
+#' The behavior mirrors the blocking functions. Collect-all resolves in input
+#' order with names carried over, and the first erroring handle by position
+#' rejects with `index` (only that handle is consumed, the rest stay
+#' collectible). Collect-any resolves `list(index, value)` for the first
+#' terminal task, and a raised outcome rejects with the `index` field. A timeout
+#' rejects with the `mizu_timeout` classed error and consumes nothing. When a
+#' collection finishes, whether resolved, rejected, or timed out, every handle
+#' in it is released, and handles whose results were not consumed can be
+#' collected with a blocking call again.
 #'
-#' One consumer per result: a task result belongs to exactly one
-#' consumer. A task with a promise attached — or part of a pending
-#' collection — refuses [mizu_collect()], [mizu_collect_any()] and
-#' [mizu_collect_all()] with an error naming the pending consumer; a
-#' task enrolled in a collection likewise refuses a promise.
-#' [mizu_cancel()] stays allowed and is the destructive option: the
-#' cancel publishes, the result is gone for every consumer, and the
-#' pending promise rejects with `mizu_error_cancelled`. A `timeout` is
-#' the non-destructive counterpart: it only detaches the promise — the
-#' task keeps running and its result stays collectible. (A channel
-#' message instead belongs to whoever takes it first — see
-#' [mizu_recv_async()].)
+#' A task result belongs to exactly one consumer. A task with a promise
+#' attached, or one that is part of a pending collection, refuses
+#' [mizu_collect()], [mizu_collect_any()] and [mizu_collect_all()] with an error
+#' naming the pending consumer, and a task enrolled in a collection likewise
+#' refuses a promise. [mizu_cancel()] is still allowed and is the destructive
+#' option: the cancel publishes, the result is gone for every consumer, and the
+#' pending promise rejects with `mizu_error_cancelled`. A `timeout` is the
+#' non-destructive counterpart. It only detaches the promise, and the task keeps
+#' running with its result still collectible. (A channel message instead belongs
+#' to whoever takes it first; see [mizu_recv_async()].)
 #'
 #' Requires the \pkg{later} and \pkg{promises} packages.
 #'

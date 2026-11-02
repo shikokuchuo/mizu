@@ -11,11 +11,10 @@ A pool handle (class \code{"mizu_pool"}) inside a pool task;
 otherwise \code{NULL}.
 }
 \description{
-Inside a pool task, \code{mizu_current_pool()} returns the pool handle of
-the worker evaluating the task — the handle to pass to \code{\link[=mizu_submit]{mizu_submit()}}
-for nested submission (subtasks push onto the worker's own
-work-stealing deque, and a worker blocked collecting them helps instead
-of sleeping). Outside a task, it returns \code{NULL}.
+Inside a pool task, \code{mizu_current_pool()} returns the pool handle of the
+worker evaluating the task. Pass it to \code{\link[=mizu_submit]{mizu_submit()}} for nested submission:
+subtasks push onto the worker's own work-stealing deque, and a worker blocked
+collecting them helps instead of sleeping. Outside a task, it returns \code{NULL}.
 }
 \details{
 The pool itself provides the handle around each task evaluation, so

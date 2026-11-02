@@ -29,9 +29,9 @@ observes:
 \code{"done"} or \code{"error"} when its result is published.
 \item \code{"drop"} when a claimed task is discarded (cancelled before or during
 execution, or its payload's shared region died with its submitter).
-\item \code{"rehome"} when a worker helping with the doorbell claims a map
-runner. The helper moves it onto its own deque — where idle peers
-can steal it — instead of executing it nested.
+\item \code{"rehome"} when a worker helping with the doorbell claims a map runner. The
+helper moves it onto its own deque, where idle peers can steal it, instead
+of executing it nested.
 }
 
 \code{id} identifies the task as \code{"<submitter slot>:<counter>"}. This id is

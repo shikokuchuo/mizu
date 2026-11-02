@@ -26,10 +26,10 @@ inside a task, the evaluating worker's own handle from
 coerced with \code{as.list()}, as \code{\link[=lapply]{lapply()}} does.}
 
 \item{.f}{a function (or, as \code{\link[=match.fun]{match.fun()}} accepts, its name) applied as
-\code{.f(.x[[i]], ...)}. Serialized once with its enclosing environment.
-Keep that environment small, as with any cross-process map. A
-\code{\link[=mizu_call]{mizu_call()}} specification maps over a pool of any worker language —
-see the Cross-language maps section.}
+\code{.f(.x[[i]], ...)}. Serialized once with its enclosing environment. Keep
+that environment small, as with any cross-process map. A \code{\link[=mizu_call]{mizu_call()}}
+specification maps over a pool of any worker language; see the
+Cross-language maps section.}
 
 \item{...}{further constant arguments to \code{.f}, staged once. As in
 \code{\link[=mizu_submit]{mizu_submit()}}, the formals ahead of \code{...} are dot-prefixed, so an
@@ -60,46 +60,45 @@ tasks already in, and returns the \code{mizu_timeout} sentinel (class
 indefinitely. Submission blocks only while an injection ring is full;
 the collection deadline is \code{\link[=mizu_collect]{mizu_collect()}}'s \code{timeout}.}
 
-\item{.collect}{\code{"copy"} (the default) gathers template results into
-an owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an
-ALTREP view over the map's shared output area — no gather copy — for
-pipelines that immediately reduce. Requires an atomic \code{.template}.
-The view is copy-on-write: the first write materializes a private
-copy. It keeps the map region alive until released, and re-sending
-it through a channel or pool crosses as a full copy, not by
-reference. The choice is stored on the handle.}
+\item{.collect}{\code{"copy"} (the default) gathers template results into an
+owning R vector at \code{\link[=mizu_collect]{mizu_collect()}}. \code{"view"} instead returns an ALTREP
+view over the map's shared output area, with no gather copy, for pipelines
+that reduce it immediately. Requires an atomic \code{.template}. The view is
+copy-on-write: the first write materializes a private copy. It keeps the
+map region alive until released, and re-sending it through a channel or
+pool crosses as a full copy, not by reference. The choice is stored on the
+handle.}
 }
 \value{
 \code{mizu_map_prepare()}: a prepared-map handle. \code{mizu_map_run()}:
-exactly what \code{\link[=mizu_map]{mizu_map()}} returns for the staged map — a map handle
-whose \code{\link[=mizu_collect]{mizu_collect()}} returns a list, a templated atomic vector,
-or the \code{mizu_timeout} sentinel.
+what \code{\link[=mizu_map]{mizu_map()}} returns for the staged map, a map handle whose
+\code{\link[=mizu_collect]{mizu_collect()}} returns a list, a templated atomic vector, or the
+\code{mizu_timeout} sentinel.
 }
 \description{
-\code{mizu_map_prepare()} stages a map — \code{.f}, the constant arguments in
-\code{...}, and \code{.x} — serialized once into a shared map region, without
-running it. It returns a prepared-map handle. Each \code{mizu_map_run()}
-then costs only task submission and collection: no serialization and
-no region create. Because the region (and its name) stays alive across
-runs, workers that ran a previous run reuse their cached map context
-instead of re-attaching. Repeated stochastic simulation is the headline
-use. \code{mizu_map_run(pm, .seed = i)} varies the RNG streams per run for
-free: the seed state rides the runner payloads, not the region.
+\code{mizu_map_prepare()} stages a map (\code{.f}, the constant arguments in \code{...}, and
+\code{.x}), serialized once into a shared map region, without running it, and
+returns a prepared-map handle. Each \code{mizu_map_run()} then costs only task
+submission and collection, with no serialization and no region create.
+Because the region (and its name) stays alive across runs, workers that ran a
+previous run reuse their cached map context instead of re-attaching. Repeated
+stochastic simulation is the main use: \code{mizu_map_run(pm, .seed = i)} varies
+the RNG streams per run at no extra cost, because the seed state rides the
+runner payloads rather than the region.
 }
 \details{
-Between runs, the region's shared scheduling state resets in O(1). The
-cursor and cancel word clear, and the run generation embedded in every
-claim word advances. A leftover task from a previous run can never
-interfere with the new run. After an unclean run — a
-\code{.timeout} expiry, an error in \code{.f}, a worker death — the handle is
-marked stale. The next \code{mizu_map_run()} restages into a fresh region
-automatically (the old one is deleted at garbage collection, once any
-leftover tasks are done with it). A run collected with
-\code{.collect = "view"} restages likewise: the returned view keeps its
-region alive, so the next run stages fresh rather than reusing pages
-a held view still reads. A map small enough to ride entirely inline
-keeps its staged blob on the handle instead: runs resubmit it, still
-skipping the serialization.
+Between runs, the region's shared scheduling state resets in O(1). The cursor
+and cancel word clear, and the run generation embedded in every claim word
+advances, so a leftover task from a previous run can never interfere with the
+new run. After an unclean run (a \code{.timeout} expiry, an error in \code{.f}, a
+worker death) the handle is marked stale, and the next \code{mizu_map_run()}
+restages into a fresh region automatically (the old one is deleted at garbage
+collection, once any leftover tasks are done with it). A run collected with
+\code{.collect = "view"} restages likewise: the returned view keeps its region
+alive, so the next run stages fresh rather than reusing pages a held view
+still reads. A map small enough to ride entirely inline keeps its staged blob
+on the handle instead, and runs resubmit it, still skipping the
+serialization.
 
 The prepared handle keeps the staged \code{.x} (for automatic restaging)
 and the map region alive for its lifetime. Both release at garbage
@@ -110,17 +109,16 @@ run.
 \section{Replacing x between runs}{
 
 \code{mizu_map_run(pm, .x = x2)} runs over a replacement \code{.x}. When both the
-staged and the replacement \code{.x} are bare-byte eligible (atomic,
-non-ALTREP, no attributes beyond names) with identical type and length,
-the swap is in place. The new bytes are copied over the \code{.x} section of
-the region. This runs the iterate-over-same-shape loop (optimizer
-steps, simulation sweeps) at the cost of one copy, skipping the region
-create and the re-attach of every worker. Any other change of \code{.x} — a
-different shape or type, a list, a map staged inline — restages
-automatically on the next run. A streaming prepared map keeps \code{.x}
-in the submitting process, so a replacement \code{.x} of any shape
-re-slices on the next run — only a length change under \code{.template}
-restages (the output area is sized for the staged length).
+staged and the replacement \code{.x} are bare-byte eligible (atomic, non-ALTREP,
+no attributes beyond names) with identical type and length, the swap is in
+place: the new bytes are copied over the \code{.x} section of the region. This
+runs a loop over data of the same shape (optimizer steps, simulation sweeps)
+at the cost of one copy, skipping the region create and the re-attach of
+every worker. Any other change of \code{.x} (a different shape or type, a list, a
+map staged inline) restages automatically on the next run. A streaming
+prepared map keeps \code{.x} in the submitting process, so a replacement \code{.x} of
+any shape re-slices on the next run. Only a length change under \code{.template}
+restages, because the output area is sized for the staged length.
 }
 
 \examples{

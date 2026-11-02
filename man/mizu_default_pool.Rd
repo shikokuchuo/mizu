@@ -31,13 +31,13 @@ default (a pool handle or \code{NULL}), invisibly. \code{mizu_with_pool()}: the
 value of \code{expr}.
 }
 \description{
-\code{mizu_default_pool()} returns the pool registered as this process's
-default, or \code{NULL} when none is set. \code{mizu_set_default_pool()} sets the
-default — or clears it, with \code{NULL} — and invisibly returns the
-previous one, so callers can save and restore. \code{mizu_with_pool()}
-evaluates \code{expr} with \code{pool} as the default and restores the previous
-default on exit, including on error. \code{mizu_local_pool()} sets the
-default until the calling frame exits (the withr \verb{local_*} pattern).
+\code{mizu_default_pool()} returns the pool registered as this process's default,
+or \code{NULL} when none is set. \code{mizu_set_default_pool()} sets the default (or
+clears it with \code{NULL}) and invisibly returns the previous one, so callers can
+save and restore it. \code{mizu_with_pool()} evaluates \code{expr} with \code{pool} as the
+default and restores the previous default on exit, including on error.
+\code{mizu_local_pool()} sets the default until the calling frame exits (the withr
+\verb{local_*} pattern).
 }
 \details{
 The default keeps the pool alive even after its variable is removed,
@@ -45,21 +45,20 @@ until the default is cleared or replaced. Handles from
 \code{\link[=mizu_pool_attach]{mizu_pool_attach()}} are valid defaults; ownership and teardown stay
 with the pool's creator.
 
-Setting a default checks the type only: a stopped pool is accepted
-(liveness is transient, so a probe would prove nothing about use
-time) and fails later with the usual stopped-pool errors. The default
-is process-global state — after a \code{fork()}, a child process reads it
-as unset.
+Setting a default checks only the type. A stopped pool is accepted (liveness
+is transient, so a probe would prove nothing about use time) and fails later
+with the usual stopped-pool errors. The default is process-global state, and
+a child process created by \code{fork()} reads it as unset.
 }
 \section{Package authors}{
 
-A function that takes an optional pool resolves it in this order: an
-explicit \code{pool} argument, then \code{\link[=mizu_current_pool]{mizu_current_pool()}} inside a task (the
-evaluating worker's own pool, for nested submission), then
-\code{mizu_default_pool()}, then the caller's own fallback — sequential
-evaluation or an error. \code{mizu_current_pool()} is runtime-owned by the
-pool around each task evaluation and cannot be shadowed; the default
-pool is user-set state and never overrides it.
+A function that takes an optional pool resolves it in this order: an explicit
+\code{pool} argument, then \code{\link[=mizu_current_pool]{mizu_current_pool()}} inside a task (the evaluating
+worker's own pool, for nested submission), then \code{mizu_default_pool()}, then
+the caller's own fallback, such as sequential evaluation or an error.
+\code{mizu_current_pool()} is set by the pool around each task evaluation and
+cannot be shadowed. The default pool is user-set state and never overrides
+it.
 }
 
 \examples{

@@ -106,26 +106,25 @@ spawn_worker <- function(token, slot, stdout = "", stderr = "") {
 #' entry expression and the `.libPaths()` of the host hex-encoded in argv.
 #'
 #' @section Containers:
-#' `system2(wait = FALSE)` detaches background children, so workers and
-#' peers are adopted by PID 1 of the process namespace and reaped by that
-#' init when they exit. In a container whose PID 1 does not reap (a plain
-#' `docker run` without `--init`), exited children accumulate as zombie
-#' PID-table entries. This is harmless to mizu itself — death verdicts
-#' come from the liveness lock, never the PID — but PID-probe supervision
-#' misreads zombies as alive, and [mizu_prune()] cannot reclaim a dead
-#' process's regions while its PID stays taken.
+#' `system2(wait = FALSE)` detaches background children, so workers and peers
+#' are adopted by PID 1 of the process namespace and reaped by that init when
+#' they exit. In a container whose PID 1 does not reap (a plain `docker run`
+#' without `--init`), exited children accumulate as zombie PID-table entries.
+#' This is harmless to mizu itself, which detects death through the liveness
+#' lock rather than the PID, but PID-probe supervision misreads zombies as
+#' alive, and [mizu_prune()] cannot reclaim a dead process's regions while its
+#' PID stays taken.
 #'
 #' @param stdout,stderr forwarded to [system2()]. The default `""` sends
 #'   the child output (for a channel peer, including its error epilogue)
 #'   to the console of the host, `FALSE` discards it, and a file name
 #'   collects it in that file.
 #'
-#'   On Windows, the child holds a redirection file without sharing for
-#'   its lifetime. Only one live process can use a file at a time.
-#'   Other processes cannot read the file while the child lives. A
-#'   second spawn with the same file fails to launch. In a pool, this
-#'   failure causes a startup timeout. A custom launcher that sets the
-#'   file name from `slot` gives one log file per worker (see examples).
+#' On Windows, the child holds a redirection file exclusively for its lifetime,
+#'   so other processes cannot read it while the child runs, and a second spawn
+#'   with the same file fails to launch (in a pool, as a startup timeout). A
+#'   custom launcher that sets the file name from `slot` gives one log file per
+#'   worker (see examples).
 #'
 #' @return A `function(token, slot)`. [mizu_pool()] and
 #'   [mizu_spawn_workers()] call it with both arguments to spawn the worker
@@ -280,22 +279,22 @@ py_module_launcher <- function(python, module, stdout, stderr) {
 #' Python Launcher
 #'
 #' Returns a launcher that spawns Python processes running
-#' [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of
-#' the same shared-memory core: `python -m pymizu.child` for the channel
-#' peer of [mizu_channel()], `python -m pymizu.worker` for the pool
-#' workers of [mizu_pool()] and [mizu_spawn_workers()]. The mirror of
-#' pymizu's `r_launcher()`, which spawns R processes from a Python host.
+#' [pymizu](https://github.com/shikokuchuo/pymizu), the Python binding of the
+#' same shared-memory core: `python -m pymizu.child` for the channel peer of
+#' [mizu_channel()], and `python -m pymizu.worker` for the pool workers of
+#' [mizu_pool()] and [mizu_spawn_workers()]. It is the counterpart of pymizu's
+#' `r_launcher()`, which spawns R processes from a Python host.
 #'
-#' The first worker's join records the workers' language in the pool, so
-#' the launcher carries no language attribute: a pool of Python workers
-#' takes [mizu_call()] specifications through [mizu_submit_call()], and a
-#' plain [mizu_submit()] fails at once with an error naming
-#' [mizu_submit_call()]. A launcher that spawns the wrong language fails
-#' at join, not at the first task.
+#' The first worker to join records the workers' language in the pool, so the
+#' launcher carries no language attribute. A pool of Python workers takes
+#' [mizu_call()] specifications through [mizu_submit_call()], and a plain
+#' [mizu_submit()] fails immediately with an error naming [mizu_submit_call()].
+#' A launcher that spawns the wrong language fails at join, not at the first
+#' task.
 #'
 #' The interpreter is probed for pymizu when the launcher is created, so a
-#' missing interpreter or package raises here, before anything exists.
-#' The payload rules for a non-R channel peer apply: only vectors and
+#' missing interpreter or package errors here, before any channel or pool is
+#' created. The payload rules for a non-R channel peer apply: only vectors and
 #' strings cross (see [mizu_send()]).
 #'
 #' @param python path to the Python interpreter. The default looks up

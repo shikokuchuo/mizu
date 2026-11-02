@@ -31,13 +31,12 @@ this handle parked waiting for a result), and \code{ledger_entries}
 (lent-out regions still pinned by consumer views).
 }
 \description{
-A read-only debugging snapshot of the entire pool region, one level
-deeper than \code{\link[=mizu_pool_info]{mizu_pool_info()}}. It shows per-slot registry detail
-and every occupied result slot. State is distributed across processes
-and execution is non-deterministic, so reach for this tool first when
-a pool hangs. The scan takes no locks and can race in-flight
-transitions. Each field is a consistent single read. The rows need not
-be mutually consistent.
+A read-only debugging snapshot of the entire pool region, one level deeper
+than \code{\link[=mizu_pool_info]{mizu_pool_info()}}. It shows per-slot registry detail and every occupied
+result slot. State is distributed across processes and execution is
+non-deterministic, so start here when a pool hangs. The scan takes no locks
+and can race with in-flight transitions: each field is a single consistent
+read, but the rows need not be consistent with each other.
 }
 \examples{
 p <- mizu_pool()

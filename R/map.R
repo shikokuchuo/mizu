@@ -70,203 +70,189 @@ mono_time <- function() .Call(mizu_now_call)
 #' Parallel Map Over a Pool
 #'
 #' Maps `.f` over the elements of `.x` on a pool and returns a map handle
-#' immediately — as [mizu_submit()] returns a task. [mizu_collect()] on
-#' the handle waits for completion and returns the results in input
-#' order: a list by default, or an atomic vector (or matrix) with
-#' [vapply()]-style results when `.template` is given. [mizu_cancel()]
-#' stops it. `as.promise()` (or `then()` directly) collects it through
-#' the event loop instead — see [mizu_collect_all_async()]. Unlike
-#' mapping with per-element [mizu_submit()] calls, one `mizu_map()` call
-#' serializes `.f`, the constant arguments in `...`, and `.x` exactly once.
-#' It submits one *runner* task per live worker, and each worker
-#' materializes that map context at most once. The remaining per-element
-#' cost is one R function call, as in [lapply()]. Runners self-schedule:
-#' they claim contiguous element batches off a shared cursor in the map
-#' region and size each batch adaptively toward a fixed time target. A
-#' trivial `.f` runs in large batches at near-zero scheduling overhead. An
-#' expensive or skewed `.f` self-limits to fine claims that keep the
-#' workers balanced. An atomic, non-ALTREP `.x` with no attributes beyond
-#' names also travels as bare bytes. The workers slice their batches
-#' straight from shared memory without deserializing `.x`, and no worker
-#' ever materializes more than a batch of it.
+#' immediately, just as [mizu_submit()] returns a task. [mizu_collect()] on the
+#' handle waits for completion and returns the results in input order: a list by
+#' default, or an atomic vector (or matrix) in the style of [vapply()] when
+#' `.template` is given. [mizu_cancel()] stops it. `as.promise()` (or `then()`
+#' directly) collects it through the event loop instead; see
+#' [mizu_collect_all_async()].
 #'
-#' Runners are ordinary pool tasks: they are stolen and balanced like any
-#' other work. Worker death is detected and reported (see Errors), and
-#' every pool invariant applies unchanged. Between batches, a runner also
-#' answers a pool-wide doorbell: when another submitter's task arrives
-#' while every worker is busy inside a map, one runner picks it up at
-#' its next batch boundary. Pickup latency is bounded and independent of
-#' `length(.x)`. A map runner picked up this way is not executed on the
-#' spot: the helper moves it onto its own deque instead, where the next
-#' free worker steals it and joins that map.
+#' Unlike a loop of per-element [mizu_submit()] calls, one `mizu_map()` call
+#' serializes `.f`, the constant arguments in `...`, and `.x` once. It submits
+#' one *runner* task per live worker, and each worker sets up that map context
+#' at most once. The remaining per-element cost is one R function call, as in
+#' [lapply()]. Runners schedule themselves: they claim contiguous batches of
+#' elements from a shared cursor in the map region and size each batch
+#' adaptively toward a fixed time target. A trivial `.f` runs in large batches
+#' with near-zero scheduling overhead, while an expensive or skewed `.f` settles
+#' on fine claims that keep the workers balanced. An atomic, non-ALTREP `.x`
+#' with no attributes beyond names travels as bare bytes: the workers slice
+#' their batches directly from shared memory without deserializing `.x`, and no
+#' worker holds more than a batch of it at a time.
+#'
+#' Runners are ordinary pool tasks, stolen and balanced like any other work.
+#' Worker death is detected and reported (see Errors), and every pool invariant
+#' applies unchanged. Between batches, a runner also answers a pool-wide
+#' doorbell. When another submitter's task arrives while every worker is busy
+#' inside a map, one runner picks it up at its next batch boundary, so pickup
+#' latency is bounded and independent of `length(.x)`. A map runner picked up
+#' this way is not executed on the spot. The helper moves it onto its own deque,
+#' where the next free worker steals it and joins that map.
 #'
 #' @section Granularity:
-#' Elements are claimed in *morsels*: contiguous ranges of
-#' `max(1, min(n %/% (workers * 256), 256))` elements. The morsel is the
-#' granularity floor for cancellation, help, and loss reporting. Morsels
-#' go to runners in adaptively sized batches of consecutive morsels.
-#' `.n_chunks` overrides the morsel count outright (`min(length(.x), .n_chunks)`
-#' morsels). With no per-morsel shared state, `.n_chunks = length(x)` is
-#' admissible at zero memory cost for extremely skewed element times. A
-#' map submitted while no worker is live queues a single runner in the
-#' injection ring and runs when a worker joins. If no worker has ever
-#' joined the pool, `mizu_map()` errors instead, as `mizu_submit_call()`
-#' does. If the result-slot subrange of the submitter is fully occupied
-#' by outstanding tasks, `mizu_map()` errors immediately, before it
-#' stages anything.
+#' Elements are claimed in *morsels*: contiguous ranges of `max(1, min(n %/%
+#' (workers * 256), 256))` elements. The morsel is the granularity floor for
+#' cancellation, help, and loss reporting. Morsels go to runners in adaptively
+#' sized batches of consecutive morsels. `.n_chunks` overrides the morsel count
+#' (giving `min(length(.x), .n_chunks)` morsels). There is no per-morsel shared
+#' state, so `.n_chunks = length(x)` costs no extra memory and suits extremely
+#' skewed element times. A map submitted while no worker is live queues a single
+#' runner in the injection ring and runs when a worker joins. If no worker has
+#' ever joined the pool, `mizu_map()` errors instead, as `mizu_submit_call()`
+#' does. If the submitter's result slots are all occupied by outstanding tasks,
+#' `mizu_map()` errors immediately, before it stages anything.
 #'
 #' @section Templates:
-#' `.template` is [vapply()]'s `FUN.VALUE`: every result must match its
-#' type and length exactly, or coerce upward (logical -> integer ->
-#' double -> complex, checked on the workers per element). A classed
-#' `integer64` template (bit64's layout) is also supported: results must
-#' be `integer64` of the template's length — an int64 result never
-#' widens to double — and the gathered vector or view keeps the class.
-#' Results are written directly into a shared output area and gathered
-#' in one copy: zero result serializations. With `.collect = "view"`,
-#' the gather copy is skipped as well: the result is a copy-on-write
-#' view over the shared output area itself, for pipelines that
-#' immediately reduce. A template of length `m > 1` gathers an
-#' `m * length(.x)` matrix, with the names of the template as row names, as
-#' `vapply()` does. Character templates are assembled through the generic
-#' result path instead. Their type checks then surface at assembly, not
-#' per element on the workers. Big results of a consistent shape belong
-#' on the template path: a runner's generic results accumulate on the
-#' worker and publish once, so `.template` both caps worker memory and
-#' moves the values across processes without serialization. Note for
-#' readers of [mizu_pool_stats()]: a map with large *generic* results
-#' publishes them through the ordinary result path. Such a map can add a
-#' few result-slot `spills` per call even when the `slot_size` of the
-#' pool is right for its usual traffic.
+#' `.template` works like [vapply()]'s `FUN.VALUE`: every result must match its
+#' type and length exactly, or coerce upward (logical -> integer -> double ->
+#' complex, checked on the workers per element). A classed `integer64` template
+#' (bit64's layout) is also supported. Results must then be `integer64` of the
+#' template's length, since an int64 result never widens to double, and the
+#' gathered vector or view keeps the class. Results are written directly into a
+#' shared output area and gathered in one copy, so no result is serialized. With
+#' `.collect = "view"`, the gather copy is skipped as well, and the result is a
+#' copy-on-write view over the shared output area itself, for pipelines that
+#' reduce it immediately. A template of length `m > 1` gathers an `m *
+#' length(.x)` matrix with the names of the template as row names, as `vapply()`
+#' does. Character templates are assembled through the generic result path
+#' instead, so their type checks surface at assembly rather than per element on
+#' the workers. Large results of a consistent shape belong on the template path.
+#' A runner's generic results accumulate on the worker and publish once, so
+#' `.template` both caps worker memory and moves the values across processes
+#' without serialization. For readers of [mizu_pool_stats()]: a map with large
+#' *generic* results publishes them through the ordinary result path, and can
+#' add a few result-slot `spills` per call even when the pool's `slot_size` is
+#' right for its usual traffic.
 #'
 #' @section Errors, timeout, and cleanup:
-#' An error raised by `.f` signals again in the caller as the original
-#' condition. A `mizu_map_index` field names the failing element: the first
-#' by element index among the elements that ran. Failure is fail-fast: the
-#' erroring runner sets the map's shared cancel word before publishing
-#' its error, so every other runner stops within about one batch instead
-#' of finishing the remaining elements. If a worker dies mid-map, the map
-#' raises `mizu_error_worker_died` (see [mizu_error]), carrying the lost
-#' elements as a `lost` field: a two-column matrix of inclusive
-#' `lo, hi` ranges. Loss is reported conservatively, per runner: a dead
-#' runner's results publish only at the end, so everything it completed
-#' counts as lost alongside what it was executing, never the reverse. On
-#' `.timeout` expiry, mid-submit or mid-collect, the outstanding work is
-#' cancelled and the `mizu_timeout` sentinel is returned, never raised.
-#' Executing runners observe cancellation within about one batch (one
-#' element where `.f` is expensive), independent of `length(.x)`. The
-#' slot of a published-uncollected result is released only when the
-#' dropped handle's finalizer runs at the next garbage collection. The
-#' map's staging region is likewise deleted at garbage collection. A
-#' later map absorbs these temporarily occupied slots by using fewer
+#' An error raised by `.f` is signalled again in the caller as the original
+#' condition, with a `mizu_map_index` field naming the failing element (the
+#' lowest index among the elements that ran). Failure is fail-fast: the erroring
+#' runner sets the map's shared cancel word before publishing its error, so
+#' every other runner stops within about one batch instead of finishing the
+#' remaining elements. If a worker dies mid-map, the map raises
+#' `mizu_error_worker_died` (see [mizu_error]) with the lost elements in a
+#' `lost` field, a two-column matrix of inclusive `lo, hi` ranges. Loss is
+#' reported conservatively, per runner. A dead runner's results publish only at
+#' the end, so everything it completed is reported as lost along with what it
+#' was executing, and a lost element is never reported as completed. On
+#' `.timeout` expiry, during submit or collect, the outstanding work is
+#' cancelled and the `mizu_timeout` sentinel is returned, not raised. Executing
+#' runners observe cancellation within about one batch (one element where `.f`
+#' is expensive), independent of `length(.x)`. The slot of a published but
+#' uncollected result is released only when the dropped handle's finalizer runs
+#' at the next garbage collection, and the map's staging region is deleted then
+#' too. A later map absorbs these temporarily occupied slots by using fewer
 #' runners.
 #'
 #' @section Reproducible RNG:
-#' By default nothing is guaranteed about random draws inside `.f`: the
-#' workers seed lazily and independently, and the fast path pays nothing
-#' for the option. `.seed` opts into reproducible per-element
-#' L'Ecuyer-CMRG streams: element `i` runs under the stream `i` jumps of
-#' 2^127 steps from the base state that `set.seed(.seed, "L'Ecuyer-CMRG")`
-#' installs. The caller's own `.Random.seed` is not touched, and the
-#' RNG state of each worker is saved and restored around its batches.
-#' Because the streams are per-element, the results are identical for any
-#' `.n_chunks` value, batch sizing, worker count, or steal order. With
-#' `c(seed, offset)`, element `i` runs under the stream of element
-#' `i + offset` of an unoffset run, so a map split across runs or
-#' processes reproduces the streams of one uninterrupted run.
+#' By default, nothing is guaranteed about random draws inside `.f`. The workers
+#' seed lazily and independently, and the fast path pays nothing for the option.
+#' `.seed` gives every element a reproducible L'Ecuyer-CMRG stream: element `i`
+#' runs under the stream `i` jumps of 2^127 steps from the base state that
+#' `set.seed(.seed, "L'Ecuyer-CMRG")` installs. The caller's own `.Random.seed`
+#' is not touched, and the RNG state of each worker is saved and restored around
+#' its batches. Because the streams are per-element, the results are identical
+#' for any `.n_chunks` value, batch sizing, worker count, or steal order. With
+#' `c(seed, offset)`, element `i` runs under the stream of element `i + offset`
+#' of an unoffset run, so a map split across runs or processes reproduces the
+#' streams of one uninterrupted run.
 #'
 #' @section Nested maps:
-#' `mizu_map(mizu_current_pool(), ...)` inside a task expression uses the
-#' handle of the worker running it. Runner submissions push onto the
-#' worker's own deque. The blocked collect executes its own
-#' runners while idle peers steal the rest: nested parallelism at minimal
-#' overhead. The first nested map of a worker claims a
-#' submitter slot. So at the default `max_submitters = 8` (one held by the
-#' controller) at most 7 workers can nest concurrently. Raise
-#' `max_submitters` for wider nested fan-outs.
+#' `mizu_map(mizu_current_pool(), ...)` inside a task expression uses the handle
+#' of the worker running it. Runner submissions push onto the worker's own
+#' deque. The blocked collect executes its own runners while idle peers steal
+#' the rest, so nested parallelism has little overhead. The first nested map on
+#' a worker claims a submitter slot, so with the default `max_submitters = 8`
+#' (one held by the controller) at most 7 workers can nest at the same time.
+#' Raise `max_submitters` for wider nested fan-outs.
 #'
 #' @section Cross-language maps:
-#' `.f` may be a [mizu_call()] specification instead of a function — the
-#' way to map over a foreign pool (one spawned with
-#' [mizu_py_launcher()], or any pool whose workers are not R). A spec
-#' `.f` always stages a shared map region: the descriptor crosses in the
-#' interchange format and each runner task carries a region reference any
-#' worker language reads. The map element fills the spec's first
-#' positional argument (name kind) or binds as `x` (source kind), and the
-#' spec's own constant arguments ride with it — so `...` must be empty
+#' `.f` may be a [mizu_call()] specification instead of a function. This is how
+#' you map over a pool whose workers are not R, such as one spawned with
+#' [mizu_py_launcher()]. A spec `.f` always stages a shared map region: the
+#' descriptor crosses in the interchange format, and each runner task carries a
+#' region reference that any worker language reads. The map element fills the
+#' spec's first positional argument (name kind) or binds as `x` (source kind),
+#' and the spec's own constant arguments travel with it, so `...` must be empty
 #' with a spec `.f`. Constants and elements must be portable values (the
-#' interchange subset documented in [mizu_send()]); a non-portable one
-#' raises `mizu_error_not_portable` at stage time. `.template` and
-#' `.collect` work unchanged — the results are gathered (or
-#' view-wrapped) by the submitter's own language — and a
-#' per-element error crosses with its element index. `.seed` carries as
-#' the language-neutral `(seed, offset)` pair and each worker language
-#' derives its own per-element streams: batching- and steal-order
-#' invariance holds within a worker language, but the draws are not
-#' identical across languages. A spec map runs on a same-language pool
-#' too, subject to the same portability rules.
+#' interchange subset documented in [mizu_send()]), and a non-portable one
+#' raises `mizu_error_not_portable` at stage time. `.template` and `.collect`
+#' work unchanged, with the results gathered (or view-wrapped) by the
+#' submitter's own language, and a per-element error crosses with its element
+#' index. `.seed` crosses as the language-neutral `(seed, offset)` pair and each
+#' worker language derives its own per-element streams. Batching and steal-order
+#' invariance holds within a worker language, but the draws are not identical
+#' across languages. A spec map runs on a same-language pool too, subject to the
+#' same portability rules.
 #'
 #' @section Streaming maps:
-#' With `.stream = TRUE`, the map never stages the whole of `.x` into
-#' shared memory: it streams slices of `.x` to workers as they take work;
-#' the return value is unchanged. Fixed x-slices ride ordinary chunk tasks
-#' under a sliding submit/collect window of at most
-#' `min(.n_chunks, 2 * live workers, free result slots)` outstanding tasks,
-#' so shared-memory use is bounded by `window x slice` instead of the
-#' size of `.x` — with the default chunk count that is roughly
-#' `(2 * workers) / .n_chunks` of the serialized `.x`. The chunk count
-#' defaults to `min(length(.x), 32 * live workers)` and `.n_chunks`
-#' overrides it outright (`.n_chunks = length(.x)` is the mirai-style
-#' extreme of one element per task). Everything else — result order,
-#' `.template` and `.collect`, `.seed` invariance, the error behavior —
-#' is exactly the non-streaming map's. Fail-fast latency grows from
-#' about one adaptive morsel batch to about one chunk: the outstanding
-#' work at any time is bounded by the window, so the bound moves with
-#' `.n_chunks`. Two trade-offs come with fixed chunks: the adaptive batch
-#' sizing of the morsel scheduler is lost (to mitigate skew, raise
-#' `.n_chunks`), and slices cross serialized, so each chunk pays an
-#' ordinary submit's serialization instead of the non-streaming map's
-#' serialization-free slicing. A streaming map with R
-#' workers shares one description of the map with every worker, and each
-#' worker reads that description at most once. A [mizu_call()] spec as
-#' `.f` streams too, over workers of any language. Each chunk in the
-#' window then stages a small shared region of its own (the slice plus
-#' the task that runs on it, one runner task per chunk), removed as soon
-#' as the chunk completes. Shared-memory use stays bounded by the window
-#' plus a small per-worker cache (up to 8 recent slices per worker)
-#' rather than by the size of `.x`. Each chunk also writes its results
-#' separately, so they cannot combine into one view:
-#' `.collect = "view"` errors on a streaming spec map, as does preparing
-#' one with [mizu_map_prepare()].
+#' With `.stream = TRUE`, the map does not stage the whole of `.x` into shared
+#' memory. It streams slices of `.x` to workers as they take work, and the
+#' return value is unchanged. Fixed slices of `.x` ride ordinary chunk tasks
+#' under a sliding submit/collect window of at most `min(.n_chunks, 2 * live
+#' workers, free result slots)` outstanding tasks, so shared-memory use is
+#' bounded by the window times the slice size instead of the size of `.x`. With
+#' the default chunk count that is roughly `(2 * workers) / .n_chunks` of the
+#' serialized `.x`. The chunk count defaults to `min(length(.x), 32 * live
+#' workers)`, and `.n_chunks` overrides it (`.n_chunks = length(.x)` is the
+#' mirai-style extreme of one element per task). Everything else (result order,
+#' `.template` and `.collect`, `.seed` invariance, the error behavior) is the
+#' same as for the non-streaming map. Fail-fast latency grows from about one
+#' adaptive morsel batch to about one chunk, because the outstanding work at any
+#' time is bounded by the window, so the bound moves with `.n_chunks`. Fixed
+#' chunks have two costs: the adaptive batch sizing of the morsel scheduler is
+#' lost (raise `.n_chunks` to mitigate skew), and slices cross serialized, so
+#' each chunk pays an ordinary submit's serialization instead of the
+#' non-streaming map's serialization-free slicing. A streaming map with R
+#' workers shares one description of the map with every worker, and each worker
+#' reads that description at most once. A [mizu_call()] spec as `.f` streams
+#' too, over workers of any language. Each chunk in the window then stages a
+#' small shared region of its own (the slice plus the task that runs on it, one
+#' runner task per chunk), removed as soon as the chunk completes. Shared-memory
+#' use stays bounded by the window plus a small per-worker cache (up to 8 recent
+#' slices per worker) rather than by the size of `.x`. Each chunk also writes
+#' its results separately, so they cannot combine into one view: `.collect =
+#' "view"` errors on a streaming spec map, as does preparing one with
+#' [mizu_map_prepare()].
 #'
 #' @section Very large x:
-#' The serialized runner wrapper needs a little over 200 bytes of entry
-#' inline budget, so pools created with `slot_size = 256L` (224-byte
-#' budget) fit it. The exception is `.seed`: its 6-word RNG state pushes
-#' the wrapper to about 270 bytes. Seeded maps on such pools work but
-#' spill a region per runner, so keep the default `slot_size` on pools
-#' meant for seeded maps. For a very large `.x`, two paths avoid
-#' materializing it per worker. If the shared-memory use is acceptable,
-#' share it first: a zero-copy view received from a channel or a pool
-#' result, or a `mori::share()`d vector, reduces to its ~30-byte
-#' identifier inside the staged descriptor, and workers read elements
-#' straight off the shared pages with OS demand paging — no worker copies
-#' any part of `.x` (`mizu_map` itself never calls mori). If `.x` must
-#' not be staged wholesale at all, `.stream = TRUE` keeps only a window
-#' of slices in shared memory — see the Streaming maps section.
+#' The serialized runner wrapper needs a little over 200 bytes of entry inline
+#' budget, so pools created with `slot_size = 256L` (224-byte budget) fit it.
+#' The exception is `.seed`: its 6-word RNG state pushes the wrapper to about
+#' 270 bytes. Seeded maps on such pools work but spill a region per runner, so
+#' keep the default `slot_size` on pools meant for seeded maps. For a very large
+#' `.x`, two paths avoid materializing it on every worker. If the shared-memory
+#' use is acceptable, share it first: a zero-copy view received from a channel
+#' or a pool result, or a `mori::share()`d vector, reduces to its 30-byte
+#' identifier inside the staged descriptor, and workers read elements directly
+#' off the shared pages with OS demand paging, so no worker copies any part of
+#' `.x` (`mizu_map()` itself never calls mori). If `.x` must not be staged
+#' wholesale at all, `.stream = TRUE` keeps only a window of slices in shared
+#' memory; see the Streaming maps section.
 #'
 #' As in [lapply()], `.x` is indexed with `[[` on the workers after an
-#' `as.list()` coercion of anything that is not a plain vector. So a
-#' data.frame maps over its columns, and a factor over its elements.
+#' `as.list()` coercion of anything that is not a plain vector, so a
+#' data.frame maps over its columns and a factor over its elements.
 #'
 #' @inheritParams mizu_submit
 #' @param .x a vector (atomic or list) to map over. Anything else is
 #'   coerced with `as.list()`, as [lapply()] does.
 #' @param .f a function (or, as [match.fun()] accepts, its name) applied as
-#'   `.f(.x[[i]], ...)`. Serialized once with its enclosing environment.
-#'   Keep that environment small, as with any cross-process map. A
-#'   [mizu_call()] specification maps over a pool of any worker language —
-#'   see the Cross-language maps section.
+#'   `.f(.x[[i]], ...)`. Serialized once with its enclosing environment. Keep
+#'   that environment small, as with any cross-process map. A [mizu_call()]
+#'   specification maps over a pool of any worker language; see the
+#'   Cross-language maps section.
 #' @param ... further constant arguments to `.f`, staged once. As in
 #'   [mizu_submit()], the formals ahead of `...` are dot-prefixed, so an
 #'   argument name passed here never collides with them.
@@ -288,26 +274,25 @@ mono_time <- function() .Call(mizu_now_call)
 #'   bounding shared-memory use by the window times the slice size.
 #'   See the Streaming maps section. A streaming map handle collects
 #'   with [mizu_collect()] only (it cannot be promise-armed).
-#' @param .collect `"copy"` (the default) gathers template results into
-#'   an owning R vector at [mizu_collect()]. `"view"` instead returns an
-#'   ALTREP view over the map's shared output area — no gather copy — for
-#'   pipelines that immediately reduce. Requires an atomic `.template`.
-#'   The view is copy-on-write: the first write materializes a private
-#'   copy. It keeps the map region alive until released, and re-sending
-#'   it through a channel or pool crosses as a full copy, not by
-#'   reference. The choice is stored on the handle.
+#' @param .collect `"copy"` (the default) gathers template results into an
+#'   owning R vector at [mizu_collect()]. `"view"` instead returns an ALTREP
+#'   view over the map's shared output area, with no gather copy, for pipelines
+#'   that reduce it immediately. Requires an atomic `.template`. The view is
+#'   copy-on-write: the first write materializes a private copy. It keeps the
+#'   map region alive until released, and re-sending it through a channel or
+#'   pool crosses as a full copy, not by reference. The choice is stored on the
+#'   handle.
 #'
-#' @return A map handle (class `"mizu_map"`). [mizu_collect()] on it
-#'   returns a list of the results of `.f` in the order of `.x`, with
-#'   `names(.x)` reapplied. With `.template`, an atomic vector of type
-#'   `typeof(.template)` (an `m * length(.x)` matrix when
-#'   `length(.template) > 1`) — an owning vector, or a copy-on-write view
-#'   over the shared output area with `.collect = "view"`. On `.timeout`
-#'   expiry mid-submission, `mizu_map()` itself returns the
-#'   `mizu_timeout` sentinel; [mizu_collect()] returns it on its own
-#'   `timeout` expiry. A length-0 `.x` returns a handle whose collect
-#'   yields the empty result, as [lapply()] — no region or tasks are
-#'   created.
+#' @return A map handle (class `"mizu_map"`). [mizu_collect()] on it returns a
+#'   list of the results of `.f` in the order of `.x`, with `names(.x)`
+#'   reapplied. With `.template`, an atomic vector of type `typeof(.template)`,
+#'   or an `m * length(.x)` matrix when `length(.template) > 1`. This is an
+#'   owning vector, or a copy-on-write view over the shared output area with
+#'   `.collect = "view"`. On `.timeout` expiry mid-submission, `mizu_map()`
+#'   itself returns the `mizu_timeout` sentinel, and [mizu_collect()] returns it
+#'   on its own `timeout` expiry. A length-0 `.x` returns a handle whose collect
+#'   yields the empty result, as [lapply()] does, and creates no region or
+#'   tasks.
 #'
 #' @examples
 #' p <- mizu_pool()
@@ -488,29 +473,28 @@ map_collect_handle <- function(m, timeout) {
 
 #' Prepared Maps: Stage Once, Run Many
 #'
-#' `mizu_map_prepare()` stages a map — `.f`, the constant arguments in
-#' `...`, and `.x` — serialized once into a shared map region, without
-#' running it. It returns a prepared-map handle. Each `mizu_map_run()`
-#' then costs only task submission and collection: no serialization and
-#' no region create. Because the region (and its name) stays alive across
-#' runs, workers that ran a previous run reuse their cached map context
-#' instead of re-attaching. Repeated stochastic simulation is the headline
-#' use. `mizu_map_run(pm, .seed = i)` varies the RNG streams per run for
-#' free: the seed state rides the runner payloads, not the region.
+#' `mizu_map_prepare()` stages a map (`.f`, the constant arguments in `...`, and
+#' `.x`), serialized once into a shared map region, without running it, and
+#' returns a prepared-map handle. Each `mizu_map_run()` then costs only task
+#' submission and collection, with no serialization and no region create.
+#' Because the region (and its name) stays alive across runs, workers that ran a
+#' previous run reuse their cached map context instead of re-attaching. Repeated
+#' stochastic simulation is the main use: `mizu_map_run(pm, .seed = i)` varies
+#' the RNG streams per run at no extra cost, because the seed state rides the
+#' runner payloads rather than the region.
 #'
-#' Between runs, the region's shared scheduling state resets in O(1). The
-#' cursor and cancel word clear, and the run generation embedded in every
-#' claim word advances. A leftover task from a previous run can never
-#' interfere with the new run. After an unclean run — a
-#' `.timeout` expiry, an error in `.f`, a worker death — the handle is
-#' marked stale. The next `mizu_map_run()` restages into a fresh region
-#' automatically (the old one is deleted at garbage collection, once any
-#' leftover tasks are done with it). A run collected with
-#' `.collect = "view"` restages likewise: the returned view keeps its
-#' region alive, so the next run stages fresh rather than reusing pages
-#' a held view still reads. A map small enough to ride entirely inline
-#' keeps its staged blob on the handle instead: runs resubmit it, still
-#' skipping the serialization.
+#' Between runs, the region's shared scheduling state resets in O(1). The cursor
+#' and cancel word clear, and the run generation embedded in every claim word
+#' advances, so a leftover task from a previous run can never interfere with the
+#' new run. After an unclean run (a `.timeout` expiry, an error in `.f`, a
+#' worker death) the handle is marked stale, and the next `mizu_map_run()`
+#' restages into a fresh region automatically (the old one is deleted at garbage
+#' collection, once any leftover tasks are done with it). A run collected with
+#' `.collect = "view"` restages likewise: the returned view keeps its region
+#' alive, so the next run stages fresh rather than reusing pages a held view
+#' still reads. A map small enough to ride entirely inline keeps its staged blob
+#' on the handle instead, and runs resubmit it, still skipping the
+#' serialization.
 #'
 #' The prepared handle keeps the staged `.x` (for automatic restaging)
 #' and the map region alive for its lifetime. Both release at garbage
@@ -521,9 +505,9 @@ map_collect_handle <- function(m, timeout) {
 #' @inheritParams mizu_map
 #'
 #' @return `mizu_map_prepare()`: a prepared-map handle. `mizu_map_run()`:
-#'   exactly what [mizu_map()] returns for the staged map — a map handle
-#'   whose [mizu_collect()] returns a list, a templated atomic vector,
-#'   or the `mizu_timeout` sentinel.
+#'   what [mizu_map()] returns for the staged map, a map handle whose
+#'   [mizu_collect()] returns a list, a templated atomic vector, or the
+#'   `mizu_timeout` sentinel.
 #'
 #' @examples
 #' p <- mizu_pool()
@@ -579,17 +563,16 @@ mizu_map_prepare <- function(
 
 #' @section Replacing x between runs:
 #' `mizu_map_run(pm, .x = x2)` runs over a replacement `.x`. When both the
-#' staged and the replacement `.x` are bare-byte eligible (atomic,
-#' non-ALTREP, no attributes beyond names) with identical type and length,
-#' the swap is in place. The new bytes are copied over the `.x` section of
-#' the region. This runs the iterate-over-same-shape loop (optimizer
-#' steps, simulation sweeps) at the cost of one copy, skipping the region
-#' create and the re-attach of every worker. Any other change of `.x` — a
-#' different shape or type, a list, a map staged inline — restages
-#' automatically on the next run. A streaming prepared map keeps `.x`
-#' in the submitting process, so a replacement `.x` of any shape
-#' re-slices on the next run — only a length change under `.template`
-#' restages (the output area is sized for the staged length).
+#' staged and the replacement `.x` are bare-byte eligible (atomic, non-ALTREP,
+#' no attributes beyond names) with identical type and length, the swap is in
+#' place: the new bytes are copied over the `.x` section of the region. This
+#' runs a loop over data of the same shape (optimizer steps, simulation sweeps)
+#' at the cost of one copy, skipping the region create and the re-attach of
+#' every worker. Any other change of `.x` (a different shape or type, a list, a
+#' map staged inline) restages automatically on the next run. A streaming
+#' prepared map keeps `.x` in the submitting process, so a replacement `.x` of
+#' any shape re-slices on the next run. Only a length change under `.template`
+#' restages, because the output area is sized for the staged length.
 #'
 #' @rdname mizu_map_prepare
 #' @param pm a prepared-map handle from [mizu_map_prepare()].

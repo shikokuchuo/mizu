@@ -20,16 +20,15 @@ own).
 }
 \description{
 Broadcasts shutdown, wakes every sleeping participant, and cancels all
-pending tasks (blocked collectors raise \code{mizu_error_cancelled}). Then
-waits up to \code{timeout} seconds for the workers to exit cleanly, and
-deletes the shared region and the liveness files. The handle is dead
-afterwards, and stopping it again is a no-op. Only the creating process
-can stop a pool.
+pending tasks (blocked collectors raise \code{mizu_error_cancelled}). Then waits
+up to \code{timeout} seconds for the workers to exit cleanly, and deletes the
+shared region and the liveness files. The handle is dead afterwards, and
+stopping it again does nothing. Only the creating process can stop a pool.
 }
 \details{
-A stop also rejects every promise still pending on the pool — task
-promises, \code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}} and \code{\link[=mizu_collect_any_async]{mizu_collect_any_async()}}
-collections, and map promises — with \code{mizu_error_stopped}.
+A stop also rejects every promise still pending on the pool (task promises,
+\code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}} and \code{\link[=mizu_collect_any_async]{mizu_collect_any_async()}} collections, and
+map promises) with \code{mizu_error_stopped}.
 }
 \examples{
 p <- mizu_pool()

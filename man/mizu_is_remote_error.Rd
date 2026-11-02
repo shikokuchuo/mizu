@@ -13,16 +13,16 @@ mizu_is_remote_error(x)
 \code{TRUE} or \code{FALSE}.
 }
 \description{
-A channel receive returns a remote error stream as a value, not a
-raised condition: an error in the peer is data until user code decides
-otherwise. The value is a \code{mizu_error_remote} condition (see
-\link{mizu_error}) — an ordinary condition object, so it prints, and
-\code{conditionMessage()} leads with \code{remote_type: message}.
+A channel receive returns a remote error as a value, not a raised condition:
+an error in the peer is data until your code decides otherwise. The value is
+a \code{mizu_error_remote} condition (see \link{mizu_error}). It is an ordinary
+condition object, so it prints, and \code{conditionMessage()} leads with
+\code{remote_type: message}.
 }
 \details{
-\code{mizu_is_remote_error()} tests the class. Signal it with \code{stop(x)} —
-handlers dispatch on its classes (\code{mizu_error_remote}, then
-\code{mizu_error}, \code{error}, \code{condition}).
+\code{mizu_is_remote_error()} tests the class. Signal it with \code{stop(x)}, and
+handlers dispatch on its classes (\code{mizu_error_remote}, then \code{mizu_error},
+\code{error}, \code{condition}).
 }
 \examples{
 ch <- mizu_channel(quote(stop("boom")))

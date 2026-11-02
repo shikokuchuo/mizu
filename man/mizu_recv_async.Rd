@@ -40,54 +40,50 @@ the next message. \code{mizu_recv_handler()}: the channel handle,
 invisibly.
 }
 \description{
-\code{mizu_recv_async()} returns immediately with a
-\code{\link[promises:promise]{promises::promise()}} — it never blocks — resolving with the next
-received payload: the identical R object a blocking \code{\link[=mizu_recv]{mizu_recv()}}
-would have returned, zero-copy ALTREP views included. Chain with
-\code{\link[promises:then]{promises::then()}} or the promise pipe \verb{\%...>\%}.
+\code{mizu_recv_async()} returns a \code{\link[promises:promise]{promises::promise()}} immediately, without
+blocking. The promise resolves with the next received payload, the same R
+object a blocking \code{\link[=mizu_recv]{mizu_recv()}} would have returned, zero-copy ALTREP views
+included. Chain it with \code{\link[promises:then]{promises::then()}} or the promise pipe \verb{\%...>\%}.
 }
 \details{
-The promise rejects on \code{mizu_closed}, \code{mizu_peer_gone}, and on
-\code{timeout} expiry — as classed \emph{error} conditions carrying the same
-class names as the sentinels, so \code{inherits(x, "mizu_closed")} works on
-either form. Close and peer death wake the event loop directly, so
-the rejection is prompt, never timeout-driven.
+The promise rejects on \code{mizu_closed}, \code{mizu_peer_gone}, and \code{timeout} expiry
+with classed \emph{error} conditions that carry the same class names as the
+sentinels, so \code{inherits(x, "mizu_closed")} works on either form. Close and
+peer death wake the event loop directly, so the rejection is prompt rather
+than waiting for the timeout.
 
 Several outstanding calls on one channel resolve in FIFO call order,
 one message each. No message is lost: messages already in the ring
 resolve immediately (still asynchronously, as promises require), and
 only messages yet to arrive wait on the event.
 
-\code{mizu_recv_handler()} is the stream form: it installs \code{fn} on the
-channel and each burst of messages is delivered to it from the event
-loop — no promise is allocated per message. With \code{batch = TRUE} each
-drained burst is delivered as one list in a single \code{fn(list)} call
-(the throughput form: one R call per burst); with \code{batch = FALSE},
-\code{fn(value)} is called per message. Close and peer death are delivered
-to \code{fn} as the classed error conditions (\code{mizu_closed},
-\code{mizu_peer_gone}), after which the handler is removed. A declined
-foreign payload (see \code{\link[=mizu_send]{mizu_send()}}) is delivered as its
-\code{mizu_error_python_payload} condition and the handler continues. An
-error raised by \code{fn} removes the handler and propagates at the event
-loop. \code{mizu_recv_handler(ch, NULL)} removes the handler.
+\code{mizu_recv_handler()} is the stream form. It installs \code{fn} on the channel,
+and the event loop delivers each burst of messages to it without allocating a
+promise per message. With \code{batch = TRUE}, each drained burst is delivered as
+one list in a single \code{fn(list)} call, which is the high-throughput form. With
+\code{batch = FALSE}, \code{fn(value)} is called once per message. Close and peer death
+are delivered to \code{fn} as the classed error conditions (\code{mizu_closed},
+\code{mizu_peer_gone}), after which the handler is removed. A declined foreign
+payload (see \code{\link[=mizu_send]{mizu_send()}}) is delivered as its \code{mizu_error_python_payload}
+condition and the handler continues. An error raised by \code{fn} removes the
+handler and propagates at the event loop. \code{mizu_recv_handler(ch, NULL)}
+removes the handler.
 
-One consumer per message: a channel message belongs to whoever takes
-it first. A channel holds at most one of the two consumer forms at a
-time: installing a handler with promises pending, or requesting a
-promise with a handler installed, is an error. Mixing a blocking
-\code{\link[=mizu_recv]{mizu_recv()}} with either consumer form consumes in arrival order —
-the blocking call may take a message a promise or the handler was
-waiting on. A close or peer death it observes is observed by the
-consumer too: both are channel state, re-read on every receive, never
-consumed. (A task result instead belongs to exactly one consumer —
+A channel message belongs to whoever takes it first. A channel can have only
+one of the two consumer forms at a time: installing a handler while promises
+are pending, or requesting a promise while a handler is installed, is an
+error. A blocking \code{\link[=mizu_recv]{mizu_recv()}} mixed with either consumer form consumes in
+arrival order, so the blocking call may take a message that a promise or the
+handler was waiting on. A close or peer death that it observes is observed by
+the consumer too, because both are channel state, re-read on every receive
+and never consumed. (A task result instead belongs to exactly one consumer;
 see \code{\link[=mizu_collect_all_async]{mizu_collect_all_async()}}.)
 
 Every main-thread drain is bounded per event-loop turn and
 re-scheduled, so a saturated ring starves neither Shiny nor
 \code{\link[later:run_now]{later::run_now()}}.
 
-Requires the \pkg{later} package (and \pkg{promises} for
-\code{mizu_recv_async()}), both of which must be installed.
+Requires the \pkg{later} package, and \pkg{promises} for \code{mizu_recv_async()}.
 }
 \examples{
 \dontshow{if (interactive() && requireNamespace("promises", quietly = TRUE)) withAutoprint(\{ # examplesIf}

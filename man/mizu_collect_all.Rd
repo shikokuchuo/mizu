@@ -20,17 +20,16 @@ names of \code{tasks} carry over. On timeout, the \code{mizu_timeout}
 sentinel.
 }
 \description{
-\code{mizu_collect_all()} waits until every task in \code{tasks} reaches a
-terminal state and returns all results in input order — the batch
-counterpart of \code{\link[=mizu_collect]{mizu_collect()}} for fire-then-collect patterns, with
-one R call for the whole set instead of one per task. The wait sleeps
-until any publishing worker wakes it directly: no polling.
+\code{mizu_collect_all()} waits until every task in \code{tasks} reaches a terminal
+state and returns all results in input order. It is the batch counterpart of
+\code{\link[=mizu_collect]{mizu_collect()}}, with one R call for the whole set instead of one per task.
+The wait sleeps until a publishing worker wakes it directly, with no polling.
 }
 \details{
-For homogeneous element-wise work, \code{\link[=mizu_map]{mizu_map()}} remains the right
-answer (it batches submission and staging, not just collection).
-\code{mizu_collect_all()} is for heterogeneous handle sets — different
-expressions and arguments — which is what the per-task API is for.
+For homogeneous element-wise work, use \code{\link[=mizu_map]{mizu_map()}}, which batches submission
+and staging as well as collection. \code{mizu_collect_all()} is for sets of tasks
+with different expressions and arguments, which is what the per-task API is
+for.
 }
 \section{Outcomes}{
 
@@ -45,11 +44,10 @@ As for \code{\link[=mizu_collect]{mizu_collect()}}, attributed to a handle by po
 }
 
 
-The \code{index} field of a raised condition is the 1-based position in
-\code{tasks} of the first such task. Only the reported handle is consumed;
-every other handle — the results ahead of it included — stays valid
-and collectible. A timeout consumes nothing: every handle stays valid
-and collectible.
+The \code{index} field of a raised condition is the 1-based position in \code{tasks} of
+the first such task. Only the reported handle is consumed. Every other
+handle, including those ahead of it, stays valid and collectible. A timeout
+consumes nothing, so every handle stays valid and collectible.
 }
 
 \examples{

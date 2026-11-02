@@ -12,37 +12,34 @@ inside a task, the evaluating worker's own handle from
 \code{\link[=mizu_current_pool]{mizu_current_pool()}}.}
 }
 \value{
-A list of two data frames. \code{workers}: one row per worker slot,
-with \code{status}, \code{pid}, \code{tasks} (task evaluations run, help-mode and
-nested inline execution included), \code{steals} (entries claimed from the
-deques of peers), \code{injections} (entries claimed from injection
-rings), \code{parks} (kernel parks in the worker loop), \code{helps} (claims
-executed while blocked in a nested collect), and the current \code{deque}
-depth. \code{submitters}: one row per submitter slot, with \code{status},
-\code{pid}, \code{injected} (entries ever published to its injection ring),
-\code{claimed} (entries the workers took from it), \code{spills} (payloads past
-the inline budget that traveled in their own region — task payloads
-at submit and result payloads at publish, both attributed to the
-submitter of the task. A nonzero value means \code{slot_size} is
-undersized for the traffic), \code{spill_reuse} (the subset of \code{spills}
-that recycled a retired region from the free list of the producer
-instead of creating one), and \code{queued} (\code{injected - claimed}).
-Steady-state spill traffic approaches \code{spills}, so
-\code{spills - spill_reuse} is the region-churn rate. Counters reset when
-a new joiner reuses a slot.
+A list of two data frames. \code{workers}: one row per worker slot, with
+\code{status}, \code{pid}, \code{tasks} (task evaluations run, help-mode and nested inline
+execution included), \code{steals} (entries claimed from the deques of peers),
+\code{injections} (entries claimed from injection rings), \code{parks} (kernel parks
+in the worker loop), \code{helps} (claims executed while blocked in a nested
+collect), and the current \code{deque} depth. \code{submitters}: one row per
+submitter slot, with \code{status}, \code{pid}, \code{injected} (entries ever published to
+its injection ring), \code{claimed} (entries the workers took from it), \code{spills}
+(payloads past the inline budget that traveled in their own region: task
+payloads at submit and result payloads at publish, both attributed to the
+submitter of the task; a nonzero value means \code{slot_size} is undersized for
+the traffic), \code{spill_reuse} (the subset of \code{spills} that recycled a retired
+region from the free list of the producer instead of creating one), and
+\code{queued} (\code{injected - claimed}). Steady-state spill traffic approaches
+\code{spills}, so \code{spills - spill_reuse} is the region-churn rate. Counters
+reset when a new joiner reuses a slot.
 }
 \description{
-Per-worker and per-submitter counters, accumulated since each
-participant joined. They complement the point-in-time snapshots of
-\code{\link[=mizu_pool_info]{mizu_pool_info()}} and \code{\link[=mizu_pool_dump]{mizu_pool_dump()}}. Keeping them costs the
-pool nothing. The submitter counts ride the injection ring's own
-positions: submission writes nothing extra, and the spill counter
-moves only on the spill path, whose region create already costs far
-more than the counter update. The worker counters are kept
-process-locally and mirrored into the region only when a worker
-parks, leaves, or passes its fairness tick. So under continuous load,
-a worker's row can lag by up to 61 claims. The row is exact whenever
-that worker is parked or retired, or the pool is idle.
+Per-worker and per-submitter counters, accumulated since each participant
+joined. They complement the point-in-time snapshots of \code{\link[=mizu_pool_info]{mizu_pool_info()}} and
+\code{\link[=mizu_pool_dump]{mizu_pool_dump()}}. Keeping them costs the pool nothing. The submitter counts
+are derived from the injection ring's own positions, so submission writes
+nothing extra, and the spill counter moves only on the spill path, where
+creating the region already costs far more than the counter update. The
+worker counters are kept in the worker process and mirrored into the region
+only when a worker parks, leaves, or passes its fairness tick, so under
+continuous load a worker's row can lag by up to 61 claims. The row is exact
+whenever that worker is parked or retired, or the pool is idle.
 }
 \examples{
 p <- mizu_pool()

@@ -12,12 +12,11 @@ the child output (for a channel peer, including its error epilogue)
 to the console of the host, \code{FALSE} discards it, and a file name
 collects it in that file.
 
-On Windows, the child holds a redirection file without sharing for
-its lifetime. Only one live process can use a file at a time.
-Other processes cannot read the file while the child lives. A
-second spawn with the same file fails to launch. In a pool, this
-failure causes a startup timeout. A custom launcher that sets the
-file name from \code{slot} gives one log file per worker (see examples).}
+On Windows, the child holds a redirection file exclusively for its lifetime,
+so other processes cannot read it while the child runs, and a second spawn
+with the same file fails to launch (in a pool, as a startup timeout). A
+custom launcher that sets the file name from \code{slot} gives one log file per
+worker (see examples).}
 }
 \value{
 A \verb{function(token, slot)}. \code{\link[=mizu_pool]{mizu_pool()}} and
@@ -33,14 +32,14 @@ entry expression and the \code{.libPaths()} of the host hex-encoded in argv.
 }
 \section{Containers}{
 
-\code{system2(wait = FALSE)} detaches background children, so workers and
-peers are adopted by PID 1 of the process namespace and reaped by that
-init when they exit. In a container whose PID 1 does not reap (a plain
-\verb{docker run} without \code{--init}), exited children accumulate as zombie
-PID-table entries. This is harmless to mizu itself — death verdicts
-come from the liveness lock, never the PID — but PID-probe supervision
-misreads zombies as alive, and \code{\link[=mizu_prune]{mizu_prune()}} cannot reclaim a dead
-process's regions while its PID stays taken.
+\code{system2(wait = FALSE)} detaches background children, so workers and peers
+are adopted by PID 1 of the process namespace and reaped by that init when
+they exit. In a container whose PID 1 does not reap (a plain \verb{docker run}
+without \code{--init}), exited children accumulate as zombie PID-table entries.
+This is harmless to mizu itself, which detects death through the liveness
+lock rather than the PID, but PID-probe supervision misreads zombies as
+alive, and \code{\link[=mizu_prune]{mizu_prune()}} cannot reclaim a dead process's regions while its
+PID stays taken.
 }
 
 \examples{

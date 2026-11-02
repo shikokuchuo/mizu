@@ -62,31 +62,30 @@ A pool handle (class \code{"mizu_pool"}) holding submitter slot 0.
 Handles are process-private and do not survive \code{fork()}.
 }
 \description{
-Creates a shared-memory task pool and spawns its worker processes.
-Each submitter feeds the workers through its own queue (an injection
-ring), and results are published through result slots. A submission is
-one shared-memory write plus at most one wake-up: no dispatcher
-process is in the loop. Each worker owns a work-stealing deque. Idle
-workers steal from busy ones and drain the injection rings. A fairness
-tick bounds the latency of external submissions on a saturated pool.
+Creates a shared-memory task pool and spawns its worker processes. Each
+submitter feeds the workers through its own queue (an injection ring), and
+results are published through result slots. A submission is one shared-memory
+write plus at most one wake-up, with no dispatcher process in between. Each
+worker owns a work-stealing deque. Idle workers steal from busy ones and
+drain the injection rings. A fairness tick bounds the latency of external
+submissions on a saturated pool.
 }
 \details{
-The pool lives as long as the process that created it. Use the
-returned handle directly with \code{\link[=mizu_submit]{mizu_submit()}} and \code{\link[=mizu_collect]{mizu_collect()}}.
-Other processes join as submitters through \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}.
-Dropping the handle (or exiting R) shuts the pool down as
-\code{\link[=mizu_pool_stop]{mizu_pool_stop()}} does, but without the wait.
+The pool exists only as long as the process that created it. Use the returned
+handle directly with \code{\link[=mizu_submit]{mizu_submit()}} and \code{\link[=mizu_collect]{mizu_collect()}}. Other processes
+join as submitters through \code{\link[=mizu_pool_attach]{mizu_pool_attach()}}. Dropping the handle (or
+exiting R) shuts the pool down as \code{\link[=mizu_pool_stop]{mizu_pool_stop()}} does, but without
+waiting for the workers.
 
-Payload contents interoperate with mori. A \code{mori::share()}d object
-anywhere inside the arguments of a task or its result crosses as a
-short identifier, and maps zero-copy on the other side.
+Payloads interoperate with mori. A \code{mori::share()}d object anywhere in a
+task's arguments or result crosses as a short identifier, and is mapped
+zero-copy on the other side.
 
-The liveness lock files of the pool (the death-detection verdict) live
-in a per-platform directory chosen at create time. This is \verb{/dev/shm} on
-Linux, and the per-user temporary directory on macOS and Windows. The
-chosen path is recorded in the region, so every participant uses the
-same files. The environment variable \code{MIZU_LIVENESS_DIR}, read in the
-creating process, overrides the default.
+The pool's liveness lock files, which detect the death of a participant, are
+created in a per-platform directory: \verb{/dev/shm} on Linux, and the per-user
+temporary directory on macOS and Windows. The path is recorded in the region,
+so every participant uses the same files. The environment variable
+\code{MIZU_LIVENESS_DIR}, read in the creating process, overrides the default.
 }
 \examples{
 p <- mizu_pool()

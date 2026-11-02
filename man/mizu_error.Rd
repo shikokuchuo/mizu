@@ -38,19 +38,18 @@ process died.
 or whose pool was stopped.
 \item \code{mizu_error_worker_died} — \code{\link[=mizu_collect]{mizu_collect()}} on a task whose executing
 worker died. Fields \code{slot} (worker registry slot, 0-based as in
-\code{\link[=mizu_pool_dump]{mizu_pool_dump()}}) and \code{pid}: the claimant record of the result slot,
-read at collect time. This is informational, racy against slot reuse
-exactly as \code{\link[=mizu_pool_dump]{mizu_pool_dump()}} is, and \code{NA} where no claim was
-recorded. \code{\link[=mizu_map]{mizu_map()}} signals this class again with the lost elements
-as an additional \code{lost} field: a two-column matrix of inclusive
-\verb{lo, hi} ranges, runner-granular and conservative (see the Errors
-section of \code{\link[=mizu_map]{mizu_map()}}). pymizu's \code{WorkerDiedError.lost} carries
-the same set as a list of 0-based half-open \verb{[lo, hi)} spans.
-\item \code{mizu_error_task_lost} — \code{\link[=mizu_collect]{mizu_collect()}} on a task whose payload
-region vanished before any worker could read it (its submitter died
-or released the pool with the task still queued). Unlike
-\code{mizu_error_worker_died} no death verdict is involved: the task never
-started executing anywhere.
+\code{\link[=mizu_pool_dump]{mizu_pool_dump()}}) and \code{pid}: the claimant record of the result slot, read
+at collect time. This is informational, can race with slot reuse as
+\code{\link[=mizu_pool_dump]{mizu_pool_dump()}} does, and is \code{NA} where no claim was recorded.
+\code{\link[=mizu_map]{mizu_map()}} signals this class with the lost elements as an additional
+\code{lost} field: a two-column matrix of inclusive \verb{lo, hi} ranges,
+runner-granular and conservative (see the Errors section of \code{\link[=mizu_map]{mizu_map()}}).
+pymizu's \code{WorkerDiedError.lost} carries the same set as a list of 0-based
+half-open \verb{[lo, hi)} spans.
+\item \code{mizu_error_task_lost} — \code{\link[=mizu_collect]{mizu_collect()}} on a task whose payload region
+vanished before any worker could read it (its submitter died or released
+the pool with the task still queued). Unlike \code{mizu_error_worker_died}, no
+worker death is involved, and the task never started executing anywhere.
 \item \code{mizu_error_startup} — \code{\link[=mizu_channel]{mizu_channel()}}, \code{\link[=mizu_pool]{mizu_pool()}} and
 \code{\link[=mizu_spawn_workers]{mizu_spawn_workers()}} when a child process fails to attach within
 \code{startup_timeout}.
@@ -89,17 +88,17 @@ Raised \code{mizu_error} conditions are distinct from sentinels (class
 terminal state, not a signalled condition. See
 \code{\link[=mizu_is_sentinel]{mizu_is_sentinel()}}.
 
-Which of the two you get follows the shape of the call. The functions
-that move payloads and wait with a bound — \code{\link[=mizu_send]{mizu_send()}}, \code{\link[=mizu_recv]{mizu_recv()}},
-\code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_map]{mizu_map()}} — return sentinels for transport states.
-These are: not yet (\code{mizu_timeout}), not now (\code{mizu_full}), stream over
-(\code{mizu_closed}, \code{mizu_peer_gone}). Their caller is a loop, and these are
-its normal outcomes. Conditions are raised where a request failed for
-good. Constructors and \code{\link[=mizu_submit]{mizu_submit()}}, whose return is a handle the
-next line uses, raise on every failure. \code{\link[=mizu_collect]{mizu_collect()}} raises when the
-value can never arrive: the task's own error re-signalled,
-\code{mizu_error_cancelled}, \code{mizu_error_worker_died}. A sentinel invites the
-next iteration of the loop. A condition means stop and deal with it.
+Which of the two you get depends on the shape of the call. The functions that
+move payloads and wait with a bound (\code{\link[=mizu_send]{mizu_send()}}, \code{\link[=mizu_recv]{mizu_recv()}},
+\code{\link[=mizu_collect]{mizu_collect()}}, \code{\link[=mizu_map]{mizu_map()}}) return sentinels for transport states:
+nothing yet (\code{mizu_timeout}), no room now (\code{mizu_full}), and stream over
+(\code{mizu_closed}, \code{mizu_peer_gone}). Their caller is a loop, and these are its
+normal outcomes. Conditions are raised where a request has failed for good.
+Constructors and \code{\link[=mizu_submit]{mizu_submit()}}, whose return value is a handle the next
+line uses, raise on every failure. \code{\link[=mizu_collect]{mizu_collect()}} raises when the value can
+never arrive: the task's own error re-signalled, \code{mizu_error_cancelled}, or
+\code{mizu_error_worker_died}. A sentinel invites the next iteration of the loop,
+and a condition means stop and deal with it.
 }
 \section{Task error transport}{
 

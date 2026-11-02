@@ -30,63 +30,58 @@ parses and evaluates it as R source).}
 inline payload budget is \code{slot_size - 16}. Payloads that serialize
 larger spill to the arena, and past it to a fresh region.}
 
-\item{arena_size}{spill-arena bytes per direction. A multiple of 128, or 0
-to disable (every spill then creates a region). This bounds the
-in-flight spill. An undersized arena falls back to creating a region
-per payload, never to errors.}
+\item{arena_size}{spill-arena bytes per direction. A multiple of 128, or 0 to
+disable (every spill then creates a region). This bounds the in-flight
+spill. An undersized arena falls back to creating a region per payload, and
+never errors.}
 
-\item{spin}{opts the channel into pure-spin waiting: consumers never park
-and producers skip the wake check on publish. Use this only when the
-consumer never yields. If a spin-mode consumer parks, the producer
-never wakes it.}
+\item{spin}{\code{TRUE} makes the channel spin-wait: consumers never park and
+producers skip the wake check on publish. Use this only when the consumer
+never yields, because a spin-mode consumer that parks is never woken.}
 
 \item{startup_timeout}{seconds to wait for the peer to attach and signal
 ready. On expiry, mizu releases the channel and raises
 \code{mizu_error_startup} (see \link{mizu_error}).}
 
-\item{launcher}{a \verb{function(token)} that spawns the peer process. For an
-R peer, it arranges for a process to call \code{mizu:::peer_main(token)}. The
-default \code{\link[=mizu_launcher]{mizu_launcher()}} spawns \code{Rscript} and propagates the
-\code{.libPaths()} of the host. Its \code{stdout} and \code{stderr} arguments direct
-the peer output, including the error epilogue. A custom launcher must
-arrange the library paths itself. For a peer in another language (a
-source-string \code{expr}), it spawns a program that attaches with \code{token}
-and speaks the wire protocol, such as \verb{python3 -m pymizu.child} for a
-Python peer — \code{\link[=mizu_py_launcher]{mizu_py_launcher()}} is the ready-made launcher for
-that case.}
+\item{launcher}{a \verb{function(token)} that spawns the peer process. For an R
+peer, it arranges for a process to call \code{mizu:::peer_main(token)}. The
+default \code{\link[=mizu_launcher]{mizu_launcher()}} spawns \code{Rscript} and propagates the \code{.libPaths()}
+of the host. Its \code{stdout} and \code{stderr} arguments direct the peer output,
+including the error message. A custom launcher must arrange the library
+paths itself. For a peer in another language (a source-string \code{expr}), it
+spawns a program that attaches with \code{token} and speaks the wire protocol,
+such as \verb{python3 -m pymizu.child} for a Python peer. \code{\link[=mizu_py_launcher]{mizu_py_launcher()}}
+is the ready-made launcher for that case.}
 }
 \value{
 A channel handle (class \code{"mizu_channel"}). Handles are
 process-private and do not survive \code{fork()}.
 }
 \description{
-Creates a shared-memory SPSC channel — one lock-free ring per direction —
-and spawns a child R process connected to the other end. The channel is
-two-way once the peer is spawned: the returned handle produces on the
-host-to-peer ring and consumes the peer-to-host ring. Setup is
-one-sided: only a short join token (the suffix of the region name)
-crosses the process boundary, as a command-line argument.
+Creates a shared-memory single-producer single-consumer channel, with one
+lock-free ring per direction, and spawns a child R process connected to the
+other end. The returned handle sends on the host-to-peer ring and receives on
+the peer-to-host ring. Only a short join token (the suffix of the region
+name) is passed to the child, as a command-line argument.
 }
 \details{
-\code{expr} is a quoted expression, not a closure. It captures nothing, and
-unlike \code{\link[=mizu_submit]{mizu_submit()}} mizu does not capture it for you: pass it
-pre-quoted. The peer evaluates it in a fresh environment whose parent is
-the global environment of the child. \code{ch} (the peer-side channel handle)
-is the only binding that mizu provides. Data crosses the ring, and the
-expression itself loads any packages it needs. When the expression
-returns or errors, the peer signals an orderly close and exits. An error
-message goes to the stderr of the child.
+\code{expr} is a quoted expression, not a closure. It captures nothing, and unlike
+\code{\link[=mizu_submit]{mizu_submit()}}, mizu does not quote it for you. The peer evaluates it in a
+fresh environment whose parent is the child's global environment, with \code{ch}
+(the peer-side channel handle) as the only binding that mizu provides. The
+expression must load any packages it needs. When the expression returns or
+errors, the peer signals an orderly close and exits. An error message goes to
+the child's standard error.
 
-Payload contents interoperate transparently with mori. A \code{mori::share()}d
-object anywhere inside a payload serializes to its short identifier wire
-form through the mori hooks, and maps zero-copy on the other side.
+Payloads interoperate with mori. A \code{mori::share()}d object anywhere inside a
+payload is serialized as its short identifier through the mori hooks, and is
+mapped zero-copy on the other side.
 
-The two liveness lock files of the channel (the death-detection verdict)
-live in a per-platform directory chosen at create time. This is
-\verb{/dev/shm} on Linux, and the per-user temporary directory on macOS and
-Windows. The chosen path is recorded in the region, so both sides use
-the same files. The environment variable \code{MIZU_LIVENESS_DIR}, read in
-the creating process, overrides the default.
+The channel's two liveness lock files, which detect the death of either side,
+are created in a per-platform directory: \verb{/dev/shm} on Linux, and the
+per-user temporary directory on macOS and Windows. The path is recorded in
+the region, so both sides use the same files. The environment variable
+\code{MIZU_LIVENESS_DIR}, read in the creating process, overrides the default.
 }
 \examples{
 ch <- mizu_channel(quote(
