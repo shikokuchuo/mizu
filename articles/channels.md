@@ -47,7 +47,9 @@ message arrives as an ordinary copy. No call needs an error handler. If
 the process at the other end dies, receives first drain the messages
 that it already published, then report `mizu_peer_gone`.
 `mizu_alive(ch)` reports at any time whether the peer still runs,
-without touching the rings.
+without touching the rings. `mizu_channel_info(ch)` returns a read-only
+snapshot of the channel’s state: ring geometry and watermarks, the
+free-list and open caches, and the notify signals sent.
 
 [`mizu_close()`](https://shikokuchuo.net/mizu/reference/mizu_close.md)
 performs an orderly shutdown. It waits for the peer to finish reading

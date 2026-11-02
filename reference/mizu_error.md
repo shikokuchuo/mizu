@@ -45,9 +45,11 @@ carry as condition elements:
   is, and `NA` where no claim was recorded.
   [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
   signals this class again with the lost elements as an additional
-  `elements` field: a two-column matrix of inclusive `lo, hi` ranges,
+  `lost` field: a two-column matrix of inclusive `lo, hi` ranges,
   runner-granular and conservative (see the Errors section of
   [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)).
+  pymizu's `WorkerDiedError.lost` carries the same set as a list of
+  0-based half-open `[lo, hi)` spans.
 
 - `mizu_error_task_lost` —
   [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)

@@ -9,7 +9,7 @@ live workers out of registry capacity, and pending (uncompleted) tasks.
 A task handle prints its state, probed without consuming the result. The
 state is `pending`, `ok`, `err`, `cancel`, `died`, or `lost` in the
 result-slot vocabulary of
-[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md).
+[`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md).
 It is `collected` once the result is taken, or `dropped` when its pool
 is gone. Sentinels print as their class. The handle methods never error
 and never touch the rings. A handle whose resources are released (a
@@ -60,7 +60,7 @@ print(x, ...)
 ``` r
 p <- mizu_pool()
 p
-#> <mizu_pool /mizu_1a34_9d5c3b75: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_1a23_6ce6554c: controller, 1/1 workers live, 0 pending>
 t <- mizu_submit(p, 1 + 1)
 t
 #> <mizu_task: ok>

@@ -2,7 +2,7 @@
 
 Per-worker and per-submitter counters, accumulated since each
 participant joined. They complement the point-in-time snapshots of
-[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)
+[`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md)
 and
 [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md).
 Keeping them costs the pool nothing. The submitter counts ride the
@@ -57,15 +57,15 @@ reset when a new joiner reuses a slot.
 p <- mizu_pool()
 t <- mizu_submit(p, runif(5))
 mizu_collect(t)
-#> [1] 0.8891272 0.9280361 0.3274906 0.3164852 0.1242693
+#> [1] 0.1141683 0.1675615 0.4465243 0.8291566 0.7089658
 mizu_pool_stats(p)
 #> $workers
 #>   slot status  pid tasks steals injections parks helps deque
-#> 1    0   live 8095     1      0          1     1     0     0
+#> 1    0   live 8161     1      0          1     1     0     0
 #> 
 #> $submitters
 #>   slot status  pid injected claimed spills spill_reuse queued
-#> 1    0   live 6708        1       1      0           0      0
+#> 1    0   live 6691        1       1      0           0      0
 #> 2    1   free    0        0       0      0           0      0
 #> 3    2   free    0        0       0      0           0      0
 #> 4    3   free    0        0       0      0           0      0

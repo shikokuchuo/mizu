@@ -2,7 +2,7 @@
 
 A read-only debugging snapshot of the entire pool region, one level
 deeper than
-[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md).
+[`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md).
 It shows per-slot registry detail and every occupied result slot. State
 is distributed across processes and execution is non-deterministic, so
 reach for this tool first when a pool hangs. The scan takes no locks and
@@ -29,7 +29,7 @@ mizu_pool_dump(pool)
 ## Value
 
 A list with elements `token` and `name` (as in
-[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)),
+[`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md)),
 `shutdown`, `workers` (data frame: slot, status, pid, park_state,
 parked, deque `top` and `bottom`, and the in-flight result slot),
 `submitters` (data frame: slot, status, pid, result-slot subrange,
@@ -56,18 +56,18 @@ p <- mizu_pool()
 t <- mizu_submit(p, runif(1))
 mizu_pool_dump(p)
 #> $name
-#> [1] "/mizu_1a34_9d5c3b6c"
+#> [1] "/mizu_1a23_6ce65543"
 #> 
 #> $shutdown
 #> [1] FALSE
 #> 
 #> $workers
 #>   slot status  pid park_state parked top bottom in_flight
-#> 1    0   live 8054     parked   TRUE   0      0        -1
+#> 1    0   live 8079     parked   TRUE   0      0        -1
 #> 
 #> $submitters
 #>   slot status  pid rs_start rs_count queued ready full_waiter
-#> 1    0   live 6708        0      512      0 FALSE       FALSE
+#> 1    0   live 6691        0      512      0 FALSE       FALSE
 #> 2    1   free    0        0        0      0 FALSE       FALSE
 #> 3    2   free    0        0        0      0 FALSE       FALSE
 #> 4    3   free    0        0        0      0 FALSE       FALSE
@@ -116,9 +116,9 @@ mizu_pool_dump(p)
 #> [1] 479
 #> 
 #> $token
-#> [1] "1a34_9d5c3b6c"
+#> [1] "1a23_6ce65543"
 #> 
 mizu_collect(t)
-#> [1] 0.02833839
+#> [1] 0.8516335
 mizu_pool_stop(p)
 ```

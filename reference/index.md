@@ -14,6 +14,8 @@
   : Close a Channel
 - [`mizu_alive()`](https://shikokuchuo.net/mizu/reference/mizu_alive.md)
   : Check Whether the Channel Peer Is Alive
+- [`mizu_channel_info()`](https://shikokuchuo.net/mizu/reference/mizu_channel_info.md)
+  : Inspect a Channel
 
 ## Pools
 
@@ -71,7 +73,7 @@
 
 ## Monitoring and debugging
 
-- [`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)
+- [`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md)
   : Inspect a Pool
 - [`mizu_pool_stats()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stats.md)
   : Cumulative Pool Counters
@@ -103,6 +105,7 @@
   [`mizu_error_task_lost`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_startup`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_shm`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
+  [`mizu_error_not_portable`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_python_payload`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   [`mizu_error_remote`](https://shikokuchuo.net/mizu/reference/mizu_error.md)
   : Error Conditions

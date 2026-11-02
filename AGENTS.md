@@ -527,9 +527,7 @@ handle by position re-raising with `index` (only that handle consumed,
 the rest collectible), a timeout consuming nothing.
 [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)
 is the first tool when a pool hangs. The join token is the pool’s
-documented identity:
-[`mizu_pool_status()`](https://shikokuchuo.net/mizu/reference/mizu_pool_status.md)
-and
+documented identity: `mizu_pool_status()` and
 [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)
 carry `$token` (`<pid hex>_<counter hex>`) alongside `$name` (the
 platform region name, for debugging), and

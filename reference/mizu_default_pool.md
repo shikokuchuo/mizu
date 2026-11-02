@@ -91,7 +91,7 @@ f(1L)
 mizu_with_pool(NULL, mizu_default_pool())
 #> NULL
 mizu_default_pool()
-#> <mizu_pool /mizu_1a34_9d5c3b62: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_1a23_6ce65539: controller, 1/1 workers live, 0 pending>
 
 mizu_set_default_pool(old)
 mizu_pool_stop(p)

@@ -149,7 +149,7 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; $total</span></span>
-<span><span class="co">#&gt; [1] 4.978443</span></span>
+<span><span class="co">#&gt; [1] 6.32881</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; $label</span></span>
 <span><span class="co">#&gt; [1] "done"</span></span></code></pre></div>
@@ -186,10 +186,10 @@
 <span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_retire_worker</a></span><span class="op">(</span><span class="va">p</span>, slot <span class="op">=</span> <span class="fl">0L</span><span class="op">)</span>  <span class="co"># worker 0 exits after its current task</span></span>
 <span></span>
 <span><span class="co"># in another R process — submit and collect exactly as the creator does:</span></span>
-<span><span class="va">p2</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_pool_attach.html">mizu_pool_attach</a></span><span class="op">(</span><span class="va">token</span><span class="op">)</span>     <span class="co"># token: mizu_pool_status(p)$token on the creator</span></span></code></pre></div>
+<span><span class="va">p2</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_pool_attach.html">mizu_pool_attach</a></span><span class="op">(</span><span class="va">token</span><span class="op">)</span>     <span class="co"># token: mizu_pool_info(p)$token on the creator</span></span></code></pre></div>
 <p>Four read-only tools observe a running pool without disturbing it:</p>
 <div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_pool_status.html">mizu_pool_status</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>  <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>
+<code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_pool_info.html">mizu_pool_info</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>  <span class="co"># snapshot: worker states, queued tasks, result slots</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_stats.html">mizu_pool_stats</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>   <span class="co"># cumulative counters: tasks run, steals, parks per worker</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_dump.html">mizu_pool_dump</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span>    <span class="co"># every slot in full detail — the first tool when a pool hangs</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_trace.html">mizu_pool_trace</a></span><span class="op">(</span><span class="va">p</span>, \<span class="op">(</span><span class="va">event</span>, <span class="va">id</span><span class="op">)</span> <span class="fu"><a href="https://rdrr.io/r/base/message.html" class="external-link">message</a></span><span class="op">(</span><span class="va">event</span>, <span class="st">" "</span>, <span class="va">id</span><span class="op">)</span><span class="op">)</span>  <span class="co"># task lifecycle hook</span></span></code></pre></div>

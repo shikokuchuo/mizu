@@ -87,9 +87,10 @@ worker died. Fields <code>slot</code> (worker registry slot, 0-based as in
 read at collect time. This is informational, racy against slot reuse
 exactly as <code><a href="mizu_pool_dump.html">mizu_pool_dump()</a></code> is, and <code>NA</code> where no claim was
 recorded. <code><a href="mizu_map.html">mizu_map()</a></code> signals this class again with the lost elements
-as an additional <code>elements</code> field: a two-column matrix of inclusive
+as an additional <code>lost</code> field: a two-column matrix of inclusive
 <code>lo, hi</code> ranges, runner-granular and conservative (see the Errors
-section of <code><a href="mizu_map.html">mizu_map()</a></code>).</p></li>
+section of <code><a href="mizu_map.html">mizu_map()</a></code>). pymizu's <code>WorkerDiedError.lost</code> carries
+the same set as a list of 0-based half-open <code>[lo, hi)</code> spans.</p></li>
 <li><p><code>mizu_error_task_lost</code> — <code><a href="mizu_submit.html">mizu_collect()</a></code> on a task whose payload
 region vanished before any worker could read it (its submitter died
 or released the pool with the task still queued). Unlike
