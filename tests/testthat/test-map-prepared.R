@@ -65,11 +65,11 @@ test_that("an empty prepared map runs without a pool round-trip", {
 
 test_that("prepared handles print their region and staleness", {
   p <- pool_pair()
-  pm <- mizu_map_prepare(p[["ctrl"]], 1:4 + 0, identity)
-  expect_output(print(pm), "4 elements")
-  expect_output(print(pm), pm[["st"]][["name"]], fixed = TRUE)
+  pm <- mizu_map_prepare(p[["ctrl"]], runif(100000), identity)
+  expect_snapshot(print(pm), transform = scrub_mizu_names)
+  expect_match(capture_output(print(pm)), pm[["st"]][["name"]], fixed = TRUE)
   pm[["st"]] <- NULL
-  expect_output(print(pm), "stale")
+  expect_snapshot(print(pm))
   expect_error(mizu_collect(mizu_map_run(list())), "not a prepared-map handle")
   pool_end(p)
 })

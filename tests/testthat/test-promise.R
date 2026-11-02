@@ -1187,7 +1187,7 @@ test_that("a map promise is cached; collected and streaming handles refuse one",
   on.exit(pool_end(p))
   m <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L)
   expect_identical(promises::as.promise(m), promises::as.promise(m))
-  expect_output(print(m), "promise pending", fixed = TRUE)
+  expect_snapshot(print(m))
   while (pool_step(p) == 1L) {
     NULL
   }

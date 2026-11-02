@@ -62,3 +62,10 @@
       Error:
       ! mizu: timeout must be a number of seconds, not NA
 
+# a map promise is cached; collected and streaming handles refuse one
+
+    Code
+      print(m)
+    Output
+      <mizu_map: 4 elements, promise pending>
+

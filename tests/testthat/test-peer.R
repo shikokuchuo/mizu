@@ -91,7 +91,7 @@ test_that("peer death surfaces as a sticky mizu_peer_gone after draining", {
   # probe delivers the verdict
   r <- mizu_recv(ch, timeout = 30)
   expect_s3_class(r, "mizu_peer_gone")
-  expect_output(print(r), "<mizu_peer_gone>", fixed = TRUE)
+  expect_snapshot(print(r))
   expect_false(mizu_alive(ch))
   expect_s3_class(mizu_send(ch, 1), "mizu_peer_gone") # sticky
   expect_s3_class(mizu_recv(ch, 0), "mizu_peer_gone")

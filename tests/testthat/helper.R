@@ -339,6 +339,13 @@ foreign_pair <- function(caps = 0L, ...) {
 # c(refcount, flags) of the region behind a view; integer(0) otherwise.
 rc_of <- function(x) .Call(mizu:::mizu_zc_refcount, x)
 
+# Snapshot transform for print-output tests: scrub volatile region names —
+# "/mizu_<pid>_<counter>" on POSIX, "Local\mizu_<pid>_<counter>" on Windows —
+# so snapshots stay byte-stable across runs and platforms.
+scrub_mizu_names <- function(x) {
+  gsub("(Local\\\\|/)?mizu_[0-9a-f]+_[0-9a-f]+", "mizu_…", x)
+}
+
 # The canonical peer expression: echo everything until close or host death.
 # An idle timeout is not terminal — under instrumentation (valgrind) the
 # producer can exceed any idle bound — so only other sentinels end the loop.
