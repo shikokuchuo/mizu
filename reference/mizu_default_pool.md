@@ -2,8 +2,8 @@
 
 `mizu_default_pool()` returns the pool registered as this process's
 default, or `NULL` when none is set. `mizu_set_default_pool()` sets the
-default — or clears it, with `NULL` — and invisibly returns the previous
-one, so callers can save and restore. `mizu_with_pool()` evaluates
+default (or clears it with `NULL`) and invisibly returns the previous
+one, so callers can save and restore it. `mizu_with_pool()` evaluates
 `expr` with `pool` as the default and restores the previous default on
 exit, including on error. `mizu_local_pool()` sets the default until the
 calling frame exits (the withr `local_*` pattern).
@@ -53,11 +53,11 @@ until the default is cleared or replaced. Handles from
 [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md)
 are valid defaults; ownership and teardown stay with the pool's creator.
 
-Setting a default checks the type only: a stopped pool is accepted
+Setting a default checks only the type. A stopped pool is accepted
 (liveness is transient, so a probe would prove nothing about use time)
 and fails later with the usual stopped-pool errors. The default is
-process-global state — after a `fork()`, a child process reads it as
-unset.
+process-global state, and a child process created by `fork()` reads it
+as unset.
 
 ## Package authors
 
@@ -65,11 +65,11 @@ A function that takes an optional pool resolves it in this order: an
 explicit `pool` argument, then
 [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
 inside a task (the evaluating worker's own pool, for nested submission),
-then `mizu_default_pool()`, then the caller's own fallback — sequential
-evaluation or an error.
+then `mizu_default_pool()`, then the caller's own fallback, such as
+sequential evaluation or an error.
 [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
-is runtime-owned by the pool around each task evaluation and cannot be
-shadowed; the default pool is user-set state and never overrides it.
+is set by the pool around each task evaluation and cannot be shadowed.
+The default pool is user-set state and never overrides it.
 
 ## Examples
 
@@ -91,7 +91,7 @@ f(1L)
 mizu_with_pool(NULL, mizu_default_pool())
 #> NULL
 mizu_default_pool()
-#> <mizu_pool /mizu_196d_bdaea4de: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_1a0f_442a1928: controller, 1/1 workers live, 0 pending>
 
 mizu_set_default_pool(old)
 mizu_pool_stop(p)

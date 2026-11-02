@@ -3,8 +3,8 @@
 Creates a shared-memory task pool and spawns its worker processes. Each
 submitter feeds the workers through its own queue (an injection ring),
 and results are published through result slots. A submission is one
-shared-memory write plus at most one wake-up: no dispatcher process is
-in the loop. Each worker owns a work-stealing deque. Idle workers steal
+shared-memory write plus at most one wake-up, with no dispatcher process
+in between. Each worker owns a work-stealing deque. Idle workers steal
 from busy ones and drain the injection rings. A fairness tick bounds the
 latency of external submissions on a saturated pool.
 
@@ -91,8 +91,8 @@ are process-private and do not survive `fork()`.
 
 ## Details
 
-The pool lives as long as the process that created it. Use the returned
-handle directly with
+The pool is tied to the process that created it. Use the returned handle
+directly with
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 and
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
@@ -100,19 +100,19 @@ Other processes join as submitters through
 [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md).
 Dropping the handle (or exiting R) shuts the pool down as
 [`mizu_pool_stop()`](https://shikokuchuo.net/mizu/reference/mizu_pool_stop.md)
-does, but without the wait.
+does, but without waiting for the workers.
 
-Payload contents interoperate with mori. A
+Payloads interoperate with mori. A
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d object
-anywhere inside the arguments of a task or its result crosses as a short
-identifier, and maps zero-copy on the other side.
+anywhere in a task's arguments or result crosses as a short identifier,
+and is mapped zero-copy on the other side.
 
-The liveness lock files of the pool (the death-detection verdict) live
-in a per-platform directory chosen at create time. This is `/dev/shm` on
-Linux, and the per-user temporary directory on macOS and Windows. The
-chosen path is recorded in the region, so every participant uses the
-same files. The environment variable `MIZU_LIVENESS_DIR`, read in the
-creating process, overrides the default.
+The pool's liveness lock files, which detect the death of a participant,
+are created in a per-platform directory: `/dev/shm` on Linux, and the
+per-user temporary directory on macOS and Windows. The path is recorded
+in the region, so every participant uses the same files. The environment
+variable `MIZU_LIVENESS_DIR`, read in the creating process, overrides
+the default.
 
 ## Examples
 

@@ -2,10 +2,11 @@
 
 The main function is
 [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md).
-It creates a two-way shared-memory channel — one lock-free ring per
-direction — and spawns a child R process connected to the other end. The
+It creates a two-way shared-memory channel, with one lock-free ring per
+direction, and spawns a child R process connected to the other end. The
 child evaluates a quoted expression with `ch` bound to its side of the
-channel. All data crosses the rings, not the process boundary.
+channel. Only a short join token is passed to the child on its command
+line; all data crosses through the rings.
 
 ``` r
 
@@ -25,7 +26,8 @@ mizu_recv(ch, timeout = 5)
 ```
 
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
-publishes a message to the peer, visible the moment the call returns.
+publishes a message to the peer, and it is visible as soon as the call
+returns.
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
 returns the next message.
 [`mizu_send_batch()`](https://shikokuchuo.net/mizu/reference/mizu_send_batch.md)
@@ -34,22 +36,21 @@ and
 move a whole list of messages in one call. Use them at rates where the
 per-call overhead of R itself starts to matter.
 
-Outcomes that end a conversation — ring full, timeout, orderly close,
-peer death — come back as class-tagged sentinel values, not errors. A
-receive loop tests for them with `inherits(x, "mizu_sentinel")`, or with
-the specific classes `mizu_full`, `mizu_timeout`, `mizu_closed`,
-`mizu_peer_gone`.
+A full ring, a timeout, an orderly close, and peer death are returned as
+class-tagged sentinel values, not errors. A receive loop tests for them
+with `inherits(x, "mizu_sentinel")`, or with the specific classes
+`mizu_full`, `mizu_timeout`, `mizu_closed`, `mizu_peer_gone`.
 [`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/reference/mizu_is_sentinel.md)
-is the stricter test: it returns `TRUE` only for the exact sentinel
-objects mizu returned. A class test alone cannot tell a terminal state
-from a look-alike payload — even a genuine sentinel forwarded as a
-message arrives as an ordinary copy. No call needs an error handler. If
-the process at the other end dies, receives first drain the messages
-that it already published, then report `mizu_peer_gone`.
-`mizu_alive(ch)` reports at any time whether the peer still runs,
-without touching the rings. `mizu_channel_info(ch)` returns a read-only
-snapshot of the channel’s state: ring geometry and watermarks, the
-free-list and open caches, and the notify signals sent.
+is the stricter test. It returns `TRUE` only for the sentinel objects
+that mizu itself returned, since a class test cannot tell a terminal
+state from a look-alike payload (a sentinel forwarded as a message
+arrives as an ordinary copy). No call needs an error handler. If the
+process at the other end dies, receives first drain the messages that it
+already published, then report `mizu_peer_gone`. `mizu_alive(ch)`
+reports at any time whether the peer still runs, without touching the
+rings. `mizu_channel_info(ch)` returns a read-only snapshot of the
+channel’s state: ring geometry and watermarks, the free-list and open
+caches, and the notify signals sent.
 
 [`mizu_close()`](https://shikokuchuo.net/mizu/reference/mizu_close.md)
 performs an orderly shutdown. It waits for the peer to finish reading
@@ -79,39 +80,38 @@ conditionMessage(x)
 mizu_close(ch)
 ```
 
-The peer also prints an error epilogue to its standard error, which
-lands on your console by default. The `launcher` argument customizes how
-the peer is spawned: its default
+The peer also prints the error to its standard error, which appears on
+your console by default. The `launcher` argument controls how the peer
+is spawned. The default
 [`mizu_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_launcher.md)
-takes `stdout` / `stderr`, so
-`launcher = mizu_launcher(stderr = "peer.log")` collects the epilogue in
-a file instead — the same launcher spawns the R workers of
+takes `stdout` and `stderr` arguments, so
+`launcher = mizu_launcher(stderr = "peer.log")` writes the error to a
+file instead. The same launcher spawns the R workers of
 [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md).
 
 ## Promises and handlers
 
-For event-driven consumers — a Shiny app, an `httpuv` server, any
-program organized around an event loop — the channel waits on a notify
-endpoint instead of parking a thread. When the peer publishes, the
-endpoint wakes the event loop, and the message is delivered on the main
-thread through `later`. There is no polling and no extra thread.
-Requires the `later` package, and `promises` for the promise forms.
+In an event-driven program (a Shiny app, an `httpuv` server, anything
+built around an event loop), the channel can wait on a notify endpoint
+instead of blocking. When the peer publishes, the endpoint wakes the
+event loop, and `later` delivers the message on the main thread. There
+is no polling and no extra thread. This needs the `later` package, and
+`promises` for the promise forms.
 
 [`mizu_recv_async()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
-returns a promise (never blocks) that resolves with the next message —
-the identical object a blocking
+returns a promise without blocking. It resolves with the next message,
+the same object a blocking
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
-would have returned — and rejects on close, peer death, or its own
-`timeout`, as classed error conditions carrying the sentinel class
-names.
+would return, and rejects on close, peer death, or its own `timeout`
+with a classed error that carries the sentinel’s class name.
 [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
-is the stream form: it installs a function and each burst is delivered
-to it from the event loop, with `batch = TRUE` collecting the burst into
-one list per call. Resolution is per burst, never per item: a promise
-costs tens of microseconds of R work against about a microsecond of
-transport, so high volumes belong on the batch handler. Every
-main-thread drain is bounded per event-loop turn and re-scheduled, so a
-saturated ring cannot starve the loop.
+is the stream form. It installs a function that the event loop calls
+with each burst of messages, and `batch = TRUE` delivers each burst as
+one list. Delivery is per burst, not per message. A promise costs tens
+of microseconds of R work against about a microsecond of transport, so
+use the batch handler for high message volumes. Every main-thread drain
+is bounded per event-loop turn and re-scheduled, so a saturated ring
+cannot starve the loop.
 
 ``` r
 
@@ -124,6 +124,6 @@ for (i in 1:4) later::run_now(1) # pump the loop until the resolution lands
 mizu_close(ch)
 ```
 
-A channel holds at most one of the two consumer forms at a time:
-installing a handler with promises pending, or requesting a promise with
-a handler installed, is an error.
+A channel can have only one of the two consumer forms at a time.
+Installing a handler while promises are pending, or requesting a promise
+while a handler is installed, is an error.

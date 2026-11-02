@@ -5,11 +5,11 @@ Returns a launcher that spawns Python processes running
 the same shared-memory core: `python -m pymizu.child` for the channel
 peer of
 [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md),
-`python -m pymizu.worker` for the pool workers of
+and `python -m pymizu.worker` for the pool workers of
 [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md) and
 [`mizu_spawn_workers()`](https://shikokuchuo.net/mizu/reference/mizu_spawn_workers.md).
-The mirror of pymizu's `r_launcher()`, which spawns R processes from a
-Python host.
+It is the counterpart of pymizu's `r_launcher()`, which spawns R
+processes from a Python host.
 
 ## Usage
 
@@ -41,23 +41,23 @@ call it with both arguments to spawn the worker for `slot`.
 
 ## Details
 
-The first worker's join records the workers' language in the pool, so
-the launcher carries no language attribute: a pool of Python workers
+The first worker to join records the workers' language in the pool, so
+the launcher carries no language attribute. A pool of Python workers
 takes
 [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
 specifications through
 [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md),
 and a plain
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-fails at once with an error naming
+fails immediately with an error naming
 [`mizu_submit_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md).
 A launcher that spawns the wrong language fails at join, not at the
 first task.
 
 The interpreter is probed for pymizu when the launcher is created, so a
-missing interpreter or package raises here, before anything exists. The
-payload rules for a non-R channel peer apply: only vectors and strings
-cross (see
+missing interpreter or package errors here, before any channel or pool
+is created. The payload rules for a non-R channel peer apply: only
+vectors and strings cross (see
 [`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)).
 
 ## Examples

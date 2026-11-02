@@ -2,22 +2,23 @@
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) maps
 a function over a vector or list on the pool and returns a map handle
-immediately — as
+immediately, just as
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 returns a task.
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-on the handle waits and returns the results in input order;
+on the handle waits and returns the results in input order.
 [`as.promise()`](https://rstudio.github.io/promises/reference/is.promise.html)
 (or [`then()`](https://rstudio.github.io/promises/reference/then.html)
-directly) collects through the event loop instead — see [Promises and
+directly) collects through the event loop instead; see [Promises and
 handlers](https://shikokuchuo.net/mizu/articles/pools.html#promises-and-handlers).
-It is not a loop over
+A map is not a loop over
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
 The function, its constant arguments, and the data are staged once in
-shared memory. A handful of chunk tasks divide the elements, and each
-worker sets up the map at most once. The per-element cost approaches the
-cost of [`lapply()`](https://rdrr.io/r/base/lapply.html), while the work
-spreads across workers and balances itself through stealing.
+shared memory. A few tasks divide the elements between the workers, and
+each worker sets up the map at most once. The per-element cost
+approaches the cost of [`lapply()`](https://rdrr.io/r/base/lapply.html),
+while the work spreads across workers and balances itself through
+stealing.
 
 ``` r
 
@@ -44,11 +45,11 @@ mizu_collect(m)
 
 ## Templates
 
-A `.template` (in the style of the `FUN.VALUE` argument of
-[`vapply()`](https://rdrr.io/r/base/lapply.html)) gives you an atomic
-vector or matrix instead of a list. The workers write the results
-straight into shared memory: each result crosses the process boundary
-exactly once, without serialization:
+A `.template`, like the `FUN.VALUE` argument of
+[`vapply()`](https://rdrr.io/r/base/lapply.html), gives you an atomic
+vector or matrix instead of a list. The workers write their results
+directly into shared memory, so each result crosses the process boundary
+once, without serialization:
 
 ``` r
 
@@ -58,18 +59,18 @@ mizu_collect(m)
 ```
 
 With `.collect = "view"`, the result is the shared output area itself,
-wrapped as a read-only ALTREP view: no final copy, and the region stays
-alive until the view is garbage collected.
+wrapped as a read-only ALTREP view. There is no final copy, and the
+region stays alive until the view is garbage collected.
 
 An `integer64` template (bit64’s layout, constructed without bit64) is
-also supported. An int64 result never widens to double, so results must
-be exact `integer64` of the template’s length.
+also supported. Results must then be `integer64` of the template’s
+length, since an int64 result never widens to double.
 
 ## Reproducible randomness
 
-Random numbers drawn inside the function are not reproducible by
-default, and cost nothing extra. Pass `.seed` to give every element its
-own L’Ecuyer-CMRG stream. Then the results are identical for any
+By default, random numbers drawn inside the function are not
+reproducible, and cost nothing extra. Pass `.seed` to give every element
+its own L’Ecuyer-CMRG stream. The results are then identical for any
 chunking, worker count, or steal order:
 
 ``` r
@@ -83,14 +84,14 @@ identical(mizu_collect(m1), mizu_collect(m2))
 ## Prepared maps
 
 [`mizu_map_prepare()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
-stages a map — the function, its constant arguments, and the data —
-without running it: the serialization and the region creation are paid
+stages a map (the function, its constant arguments, and the data)
+without running it, so the serialization and region creation happen
 once. Each
 [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
 then costs only task submission and collection, and reuses the map
-context cached by each worker. Repeated stochastic simulation is the
-headline use: `.seed` rides each run rather than the region, so the
-random streams vary per run for free:
+context cached on each worker. Repeated stochastic simulation is the
+main use. `.seed` is passed per run rather than staged with the region,
+so each run can use different random streams at no extra cost:
 
 ``` r
 
@@ -103,21 +104,22 @@ vapply(runs, \(r) r[[1L]], numeric(1))
 #> [1] 0.13109678 0.08153219 0.17986914 0.17683176
 ```
 
-`mizu_map_run(pm, .x = x2)` replaces the staged data: an atomic vector
-of the same type and length swaps in place at the cost of one copy; any
-other replacement restages automatically. A run collected with
+`mizu_map_run(pm, .x = x2)` replaces the staged data. An atomic vector
+of the same type and length is swapped in place with one copy, and any
+other replacement restages the map automatically. A run collected with
 `.collect = "view"` hands its region to the view, so the next run
 restages into a fresh one. The handle keeps the staged data and the
-region alive for its lifetime; both release at garbage collection.
+region alive for its lifetime, and both are released at garbage
+collection.
 
 ## Nested maps
 
-A map can nest: `mizu_map(mizu_current_pool(), ...)` inside a task
-expression uses the handle of the worker running the task. The runner
-submissions push straight onto that worker’s own deque, and the blocked
-collect executes its own runners while idle peers steal the rest: nested
-maps never deadlock the pool. A `.template` on the nested map collects
-as an atomic vector the task reduces directly — no list assembly, no
+Maps nest: `mizu_map(mizu_current_pool(), ...)` inside a task expression
+uses the handle of the worker running the task. The runner submissions
+push onto that worker’s own deque, and while the collect waits it
+executes its own runners as idle peers steal the rest, so a nested map
+cannot deadlock the pool. With a `.template`, the nested map collects as
+an atomic vector that the task can reduce directly, with no list to
 [`unlist()`](https://rdrr.io/r/base/unlist.html):
 
 ``` r
@@ -134,10 +136,10 @@ mizu_collect(t)
 #> [1] 5000050000
 ```
 
-The first nested map of a worker claims a submitter slot, so at the
-default `max_submitters = 8` — one held by the controller — at most 7
-workers can nest concurrently. Raise `max_submitters` for wider nested
-fan-outs.
+The first nested map on a worker claims a submitter slot. With the
+default `max_submitters = 8`, one of which the controller holds, at most
+7 workers can nest at the same time. Raise `max_submitters` for wider
+nested fan-outs.
 
 ``` r
 

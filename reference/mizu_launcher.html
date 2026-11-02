@@ -75,12 +75,11 @@ entry expression and the <code><a href="https://rdrr.io/r/base/libPaths.html" cl
 the child output (for a channel peer, including its error epilogue)
 to the console of the host, <code>FALSE</code> discards it, and a file name
 collects it in that file.</p>
-<p>On Windows, the child holds a redirection file without sharing for
-its lifetime. Only one live process can use a file at a time.
-Other processes cannot read the file while the child lives. A
-second spawn with the same file fails to launch. In a pool, this
-failure causes a startup timeout. A custom launcher that sets the
-file name from <code>slot</code> gives one log file per worker (see examples).</p></dd>
+<p>On Windows, the child holds a redirection file exclusively for its lifetime,
+so other processes cannot read it while the child runs, and a second spawn
+with the same file fails to launch (in a pool, as a startup timeout). A
+custom launcher that sets the file name from <code>slot</code> gives one log file per
+worker (see examples).</p></dd>
 
 </dl></div>
     <div class="section level2">
@@ -94,14 +93,14 @@ peer.</p>
     <h2 id="containers">Containers<a class="anchor" aria-label="anchor" href="#containers"></a></h2>
 
 
-<p><code>system2(wait = FALSE)</code> detaches background children, so workers and
-peers are adopted by PID 1 of the process namespace and reaped by that
-init when they exit. In a container whose PID 1 does not reap (a plain
-<code>docker run</code> without <code>--init</code>), exited children accumulate as zombie
-PID-table entries. This is harmless to mizu itself — death verdicts
-come from the liveness lock, never the PID — but PID-probe supervision
-misreads zombies as alive, and <code><a href="mizu_prune.html">mizu_prune()</a></code> cannot reclaim a dead
-process's regions while its PID stays taken.</p>
+<p><code>system2(wait = FALSE)</code> detaches background children, so workers and peers
+are adopted by PID 1 of the process namespace and reaped by that init when
+they exit. In a container whose PID 1 does not reap (a plain <code>docker run</code>
+without <code>--init</code>), exited children accumulate as zombie PID-table entries.
+This is harmless to mizu itself, which detects death through the liveness
+lock rather than the PID, but PID-probe supervision misreads zombies as
+alive, and <code><a href="mizu_prune.html">mizu_prune()</a></code> cannot reclaim a dead process's regions while its
+PID stays taken.</p>
     </div>
 
     <div class="section level2">

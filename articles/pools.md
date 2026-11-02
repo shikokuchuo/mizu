@@ -1,11 +1,11 @@
 # Task pools
 
 [`mizu_pool()`](https://shikokuchuo.net/mizu/reference/mizu_pool.md)
-builds on the same shared-memory transport as a channel. It spawns a
-pool of worker processes with work-stealing deques and no dispatcher in
-the loop. A submitted task goes straight from the submitting process
-into shared memory, where a worker claims it. Idle workers steal from
-busy ones, so the load balances itself.
+builds on the same shared-memory transport as a channel. It spawns
+worker processes that each own a work-stealing deque, with no dispatcher
+process in between. A submitted task goes from your process into shared
+memory, where a worker claims it. Idle workers steal from busy ones, so
+the load balances itself.
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 captures an expression together with the values it needs and returns a
 task handle immediately. Your session stays free to continue.
@@ -34,10 +34,10 @@ code.
 Inside a task,
 [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
 returns the handle of the worker running it, so a task can split itself
-into subtasks. A nested submit pushes straight onto that worker’s own
-work-stealing deque — no ring, no wake. A worker waiting on a nested
-result executes other work instead of sleeping. Divide-and-conquer runs
-at minimal overhead and never deadlocks the pool:
+into subtasks. A nested submit pushes onto that worker’s own
+work-stealing deque, so there is no ring and no wake-up. A worker
+waiting on a nested result executes other work instead of sleeping.
+Divide-and-conquer has little overhead and cannot deadlock the pool:
 
 ``` r
 
@@ -55,7 +55,7 @@ mizu_collect(t)
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) nests
 the same way: a task can map over its own pool with
-`mizu_map(mizu_current_pool(), ...)` — see [Nested
+`mizu_map(mizu_current_pool(), ...)`. See [Nested
 maps](https://shikokuchuo.net/mizu/articles/map.html#nested-maps).
 
 ## A default pool for package code
@@ -63,9 +63,9 @@ maps](https://shikokuchuo.net/mizu/articles/map.html#nested-maps).
 Package code can read a process-wide default pool with
 [`mizu_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md).
 [`mizu_set_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
-sets it — `NULL` clears it — and invisibly returns the previous default,
-so callers can save and restore. The registry keeps the handle alive: a
-pool set as the default stays alive even after its variable is removed.
+sets it (or clears it with `NULL`) and invisibly returns the previous
+default, so you can save and restore it. A pool set as the default stays
+alive even after its variable is removed.
 [`mizu_with_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
 scopes the default to an expression,
 [`mizu_local_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md)
@@ -75,12 +75,12 @@ Resolve an optional pool in this order: an explicit `pool` argument,
 [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
 inside a task,
 [`mizu_default_pool()`](https://shikokuchuo.net/mizu/reference/mizu_default_pool.md),
-then your own fallback — sequential evaluation or an error. The default
-never overrides
-[`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md):
-inside a task the worker’s own handle wins, so nested submission is
-never shadowed. Setting a default checks the type only — a stopped pool
-is accepted and fails at use time — and handles from
+then your own fallback, such as sequential evaluation or an error.
+Inside a task,
+[`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
+takes precedence over the default, so nested submission always goes to
+the worker’s own pool. Setting a default checks only the type: a stopped
+pool is accepted and fails when used. Handles from
 [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/reference/mizu_pool_attach.md)
 are valid defaults.
 
@@ -103,15 +103,15 @@ mizu_set_default_pool(old)
 
 [`mizu_collect_any()`](https://shikokuchuo.net/mizu/reference/mizu_collect_any.md)
 waits on a list of task handles and returns `list(index, value)` for the
-first to reach a terminal state — completion order, not submission
-order. The other handles stay collectible.
+first to reach a terminal state, in completion order rather than
+submission order. The other handles stay collectible.
 [`mizu_collect_all()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all.md)
 waits until every task is terminal and returns all values in input
 order, with the names of the handle list carried over. Both take one
 overall `timeout` and return the `mizu_timeout` sentinel on expiry,
-consuming nothing. An outcome that raises — the task’s own error, a
-cancelled task, a dead worker — gains a 1-based `index` field naming the
-handle’s position, and only the reported handle is consumed:
+consuming nothing. An outcome that raises (the task’s own error, a
+cancelled task, a dead worker) carries a 1-based `index` field with the
+handle’s position, and only that handle is consumed:
 
 ``` r
 
@@ -132,7 +132,7 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 6.32881
+#> [1] 5.347343
 #> 
 #> $label
 #> [1] "done"
@@ -140,10 +140,9 @@ mizu_collect_all(ts, timeout = 5)
 
 On the submit side,
 [`mizu_submit_batch()`](https://shikokuchuo.net/mizu/reference/mizu_submit_batch.md)
-is the batch form: one task per element of a list of pre-quoted
-expressions in a single call — one crossing into shared memory and one
-wake-up sweep for the whole burst, with the `...` arguments shared by
-every task:
+submits one task per element of a list of pre-quoted expressions in a
+single call. The whole burst crosses into shared memory once, with one
+wake-up sweep, and the `...` arguments are shared by every task:
 
 ``` r
 
@@ -158,26 +157,27 @@ mizu_collect_all(ts, timeout = 5)
 
 ## Promises and handlers
 
-For event-driven consumers, you can call
+In an event-driven program, call
 [`then()`](https://rstudio.github.io/promises/reference/then.html)
-directly on a task handle: `then(task, fn)` (or `as.promise(task)`)
+directly on a task handle. `then(task, fn)` (or `as.promise(task)`)
 resolves with the task’s value and rejects with the classed condition
+that
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-would raise — worker death included.
+would raise, including worker death.
 [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
 and
 [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
-are the async forms of the collective functions, with exactly one
-promise per collection: collect-all resolves in input order with names
-carried, the first erroring handle by position rejecting with `index`;
-collect-any resolves `list(index, value)`. A map handle gets the same
-treatment — `then(map_handle, fn)` resolves with the whole gathered
-result. Requires the `later` and `promises` packages.
+are the async forms of the collective functions, with one promise per
+collection. Collect-all resolves in input order with names carried over,
+and rejects with `index` on the first erroring handle by position.
+Collect-any resolves `list(index, value)`. A map handle works the same
+way: `then(map_handle, fn)` resolves with the whole gathered result.
+This needs the `later` and `promises` packages.
 
-Resolution is per collection, never per task: a promise costs tens of
-microseconds of R work against about a microsecond of transport, so a
-map of ten thousand elements resolves one promise rather than allocating
-ten thousand. A burst of results produces one wake-up no matter how many
+There is one promise per collection, not per task. A promise costs tens
+of microseconds of R work against about a microsecond of transport, so a
+map of ten thousand elements resolves one promise rather than ten
+thousand. A burst of results produces one wake-up no matter how many
 workers published it, and every main-thread drain is bounded per
 event-loop turn and re-scheduled.
 
@@ -195,27 +195,26 @@ for (i in 1:8) later::run_now(1) # pump the loop until the resolutions land
 #> [1] "slow"
 ```
 
-A task with a promise attached — or part of a pending async collection —
-refuses a blocking
+A task with a promise attached, or one that is part of a pending async
+collection, refuses a blocking
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-and a second promise: one consumer per result.
+and a second promise: each result has one consumer.
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
-stays allowed throughout; the cancel publishes, and the drain rejects.
+is still allowed, and the pending promise then rejects.
 
 ## Sizing, sharing and watching a pool
 
 A pool can grow and shrink while it runs. Retirement never interrupts a
 task: the worker finishes its current task, and the remaining workers
 take over anything still queued to it. Other R processes can join a
-running pool as submitters — the join token of the pool is the only
-thing they need:
+running pool as submitters. All they need is the pool’s join token:
 
 ``` r
 
 mizu_spawn_workers(p, n = 2L)     # two more workers join the pool
 mizu_retire_worker(p, slot = 0L)  # worker 0 exits after its current task
 
-# in another R process — submit and collect exactly as the creator does:
+# in another R process, submit and collect exactly as the creator does:
 p2 <- mizu_pool_attach(token)     # token: mizu_pool_info(p)$token on the creator
 ```
 
@@ -225,7 +224,7 @@ Four read-only tools observe a running pool without disturbing it:
 
 mizu_pool_info(p)  # snapshot: worker states, queued tasks, result slots
 mizu_pool_stats(p)   # cumulative counters: tasks run, steals, parks per worker
-mizu_pool_dump(p)    # every slot in full detail — the first tool when a pool hangs
+mizu_pool_dump(p)    # every slot in full detail; start here when a pool hangs
 mizu_pool_trace(p, \(event, id) message(event, " ", id))  # task lifecycle hook
 ```
 

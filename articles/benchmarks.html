@@ -87,7 +87,7 @@
 
 
 
-    <p>Two head-to-head measurements against mirai, timed with <a href="https://bench.r-lib.org" class="external-link">bench</a>. Four mizu workers against four mirai daemons. Setup is excluded from the timings:</p>
+    <p>Two measurements against mirai, timed with <a href="https://bench.r-lib.org" class="external-link">bench</a>, with four mizu workers against four mirai daemons. Setup is excluded from the timings:</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://shikokuchuo.net/mizu/">mizu</a></span><span class="op">)</span></span>
 <span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://mirai.r-lib.org" class="external-link">mirai</a></span><span class="op">)</span></span>
@@ -107,7 +107,9 @@
 <span></span>
 <span><span class="co"># Speedup multiple of one bench row over another, from the medians</span></span>
 <span><span class="va">speedup</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">b</span>, <span class="va">over</span>, <span class="va">base</span><span class="op">)</span> <span class="fu"><a href="https://rdrr.io/r/base/Round.html" class="external-link">signif</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="va">b</span><span class="op">$</span><span class="va">median</span><span class="op">[</span><span class="va">over</span><span class="op">]</span><span class="op">)</span> <span class="op">/</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="va">b</span><span class="op">$</span><span class="va">median</span><span class="op">[</span><span class="va">base</span><span class="op">]</span><span class="op">)</span>, <span class="fl">2L</span><span class="op">)</span></span></code></pre></div>
-<p><strong>A dataset across the wire, both ways.</strong> The <code>enrich()</code> task receives the 3.3 MB <code>diamonds</code> data frame, adds a column, and returns it. mirai serializes the data once per direction and copies it through a socket. mizu stages the frame once in shared memory; the worker reads it in place, and the enriched frame crosses back the same way:</p>
+<section class="level2"><h2 id="a-data-frame-there-and-back">A data frame there and back<a class="anchor" aria-label="anchor" href="#a-data-frame-there-and-back"></a>
+</h2>
+<p>The <code>enrich()</code> task receives the 3.3 MB <code>diamonds</code> data frame, adds a column, and returns it. mirai serializes the data once per direction and copies it through a socket. mizu stages the frame once in shared memory. The worker reads it in place, and the enriched frame crosses back the same way:</p>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">roundtrip</span> <span class="op">&lt;-</span> <span class="fu">bench</span><span class="fu">::</span><span class="fu">mark</span><span class="op">(</span></span>
 <span>  mizu <span class="op">=</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fu">enrich</span><span class="op">(</span><span class="va">dat</span><span class="op">)</span>, dat <span class="op">=</span> <span class="va">diamonds</span>, enrich <span class="op">=</span> <span class="va">enrich</span><span class="op">)</span><span class="op">)</span>,</span>
@@ -117,10 +119,12 @@
 <span><span class="co">#&gt; # A tibble: 2 × 6</span></span>
 <span><span class="co">#&gt;   expression      min   median `itr/sec` mem_alloc `gc/sec`</span></span>
 <span><span class="co">#&gt;   &lt;bch:expr&gt; &lt;bch:tm&gt; &lt;bch:tm&gt;     &lt;dbl&gt; &lt;bch:byt&gt;    &lt;dbl&gt;</span></span>
-<span><span class="co">#&gt; 1 mizu       493.76µs 666.27µs      928.  483.41KB      0  </span></span>
-<span><span class="co">#&gt; 2 mirai        7.61ms   8.73ms      115.    3.82MB     16.1</span></span></code></pre></div>
-<p>End to end, mizu is <strong>13x</strong> faster: every timed run stages the frame, runs the task — computing the new column over all 53,940 rows — and returns the enriched frame (medians).</p>
-<p><strong>Five thousand small tasks.</strong> Each task summarizes a sliding window of 1,000 prices — mean and standard deviation, about 10µs of work apiece. mirai sends one task per element through its dispatcher, whose per-task cost alone exceeds the task. mizu stages the map once, and the workers self-schedule element ranges off a shared cursor. The serial <code><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply()</a></code> row is the baseline a parallel map must beat:</p>
+<span><span class="co">#&gt; 1 mizu       497.12µs 579.33µs     1130.  483.41KB      0  </span></span>
+<span><span class="co">#&gt; 2 mirai        7.16ms   7.67ms      129.    3.82MB     15.9</span></span></code></pre></div>
+<p>End to end, mizu is <strong>13x</strong> faster (medians). Every timed run stages the frame, computes the new column over all 53,940 rows, and returns the enriched frame.</p>
+</section><section class="level2"><h2 id="five-thousand-small-tasks">Five thousand small tasks<a class="anchor" aria-label="anchor" href="#five-thousand-small-tasks"></a>
+</h2>
+<p>Each task computes the mean and standard deviation of a sliding window of 1,000 prices, about 10 µs of work. mirai sends one task per element through its dispatcher, and the per-task cost alone exceeds the work. mizu stages the map once, and the workers claim element ranges from a shared cursor. The serial <code><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply()</a></code> row is the baseline a parallel map has to beat:</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">winsum</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/eval.html" class="external-link">evalq</a></span><span class="op">(</span><span class="kw">function</span><span class="op">(</span><span class="va">i</span><span class="op">)</span> <span class="op">{</span></span>
 <span>  <span class="va">w</span> <span class="op">&lt;-</span> <span class="fu">ggplot2</span><span class="fu">::</span><span class="va">diamonds</span><span class="op">$</span><span class="va">price</span><span class="op">[</span><span class="va">i</span><span class="op">:</span><span class="op">(</span><span class="va">i</span> <span class="op">+</span> <span class="fl">999L</span><span class="op">)</span><span class="op">]</span></span>
@@ -138,17 +142,17 @@
 <span><span class="co">#&gt; # A tibble: 3 × 6</span></span>
 <span><span class="co">#&gt;   expression      min   median `itr/sec` mem_alloc `gc/sec`</span></span>
 <span><span class="co">#&gt;   &lt;bch:expr&gt; &lt;bch:tm&gt; &lt;bch:tm&gt;     &lt;dbl&gt; &lt;bch:byt&gt;    &lt;dbl&gt;</span></span>
-<span><span class="co">#&gt; 1 serial       48.2ms   59.1ms     15.3       77MB    34.3 </span></span>
-<span><span class="co">#&gt; 2 mizu         12.9ms   15.3ms     55.9    560.5KB     0   </span></span>
-<span><span class="co">#&gt; 3 mirai       516.2ms  516.2ms      1.94    47.4MB     1.94</span></span></code></pre></div>
-<p>mizu turns the four workers into a <strong>3.9x</strong> gain over the serial loop, and runs <strong>34x</strong> ahead of mirai (medians).</p>
+<span><span class="co">#&gt; 1 serial       45.6ms     52ms     17.5     77.1MB    44.7 </span></span>
+<span><span class="co">#&gt; 2 mizu         12.6ms   15.4ms     56.0      535KB     0   </span></span>
+<span><span class="co">#&gt; 3 mirai       520.8ms  520.8ms      1.92    47.4MB     1.92</span></span></code></pre></div>
+<p>With four workers, mizu is <strong>3.4x</strong> faster than the serial loop and <strong>34x</strong> faster than mirai (medians).</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu">daemons</span><span class="op">(</span><span class="fl">0L</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></code></pre></div>
-<p>mirai remains the general solution: it scales across machines, where serialization through sockets is unavoidable. On one machine, mizu removes that cost — an order of magnitude on data movement, and per-task overhead low enough that even microsecond-scale tasks profit from parallelism.</p>
-<section class="level2"><h2 id="how-mizu-compares">How mizu compares<a class="anchor" aria-label="anchor" href="#how-mizu-compares"></a>
+<p>mirai is the general solution. It scales across machines, where serialization through sockets is unavoidable. On one machine, mizu removes that cost: data movement is an order of magnitude cheaper, and the per-task overhead is low enough that even microsecond-scale tasks benefit from parallelism.</p>
+</section><section class="level2"><h2 id="how-mizu-compares">How mizu compares<a class="anchor" aria-label="anchor" href="#how-mizu-compares"></a>
 </h2>
-<p>mizu occupies a specific point in the design space: parallelism across processes on a single machine, with data moving through shared memory instead of serialized copies. The tools below overlap at the edges; the differences are in what has to run, how data moves, and where workers can live.</p>
+<p>mizu targets parallelism across processes on a single machine, with data moving through shared memory instead of serialized copies. The tools below overlap at the edges. They differ in what has to run, how data moves, and where workers can run.</p>
 <table class="table caption-top">
 <colgroup>
 <col style="width: 25%">
@@ -195,7 +199,7 @@
 </tr>
 <tr class="even">
 <td>mizu</td>
-<td>Nothing; a package</td>
+<td>Worker processes, no dispatcher</td>
 <td>Shared-memory views, µs handoff</td>
 <td>Fine-grained tasks, large vectors and frames, Python interop</td>
 </tr>
@@ -203,18 +207,18 @@
 </table>
 <section class="level3"><h3 id="base-r">Base R<a class="anchor" aria-label="anchor" href="#base-r"></a>
 </h3>
-<p><code>mclapply()</code> forks workers on Unix — cheap there, because a fork shares the parent’s pages copy-on-write — but fork is unavailable on Windows and composes poorly with threads, GUI sessions, and some external libraries. <code>parLapply()</code> over a socket cluster is the portable form, and it serializes every task and result through a socket.</p>
+<p><code>mclapply()</code> forks workers on Unix. A fork is cheap because it shares the parent’s pages copy-on-write, but it is unavailable on Windows and composes poorly with threads, GUI sessions, and some external libraries. <code>parLapply()</code> over a socket cluster is the portable form, and it serializes every task and result through a socket.</p>
 </section><section class="level3"><h3 id="mirai-crew-and-future">mirai, crew, and future<a class="anchor" aria-label="anchor" href="#mirai-crew-and-future"></a>
 </h3>
-<p>mirai dispatches tasks to daemon processes over nanonext sockets, its dispatcher working through callbacks rather than as a broker process. Socket copies are the price of its generality: daemons can run anywhere a network reaches, including other machines and HPC clusters, which shared memory cannot. crew builds auto-scaling worker management on mirai for bursty pipelines.</p>
+<p>mirai dispatches tasks to daemon processes over nanonext sockets. Its dispatcher runs through callbacks rather than as a separate broker process. Socket copies are the price of its generality: daemons can run anywhere a network reaches, including other machines and HPC clusters, where shared memory cannot. crew builds auto-scaling worker management on mirai for bursty pipelines.</p>
 <p>future layers a backend-agnostic interface over these and other backends (multisession, multicore, or mirai itself via future.mirai), so code ports between them unchanged. The cost of that abstraction is much higher per-task overhead than either mirai or crew, on top of the backend’s own transport cost.</p>
 </section><section class="level3"><h3 id="callr">callr<a class="anchor" aria-label="anchor" href="#callr"></a>
 </h3>
-<p>callr answers a different question — evaluating R code in a fresh, isolated session with no carry-over of state — and pays for the isolation with a process spawn and a serialized round trip per call. It is the right tool for one-off isolation, not for dividing a loop.</p>
-</section><section class="level3"><h3 id="the-one-thing-only-mizu-does">The one thing only mizu does<a class="anchor" aria-label="anchor" href="#the-one-thing-only-mizu-does"></a>
+<p>callr answers a different question. It evaluates R code in a fresh, isolated session with no carry-over of state, and pays for that isolation with a process spawn and a serialized round trip per call. It is the right tool for one-off isolation, not for dividing a loop.</p>
+</section><section class="level3"><h3 id="python-workers">Python workers<a class="anchor" aria-label="anchor" href="#python-workers"></a>
 </h3>
-<p>A pool whose workers are Python processes, exchanging vectors and data frames as shared-memory views (<a href="interop.html">Python interop</a>). None of the tools above cross the language boundary.</p>
-<p>The short version: choose mizu when the work fits one machine, when tasks are fine-grained or vectors and frames large, or when Python needs to be in the loop. Choose mirai or crew when workers must run on other machines or under a scheduler, and callr when a task needs a pristine session.</p>
+<p>Only mizu runs a pool whose workers are Python processes, exchanging vectors and data frames as shared-memory views (see <a href="interop.html">Python interop</a>). None of the tools above cross the language boundary.</p>
+<p>Choose mizu when the work fits on one machine, when tasks are fine-grained or the data is large, or when Python needs to be in the loop. Choose mirai or crew when workers must run on other machines or under a scheduler, and callr when a task needs a fresh session.</p>
 </section></section><script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
       var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);

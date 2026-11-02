@@ -39,8 +39,8 @@ Invisibly, `NULL`.
   execution, or its payload's shared region died with its submitter).
 
 - `"rehome"` when a worker helping with the doorbell claims a map
-  runner. The helper moves it onto its own deque — where idle peers can
-  steal it — instead of executing it nested.
+  runner. The helper moves it onto its own deque, where idle peers can
+  steal it, instead of executing it nested.
 
 `id` identifies the task as `"<submitter slot>:<counter>"`. This id is
 stable across processes, so logs from both sides of a pool can be

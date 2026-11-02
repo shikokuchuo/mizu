@@ -1,10 +1,10 @@
 # The Evaluating Worker's Own Pool Handle
 
 Inside a pool task, `mizu_current_pool()` returns the pool handle of the
-worker evaluating the task — the handle to pass to
+worker evaluating the task. Pass it to
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-for nested submission (subtasks push onto the worker's own work-stealing
-deque, and a worker blocked collecting them helps instead of sleeping).
+for nested submission: subtasks push onto the worker's own work-stealing
+deque, and a worker blocked collecting them helps instead of sleeping.
 Outside a task, it returns `NULL`.
 
 ## Usage

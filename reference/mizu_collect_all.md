@@ -1,12 +1,11 @@
 # Collect the Results of Several Tasks, in Order
 
 `mizu_collect_all()` waits until every task in `tasks` reaches a
-terminal state and returns all results in input order — the batch
+terminal state and returns all results in input order. It is the batch
 counterpart of
-[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-for fire-then-collect patterns, with one R call for the whole set
-instead of one per task. The wait sleeps until any publishing worker
-wakes it directly: no polling.
+[`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
+with one R call for the whole set instead of one per task. The wait
+sleeps until a publishing worker wakes it directly, with no polling.
 
 ## Usage
 
@@ -35,12 +34,11 @@ A plain list of the task values in the order of `tasks`; the names of
 
 ## Details
 
-For homogeneous element-wise work,
-[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
-remains the right answer (it batches submission and staging, not just
-collection). `mizu_collect_all()` is for heterogeneous handle sets —
-different expressions and arguments — which is what the per-task API is
-for.
+For homogeneous element-wise work, use
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md),
+which batches submission and staging as well as collection.
+`mizu_collect_all()` is for sets of tasks with different expressions and
+arguments, which is what the per-task API is for.
 
 ## Outcomes
 
@@ -59,9 +57,9 @@ attributed to a handle by position as in
 | an executing worker died | raised with an `index` field | `mizu_error_worker_died` |
 
 The `index` field of a raised condition is the 1-based position in
-`tasks` of the first such task. Only the reported handle is consumed;
-every other handle — the results ahead of it included — stays valid and
-collectible. A timeout consumes nothing: every handle stays valid and
+`tasks` of the first such task. Only the reported handle is consumed.
+Every other handle, including those ahead of it, stays valid and
+collectible. A timeout consumes nothing, so every handle stays valid and
 collectible.
 
 ## Examples

@@ -40,12 +40,12 @@ carry as condition elements:
   slot, 0-based as in
   [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md))
   and `pid`: the claimant record of the result slot, read at collect
-  time. This is informational, racy against slot reuse exactly as
+  time. This is informational, can race with slot reuse as
   [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md)
-  is, and `NA` where no claim was recorded.
+  does, and is `NA` where no claim was recorded.
   [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
-  signals this class again with the lost elements as an additional
-  `lost` field: a two-column matrix of inclusive `lo, hi` ranges,
+  signals this class with the lost elements as an additional `lost`
+  field: a two-column matrix of inclusive `lo, hi` ranges,
   runner-granular and conservative (see the Errors section of
   [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)).
   pymizu's `WorkerDiedError.lost` carries the same set as a list of
@@ -55,8 +55,8 @@ carry as condition elements:
   [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
   on a task whose payload region vanished before any worker could read
   it (its submitter died or released the pool with the task still
-  queued). Unlike `mizu_error_worker_died` no death verdict is involved:
-  the task never started executing anywhere.
+  queued). Unlike `mizu_error_worker_died`, no worker death is involved,
+  and the task never started executing anywhere.
 
 - `mizu_error_startup` —
   [`mizu_channel()`](https://shikokuchuo.net/mizu/reference/mizu_channel.md),
@@ -110,24 +110,25 @@ A sentinel is an ordinary return value that marks a terminal state, not
 a signalled condition. See
 [`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/reference/mizu_is_sentinel.md).
 
-Which of the two you get follows the shape of the call. The functions
-that move payloads and wait with a bound —
-[`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md),
+Which of the two you get depends on the shape of the call. The functions
+that move payloads and wait with a bound
+([`mizu_send()`](https://shikokuchuo.net/mizu/reference/mizu_send.md),
 [`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md),
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
-[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md) —
-return sentinels for transport states. These are: not yet
-(`mizu_timeout`), not now (`mizu_full`), stream over (`mizu_closed`,
-`mizu_peer_gone`). Their caller is a loop, and these are its normal
-outcomes. Conditions are raised where a request failed for good.
-Constructors and
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md))
+return sentinels for transport states: nothing yet (`mizu_timeout`), no
+room now (`mizu_full`), and stream over (`mizu_closed`,
+`mizu_peer_gone`). Their caller is usually a loop, and these are its
+normal outcomes. Conditions are raised where a request has failed for
+good. Constructors and
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
-whose return is a handle the next line uses, raise on every failure.
+whose return value is a handle the next line uses, raise on every
+failure.
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 raises when the value can never arrive: the task's own error
-re-signalled, `mizu_error_cancelled`, `mizu_error_worker_died`. A
-sentinel invites the next iteration of the loop. A condition means stop
-and deal with it.
+re-signalled, `mizu_error_cancelled`, or `mizu_error_worker_died`. A
+sentinel invites the next iteration of the loop, and a condition means
+stop and deal with it.
 
 ## Task error transport
 

@@ -113,14 +113,13 @@ otherwise. <code>Inf</code> (the default) waits indefinitely; <code>0</code> doe
 
 <dt id="arg-task">task<a class="anchor" aria-label="anchor" href="#arg-task"></a></dt>
 <dd><p>a task handle from <code>mizu_submit()</code>, or a map handle from
-<code><a href="mizu_map.html">mizu_map()</a></code> / <code><a href="mizu_map_prepare.html">mizu_map_run()</a></code>. A map handle collects the whole
-map: the gathered list (or templated vector), an element error
-re-signalled with its <code>mizu_map_index</code>, or a worker death as
-<code>mizu_error_worker_died</code> with the lost element ranges — the same
-rules as in <code><a href="mizu_map.html">mizu_map()</a></code>'s Errors section. A task or map handle
-with a pending promise (or enrolled in a pending
-<code><a href="mizu_collect_all_async.html">mizu_collect_all_async()</a></code> / <code><a href="mizu_collect_all_async.html">mizu_collect_any_async()</a></code> collection)
-refuses a blocking collect: one consumer per result.</p></dd>
+<code><a href="mizu_map.html">mizu_map()</a></code> / <code><a href="mizu_map_prepare.html">mizu_map_run()</a></code>. A map handle collects the whole map: the
+gathered list (or templated vector), an element error re-signalled with its
+<code>mizu_map_index</code>, or a worker death as <code>mizu_error_worker_died</code> with the
+lost element ranges, following the rules in <code><a href="mizu_map.html">mizu_map()</a></code>'s Errors section.
+A task or map handle with a pending promise (or enrolled in a pending
+<code><a href="mizu_collect_all_async.html">mizu_collect_all_async()</a></code> / <code><a href="mizu_collect_all_async.html">mizu_collect_any_async()</a></code> collection) refuses
+a blocking collect: one consumer per result.</p></dd>
 
 
 <dt id="arg-timeout">timeout<a class="anchor" aria-label="anchor" href="#arg-timeout"></a></dt>
@@ -137,20 +136,19 @@ sentinel.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>Submission blocks only when the submitter's own injection ring is
-full: one submitter waiting never slows another. On <code>.timeout</code> expiry,
-submission raises <code>mizu_error_submit_timeout</code> instead of stalling. If
-no result arrives within <code>timeout</code>, collection returns the
-<code>mizu_timeout</code> sentinel (class <code>c("mizu_timeout", "mizu_sentinel")</code>).
-Collecting a task whose handle was cancelled (or whose pool was
-stopped) raises <code>mizu_error_cancelled</code>. Collecting a task whose
-executing worker died raises <code>mizu_error_worker_died</code>, carrying the
-slot and pid of the worker (see <a href="mizu_error.html">mizu_error</a>). Worker death is
-detected as soon as the operating system reports it: each worker holds
-a lock that the kernel releases the moment its process exits, with no
-heartbeats and no polling. The death fails exactly the tasks that the
-dead worker claimed, and the surviving workers consume the work still
-queued on its deque.</p>
+    <p>Submission blocks only when the submitter's own injection ring is full, so
+one waiting submitter never slows another. On <code>.timeout</code> expiry, submission
+raises <code>mizu_error_submit_timeout</code> instead of stalling. If no result arrives
+within <code>timeout</code>, collection returns the <code>mizu_timeout</code> sentinel (class
+<code>c("mizu_timeout", "mizu_sentinel")</code>). Collecting a task whose handle was
+cancelled (or whose pool was stopped) raises <code>mizu_error_cancelled</code>.
+Collecting a task whose executing worker died raises
+<code>mizu_error_worker_died</code>, carrying the slot and pid of the worker (see
+<a href="mizu_error.html">mizu_error</a>). Worker death is detected as soon as the operating system
+reports it. Each worker holds a lock that the kernel releases when its
+process exits, so there are no heartbeats and no polling. Only the tasks the
+dead worker had claimed fail, and the surviving workers take over the work
+still queued on its deque.</p>
     </div>
     <div class="section level2">
     <h2 id="outcomes">Outcomes<a class="anchor" aria-label="anchor" href="#outcomes"></a></h2>
@@ -162,16 +160,14 @@ original classes, <code>message</code>, <code>call</code>, and every named field
 payload codec can carry within the result slot's inline budget, with
 anything it cannot carry dropped and named in a <code>dropped_fields</code>
 field. See the Task error transport section of <a href="mizu_error.html">mizu_error</a>.</p>
-<p>Inside a task, <code><a href="mizu_current_pool.html">mizu_current_pool()</a></code> returns the handle of the
-worker running it, so a task can submit nested subtasks.
-<code>mizu_submit(mizu_current_pool(), ...)</code> inside a task pushes onto the
-work-stealing deque of the worker itself: no ring, no wait. A full
-deque runs the subtask inline instead. A worker blocked in
-<code>mizu_collect()</code> on a nested handle helps instead of sleeping. It
-executes work from its own deque (and steals from peers) until the
-awaited result is published. So nested fan-outs cost almost nothing
-and never deadlock the pool. A nested submission claims a submitter
-slot for the worker on first use.</p>
+<p>Inside a task, <code><a href="mizu_current_pool.html">mizu_current_pool()</a></code> returns the handle of the worker running
+it, so a task can submit nested subtasks. <code>mizu_submit(mizu_current_pool(), ...)</code> inside a task pushes onto the worker's own work-stealing deque, with no
+ring and no wait. If the deque is full, the subtask runs inline instead. A
+worker blocked in <code>mizu_collect()</code> on a nested handle helps instead of
+sleeping: it executes work from its own deque (and steals from peers) until
+the awaited result is published. Nested fan-outs therefore cost very little
+and cannot deadlock the pool. A nested submission claims a submitter slot for
+the worker on first use.</p>
 <p>A handle can be collected exactly once: the result slot is released to
 the pool as the value is returned. If an uncollected handle goes to the
 garbage collector, a still-queued task is cancelled and a published

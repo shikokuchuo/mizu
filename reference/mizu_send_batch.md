@@ -47,9 +47,10 @@ returns its sentinels on timeout, close, or peer death. It then returns
 a list of 1 to `n` already-published messages without waiting further. A
 batch that reaches a message it cannot read (a foreign Python payload)
 returns what it read before it, and the failure surfaces on the next
-receive, which raises like
-[`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md) —
-as does the batch itself when the first message is the one declined.
+receive, which raises as
+[`mizu_recv()`](https://shikokuchuo.net/mizu/reference/mizu_send.md)
+does. The batch itself raises when the first message is the one
+declined.
 
 ## Examples
 

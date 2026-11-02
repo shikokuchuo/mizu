@@ -89,7 +89,7 @@
 
     <p>mizu provides parallel computation and data exchange between R processes on the same machine: lock-free channels and work-stealing task pools over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows).</p>
 <p>A channel is a two-way message link between an R session and a helper process that it spawns. A pool is a set of worker processes that divide submitted tasks among themselves.</p>
-<p>In both, one process writes data and the other reads it in place — never copied through a socket, pipe, or file.</p>
+<p>In both, one process writes data into shared memory and the other reads it in place, with no copy through a socket, pipe, or file.</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://shikokuchuo.net/mizu/">mizu</a></span><span class="op">)</span></span>
 <span></span>
@@ -105,13 +105,13 @@
 </h2>
 <ul>
 <li>
-<a href="benchmarks.html">Benchmarks</a> — head-to-head measurements against mirai.</li>
+<a href="benchmarks.html">Benchmarks</a> — measurements against mirai.</li>
 <li>
 <a href="channels.html">Channels</a> — two-way message links between R processes: send and receive, batched forms, sentinel values, remote errors.</li>
 <li>
 <a href="pools.html">Task pools</a> — work-stealing worker pools: submit and collect, nested tasks, waiting on several tasks, sizing and observing a pool.</li>
 <li>
-<a href="map.html">Parallel map</a> — <code><a href="../reference/mizu_map.html">mizu_map()</a></code>: staged-once mapping over a pool, templates, reproducible random numbers, prepared maps.</li>
+<a href="map.html">Parallel map</a> — <code><a href="../reference/mizu_map.html">mizu_map()</a></code>: mapping over a pool with the function and data staged once, templates, reproducible random numbers, prepared maps.</li>
 <li>
 <a href="interop.html">Python interop</a> — channels and pools shared with Python processes through pymizu, including the cross-language map.</li>
 <li>

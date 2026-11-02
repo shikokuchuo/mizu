@@ -1,10 +1,10 @@
 # Remote Errors
 
-A channel receive returns a remote error stream as a value, not a raised
-condition: an error in the peer is data until user code decides
+A channel receive returns a remote error as a value, not a raised
+condition: an error in the peer is data until your code decides
 otherwise. The value is a `mizu_error_remote` condition (see
-[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)) — an
-ordinary condition object, so it prints, and
+[mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)). It
+is an ordinary condition object, so it prints, and
 [`conditionMessage()`](https://rdrr.io/r/base/conditions.html) leads
 with `remote_type: message`.
 
@@ -26,7 +26,7 @@ mizu_is_remote_error(x)
 
 ## Details
 
-`mizu_is_remote_error()` tests the class. Signal it with `stop(x)` —
+`mizu_is_remote_error()` tests the class. Signal it with `stop(x)`, and
 handlers dispatch on its classes (`mizu_error_remote`, then
 `mizu_error`, `error`, `condition`).
 

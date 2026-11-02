@@ -37,8 +37,8 @@ the shared cancel word of the map is set: executing runners stop within
 about one batch of their next transition, and every outstanding runner
 task is cancelled as above. A blocking
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-on the handle raises `mizu_error_cancelled`; a pending promise rejects
-with it.
+on the handle raises `mizu_error_cancelled`, and a pending promise
+rejects with it.
 
 ## Examples
 

@@ -96,16 +96,16 @@ inside a peer expression).</p></dd>
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p><code>mizu_send_batch()</code> returns the number of messages accepted. This
-is less than <code>length(xs)</code> when the ring filled or the channel closed
-midway. Send the next element with <code><a href="mizu_send.html">mizu_send()</a></code> to learn which.
+    <p><code>mizu_send_batch()</code> returns the number of messages accepted. This is
+less than <code>length(xs)</code> when the ring filled or the channel closed midway.
+Send the next element with <code><a href="mizu_send.html">mizu_send()</a></code> to learn which.
 <code>mizu_recv_batch()</code> waits for the first message like <code><a href="mizu_send.html">mizu_recv()</a></code> and
-returns its sentinels on timeout, close, or peer death. It then
-returns a list of 1 to <code>n</code> already-published messages without waiting
-further. A batch that reaches a message it cannot read (a foreign
-Python payload) returns what it read before it, and the failure
-surfaces on the next receive, which raises like <code><a href="mizu_send.html">mizu_recv()</a></code> — as
-does the batch itself when the first message is the one declined.</p>
+returns its sentinels on timeout, close, or peer death. It then returns a
+list of 1 to <code>n</code> already-published messages without waiting further. A
+batch that reaches a message it cannot read (a foreign Python payload)
+returns what it read before it, and the failure surfaces on the next
+receive, which raises as <code><a href="mizu_send.html">mizu_recv()</a></code> does. The batch itself raises when
+the first message is the one declined.</p>
     </div>
 
     <div class="section level2">

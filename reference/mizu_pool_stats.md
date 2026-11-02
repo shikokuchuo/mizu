@@ -5,14 +5,14 @@ participant joined. They complement the point-in-time snapshots of
 [`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md)
 and
 [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md).
-Keeping them costs the pool nothing. The submitter counts ride the
-injection ring's own positions: submission writes nothing extra, and the
-spill counter moves only on the spill path, whose region create already
-costs far more than the counter update. The worker counters are kept
-process-locally and mirrored into the region only when a worker parks,
-leaves, or passes its fairness tick. So under continuous load, a
-worker's row can lag by up to 61 claims. The row is exact whenever that
-worker is parked or retired, or the pool is idle.
+Keeping them costs the pool almost nothing. The submitter counts are
+derived from the injection ring's own positions, so submission writes
+nothing extra, and the spill counter moves only on the spill path, where
+creating the region already costs far more than the counter update. The
+worker counters are kept in the worker process and mirrored into the
+region only when a worker parks, leaves, or passes its fairness tick, so
+under continuous load a worker's row can lag by up to 61 claims. The row
+is exact whenever that worker is parked or retired, or the pool is idle.
 
 ## Usage
 
@@ -42,9 +42,9 @@ blocked in a nested collect), and the current `deque` depth.
 `submitters`: one row per submitter slot, with `status`, `pid`,
 `injected` (entries ever published to its injection ring), `claimed`
 (entries the workers took from it), `spills` (payloads past the inline
-budget that traveled in their own region — task payloads at submit and
+budget that traveled in their own region: task payloads at submit and
 result payloads at publish, both attributed to the submitter of the
-task. A nonzero value means `slot_size` is undersized for the traffic),
+task; a nonzero value means `slot_size` is undersized for the traffic),
 `spill_reuse` (the subset of `spills` that recycled a retired region
 from the free list of the producer instead of creating one), and
 `queued` (`injected - claimed`). Steady-state spill traffic approaches
@@ -57,15 +57,15 @@ reset when a new joiner reuses a slot.
 p <- mizu_pool()
 t <- mizu_submit(p, runif(5))
 mizu_collect(t)
-#> [1] 0.78426080 0.12188139 0.92894957 0.77006099 0.06597338
+#> [1] 0.46373745 0.76946885 0.97118686 0.35085245 0.09462422
 mizu_pool_stats(p)
 #> $workers
 #>   slot status  pid tasks steals injections parks helps deque
-#> 1    0   live 7978     1      0          1     1     0     0
+#> 1    0   live 8142     1      0          1     1     0     0
 #> 
 #> $submitters
 #>   slot status  pid injected claimed spills spill_reuse queued
-#> 1    0   live 6509        1       1      0           0      0
+#> 1    0   live 6671        1       1      0           0      0
 #> 2    1   free    0        0       0      0           0      0
 #> 3    2   free    0        0       0      0           0      0
 #> 4    3   free    0        0       0      0           0      0

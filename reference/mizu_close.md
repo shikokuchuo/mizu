@@ -1,13 +1,13 @@
 # Close a Channel
 
-Orderly shutdown. Signals close to the peer, then waits up to `timeout`
-seconds for the peer's close (or its death). Waiting for the peer is
-what makes it safe to release the resources held by sent payloads: the
-peer confirms only after it has finished reading its messages. On that
-confirmation, all resources are released and the region name is deleted.
-The handle is dead afterwards, and closing it again is a no-op. On
-timeout the handle stays usable, and the resources release at garbage
-collection, which runs the same check again.
+Signals close to the peer, then waits up to `timeout` seconds for the
+peer to close (or die). The peer confirms only after it has finished
+reading its messages, which is what makes it safe to release the
+resources held by sent payloads. On that confirmation, all resources are
+released and the region name is deleted. The handle is dead afterwards,
+and closing it again does nothing. On timeout the handle stays usable,
+and the resources are released at garbage collection, which runs the
+same check again.
 
 ## Usage
 

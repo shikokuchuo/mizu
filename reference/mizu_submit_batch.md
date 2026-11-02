@@ -50,8 +50,9 @@ mizu_submit_batch(.pool, .exprs, ..., .timeout = Inf)
 
 ## Value
 
-A list of task handles (class `"mizu_task"`), one per accepted task —
-shorter than `.exprs` when the ring filled past `.timeout` mid-batch.
+A list of task handles (class `"mizu_task"`), one per accepted task. The
+list is shorter than `.exprs` when the ring filled past `.timeout`
+mid-batch.
 
 ## Details
 
@@ -67,8 +68,8 @@ Submission behaves per task as in
 with one difference: if the injection ring fills past `.timeout`
 mid-batch, the call returns the handles accepted so far instead of
 raising `mizu_error_submit_timeout`. Fatal outcomes (pool stopped,
-result slots exhausted) still raise; tasks already submitted stay valid
-and collectible.
+result slots exhausted) still raise, and tasks already submitted stay
+valid and collectible.
 
 ## Examples
 

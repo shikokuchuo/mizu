@@ -4,8 +4,8 @@ Broadcasts shutdown, wakes every sleeping participant, and cancels all
 pending tasks (blocked collectors raise `mizu_error_cancelled`). Then
 waits up to `timeout` seconds for the workers to exit cleanly, and
 deletes the shared region and the liveness files. The handle is dead
-afterwards, and stopping it again is a no-op. Only the creating process
-can stop a pool.
+afterwards, and stopping it again does nothing. Only the creating
+process can stop a pool.
 
 ## Usage
 
@@ -35,12 +35,12 @@ otherwise, with a warning (the workers still exit on their own).
 
 ## Details
 
-A stop also rejects every promise still pending on the pool — task
+A stop also rejects every promise still pending on the pool (task
 promises,
 [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
 and
 [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/reference/mizu_collect_all_async.md)
-collections, and map promises — with `mizu_error_stopped`.
+collections, and map promises) with `mizu_error_stopped`.
 
 ## Examples
 

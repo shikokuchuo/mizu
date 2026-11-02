@@ -83,11 +83,11 @@ its pool is gone.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
-    <p>On a map handle from <code><a href="mizu_map.html">mizu_map()</a></code> / <code><a href="mizu_map_prepare.html">mizu_map_run()</a></code>, the shared
-cancel word of the map is set: executing runners stop within about one
-batch of their next transition, and every outstanding runner task is
-cancelled as above. A blocking <code><a href="mizu_submit.html">mizu_collect()</a></code> on the handle raises
-<code>mizu_error_cancelled</code>; a pending promise rejects with it.</p>
+    <p>On a map handle from <code><a href="mizu_map.html">mizu_map()</a></code> / <code><a href="mizu_map_prepare.html">mizu_map_run()</a></code>, the shared cancel word
+of the map is set: executing runners stop within about one batch of their
+next transition, and every outstanding runner task is cancelled as above. A
+blocking <code><a href="mizu_submit.html">mizu_collect()</a></code> on the handle raises <code>mizu_error_cancelled</code>, and a
+pending promise rejects with it.</p>
     </div>
 
     <div class="section level2">

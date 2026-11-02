@@ -1,14 +1,15 @@
 # Prepared Maps: Stage Once, Run Many
 
-`mizu_map_prepare()` stages a map — `.f`, the constant arguments in
-`...`, and `.x` — serialized once into a shared map region, without
-running it. It returns a prepared-map handle. Each `mizu_map_run()` then
-costs only task submission and collection: no serialization and no
-region create. Because the region (and its name) stays alive across
-runs, workers that ran a previous run reuse their cached map context
-instead of re-attaching. Repeated stochastic simulation is the headline
-use. `mizu_map_run(pm, .seed = i)` varies the RNG streams per run for
-free: the seed state rides the runner payloads, not the region.
+`mizu_map_prepare()` stages a map (`.f`, the constant arguments in
+`...`, and `.x`), serialized once into a shared map region, without
+running it, and returns a prepared-map handle. Each `mizu_map_run()`
+then costs only task submission and collection, with no serialization
+and no region create. Because the region (and its name) stays alive
+across runs, workers that ran a previous run reuse their cached map
+context instead of re-attaching. Repeated stochastic simulation is the
+main use: `mizu_map_run(pm, .seed = i)` varies the RNG streams per run
+at no extra cost, because the seed state rides the runner payloads
+rather than the region.
 
 ## Usage
 
@@ -51,7 +52,7 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "copy")
   enclosing environment. Keep that environment small, as with any
   cross-process map. A
   [`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
-  specification maps over a pool of any worker language — see the
+  specification maps over a pool of any worker language; see the
   Cross-language maps section.
 
 - ...:
@@ -108,7 +109,7 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "copy")
   vector at
   [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).
   `"view"` instead returns an ALTREP view over the map's shared output
-  area — no gather copy — for pipelines that immediately reduce.
+  area, with no gather copy, for pipelines that reduce it immediately.
   Requires an atomic `.template`. The view is copy-on-write: the first
   write materializes a private copy. It keeps the map region alive until
   released, and re-sending it through a channel or pool crosses as a
@@ -116,9 +117,9 @@ mizu_map_run(pm, .x = NULL, .seed = NULL, .timeout = Inf, .collect = "copy")
 
 ## Value
 
-`mizu_map_prepare()`: a prepared-map handle. `mizu_map_run()`: exactly
-what [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
-returns for the staged map — a map handle whose
+`mizu_map_prepare()`: a prepared-map handle. `mizu_map_run()`: what
+[`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)
+returns for the staged map, a map handle whose
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 returns a list, a templated atomic vector, or the `mizu_timeout`
 sentinel.
@@ -127,16 +128,16 @@ sentinel.
 
 Between runs, the region's shared scheduling state resets in O(1). The
 cursor and cancel word clear, and the run generation embedded in every
-claim word advances. A leftover task from a previous run can never
-interfere with the new run. After an unclean run — a `.timeout` expiry,
-an error in `.f`, a worker death — the handle is marked stale. The next
-`mizu_map_run()` restages into a fresh region automatically (the old one
-is deleted at garbage collection, once any leftover tasks are done with
-it). A run collected with `.collect = "view"` restages likewise: the
-returned view keeps its region alive, so the next run stages fresh
-rather than reusing pages a held view still reads. A map small enough to
-ride entirely inline keeps its staged blob on the handle instead: runs
-resubmit it, still skipping the serialization.
+claim word advances, so a leftover task from a previous run can never
+interfere with the new run. After an unclean run (a `.timeout` expiry,
+an error in `.f`, a worker death) the handle is marked stale, and the
+next `mizu_map_run()` restages into a fresh region automatically (the
+old one is deleted at garbage collection, once any leftover tasks are
+done with it). A run collected with `.collect = "view"` restages
+likewise: the returned view keeps its region alive, so the next run
+stages fresh rather than reusing pages a held view still reads. A map
+small enough to ride entirely inline keeps its staged blob on the handle
+instead, and runs resubmit it, still skipping the serialization.
 
 The prepared handle keeps the staged `.x` (for automatic restaging) and
 the map region alive for its lifetime. Both release at garbage
@@ -148,15 +149,15 @@ prepare time. The runner count adapts to the live workers at each run.
 `mizu_map_run(pm, .x = x2)` runs over a replacement `.x`. When both the
 staged and the replacement `.x` are bare-byte eligible (atomic,
 non-ALTREP, no attributes beyond names) with identical type and length,
-the swap is in place. The new bytes are copied over the `.x` section of
-the region. This runs the iterate-over-same-shape loop (optimizer steps,
-simulation sweeps) at the cost of one copy, skipping the region create
-and the re-attach of every worker. Any other change of `.x` — a
-different shape or type, a list, a map staged inline — restages
+the swap is in place: the new bytes are copied over the `.x` section of
+the region. This runs a loop over data of the same shape (optimizer
+steps, simulation sweeps) at the cost of one copy, skipping the region
+create and the re-attach of every worker. Any other change of `.x` (a
+different shape or type, a list, a map staged inline) restages
 automatically on the next run. A streaming prepared map keeps `.x` in
 the submitting process, so a replacement `.x` of any shape re-slices on
-the next run — only a length change under `.template` restages (the
-output area is sized for the staged length).
+the next run. Only a length change under `.template` restages, because
+the output area is sized for the staged length.
 
 ## Examples
 

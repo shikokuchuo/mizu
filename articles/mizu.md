@@ -9,8 +9,8 @@ A channel is a two-way message link between an R session and a helper
 process that it spawns. A pool is a set of worker processes that divide
 submitted tasks among themselves.
 
-In both, one process writes data and the other reads it in place — never
-copied through a socket, pipe, or file.
+In both, one process writes data into shared memory and the other reads
+it in place, with no copy through a socket, pipe, or file.
 
 ``` r
 
@@ -29,7 +29,7 @@ mizu_pool_stop(p)
 ## The articles
 
 - [Benchmarks](https://shikokuchuo.net/mizu/articles/benchmarks.md) —
-  head-to-head measurements against mirai.
+  measurements against mirai.
 - [Channels](https://shikokuchuo.net/mizu/articles/channels.md) —
   two-way message links between R processes: send and receive, batched
   forms, sentinel values, remote errors.
@@ -38,8 +38,8 @@ mizu_pool_stop(p)
   on several tasks, sizing and observing a pool.
 - [Parallel map](https://shikokuchuo.net/mizu/articles/map.md) —
   [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md):
-  staged-once mapping over a pool, templates, reproducible random
-  numbers, prepared maps.
+  mapping over a pool with the function and data staged once, templates,
+  reproducible random numbers, prepared maps.
 - [Python interop](https://shikokuchuo.net/mizu/articles/interop.md) —
   channels and pools shared with Python processes through pymizu,
   including the cross-language map.

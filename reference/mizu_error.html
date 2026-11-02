@@ -83,19 +83,18 @@ process died.</p></li>
 or whose pool was stopped.</p></li>
 <li><p><code>mizu_error_worker_died</code> — <code><a href="mizu_submit.html">mizu_collect()</a></code> on a task whose executing
 worker died. Fields <code>slot</code> (worker registry slot, 0-based as in
-<code><a href="mizu_pool_dump.html">mizu_pool_dump()</a></code>) and <code>pid</code>: the claimant record of the result slot,
-read at collect time. This is informational, racy against slot reuse
-exactly as <code><a href="mizu_pool_dump.html">mizu_pool_dump()</a></code> is, and <code>NA</code> where no claim was
-recorded. <code><a href="mizu_map.html">mizu_map()</a></code> signals this class again with the lost elements
-as an additional <code>lost</code> field: a two-column matrix of inclusive
-<code>lo, hi</code> ranges, runner-granular and conservative (see the Errors
-section of <code><a href="mizu_map.html">mizu_map()</a></code>). pymizu's <code>WorkerDiedError.lost</code> carries
-the same set as a list of 0-based half-open <code>[lo, hi)</code> spans.</p></li>
-<li><p><code>mizu_error_task_lost</code> — <code><a href="mizu_submit.html">mizu_collect()</a></code> on a task whose payload
-region vanished before any worker could read it (its submitter died
-or released the pool with the task still queued). Unlike
-<code>mizu_error_worker_died</code> no death verdict is involved: the task never
-started executing anywhere.</p></li>
+<code><a href="mizu_pool_dump.html">mizu_pool_dump()</a></code>) and <code>pid</code>: the claimant record of the result slot, read
+at collect time. This is informational, can race with slot reuse as
+<code><a href="mizu_pool_dump.html">mizu_pool_dump()</a></code> does, and is <code>NA</code> where no claim was recorded.
+<code><a href="mizu_map.html">mizu_map()</a></code> signals this class with the lost elements as an additional
+<code>lost</code> field: a two-column matrix of inclusive <code>lo, hi</code> ranges,
+runner-granular and conservative (see the Errors section of <code><a href="mizu_map.html">mizu_map()</a></code>).
+pymizu's <code>WorkerDiedError.lost</code> carries the same set as a list of 0-based
+half-open <code>[lo, hi)</code> spans.</p></li>
+<li><p><code>mizu_error_task_lost</code> — <code><a href="mizu_submit.html">mizu_collect()</a></code> on a task whose payload region
+vanished before any worker could read it (its submitter died or released
+the pool with the task still queued). Unlike <code>mizu_error_worker_died</code>, no
+worker death is involved, and the task never started executing anywhere.</p></li>
 <li><p><code>mizu_error_startup</code> — <code><a href="mizu_channel.html">mizu_channel()</a></code>, <code><a href="mizu_pool.html">mizu_pool()</a></code> and
 <code><a href="mizu_spawn_workers.html">mizu_spawn_workers()</a></code> when a child process fails to attach within
 <code>startup_timeout</code>.</p></li>
@@ -130,17 +129,17 @@ outcomes that a running system produces, not programming mistakes.</p>
 <code><a href="mizu_submit.html">mizu_collect()</a></code>). A sentinel is an ordinary return value that marks a
 terminal state, not a signalled condition. See
 <code><a href="mizu_is_sentinel.html">mizu_is_sentinel()</a></code>.</p>
-<p>Which of the two you get follows the shape of the call. The functions
-that move payloads and wait with a bound — <code><a href="mizu_send.html">mizu_send()</a></code>, <code><a href="mizu_send.html">mizu_recv()</a></code>,
-<code><a href="mizu_submit.html">mizu_collect()</a></code>, <code><a href="mizu_map.html">mizu_map()</a></code> — return sentinels for transport states.
-These are: not yet (<code>mizu_timeout</code>), not now (<code>mizu_full</code>), stream over
-(<code>mizu_closed</code>, <code>mizu_peer_gone</code>). Their caller is a loop, and these are
-its normal outcomes. Conditions are raised where a request failed for
-good. Constructors and <code><a href="mizu_submit.html">mizu_submit()</a></code>, whose return is a handle the
+<p>Which of the two you get depends on the shape of the call. The functions that
+move payloads and wait with a bound (<code><a href="mizu_send.html">mizu_send()</a></code>, <code><a href="mizu_send.html">mizu_recv()</a></code>,
+<code><a href="mizu_submit.html">mizu_collect()</a></code>, <code><a href="mizu_map.html">mizu_map()</a></code>) return sentinels for transport states:
+nothing yet (<code>mizu_timeout</code>), no room now (<code>mizu_full</code>), and stream over
+(<code>mizu_closed</code>, <code>mizu_peer_gone</code>). Their caller is usually a loop, and these
+are its normal outcomes. Conditions are raised where a request has failed for
+good. Constructors and <code><a href="mizu_submit.html">mizu_submit()</a></code>, whose return value is a handle the
 next line uses, raise on every failure. <code><a href="mizu_submit.html">mizu_collect()</a></code> raises when the
 value can never arrive: the task's own error re-signalled,
-<code>mizu_error_cancelled</code>, <code>mizu_error_worker_died</code>. A sentinel invites the
-next iteration of the loop. A condition means stop and deal with it.</p>
+<code>mizu_error_cancelled</code>, or <code>mizu_error_worker_died</code>. A sentinel invites the
+next iteration of the loop, and a condition means stop and deal with it.</p>
     </div>
     <div class="section level2">
     <h2 id="task-error-transport">Task error transport<a class="anchor" aria-label="anchor" href="#task-error-transport"></a></h2>

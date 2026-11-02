@@ -1,11 +1,10 @@
 # Create a Channel and Spawn Its Peer
 
-Creates a shared-memory SPSC channel — one lock-free ring per direction
-— and spawns a child R process connected to the other end. The channel
-is two-way once the peer is spawned: the returned handle produces on the
-host-to-peer ring and consumes the peer-to-host ring. Setup is
-one-sided: only a short join token (the suffix of the region name)
-crosses the process boundary, as a command-line argument.
+Creates a shared-memory single-producer single-consumer channel, with
+one lock-free ring per direction, and spawns a child R process connected
+to the other end. The returned handle sends on the host-to-peer ring and
+receives on the peer-to-host ring. Only a short join token (the suffix
+of the region name) is passed to the child, as a command-line argument.
 
 ## Usage
 
@@ -50,15 +49,14 @@ mizu_channel(
 
   spill-arena bytes per direction. A multiple of 128, or 0 to disable
   (every spill then creates a region). This bounds the in-flight spill.
-  An undersized arena falls back to creating a region per payload, never
-  to errors.
+  An undersized arena falls back to creating a region per payload, and
+  never errors.
 
 - spin:
 
-  opts the channel into pure-spin waiting: consumers never park and
-  producers skip the wake check on publish. Use this only when the
-  consumer never yields. If a spin-mode consumer parks, the producer
-  never wakes it.
+  `TRUE` makes the channel spin-wait: consumers never park and producers
+  skip the wake check on publish. Use this only when the consumer never
+  yields, because a spin-mode consumer that parks is never woken.
 
 - startup_timeout:
 
@@ -74,10 +72,10 @@ mizu_channel(
   spawns `Rscript` and propagates the
   [`.libPaths()`](https://rdrr.io/r/base/libPaths.html) of the host. Its
   `stdout` and `stderr` arguments direct the peer output, including the
-  error epilogue. A custom launcher must arrange the library paths
+  error message. A custom launcher must arrange the library paths
   itself. For a peer in another language (a source-string `expr`), it
   spawns a program that attaches with `token` and speaks the wire
-  protocol, such as `python3 -m pymizu.child` for a Python peer —
+  protocol, such as `python3 -m pymizu.child` for a Python peer.
   [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/reference/mizu_py_launcher.md)
   is the ready-made launcher for that case.
 
@@ -90,26 +88,25 @@ and do not survive `fork()`.
 
 `expr` is a quoted expression, not a closure. It captures nothing, and
 unlike
-[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
-mizu does not capture it for you: pass it pre-quoted. The peer evaluates
-it in a fresh environment whose parent is the global environment of the
-child. `ch` (the peer-side channel handle) is the only binding that mizu
-provides. Data crosses the ring, and the expression itself loads any
-packages it needs. When the expression returns or errors, the peer
-signals an orderly close and exits. An error message goes to the stderr
-of the child.
+[`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
+mizu does not quote it for you. The peer evaluates it in a fresh
+environment whose parent is the child's global environment, with `ch`
+(the peer-side channel handle) as the only binding that mizu provides.
+The expression must load any packages it needs. When the expression
+returns or errors, the peer signals an orderly close and exits. An error
+message goes to the child's standard error.
 
-Payload contents interoperate transparently with mori. A
+Payloads interoperate with mori. A
 [`mori::share()`](https://rdrr.io/pkg/mori/man/share.html)d object
-anywhere inside a payload serializes to its short identifier wire form
-through the mori hooks, and maps zero-copy on the other side.
+anywhere inside a payload is serialized as its short identifier through
+the mori hooks, and is mapped zero-copy on the other side.
 
-The two liveness lock files of the channel (the death-detection verdict)
-live in a per-platform directory chosen at create time. This is
-`/dev/shm` on Linux, and the per-user temporary directory on macOS and
-Windows. The chosen path is recorded in the region, so both sides use
-the same files. The environment variable `MIZU_LIVENESS_DIR`, read in
-the creating process, overrides the default.
+The channel's two liveness lock files, which detect the death of either
+side, are created in a per-platform directory: `/dev/shm` on Linux, and
+the per-user temporary directory on macOS and Windows. The path is
+recorded in the region, so both sides use the same files. The
+environment variable `MIZU_LIVENESS_DIR`, read in the creating process,
+overrides the default.
 
 ## Examples
 

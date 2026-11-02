@@ -59,8 +59,8 @@ mizu_collect(task, timeout = Inf)
   [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md).
   A map handle collects the whole map: the gathered list (or templated
   vector), an element error re-signalled with its `mizu_map_index`, or a
-  worker death as `mizu_error_worker_died` with the lost element ranges
-  — the same rules as in
+  worker death as `mizu_error_worker_died` with the lost element ranges,
+  following the rules in
   [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md)'s
   Errors section. A task or map handle with a pending promise (or
   enrolled in a pending
@@ -83,8 +83,8 @@ sentinel.
 
 ## Details
 
-Submission blocks only when the submitter's own injection ring is full:
-one submitter waiting never slows another. On `.timeout` expiry,
+Submission blocks only when the submitter's own injection ring is full,
+so one waiting submitter never slows another. On `.timeout` expiry,
 submission raises `mizu_error_submit_timeout` instead of stalling. If no
 result arrives within `timeout`, collection returns the `mizu_timeout`
 sentinel (class `c("mizu_timeout", "mizu_sentinel")`). Collecting a task
@@ -93,11 +93,11 @@ whose handle was cancelled (or whose pool was stopped) raises
 raises `mizu_error_worker_died`, carrying the slot and pid of the worker
 (see
 [mizu_error](https://shikokuchuo.net/mizu/reference/mizu_error.md)).
-Worker death is detected as soon as the operating system reports it:
-each worker holds a lock that the kernel releases the moment its process
-exits, with no heartbeats and no polling. The death fails exactly the
-tasks that the dead worker claimed, and the surviving workers consume
-the work still queued on its deque.
+Worker death is detected as soon as the operating system reports it.
+Each worker holds a lock that the kernel releases when its process
+exits, so there are no heartbeats and no polling. Only the tasks the
+dead worker had claimed fail, and the surviving workers take over the
+work still queued on its deque.
 
 ## Outcomes
 
@@ -129,13 +129,13 @@ Inside a task,
 [`mizu_current_pool()`](https://shikokuchuo.net/mizu/reference/mizu_current_pool.md)
 returns the handle of the worker running it, so a task can submit nested
 subtasks. `mizu_submit(mizu_current_pool(), ...)` inside a task pushes
-onto the work-stealing deque of the worker itself: no ring, no wait. A
-full deque runs the subtask inline instead. A worker blocked in
-`mizu_collect()` on a nested handle helps instead of sleeping. It
+onto the worker's own work-stealing deque, with no ring and no wait. If
+the deque is full, the subtask runs inline instead. A worker blocked in
+`mizu_collect()` on a nested handle helps instead of sleeping: it
 executes work from its own deque (and steals from peers) until the
-awaited result is published. So nested fan-outs cost almost nothing and
-never deadlock the pool. A nested submission claims a submitter slot for
-the worker on first use.
+awaited result is published. Nested fan-outs therefore cost very little
+and cannot deadlock the pool. A nested submission claims a submitter
+slot for the worker on first use.
 
 A handle can be collected exactly once: the result slot is released to
 the pool as the value is returned. If an uncollected handle goes to the

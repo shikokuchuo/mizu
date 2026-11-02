@@ -70,7 +70,7 @@ mizu_retire_worker(pool, slot)
 ## Details
 
 Slots free up when workers retire, exit at shutdown, or die and are
-reaped. So a pool can cycle workers within its registry capacity for its
+reaped, so a pool can cycle workers within its registry capacity for its
 whole lifetime. Only the creating process can resize a pool.
 
 ## Examples

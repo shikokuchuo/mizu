@@ -103,9 +103,9 @@ otherwise. <code>Inf</code> (the default) waits indefinitely; <code>0</code> doe
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>A list of task handles (class <code>"mizu_task"</code>), one per
-accepted task — shorter than <code>.exprs</code> when the ring filled past
-<code>.timeout</code> mid-batch.</p>
+    <p>A list of task handles (class <code>"mizu_task"</code>), one per accepted task.
+The list is shorter than <code>.exprs</code> when the ring filled past <code>.timeout</code>
+mid-batch.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>
@@ -114,12 +114,11 @@ accepted task — shorter than <code>.exprs</code> when the ring filled past
 the batch. Unlike <code><a href="mizu_submit.html">mizu_submit()</a></code>, expressions are not captured:
 the elements of <code>.exprs</code> are pre-quoted (or plain values, which
 evaluate to themselves).</p>
-<p>Submission behaves per task as in <code><a href="mizu_submit.html">mizu_submit()</a></code>, with one
-difference: if the injection ring fills past <code>.timeout</code> mid-batch,
-the call returns the handles accepted so far instead of raising
-<code>mizu_error_submit_timeout</code>. Fatal outcomes (pool stopped, result
-slots exhausted) still raise; tasks already submitted stay valid and
-collectible.</p>
+<p>Submission behaves per task as in <code><a href="mizu_submit.html">mizu_submit()</a></code>, with one difference: if
+the injection ring fills past <code>.timeout</code> mid-batch, the call returns the
+handles accepted so far instead of raising <code>mizu_error_submit_timeout</code>. Fatal
+outcomes (pool stopped, result slots exhausted) still raise, and tasks
+already submitted stay valid and collectible.</p>
     </div>
 
     <div class="section level2">
