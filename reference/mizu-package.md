@@ -47,7 +47,6 @@ Authors:
 
 Other contributors:
 
-- Posit Software, PBC ([ROR](https://ror.org/03wc8by49)) \[copyright
-  holder, funder\]
+- Posit Software, PBC \[copyright holder, funder\]
 
 - Pierre L'Ecuyer (RngStreams library) \[copyright holder\]
