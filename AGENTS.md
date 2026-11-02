@@ -568,22 +568,37 @@ word it already loads: the channel `parked` word, the pool’s
 the carved `mizu_sub_slot.notify` word). The arm is the parker protocol
 transplanted (announce → fence → re-check; the publisher’s clear-on-send
 owns the edge, one signal per idle→data transition, absorbed stale
-signals cost one empty drain); endpoint verbs live in the core’s
-`notify.c` with the watches riding the death-listener machinery
-(`wait_*.c` — no new thread; the channel watch chains the peer’s death
-watch onto the same callback and the close paths signal the endpoint, so
-close and peer death wake an armed consumer, never just publishes). The
-R half is `src/notify_r.c`: one `mizu_r_notify` record per armed handle
-(created lazily, refs: create + armed + one per scheduled callback, all
-decrements main-thread so they never race the listener’s increments);
-the watch callback (any thread, no R API) CASes a coalesce flag and
-calls later’s `execLaterNative2` (loaded once per process via
-`R_GetCCallable`, nanonext’s exact pattern) to schedule the drain; the
-drain evals the state env’s `.drain` closure under `R_UnwindProtect`
-(cont is NULL, never R_NilValue — the epilogue SETCARs onto the token)
-so the scheduled ref releases even on a longjmp; later’s own unwind
-protection surfaces an escaping error at the `run_now()` site.
-`R/promise.R` on top: per-handle state envs in the prot slots;
+signals cost one empty drain). The core’s arm-time stale-datagram drain
+runs on the handle’s disarmed → armed transition only, keyed on a
+process-private arm-cycle flag per handle (libmizu 5b6c968): the word’s
+observed state cannot tell “disarmed” from “a publish cleared it”, and a
+re-arm that drained under a standing arm ate a signal in flight — the
+arm-devel CI stall (a pool enroll losing a worker’s publish; a channel
+enroll losing the peer’s close). The channel arm’s `avail` is the recv’s
+own verdict (ring data, or closed / peer gone), so the enroll’s
+synchronous `chan_drain` surfaces a terminal already present at enroll
+time. The binding’s rule per handle kind: the pool enroll calls the core
+arm only on the first enrollment of an arm cycle and fences itself when
+already armed (the word either stands, or a publish cleared it with its
+signal in flight, whose drain re-arms and scans the whole registry); the
+channel enroll re-arms on every enrollment for its `avail` report (sound
+now that a re-arm never drains); both drains re-arm per scan / pass;
+endpoint verbs live in the core’s `notify.c` with the watches riding the
+death-listener machinery (`wait_*.c` — no new thread; the channel watch
+chains the peer’s death watch onto the same callback and the close paths
+signal the endpoint, so close and peer death wake an armed consumer,
+never just publishes). The R half is `src/notify_r.c`: one
+`mizu_r_notify` record per armed handle (created lazily, refs: create +
+armed + one per scheduled callback, all decrements main-thread so they
+never race the listener’s increments); the watch callback (any thread,
+no R API) CASes a coalesce flag and calls later’s `execLaterNative2`
+(loaded once per process via `R_GetCCallable`, nanonext’s exact pattern)
+to schedule the drain; the drain evals the state env’s `.drain` closure
+under `R_UnwindProtect` (cont is NULL, never R_NilValue — the epilogue
+SETCARs onto the token) so the scheduled ref releases even on a longjmp;
+later’s own unwind protection surfaces an escaping error at the
+`run_now()` site. `R/promise.R` on top: per-handle state envs in the
+prot slots;
 [`mizu_recv_async()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
 (pending FIFO, `later()` timer per promise with FIFO removal),
 [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/reference/mizu_recv_async.md)
@@ -609,30 +624,31 @@ caching its task words (the scan never re-reads the extptrs —
 `mizu_pool_task_state` is total on a stale word), the waiter envs in a
 parallel preserved VECSXP, four verbs — `mizu_pool_notify_enroll` fuses
 the conflict check (linear, or a throwaway open-addressing table past
-the T×W crossover), the per-slot announces, the endpoint arm and the
-terminal probe, probing terminal FIRST so a task that already published
-settles from the call site without ever arming (returns TRUE, nothing
-registered; the post-arm re-check is the parker transplant);
-`mizu_pool_notify_scan` is the per-wake drain step (re-arm the edge the
-waking publish cleared, then up to `max` settled waiters in registry
-order, unlinked with announces withdrawn, disarming when the registry
-empties — the R drain loops scan → settle → scan until an empty scan
-proves the re-armed word saw nothing); `mizu_pool_notify_remove` (a
-timeout) and `mizu_pool_notify_find` (the cached-promise lookup). The
-map kind’s verdict is `mizu_map_runners_done` (map.c: terminal or
-abandonable per runner). The blocking collect verbs’ refusal (“one
-consumer per result”) is `mizu_r_notify_refuse` inside the C veneers —
-one pointer test when nothing is enrolled, so the sync rows pay nothing.
-The task kind settles through `mizu_pool_collect_settle` (every failure
-boxed `mizu_caught`, no handler frame per task); the collective forms
-keep one tryCatch per collection. Discipline: the enroll runs ahead of
-`promise()`’s action (it converts action errors into rejections, but a
-conflict, a spin channel or a stale task is a call-site error), the
-settle of an already-terminal waiter inside it; every drain is bounded
-per callback (`notify_quantum_n` = 2048 items or ~1 ms, whichever first
-— 256 left the batch handler 2.2x off the sync row; the pool drain scans
-in batches of 64 so the clock check between batches is honest) and
-re-scheduled with `later(secs = 0)`;
+the T×W crossover), the per-slot announces, the endpoint arm (once per
+arm cycle; a fence when already armed) and the terminal probe, probing
+terminal FIRST so a task that already published settles from the call
+site without ever arming (returns TRUE, nothing registered; the post-arm
+re-check is the parker transplant); `mizu_pool_notify_scan` is the
+per-wake drain step (re-arm the edge the waking publish cleared, then up
+to `max` settled waiters in registry order, unlinked with announces
+withdrawn, disarming when the registry empties — the R drain loops scan
+→ settle → scan until an empty scan proves the re-armed word saw
+nothing); `mizu_pool_notify_remove` (a timeout) and
+`mizu_pool_notify_find` (the cached-promise lookup). The map kind’s
+verdict is `mizu_map_runners_done` (map.c: terminal or abandonable per
+runner). The blocking collect verbs’ refusal (“one consumer per result”)
+is `mizu_r_notify_refuse` inside the C veneers — one pointer test when
+nothing is enrolled, so the sync rows pay nothing. The task kind settles
+through `mizu_pool_collect_settle` (every failure boxed `mizu_caught`,
+no handler frame per task); the collective forms keep one tryCatch per
+collection. Discipline: the enroll runs ahead of `promise()`’s action
+(it converts action errors into rejections, but a conflict, a spin
+channel or a stale task is a call-site error), the settle of an
+already-terminal waiter inside it; every drain is bounded per callback
+(`notify_quantum_n` = 2048 items or ~1 ms, whichever first — 256 left
+the batch handler 2.2x off the sync row; the pool drain scans in batches
+of 64 so the clock check between batches is honest) and re-scheduled
+with `later(secs = 0)`;
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/reference/mizu_cancel.md)
 stays allowed throughout (the cancel publishes, the drain rejects).
 later and promises sit in Suggests, guarded with informative errors; the
