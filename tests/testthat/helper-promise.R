@@ -21,6 +21,34 @@ pump_until <- function(cond, timeout = 10) {
   }
 }
 
+# The benchmark bursts' completion gate: pump until count() reaches done,
+# failing only when a full stall window passes with no progress.
+# Wall-clock-independent — a slow or throttled CI runner keeps making
+# progress and passes; only a genuine lost wake (no progress) fails.
+pump_progress <- function(count, done, stall = 60) {
+  last <- -1
+  t0 <- Sys.time()
+  repeat {
+    later::run_now()
+    n <- count()
+    if (n >= done) {
+      return(TRUE)
+    }
+    if (n != last) {
+      last <- n
+      t0 <- Sys.time()
+    } else if (difftime(Sys.time(), t0, units = "secs") > stall) {
+      return(FALSE)
+    }
+    Sys.sleep(0.01)
+  }
+}
+
+# The promise form: count the settled observers.
+pump_settled <- function(obs, stall = 60) {
+  pump_progress(function() sum(vapply(obs, settled, TRUE)), length(obs), stall)
+}
+
 # A settling observer for one promise: value/error fields set from its
 # then callbacks; id field for FIFO-order assertions. The callbacks are
 # created in an empty-parented frame: devtools::test sources helpers into

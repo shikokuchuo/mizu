@@ -180,7 +180,7 @@ test_that("event-driven consumers report against the sync rows", {
         want <- min(4096L, n - sent)
         sent <- sent + mizu_send_batch(ch, batch[seq_len(want)])
       }
-      expect_true(pump_until(function() got$n - base >= j * n, 60))
+      expect_true(pump_progress(function() got$n - base, j * n))
     }
   }
   handler() # warm-up
@@ -202,7 +202,7 @@ test_that("event-driven consumers report against the sync rows", {
       v <- NULL
       pr <- mizu_collect_all_async(mizu_submit_batch(p, exprs))
       promises::then(pr, function(x) v <<- x)
-      expect_true(pump_until(function() !is.null(v), 60))
+      expect_true(pump_progress(function() as.integer(!is.null(v)), 1L))
     }
   }
   coll() # warm-up
@@ -226,10 +226,7 @@ test_that("event-driven bursts report the FIFO-depth and per-wake scan regimes",
     for (i in seq_len(d)) {
       mizu_send(ch, 1L)
     }
-    expect_true(pump_until(
-      function() all(vapply(obs, settled, TRUE)),
-      timeout = 30
-    ))
+    expect_true(pump_settled(obs))
   }
   deep() # warm-up
   t0 <- proc.time()[[3]]
@@ -256,10 +253,7 @@ test_that("event-driven bursts report the FIFO-depth and per-wake scan regimes",
       simplify = FALSE
     )
     obs <- lapply(prs, observe)
-    expect_true(pump_until(
-      function() all(vapply(obs, settled, TRUE)),
-      timeout = 30
-    ))
+    expect_true(pump_settled(obs))
   }
   many() # warm-up
   t0 <- proc.time()[[3]]
@@ -279,10 +273,7 @@ test_that("event-driven bursts report the FIFO-depth and per-wake scan regimes",
     obs <- lapply(seq_len(n), function(i) {
       observe(promises::as.promise(mizu_submit(p, 1L)))
     })
-    expect_true(pump_until(
-      function() all(vapply(obs, settled, TRUE)),
-      timeout = 30
-    ))
+    expect_true(pump_settled(obs))
   }
   pertask() # warm-up
   t0 <- proc.time()[[3]]
