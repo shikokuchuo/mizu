@@ -8,10 +8,12 @@
 #' prints its state, probed without consuming the result. The state is
 #' `pending`, `ok`, `err`, `cancel`, `died`, or `lost` in the result-slot
 #' vocabulary of [mizu_pool_info()]. It is `collected` once the result is
-#' taken, or `dropped` when its pool is gone. Sentinels print as their
-#' class. The handle methods never error and never touch the rings. A
-#' handle whose resources are released (a closed channel, a stopped pool)
-#' prints as closed. So auto-printing is always safe.
+#' taken, or `dropped` when its pool is gone. A [mizu_call()] task
+#' specification prints its qualified name — or the first line of its
+#' source string, truncated — and its argument counts. Sentinels print
+#' as their class. The handle methods never error and never touch the
+#' rings. A handle whose resources are released (a closed channel, a
+#' stopped pool) prints as closed. So auto-printing is always safe.
 #'
 #' @param x the object.
 #' @param ... ignored.
@@ -26,6 +28,8 @@
 #' mizu_collect(t)
 #' mizu_pool_stop(p)
 #' p
+#'
+#' mizu_call("stats::quantile", runif(10))
 #'
 #' @export
 print.mizu_channel <- function(x, ...) {
@@ -77,6 +81,36 @@ print.mizu_pool <- function(x, ...) {
 #' @export
 print.mizu_task <- function(x, ...) {
   cat(sprintf("<mizu_task: %s>\n", .Call(mizu_pool_task_state, x)))
+  invisible(x)
+}
+
+#' @rdname print.mizu_channel
+#' @export
+print.mizu_call <- function(x, ...) {
+  head <- if (x[["kind"]] == 0L) {
+    x[["code"]]
+  } else {
+    src <- strsplit(x[["code"]], "\n", fixed = TRUE)[[1L]]
+    sprintf('source "%s"', if (length(src)) src[[1L]] else "")
+  }
+  if (nchar(head) > 60L) {
+    head <- paste0(strtrim(head, 57L), "...")
+  }
+  np <- length(x[["positional"]])
+  nn <- length(x[["named"]])
+  cat(sprintf(
+    "<mizu_call: %s%s>\n",
+    head,
+    if (np > 0L && nn > 0L) {
+      sprintf(", %d positional, %d named", np, nn)
+    } else if (np > 0L) {
+      sprintf(", %d positional", np)
+    } else if (nn > 0L) {
+      sprintf(", %d named", nn)
+    } else {
+      ""
+    }
+  ))
   invisible(x)
 }
 

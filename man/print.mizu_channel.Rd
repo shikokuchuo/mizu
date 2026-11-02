@@ -4,6 +4,7 @@
 \alias{print.mizu_channel}
 \alias{print.mizu_pool}
 \alias{print.mizu_task}
+\alias{print.mizu_call}
 \alias{print.mizu_map}
 \alias{print.mizu_map_prepared}
 \alias{print.mizu_sentinel}
@@ -15,6 +16,8 @@
 \method{print}{mizu_pool}(x, ...)
 
 \method{print}{mizu_task}(x, ...)
+
+\method{print}{mizu_call}(x, ...)
 
 \method{print}{mizu_map}(x, ...)
 
@@ -41,10 +44,12 @@ registry capacity, and pending (uncompleted) tasks. A task handle
 prints its state, probed without consuming the result. The state is
 \code{pending}, \code{ok}, \code{err}, \code{cancel}, \code{died}, or \code{lost} in the result-slot
 vocabulary of \code{\link[=mizu_pool_info]{mizu_pool_info()}}. It is \code{collected} once the result is
-taken, or \code{dropped} when its pool is gone. Sentinels print as their
-class. The handle methods never error and never touch the rings. A
-handle whose resources are released (a closed channel, a stopped pool)
-prints as closed. So auto-printing is always safe.
+taken, or \code{dropped} when its pool is gone. A \code{\link[=mizu_call]{mizu_call()}} task
+specification prints its qualified name — or the first line of its
+source string, truncated — and its argument counts. Sentinels print
+as their class. The handle methods never error and never touch the
+rings. A handle whose resources are released (a closed channel, a
+stopped pool) prints as closed. So auto-printing is always safe.
 }
 \examples{
 p <- mizu_pool()
@@ -54,5 +59,7 @@ t
 mizu_collect(t)
 mizu_pool_stop(p)
 p
+
+mizu_call("stats::quantile", runif(10))
 
 }

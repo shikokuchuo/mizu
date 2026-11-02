@@ -1,5 +1,6 @@
 # One-line print methods: identity and state on live handles, "closed"
-# (never an error) on released ones, class alone for tasks and sentinels.
+# (never an error) on released ones, class alone for tasks and
+# sentinels, and the head plus argument counts for call specs.
 
 test_that("channel handles print one line and survive release", {
   p <- channel_pair()
@@ -41,11 +42,56 @@ test_that("pool and task handles print one line and survive destroy", {
   expect_output(print(p[["ctrl"]]), "<mizu_pool: closed>", fixed = TRUE)
 })
 
+test_that("call specs print the head and argument counts", {
+  expect_output(
+    print(mizu_call("stats::quantile", 1:10, probs = 0.5)),
+    "<mizu_call: stats::quantile, 1 positional, 1 named>",
+    fixed = TRUE
+  )
+  expect_output(
+    print(mizu_call(.source = "x + 1", x = 41L)),
+    '<mizu_call: source "x + 1", 1 named>',
+    fixed = TRUE
+  )
+  expect_output(
+    print(mizu_call(.source = "x + 1\nx + 2")),
+    '<mizu_call: source "x + 1">',
+    fixed = TRUE
+  )
+  expect_output(
+    print(mizu_call(.source = strrep("x", 100L))),
+    "...>",
+    fixed = TRUE
+  )
+  expect_output(
+    print(mizu_call("base::sqrt")),
+    "<mizu_call: base::sqrt>",
+    fixed = TRUE
+  )
+})
+
 test_that("sentinels print as their class", {
-  p <- channel_pair()
-  s <- mizu_recv(p[["host"]], timeout = 0)
-  expect_s3_class(s, "mizu_timeout")
-  expect_output(print(s), "<mizu_timeout>", fixed = TRUE)
+  p <- channel_pair(capacity = 4L)
+  tm <- mizu_recv(p[["host"]], timeout = 0)
+  expect_s3_class(tm, "mizu_timeout")
+  expect_output(print(tm), "<mizu_timeout>", fixed = TRUE)
+
+  for (i in 1:4) {
+    expect_true(mizu_send(p[["host"]], i))
+  }
+  fl <- mizu_send(p[["host"]], 5L)
+  expect_s3_class(fl, "mizu_full")
+  expect_output(print(fl), "<mizu_full>", fixed = TRUE)
+
+  for (i in 1:4) {
+    expect_identical(mizu_recv(p[["peer"]], 5), i)
+  }
+  .Call(mizu:::mizu_channel_close_signal, p[["peer"]])
+  cl <- mizu_recv(p[["host"]], 5)
+  expect_s3_class(cl, "mizu_closed")
+  expect_output(print(cl), "<mizu_closed>", fixed = TRUE)
+  expect_true(mizu_close(p[["host"]], timeout = 5))
+  expect_true(mizu_close(p[["peer"]], timeout = 5))
 })
 
 test_that("a finalized in-process peer handle reads closed at print", {
