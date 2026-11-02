@@ -91,8 +91,8 @@ are process-private and do not survive `fork()`.
 
 ## Details
 
-The pool is tied to the process that created it. Use the returned handle
-directly with
+The pool exists only as long as the process that created it. Use the
+returned handle directly with
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 and
 [`mizu_collect()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md).

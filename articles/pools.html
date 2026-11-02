@@ -149,7 +149,7 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; $total</span></span>
-<span><span class="co">#&gt; [1] 5.347343</span></span>
+<span><span class="co">#&gt; [1] 5.269821</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; $label</span></span>
 <span><span class="co">#&gt; [1] "done"</span></span></code></pre></div>
@@ -180,7 +180,7 @@
 <p>A task with a promise attached, or one that is part of a pending async collection, refuses a blocking <code><a href="../reference/mizu_submit.html">mizu_collect()</a></code> and a second promise: each result has one consumer. <code><a href="../reference/mizu_cancel.html">mizu_cancel()</a></code> is still allowed, and the pending promise then rejects.</p>
 </section><section class="level2"><h2 id="sizing-sharing-and-watching-a-pool">Sizing, sharing and watching a pool<a class="anchor" aria-label="anchor" href="#sizing-sharing-and-watching-a-pool"></a>
 </h2>
-<p>A pool can grow and shrink while it runs. Retirement never interrupts a task: the worker finishes its current task, and the remaining workers take over anything still queued to it. Other R processes can join a running pool as submitters. All they need is the pool’s join token:</p>
+<p>A pool can grow and shrink while it runs. Retirement never interrupts a task: the worker finishes its current task, and the remaining workers take over anything still queued to it. Other R processes can join a running pool as submitters. They need only the pool’s join token:</p>
 <div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_spawn_workers</a></span><span class="op">(</span><span class="va">p</span>, n <span class="op">=</span> <span class="fl">2L</span><span class="op">)</span>     <span class="co"># two more workers join the pool</span></span>
 <span><span class="fu"><a href="../reference/mizu_spawn_workers.html">mizu_retire_worker</a></span><span class="op">(</span><span class="va">p</span>, slot <span class="op">=</span> <span class="fl">0L</span><span class="op">)</span>  <span class="co"># worker 0 exits after its current task</span></span>

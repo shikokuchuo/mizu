@@ -133,13 +133,13 @@ terminal state, not a signalled condition. See
 move payloads and wait with a bound (<code><a href="mizu_send.html">mizu_send()</a></code>, <code><a href="mizu_send.html">mizu_recv()</a></code>,
 <code><a href="mizu_submit.html">mizu_collect()</a></code>, <code><a href="mizu_map.html">mizu_map()</a></code>) return sentinels for transport states:
 nothing yet (<code>mizu_timeout</code>), no room now (<code>mizu_full</code>), and stream over
-(<code>mizu_closed</code>, <code>mizu_peer_gone</code>). Their caller is usually a loop, and these
-are its normal outcomes. Conditions are raised where a request has failed for
-good. Constructors and <code><a href="mizu_submit.html">mizu_submit()</a></code>, whose return value is a handle the
-next line uses, raise on every failure. <code><a href="mizu_submit.html">mizu_collect()</a></code> raises when the
-value can never arrive: the task's own error re-signalled,
-<code>mizu_error_cancelled</code>, or <code>mizu_error_worker_died</code>. A sentinel invites the
-next iteration of the loop, and a condition means stop and deal with it.</p>
+(<code>mizu_closed</code>, <code>mizu_peer_gone</code>). Their caller is a loop, and these are its
+normal outcomes. Conditions are raised where a request has failed for good.
+Constructors and <code><a href="mizu_submit.html">mizu_submit()</a></code>, whose return value is a handle the next
+line uses, raise on every failure. <code><a href="mizu_submit.html">mizu_collect()</a></code> raises when the value can
+never arrive: the task's own error re-signalled, <code>mizu_error_cancelled</code>, or
+<code>mizu_error_worker_died</code>. A sentinel invites the next iteration of the loop,
+and a condition means stop and deal with it.</p>
     </div>
     <div class="section level2">
     <h2 id="task-error-transport">Task error transport<a class="anchor" aria-label="anchor" href="#task-error-transport"></a></h2>

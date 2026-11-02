@@ -5,9 +5,9 @@ participant joined. They complement the point-in-time snapshots of
 [`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md)
 and
 [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/reference/mizu_pool_dump.md).
-Keeping them costs the pool almost nothing. The submitter counts are
-derived from the injection ring's own positions, so submission writes
-nothing extra, and the spill counter moves only on the spill path, where
+Keeping them costs the pool nothing. The submitter counts are derived
+from the injection ring's own positions, so submission writes nothing
+extra, and the spill counter moves only on the spill path, where
 creating the region already costs far more than the counter update. The
 worker counters are kept in the worker process and mirrored into the
 region only when a worker parks, leaves, or passes its fairness tick, so
@@ -57,15 +57,15 @@ reset when a new joiner reuses a slot.
 p <- mizu_pool()
 t <- mizu_submit(p, runif(5))
 mizu_collect(t)
-#> [1] 0.46373745 0.76946885 0.97118686 0.35085245 0.09462422
+#> [1] 0.8007534 0.6519780 0.6855986 0.5122041 0.1881328
 mizu_pool_stats(p)
 #> $workers
 #>   slot status  pid tasks steals injections parks helps deque
-#> 1    0   live 8142     1      0          1     1     0     0
+#> 1    0   live 8170     1      0          1     1     0     0
 #> 
 #> $submitters
 #>   slot status  pid injected claimed spills spill_reuse queued
-#> 1    0   live 6671        1       1      0           0      0
+#> 1    0   live 6699        1       1      0           0      0
 #> 2    1   free    0        0       0      0           0      0
 #> 3    2   free    0        0       0      0           0      0
 #> 4    3   free    0        0       0      0           0      0

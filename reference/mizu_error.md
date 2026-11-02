@@ -118,9 +118,9 @@ that move payloads and wait with a bound
 [`mizu_map()`](https://shikokuchuo.net/mizu/reference/mizu_map.md))
 return sentinels for transport states: nothing yet (`mizu_timeout`), no
 room now (`mizu_full`), and stream over (`mizu_closed`,
-`mizu_peer_gone`). Their caller is usually a loop, and these are its
-normal outcomes. Conditions are raised where a request has failed for
-good. Constructors and
+`mizu_peer_gone`). Their caller is a loop, and these are its normal
+outcomes. Conditions are raised where a request has failed for good.
+Constructors and
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md),
 whose return value is a handle the next line uses, raise on every
 failure.

@@ -78,9 +78,10 @@ both directions. The floor is 256 KB for a flat vector on a channel, and
 
 ## What crosses
 
-R’s built-in datasets show the range. Each form below comes back from
-Python [`identical()`](https://rdrr.io/r/base/identical.html) to what
-you sent, down to values, shape, class, and labels.
+R’s built-in datasets illustrate the range of what crosses. Each form
+below comes back from Python
+[`identical()`](https://rdrr.io/r/base/identical.html) to what you sent,
+down to values, shape, class, and labels.
 
 ``` r
 
@@ -120,8 +121,7 @@ offending value, and the channel stays usable. Among the built-in
 datasets, `CO2` and `ChickWeight` cross once their groupedData metadata
 is dropped. Their `formula` attributes are language objects, and `units`
 is a reserved attribute name. The frames themselves, their
-ordered-factor columns, and the `labels` attribute cross without
-trouble.
+ordered-factor columns, and the `labels` attribute cross intact.
 
 ``` r
 

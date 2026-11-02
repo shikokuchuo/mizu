@@ -107,7 +107,7 @@
 <span></span>
 <span><span class="co"># Speedup multiple of one bench row over another, from the medians</span></span>
 <span><span class="va">speedup</span> <span class="op">&lt;-</span> <span class="kw">function</span><span class="op">(</span><span class="va">b</span>, <span class="va">over</span>, <span class="va">base</span><span class="op">)</span> <span class="fu"><a href="https://rdrr.io/r/base/Round.html" class="external-link">signif</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="va">b</span><span class="op">$</span><span class="va">median</span><span class="op">[</span><span class="va">over</span><span class="op">]</span><span class="op">)</span> <span class="op">/</span> <span class="fu"><a href="https://rdrr.io/r/base/numeric.html" class="external-link">as.numeric</a></span><span class="op">(</span><span class="va">b</span><span class="op">$</span><span class="va">median</span><span class="op">[</span><span class="va">base</span><span class="op">]</span><span class="op">)</span>, <span class="fl">2L</span><span class="op">)</span></span></code></pre></div>
-<section class="level2"><h2 id="a-data-frame-there-and-back">A data frame there and back<a class="anchor" aria-label="anchor" href="#a-data-frame-there-and-back"></a>
+<section class="level2"><h2 id="a-data-frame-round-trip">A data frame round trip<a class="anchor" aria-label="anchor" href="#a-data-frame-round-trip"></a>
 </h2>
 <p>The <code>enrich()</code> task receives the 3.3 MB <code>diamonds</code> data frame, adds a column, and returns it. mirai serializes the data once per direction and copies it through a socket. mizu stages the frame once in shared memory. The worker reads it in place, and the enriched frame crosses back the same way:</p>
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
@@ -119,8 +119,8 @@
 <span><span class="co">#&gt; # A tibble: 2 × 6</span></span>
 <span><span class="co">#&gt;   expression      min   median `itr/sec` mem_alloc `gc/sec`</span></span>
 <span><span class="co">#&gt;   &lt;bch:expr&gt; &lt;bch:tm&gt; &lt;bch:tm&gt;     &lt;dbl&gt; &lt;bch:byt&gt;    &lt;dbl&gt;</span></span>
-<span><span class="co">#&gt; 1 mizu       497.12µs 579.33µs     1130.  483.41KB      0  </span></span>
-<span><span class="co">#&gt; 2 mirai        7.16ms   7.67ms      129.    3.82MB     15.9</span></span></code></pre></div>
+<span><span class="co">#&gt; 1 mizu       511.48µs 582.75µs     1135.  483.41KB      0  </span></span>
+<span><span class="co">#&gt; 2 mirai        5.66ms   7.53ms      131.    3.82MB     21.9</span></span></code></pre></div>
 <p>End to end, mizu is <strong>13x</strong> faster (medians). Every timed run stages the frame, computes the new column over all 53,940 rows, and returns the enriched frame.</p>
 </section><section class="level2"><h2 id="five-thousand-small-tasks">Five thousand small tasks<a class="anchor" aria-label="anchor" href="#five-thousand-small-tasks"></a>
 </h2>
@@ -142,10 +142,10 @@
 <span><span class="co">#&gt; # A tibble: 3 × 6</span></span>
 <span><span class="co">#&gt;   expression      min   median `itr/sec` mem_alloc `gc/sec`</span></span>
 <span><span class="co">#&gt;   &lt;bch:expr&gt; &lt;bch:tm&gt; &lt;bch:tm&gt;     &lt;dbl&gt; &lt;bch:byt&gt;    &lt;dbl&gt;</span></span>
-<span><span class="co">#&gt; 1 serial       45.6ms     52ms     17.5     77.1MB    44.7 </span></span>
-<span><span class="co">#&gt; 2 mizu         12.6ms   15.4ms     56.0      535KB     0   </span></span>
-<span><span class="co">#&gt; 3 mirai       520.8ms  520.8ms      1.92    47.4MB     1.92</span></span></code></pre></div>
-<p>With four workers, mizu is <strong>3.4x</strong> faster than the serial loop and <strong>34x</strong> faster than mirai (medians).</p>
+<span><span class="co">#&gt; 1 serial       51.9ms   59.9ms     15.6       77MB    39.0 </span></span>
+<span><span class="co">#&gt; 2 mizu         13.3ms   14.7ms     55.9    535.9KB     0   </span></span>
+<span><span class="co">#&gt; 3 mirai       521.4ms  521.4ms      1.92    47.4MB     1.92</span></span></code></pre></div>
+<p>With four workers, mizu is <strong>4.1x</strong> faster than the serial loop and <strong>35x</strong> faster than mirai (medians).</p>
 <div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu">daemons</span><span class="op">(</span><span class="fl">0L</span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></code></pre></div>

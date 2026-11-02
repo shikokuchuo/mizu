@@ -132,7 +132,7 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 5.347343
+#> [1] 5.269821
 #> 
 #> $label
 #> [1] "done"
@@ -207,7 +207,7 @@ is still allowed, and the pending promise then rejects.
 A pool can grow and shrink while it runs. Retirement never interrupts a
 task: the worker finishes its current task, and the remaining workers
 take over anything still queued to it. Other R processes can join a
-running pool as submitters. All they need is the pool’s join token:
+running pool as submitters. They need only the pool’s join token:
 
 ``` r
 

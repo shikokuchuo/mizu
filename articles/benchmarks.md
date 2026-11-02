@@ -26,7 +26,7 @@ enrich <- evalq(
 speedup <- function(b, over, base) signif(as.numeric(b$median[over]) / as.numeric(b$median[base]), 2L)
 ```
 
-## A data frame there and back
+## A data frame round trip
 
 The `enrich()` task receives the 3.3 MB `diamonds` data frame, adds a
 column, and returns it. mirai serializes the data once per direction and
@@ -44,8 +44,8 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu       497.12µs 579.33µs     1130.  483.41KB      0  
-#> 2 mirai        7.16ms   7.67ms      129.    3.82MB     15.9
+#> 1 mizu       511.48µs 582.75µs     1135.  483.41KB      0  
+#> 2 mirai        5.66ms   7.53ms      131.    3.82MB     21.9
 ```
 
 End to end, mizu is **13x** faster (medians). Every timed run stages the
@@ -80,13 +80,13 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial       45.6ms     52ms     17.5     77.1MB    44.7 
-#> 2 mizu         12.6ms   15.4ms     56.0      535KB     0   
-#> 3 mirai       520.8ms  520.8ms      1.92    47.4MB     1.92
+#> 1 serial       51.9ms   59.9ms     15.6       77MB    39.0 
+#> 2 mizu         13.3ms   14.7ms     55.9    535.9KB     0   
+#> 3 mirai       521.4ms  521.4ms      1.92    47.4MB     1.92
 ```
 
-With four workers, mizu is **3.4x** faster than the serial loop and
-**34x** faster than mirai (medians).
+With four workers, mizu is **4.1x** faster than the serial loop and
+**35x** faster than mirai (medians).
 
 ``` r
 
