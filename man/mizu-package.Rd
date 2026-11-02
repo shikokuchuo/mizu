@@ -4,7 +4,7 @@
 \name{mizu-package}
 \alias{mizu}
 \alias{mizu-package}
-\title{mizu: Zero-Copy Async and Parallel IPC Across R and Python}
+\title{mizu: Async and Parallel R at Thread Speed over Shared Memory}
 \description{
 Parallel computation and data exchange between R processes on the same
 machine. Lock-free channels and work-stealing task pools over 'POSIX'

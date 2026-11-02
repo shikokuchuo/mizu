@@ -6,7 +6,7 @@ template:
   opengraph:
     image:
       src: og-image.png
-      alt: "mizu: zero-copy async and parallel IPC across R and Python"
+      alt: "mizu: async and parallel R at thread speed over shared memory"
 
 reference:
   - title: Channels

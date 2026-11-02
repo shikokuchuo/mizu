@@ -1,5 +1,5 @@
 Package: mizu
-Title: Zero-Copy Async and Parallel IPC Across R and Python
+Title: Async and Parallel R at Thread Speed over Shared Memory
 Version: 0.0.1.9000
 Authors@R: c(
     person("Charlie", "Gao", , "charlie.gao@posit.co", role = c("aut", "cre"),

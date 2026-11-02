@@ -33,9 +33,9 @@ if (dir.exists(venv)) {
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 <!-- badges: end -->
 
-mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.
+Async and parallel R at thread speed over shared memory.
 
-Task round trips drop from ~100 µs over sockets to < 1 µs — two orders of magnitude (see [Benchmarks](#benchmarks)). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.
+Task round trips drop from ~100 µs over sockets to < 1 µs, fast enough to parallelize work at thread granularity (see [Benchmarks](#benchmarks)). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.
 
 Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting with the hot path bypassing the kernel, and peer death delivered as an OS event.
 
@@ -92,7 +92,7 @@ Note: mirai also serves workers on remote machines and HPC clusters, which share
 The function and data cross into shared memory once.
 Workers divide the elements among themselves, claiming ranges from a shared cursor.
 
-A map also nests — the mapped function can map over its own pool with `mizu_map(mizu_current_pool(), ...)`, deadlock-free.
+A map also nests: the mapped function can map over its own pool with `mizu_map(mizu_current_pool(), ...)`, deadlock-free.
 
 ```{r map}
 p <- mizu_pool(n_workers = 4L)
