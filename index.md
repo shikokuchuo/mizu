@@ -1,12 +1,12 @@
 # mizu
 
-mizu uses shared memory to make communication between R processes fast
-enough to parallelize work at thread granularity.
+Async and parallel R at thread speed over shared memory
 
-Task round trips drop from ~100 µs over sockets to \< 1 µs — two orders
-of magnitude (see [Benchmarks](#benchmarks)). Common data structures
-like vectors, matrices, data frames, and Arrow tables can be shared
-between R and Python as zero-copy views.
+Task round trips drop from ~100 µs over sockets to \< 1 µs, fast enough
+to parallelize work at thread granularity (see
+[Benchmarks](#benchmarks)). Common data structures like vectors,
+matrices, data frames, and Arrow tables can be shared between R and
+Python as zero-copy views.
 
 Channels and work-stealing task pools run over POSIX shared memory
 (Linux, macOS) or Win32 file mappings (Windows): lock-free
@@ -19,16 +19,16 @@ library for lock-free shared-memory IPC.
 [pymizu](https://github.com/shikokuchuo/pymizu) binds the same core for
 Python, so R and Python can talk to each other.
 
-- Zero-copy vectors and data frames — received as ALTREP views over the
+- Zero-copy vectors and data frames: received as ALTREP views over the
   shared pages
-- Zero-copy Arrow interchange — `arrow` tables and record batches travel
+- Zero-copy Arrow interchange: `arrow` tables and record batches travel
   as one frame, converting back without copying
-- Event-driven async — messages stream into a `later` event loop without
+- Event-driven async: messages stream into a `later` event loop without
   polling, and channels, tasks, and maps plug into `promises` pipelines,
   ready for Shiny
-- Reproducible parallel random numbers (`.seed`) — identical results for
+- Reproducible parallel random numbers (`.seed`): identical results for
   any worker count or steal order
-- Nested parallel maps — a task can map over its own pool, deadlock-free
+- Nested parallel maps: a task can map over its own pool, deadlock-free
 
 > **Lifecycle: experimental.** The API is not yet stable and we may make
 > changes in response to feedback.
@@ -86,7 +86,7 @@ on the handle waits and returns the results in order. The function and
 data cross into shared memory once. Workers divide the elements among
 themselves, claiming ranges from a shared cursor.
 
-A map also nests — the mapped function can map over its own pool with
+A map also nests: the mapped function can map over its own pool with
 `mizu_map(mizu_current_pool(), ...)`, deadlock-free.
 
 ``` r

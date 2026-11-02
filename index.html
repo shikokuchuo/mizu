@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<title>Zero-Copy Async and Parallel IPC Across R and Python • mizu</title>
+<title>Async and Parallel R at Thread Speed over Shared Memory • mizu</title>
 <!-- favicons --><link rel="icon" type="image/png" sizes="96x96" href="favicon-96x96.png">
 <link rel="icon" type="”image/svg+xml”" href="favicon.svg">
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
@@ -16,11 +16,11 @@
 <link href="deps/Source_Code_Pro-0.4.10/font.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
-<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Zero-Copy Async and Parallel IPC Across R and Python">
+<script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Async and Parallel R at Thread Speed over Shared Memory">
 <meta name="description" content="Parallel computation and data exchange between R processes on the same machine: lock-free channels, work-stealing task pools, and a parallel map over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows), with the hot path entirely in user space. Inter-process communication cheap enough that work can be divided at granularities usually reserved for threads. Vectors and data frames transfer zero-copy, received as ALTREP views over the shared pages; Apache Arrow tables and record batches travel as a single frame, with zero-copy conversion in both directions. Receives and task results integrate with later and promises for non-blocking, event-driven applications such as shiny. Channels, pools, and maps interoperate with pymizu, so a peer or worker can equally be a Python process. A complement to mirai; its payload contents interoperate transparently with mori shared objects.">
 <meta property="og:description" content="Parallel computation and data exchange between R processes on the same machine: lock-free channels, work-stealing task pools, and a parallel map over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows), with the hot path entirely in user space. Inter-process communication cheap enough that work can be divided at granularities usually reserved for threads. Vectors and data frames transfer zero-copy, received as ALTREP views over the shared pages; Apache Arrow tables and record batches travel as a single frame, with zero-copy conversion in both directions. Receives and task results integrate with later and promises for non-blocking, event-driven applications such as shiny. Channels, pools, and maps interoperate with pymizu, so a peer or worker can equally be a Python process. A complement to mirai; its payload contents interoperate transparently with mori shared objects.">
 <meta property="og:image" content="https://shikokuchuo.net/mizu/og-image.png">
-<meta property="og:image:alt" content="mizu: zero-copy async and parallel IPC across R and Python">
+<meta property="og:image:alt" content="mizu: async and parallel R at thread speed over shared memory">
 </head>
 <body>
     <a href="#container" class="visually-hidden-focusable">Skip to content</a>
@@ -80,16 +80,16 @@
 </div>
 <!-- badges: start -->
 
-<p>mizu uses shared memory to make communication between R processes fast enough to parallelize work at thread granularity.</p>
-<p>Task round trips drop from ~100 µs over sockets to &lt; 1 µs — two orders of magnitude (see <a href="#benchmarks">Benchmarks</a>). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.</p>
+<p>Async and parallel R at thread speed over shared memory</p>
+<p>Task round trips drop from ~100 µs over sockets to &lt; 1 µs, fast enough to parallelize work at thread granularity (see <a href="#benchmarks">Benchmarks</a>). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.</p>
 <p>Channels and work-stealing task pools run over POSIX shared memory (Linux, macOS) or Win32 file mappings (Windows): lock-free single-producer single-consumer rings with batched publication, spin-then-park waiting with the hot path bypassing the kernel, and peer death delivered as an OS event.</p>
 <p>mizu is built on <a href="https://github.com/shikokuchuo/libmizu" class="external-link">libmizu</a>, a C library for lock-free shared-memory IPC. <a href="https://github.com/shikokuchuo/pymizu" class="external-link">pymizu</a> binds the same core for Python, so R and Python can talk to each other.</p>
 <ul>
-<li>Zero-copy vectors and data frames — received as ALTREP views over the shared pages</li>
-<li>Zero-copy Arrow interchange — <code>arrow</code> tables and record batches travel as one frame, converting back without copying</li>
-<li>Event-driven async — messages stream into a <code>later</code> event loop without polling, and channels, tasks, and maps plug into <code>promises</code> pipelines, ready for Shiny</li>
-<li>Reproducible parallel random numbers (<code>.seed</code>) — identical results for any worker count or steal order</li>
-<li>Nested parallel maps — a task can map over its own pool, deadlock-free</li>
+<li>Zero-copy vectors and data frames: received as ALTREP views over the shared pages</li>
+<li>Zero-copy Arrow interchange: <code>arrow</code> tables and record batches travel as one frame, converting back without copying</li>
+<li>Event-driven async: messages stream into a <code>later</code> event loop without polling, and channels, tasks, and maps plug into <code>promises</code> pipelines, ready for Shiny</li>
+<li>Reproducible parallel random numbers (<code>.seed</code>): identical results for any worker count or steal order</li>
+<li>Nested parallel maps: a task can map over its own pool, deadlock-free</li>
 </ul>
 <blockquote>
 <p><strong>Lifecycle: experimental.</strong> The API is not yet stable and we may make changes in response to feedback.</p>
@@ -166,7 +166,7 @@
 <h2 id="parallel-map">Parallel map<a class="anchor" aria-label="anchor" href="#parallel-map"></a>
 </h2>
 <p><code><a href="reference/mizu_map.html">mizu_map()</a></code> maps a function over a vector or list on the pool and returns a map handle immediately, just as <code><a href="reference/mizu_submit.html">mizu_submit()</a></code> returns a task. <code><a href="reference/mizu_submit.html">mizu_collect()</a></code> on the handle waits and returns the results in order. The function and data cross into shared memory once. Workers divide the elements among themselves, claiming ranges from a shared cursor.</p>
-<p>A map also nests — the mapped function can map over its own pool with <code>mizu_map(mizu_current_pool(), ...)</code>, deadlock-free.</p>
+<p>A map also nests: the mapped function can map over its own pool with <code>mizu_map(mizu_current_pool(), ...)</code>, deadlock-free.</p>
 <div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/mizu_pool.html">mizu_pool</a></span><span class="op">(</span>n_workers <span class="op">=</span> <span class="fl">4L</span><span class="op">)</span></span>
 <span></span>
