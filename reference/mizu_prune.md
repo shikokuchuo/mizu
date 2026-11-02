@@ -38,5 +38,7 @@ reuse.
 ## Examples
 
 ``` r
+if (FALSE) { # interactive()
 mizu_prune()
+}
 ```
