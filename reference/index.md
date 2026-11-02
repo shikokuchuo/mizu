@@ -121,6 +121,7 @@
 - [`print(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_pool>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_call>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_map_prepared>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)
   [`print(`*`<mizu_sentinel>`*`)`](https://shikokuchuo.net/mizu/reference/print.mizu_channel.md)

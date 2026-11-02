@@ -11,10 +11,13 @@ state is `pending`, `ok`, `err`, `cancel`, `died`, or `lost` in the
 result-slot vocabulary of
 [`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md).
 It is `collected` once the result is taken, or `dropped` when its pool
-is gone. Sentinels print as their class. The handle methods never error
-and never touch the rings. A handle whose resources are released (a
-closed channel, a stopped pool) prints as closed. So auto-printing is
-always safe.
+is gone. A
+[`mizu_call()`](https://shikokuchuo.net/mizu/reference/mizu_call.md)
+task specification prints its qualified name — or the first line of its
+source string, truncated — and its argument counts. Sentinels print as
+their class. The handle methods never error and never touch the rings. A
+handle whose resources are released (a closed channel, a stopped pool)
+prints as closed. So auto-printing is always safe.
 
 ## Usage
 
@@ -26,6 +29,9 @@ print(x, ...)
 print(x, ...)
 
 # S3 method for class 'mizu_task'
+print(x, ...)
+
+# S3 method for class 'mizu_call'
 print(x, ...)
 
 # S3 method for class 'mizu_map'
@@ -60,7 +66,7 @@ print(x, ...)
 ``` r
 p <- mizu_pool()
 p
-#> <mizu_pool /mizu_1957_5fc99123: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_19c9_e26dbfed: controller, 1/1 workers live, 0 pending>
 t <- mizu_submit(p, 1 + 1)
 t
 #> <mizu_task: ok>
@@ -69,4 +75,7 @@ mizu_collect(t)
 mizu_pool_stop(p)
 p
 #> <mizu_pool: closed>
+
+mizu_call("stats::quantile", runif(10))
+#> <mizu_call: stats::quantile, 1 positional>
 ```
