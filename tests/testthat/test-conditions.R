@@ -43,6 +43,7 @@ test_that("cancelled collect raises mizu_error_cancelled; mizu_error catches", {
 })
 
 test_that("startup timeout raises mizu_error_startup", {
+  skip_on_cran() # wall-clock startup deadlines
   expect_error(
     mizu_pool(
       n_workers = 1L,

@@ -83,7 +83,6 @@ test_that("producer GC releases the name; live consumers keep reading", {
 })
 
 test_that("clean child exit runs the session-exit finalizers", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(

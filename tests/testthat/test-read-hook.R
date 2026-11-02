@@ -30,7 +30,6 @@ spawn_with_flags <- function(expr, flags, outfile) {
 }
 
 test_that("a read-hook raise consumes / surfaces, never wedges (R-21, R-12)", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   out <- tfile()
   on.exit(unlink(out), add = TRUE)

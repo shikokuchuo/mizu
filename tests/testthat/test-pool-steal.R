@@ -49,7 +49,10 @@ test_that("a leaving worker's deque is consumed in place: REAPING to FREE", {
   tb <- mizu_submit(p[["ctrl"]], "b")
   expect_identical(pool_pull(p, 2L), 2L)
   .Call(mizu:::mizu_pool_leave, p[["wk"]])
-  expect_identical(mizu_pool_info(p[["ctrl"]])[["workers"]], c("reaping", "live"))
+  expect_identical(
+    mizu_pool_info(p[["ctrl"]])[["workers"]],
+    c("reaping", "live")
+  )
 
   # the survivor drains the orphaned deque through the ordinary steal path;
   # observing it drained returns the slot to FREE
@@ -69,32 +72,50 @@ test_that("a leaving worker with an empty deque frees its slot directly", {
 })
 
 test_that("the fairness tick claims injection ahead of local work", {
-  p <- pool_pair(workers = 1L, max_submitters = 1L, injection_cap = 128L,
-                 per_worker_cap = 128L, result_slots = 128L)
+  p <- pool_pair(
+    workers = 1L,
+    max_submitters = 1L,
+    injection_cap = 128L,
+    per_worker_cap = 128L,
+    result_slots = 128L
+  )
   local <- lapply(1:61, function(i) mizu_submit(p[["ctrl"]], i, i = i))
   expect_identical(pool_pull(p, 61L), 61L)
   ext <- mizu_submit(p[["ctrl"]], "external")
 
   # claims 1..60 pop the deque; claim 61 is the tick's full scan, which
   # takes the ring entry while 1 local entry still queues below it
-  for (i in 1:60) expect_identical(pool_step(p), 1L)
+  for (i in 1:60) {
+    expect_identical(pool_step(p), 1L)
+  }
   expect_s3_class(mizu_collect(ext, timeout = 0), "mizu_timeout")
   expect_identical(pool_step(p), 1L)
   expect_identical(mizu_collect(ext, timeout = 5), "external")
   expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]], 1)
-  while (pool_step(p) == 1L) NULL
+  while (pool_step(p) == 1L) {
+    NULL
+  }
   pool_end(p)
 })
 
 test_that("pull stops at deque capacity and leaves the rest queued", {
-  p <- pool_pair(workers = 1L, max_submitters = 1L, injection_cap = 128L,
-                 per_worker_cap = 4L, result_slots = 128L)
+  p <- pool_pair(
+    workers = 1L,
+    max_submitters = 1L,
+    injection_cap = 128L,
+    per_worker_cap = 4L,
+    result_slots = 128L
+  )
   tasks <- lapply(1:6, function(i) mizu_submit(p[["ctrl"]], i, i = i))
   expect_identical(pool_pull(p, 6L), 4L)
   st <- mizu_pool_info(p[["ctrl"]])
   expect_identical(st[["deque"]], 4)
   expect_identical(st[["injection"]], 2)
-  while (pool_step(p) == 1L) NULL
-  for (i in 1:6) expect_identical(mizu_collect(tasks[[i]], timeout = 5), i)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  for (i in 1:6) {
+    expect_identical(mizu_collect(tasks[[i]], timeout = 5), i)
+  }
   pool_end(p)
 })

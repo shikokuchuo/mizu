@@ -578,7 +578,6 @@ test_that("verbs reject an NA timeout instead of waiting forever (R-08)", {
 })
 
 test_that("a forked child's GC does not destroy the parent's pool (R-14)", {
-  skip_on_cran()
   skip_on_os("windows") # no fork
   skip_if_no_fork() # Positron/RStudio sessions block mcfork
   p <- pool_pair()
@@ -710,6 +709,7 @@ test_that("stop warns and reports FALSE when workers outlive the wait", {
 })
 
 test_that("mizu_spawn_workers validates n and walks back a failed startup", {
+  skip_on_cran() # a wall-clock startup deadline
   ctrl <- .Call(mizu:::mizu_pool_create, 2L, 8L, 64L, 64L, 64L, 256L)
   expect_error(mizu_spawn_workers(ctrl, 0L), "at least 1")
   expect_error(mizu_spawn_workers(ctrl, 3L), "not enough free worker slots")
@@ -945,7 +945,6 @@ test_that("collect_any parks until any result publishes", {
 })
 
 test_that("collect_any wakes off the park when a result publishes", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   t1 <- mizu_submit(p, {
@@ -965,7 +964,6 @@ test_that("collect_any wakes off the park when a result publishes", {
 })
 
 test_that("collect_all wakes off the park as results publish", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   t1 <- mizu_submit(p, {
@@ -1296,7 +1294,6 @@ test_that("mizu_local_pool restores at the calling frame's exit, LIFO", {
 })
 
 test_that("collect_any reports completion order across real workers", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(2L)
   slow <- mizu_submit(p, {

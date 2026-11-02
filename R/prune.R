@@ -25,7 +25,7 @@
 #'   `NULL` if none were. On platforms whose shared memory namespace cannot
 #'   be enumerated (Windows, where orphans cannot exist), always `NULL`.
 #'
-#' @examples
+#' @examplesIf interactive()
 #' mizu_prune()
 #'
 #' @export

@@ -176,7 +176,6 @@ test_that("attach fails when the host pid cannot be watched", {
 })
 
 test_that("attach after the host died fails and unlinks the channel", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -327,7 +326,6 @@ test_that("verbs reject an NA timeout instead of waiting forever (R-08)", {
 })
 
 test_that("a forked child's GC does not destroy the parent's channel (R-14)", {
-  skip_on_cran()
   skip_on_os("windows") # no fork
   skip_if_no_fork() # Positron/RStudio sessions block mcfork
   p <- channel_pair()
@@ -457,6 +455,7 @@ test_that("destroying the host first releases the region name", {
 })
 
 test_that("create resolves the default temp dir without TMPDIR", {
+  skip_on_cran() # unsets TMPDIR process-wide; the fallback is outside tempdir()
   old <- Sys.getenv("TMPDIR", unset = NA)
   skip_if(is.na(old))
   Sys.unsetenv("TMPDIR")

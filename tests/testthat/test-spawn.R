@@ -174,6 +174,7 @@ test_that("mizu_py_launcher probes the interpreter for pymizu", {
 })
 
 test_that("mizu_py_launcher needs a python3 on the PATH by default", {
+  skip_on_cran() # swaps PATH process-wide; the snapshot is CRAN-skipped anyway
   old <- Sys.getenv("PATH")
   Sys.setenv(PATH = tempdir())
   out <- tryCatch(mizu_py_launcher(), error = conditionMessage)

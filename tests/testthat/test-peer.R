@@ -3,7 +3,6 @@
 # -> flock verdict -> survivor cleanup), and the startup deadline walk-back.
 
 test_that("a spawned echo peer round-trips every payload kind", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr, capacity = 256L, arena_size = 65536)
   expect_true(mizu_alive(ch))
@@ -22,7 +21,6 @@ test_that("a spawned echo peer round-trips every payload kind", {
 })
 
 test_that("a source-string drop is parsed and evaluated by the peer", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(
     'mizu_send(ch, paste0("source:", 1 + 2))',
@@ -33,7 +31,6 @@ test_that("a source-string drop is parsed and evaluated by the peer", {
 })
 
 test_that("a malformed source drop errors in the peer, closing orderly", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(
     "this is not R code !!!",
@@ -45,7 +42,6 @@ test_that("a malformed source drop errors in the peer, closing orderly", {
 })
 
 test_that("the peer evaluates its expression with only ch bound", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(quote(
     mizu_send(
@@ -60,7 +56,6 @@ test_that("the peer evaluates its expression with only ch bound", {
 })
 
 test_that("a returning peer expression signals an orderly close", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(quote(mizu_send(ch, "done")))
   expect_identical(mizu_recv(ch, 30), "done")
@@ -69,7 +64,6 @@ test_that("a returning peer expression signals an orderly close", {
 })
 
 test_that("a peer error is an orderly close, not a death", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(
     quote(stop("boom")),
@@ -84,7 +78,6 @@ test_that("a peer error is an orderly close, not a death", {
 })
 
 test_that("peer death surfaces as a sticky mizu_peer_gone after draining", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(quote({
     mizu_send(ch, "before death")
@@ -110,7 +103,6 @@ test_that("peer death surfaces as a sticky mizu_peer_gone after draining", {
 })
 
 test_that("a peer that exits mid-stream loses nothing already published", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(quote({
     for (i in 1:5) {
@@ -132,7 +124,6 @@ test_that("a peer that exits mid-stream loses nothing already published", {
 })
 
 test_that("a peer hard-killed mid-stream drains, then reports gone", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(quote({
     for (i in 1:5) {
@@ -166,7 +157,6 @@ test_that("the startup deadline walks the channel back", {
 })
 
 test_that("a custom launcher receives the token and drives the spawn", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   seen <- NULL
   ch <- mizu_channel(echo_expr, launcher = function(token) {
@@ -180,7 +170,6 @@ test_that("a custom launcher receives the token and drives the spawn", {
 })
 
 test_that("mori-shared objects map zero-copy in the peer process", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   skip_if_not_installed("mori")
   ch <- mizu_channel(quote({

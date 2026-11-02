@@ -11,7 +11,6 @@
 # (timing reports are a CI-log tool only); CI sets NOT_CRAN.
 
 test_that("round-trip latency reports against the socket baseline", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr, capacity = 1024L)
 
@@ -30,7 +29,6 @@ test_that("round-trip latency reports against the socket baseline", {
 })
 
 test_that("one-way throughput reports against the >100k msg/s regime", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   n <- 200000L
   ch <- mizu_channel(
@@ -68,7 +66,6 @@ test_that("one-way throughput reports against the >100k msg/s regime", {
 })
 
 test_that("pool task dispatch reports against the mirai baseline", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(1L, max_submitters = 2L) # 2048 result slots for us
 
@@ -127,7 +124,6 @@ test_that("pool task dispatch reports against the mirai baseline", {
 # rows above); dated records live in dev/bench/notes.md.
 
 test_that("event-driven consumers report against the sync rows", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   skip_if_no_promises()
   n <- 10000L
@@ -218,7 +214,6 @@ test_that("event-driven consumers report against the sync rows", {
 })
 
 test_that("event-driven bursts report the FIFO-depth and per-wake scan regimes", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   skip_if_no_promises()
 
@@ -345,7 +340,6 @@ test_that("mizu_map reports against serial lapply and per-task dispatch", {
 # baselines and every dated outcome are recorded in dev/bench/notes.md.
 
 test_that("large-vector channel round trip reports the memcpy-bound regime", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr, capacity = 64L)
 
@@ -384,7 +378,6 @@ test_that("large-vector channel round trip reports the memcpy-bound regime", {
 })
 
 test_that("pool task returning a large vector reports the memcpy-bound regime", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(1L, max_submitters = 2L)
 
@@ -465,7 +458,6 @@ test_that("template mizu_map at large n reports the staging/gather memcpy regime
 })
 
 test_that("guard: ALTREP input stays a compact stream", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr, capacity = 64L)
 
@@ -494,7 +486,6 @@ test_that("guard: ALTREP input stays a compact stream", {
 })
 
 test_that("guard: partial read of a wide matrix pays full unserialize today", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr, capacity = 64L)
 
@@ -518,7 +509,6 @@ test_that("guard: partial read of a wide matrix pays full unserialize today", {
 })
 
 test_that("foreign pool task args by reference report the copy removed (F1)", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   py <- skip_if_no_pymizu()
   launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
@@ -586,7 +576,6 @@ test_that("foreign pool task args by reference report the copy removed (F1)", {
 })
 
 test_that("foreign frame relay: the per-column REF removes the copy (F2)", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   py <- skip_if_no_pymizu()
   testthat::skip_if_not(
@@ -669,7 +658,6 @@ while True:
 })
 
 test_that("guard: held results do not pin payload regions today", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(1L, max_submitters = 2L)
 
@@ -691,7 +679,6 @@ test_that("guard: held results do not pin payload regions today", {
 })
 
 test_that("guard: attributed large vector reports the attrs-parse share", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr, capacity = 64L)
 
@@ -723,7 +710,6 @@ test_that("guard: attributed large vector reports the attrs-parse share", {
 })
 
 test_that("guard: factor-column frame reports the attr-qualification regime", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr, capacity = 64L)
 
@@ -804,7 +790,6 @@ test_that("nested-view fan-in reports the wire-resolve dedup regime", {
 })
 
 test_that("int64 reports the raw tiers against the legacy paths", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   skip_if_not_installed("bit64")
   ch <- mizu_channel(echo_expr, capacity = 64L)

@@ -7,7 +7,6 @@ test_that(".onLoad's platform probe passes on this platform", {
 })
 
 test_that("a forced DLL unload runs the teardown and leaves a clean process", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(

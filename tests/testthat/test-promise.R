@@ -203,7 +203,6 @@ test_that("the channel async verbs validate their arguments", {
 })
 
 test_that("the async verbs error informatively without later/promises installed", {
-  skip_on_cran()
   skip_if_no_promises()
   skip_if_no_child_mizu()
   # isolation needs later/promises out of .Library (include.site = FALSE
@@ -1259,7 +1258,6 @@ test_that("a map promise's watchdog re-arms while workers stay live", {
 # Cross-process ----------------------------------------------------------------
 
 test_that("a spawned echo peer drives a promise and its death rejects one", {
-  skip_on_cran()
   skip_if_no_promises()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr)
@@ -1277,7 +1275,6 @@ test_that("a spawned echo peer drives a promise and its death rejects one", {
 })
 
 test_that("a declined Python payload rejects the waiter, reaches the handler", {
-  skip_on_cran()
   skip_if_no_promises()
   py <- skip_if_no_pymizu()
   # a Python HOST that sends before any identity read stages same-language:
@@ -1323,7 +1320,6 @@ test_that("a declined Python payload rejects the waiter, reaches the handler", {
 })
 
 test_that("a batch handler fed by a real peer receives every message across quanta", {
-  skip_on_cran()
   skip_if_no_promises()
   skip_if_no_child_mizu()
   ch <- mizu_channel(echo_expr)
@@ -1343,7 +1339,6 @@ test_that("a batch handler fed by a real peer receives every message across quan
 })
 
 test_that("a killed worker rejects its promise-armed tasks; survivors unaffected", {
-  skip_on_cran()
   skip_if_no_promises()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
@@ -1384,7 +1379,6 @@ test_that("a killed worker rejects its promise-armed tasks; survivors unaffected
 })
 
 test_that("a promise-armed mizu_map() over real workers resolves the full gather", {
-  skip_on_cran()
   skip_if_no_promises()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
@@ -1399,7 +1393,6 @@ test_that("a promise-armed mizu_map() over real workers resolves the full gather
 })
 
 test_that("a map promise rejects when every worker dies before any claim", {
-  skip_on_cran()
   skip_if_no_promises()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
@@ -1423,7 +1416,6 @@ test_that("a map promise rejects when every worker dies before any claim", {
 })
 
 test_that("a hard-killed armed consumer's .ntfy socket file survives mizu_prune()", {
-  skip_on_cran()
   skip_if_no_promises()
   skip_if_no_child_mizu()
   skip_on_os(c("linux", "windows"))
@@ -1455,7 +1447,6 @@ test_that("a hard-killed armed consumer's .ntfy socket file survives mizu_prune(
 })
 
 test_that("watch soak: many arm/disarm cycles leave no leaked fds", {
-  skip_on_cran()
   skip_if_no_promises()
   p <- channel_pair()
   on.exit(channel_end(p))

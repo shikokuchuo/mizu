@@ -672,7 +672,6 @@ test_that("the mizu.gc_boundary setter rejects out-of-range values", {
 })
 
 test_that("the mizu.gc_boundary option is validated at package load", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   f <- tfile()
   mizu:::mizu_spawn(sprintf(
@@ -1723,7 +1722,6 @@ test_that("pairlists keep their type (the MORL layout coerces to VECSXP)", {
 })
 
 test_that("a mid-chain re-sender's death leaks + unlinks, never recycles under a live view", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(
     quote({
@@ -1855,7 +1853,6 @@ test_that("a nested-resolved view re-marks REFHELD through the shared mapping", 
 })
 
 test_that("a forked child's resolve and GC leave the parent's count unmoved", {
-  skip_on_cran()
   skip_on_os("windows") # no fork
   skip_if_no_fork() # Positron/RStudio sessions block mcfork
   p <- channel_pair(arena_size = 0)
@@ -1885,6 +1882,7 @@ test_that("a forked child's resolve and GC leave the parent's count unmoved", {
 })
 
 test_that("nested references dedupe to one mapping per region (Linux VMAs)", {
+  skip_on_cran() # asserts on /proc/self/maps VMA counts
   skip_on_os(c("mac", "windows")) # asserts on /proc/self/maps
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
@@ -1981,7 +1979,6 @@ test_that("foreign mori objects ride the serialize-hook path", {
 })
 
 test_that("a mid-chain re-sender killed with a nested view outstanding leaks + unlinks", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(
     quote({
@@ -2047,7 +2044,6 @@ test_that("a big vector task argument round-trips", {
 })
 
 test_that("string and list views round-trip cross-process", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(
     quote({
@@ -2080,7 +2076,6 @@ test_that("string and list views round-trip cross-process", {
 })
 
 test_that("a peer killed holding a view is force-reclaimed after the verdict", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(
     quote({

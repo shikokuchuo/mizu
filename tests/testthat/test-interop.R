@@ -942,6 +942,7 @@ test_that("ALTREP crosses by value on foreign handles", {
 })
 
 test_that("a compact-sequence vector past the floor crosses as MIZH", {
+  skip_on_cran() # a 40 MB region: past a small /dev/shm
   x <- 1:1e7
   p <- foreign_pair()
   got <- ix_rt(p, x)

@@ -16,7 +16,6 @@ test_that("a frame stages as one region past the gate, views at receive", {
 })
 
 test_that("the Arrow send path errors plainly without nanoarrow", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   # Real absence, not a mock: the child prunes every library carrying
   # nanoarrow off its path, site libraries included (include.site = FALSE —
@@ -923,7 +922,6 @@ test_that("a dead referenced region degrades only its own columns", {
 })
 
 test_that("an orphaned referenced region still borrows", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   skip_if_not_installed("nanoarrow")
   ch <- mizu_channel(
@@ -1372,7 +1370,6 @@ test_that("a list-view column takes the copy path", {
 })
 
 test_that("a dead producer degrades only its own columns to the copy path", {
-  skip_on_cran()
   skip_on_os("windows") # kernel objects have no unlink step to observe
   skip_if_not_installed("nanoarrow")
   skip_if_no_child_mizu()

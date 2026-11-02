@@ -35,6 +35,7 @@ own PID as alive). Run \code{mizu_prune()} while the PID is free, before
 reuse.
 }
 \examples{
+\dontshow{if (interactive()) withAutoprint(\{ # examplesIf}
 mizu_prune()
-
+\dontshow{\}) # examplesIf}
 }

@@ -58,7 +58,6 @@ test_that("a map's chunks spread across the workers", {
 })
 
 test_that("an imbalanced map still returns in order, work balanced", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
@@ -100,7 +99,6 @@ test_that("an imbalanced map still returns in order, work balanced", {
 })
 
 test_that("a worker killed mid-chunk fails the map with its element range", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   # parked before submit: with each push waking its own worker, exactly
@@ -173,7 +171,6 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
 })
 
 test_that("worker death fails a blob-path map with the chunk's exact range", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   # slot_size 1024: this f's chunk payload overflows the default budget
   p <- mizu_pool(n_workers = 2L, slot_size = 1024L)
@@ -220,7 +217,6 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
 })
 
 test_that("a lone worker's death fails its claimed blob chunk as died", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   # one worker: host + worker fits the two-process budget — no skip_on_cran
   p <- mizu_pool(n_workers = 1L, slot_size = 1024L)
@@ -258,7 +254,6 @@ test_that("a lone worker's death fails its claimed blob chunk as died", {
 })
 
 test_that("a streaming map's first failed turn reports a worker death", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 1L))
@@ -282,7 +277,6 @@ test_that("a streaming map's first failed turn reports a worker death", {
 })
 
 test_that("a streaming map's sweep reports a sibling's death over the error", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 1L))
@@ -316,7 +310,6 @@ test_that("a streaming map's sweep reports a sibling's death over the error", {
 })
 
 test_that("worker death on the template path never exposes partial output", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
@@ -372,7 +365,6 @@ test_that("worker death on the template path never exposes partial output", {
 })
 
 test_that("a lone worker's death reports the whole issued range as lost", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   # single worker: the only runner dies unpublished, so no history survives
   # — the died branch must still raise mizu_error_worker_died (regression:
@@ -415,7 +407,6 @@ test_that("a lone worker's death reports the whole issued range as lost", {
 })
 
 test_that("a map queued behind a doomed worker fails as died, not a hang", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   # the lone worker is inside the blocker, so the map's runners only ever
   # queue: the kill strands them with no claimant and no announce, so no
@@ -453,7 +444,6 @@ test_that("a map queued behind a doomed worker fails as died, not a hang", {
 })
 
 test_that("a runner's announce lost to a help beat still fails as died", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   # a help beat's nested claim overwrites the runner's announce and its
   # publish clears it, so the reaper's in-flight branch finds -1: only the
@@ -496,7 +486,6 @@ test_that("a runner's announce lost to a help beat still fails as died", {
 })
 
 test_that(".timeout under executing chunks returns the sentinel, cleans up", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
   r <- mizu_collect(
@@ -526,7 +515,6 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
 })
 
 test_that("a nested map fans out over the deque and peers steal it", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   # nested chunks live on the outer worker's own deque, so the peer's only
@@ -566,7 +554,6 @@ test_that("a nested map fans out over the deque and peers steal it", {
 })
 
 test_that(".seed maps are identical across worker counts and chunkings", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   f <- function(i) rnorm(2L)
   p1 <- mizu_pool(n_workers = 1L)
@@ -588,7 +575,6 @@ test_that(".seed maps are identical across worker counts and chunkings", {
 })
 
 test_that("a mori-shared x rides the descriptor as its identifier", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   skip_if_not_installed("mori")
   x <- mori::share(as.numeric(1:100) * 0.5)
@@ -601,7 +587,6 @@ test_that("a mori-shared x rides the descriptor as its identifier", {
 })
 
 test_that("a pool-result view maps by reference; view collect across workers", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   v <- mizu_collect(mizu_submit(p, seq_len(100000) + 0.5), 60)
@@ -640,7 +625,6 @@ test_that("a pool-result view maps by reference; view collect across workers", {
 })
 
 test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   st <- mizu:::map_stage(
@@ -672,7 +656,6 @@ test_that("a foreign task lands mid-map within ~a batch (doorbell help)", {
 })
 
 test_that("a map submitted into a busy pool regains freed workers", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
@@ -712,7 +695,6 @@ test_that("a map submitted into a busy pool regains freed workers", {
 })
 
 test_that("killing the re-homer leaves no wedge: the survivor drains", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
@@ -776,7 +758,6 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
 })
 
 test_that("mizu_pool_stop mid-map returns clean within ~a batch", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   st <- mizu:::map_stage(
@@ -798,7 +779,6 @@ test_that("mizu_pool_stop mid-map returns clean within ~a batch", {
 })
 
 test_that("a short map completes on free workers while a peer is pinned", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 2L)
   pin <- mizu_submit(p, Sys.sleep(2))
@@ -816,7 +796,6 @@ test_that("a short map completes on free workers while a peer is pinned", {
 })
 
 test_that("a mid-map worker death reports the gap between survivor batches", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 3L)
   # all workers parked before submit: the three morsels claim in one wave,

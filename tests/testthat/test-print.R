@@ -58,7 +58,6 @@ test_that("a finalized in-process peer handle reads closed at print", {
 })
 
 test_that("a channel whose peer is gone prints the verdict", {
-  skip_on_cran()
   skip_if_no_child_mizu()
   ch <- mizu_channel(quote(Sys.sleep(30)))
   kill_hard(.Call(mizu:::mizu_channel_stat, ch)[["peer_pid"]])
