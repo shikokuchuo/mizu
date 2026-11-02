@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="452be453149a40150ce38254437e3f84a69ad57a"  # libmizu: Rename mizu_pool_status to mizu_pool_info
+PIN="491591656f824f54b0659ad3ac860468a0f0da2c"  # libmizu: Fallback-define MADV_POPULATE_WRITE and MADV_COLLAPSE for old libc headers
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
