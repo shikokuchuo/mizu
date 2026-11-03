@@ -1,4 +1,4 @@
-#' mizu: Async and Parallel R at Thread Speed over Shared Memory
+#' mizu: Thread-Speed Async and Parallel R over Shared Memory
 #'
 #' mizu provides parallel computation and data exchange between R processes on
 #' the same machine: lock-free channels and work-stealing task pools over POSIX

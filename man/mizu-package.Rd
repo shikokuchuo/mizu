@@ -4,7 +4,7 @@
 \name{mizu-package}
 \alias{mizu}
 \alias{mizu-package}
-\title{mizu: Async and Parallel R at Thread Speed over Shared Memory}
+\title{mizu: Thread-Speed Async and Parallel R over Shared Memory}
 \description{
 mizu provides parallel computation and data exchange between R processes on
 the same machine: lock-free channels and work-stealing task pools over POSIX

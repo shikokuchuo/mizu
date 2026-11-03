@@ -1,5 +1,5 @@
 Package: mizu
-Title: Async and Parallel R at Thread Speed over Shared Memory
+Title: Thread-Speed Async and Parallel R over Shared Memory
 Version: 0.0.1.9000
 Authors@R: c(
     person("Charlie", "Gao", , "charlie.gao@posit.co", role = c("aut", "cre"),

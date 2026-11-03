@@ -33,7 +33,7 @@ if (dir.exists(venv)) {
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
 <!-- badges: end -->
 
-Async and parallel R at thread speed over shared memory.
+Thread-speed async and parallel R over shared memory.
 
 A task round trip drops from ~100 µs over sockets to < 1 µs, so you can divide work as finely as you would with threads (see [Benchmarks](#benchmarks)). Common data structures like vectors, matrices, data frames, and Arrow tables can be shared between R and Python as zero-copy views.
 

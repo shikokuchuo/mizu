@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: If you use this software, please cite it as below.
-title: "mizu: Async and Parallel R at Thread Speed over Shared Memory"
+title: "mizu: Thread-Speed Async and Parallel R over Shared Memory"
 authors:
   - family-names: Gao
     given-names: Charlie
