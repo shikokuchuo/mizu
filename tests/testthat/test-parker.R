@@ -3,6 +3,7 @@
 # caller's re-check (park itself may return WOKEN early at worst).
 
 test_that("an undisturbed park times out", {
+  skip_on_cran() # the raw one-shot park verdict: a spurious OS wake fails it
   xp <- .Call(mizu:::mizu_region_create, 4096)
   rc <- .Call(mizu:::mizu_park_call, xp, 0L, 200L, TRUE)
   expect_identical(rc, 1L)

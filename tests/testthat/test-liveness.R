@@ -34,6 +34,7 @@ test_that("lock files land in the resolved per-platform directory", {
 })
 
 test_that("MIZU_LIVENESS_DIR overrides the default, read-through", {
+  skip_on_cran() # a process-wide env var redirects the liveness directory
   d <- tempfile("livedir")
   dir.create(d)
   old <- Sys.getenv("MIZU_LIVENESS_DIR", NA_character_)
@@ -91,6 +92,7 @@ test_that("liveness handles validate their arguments", {
 })
 
 test_that("an unusable liveness directory fails both constructors cleanly", {
+  skip_on_cran() # OS file-creation failure paths via a process-wide env var
   on.exit({
     Sys.unsetenv("MIZU_LIVENESS_DIR")
     gc() # release the regions the walked-back creates left behind

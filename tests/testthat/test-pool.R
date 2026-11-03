@@ -1527,6 +1527,7 @@ test_that("a task error with a non-language call flattens without detail text", 
 })
 
 test_that("create rejects an oversized geometry and a bad liveness directory", {
+  skip_on_cran() # OS file-creation failure paths via a process-wide env var
   expect_error(
     .Call(
       mizu:::mizu_pool_create,

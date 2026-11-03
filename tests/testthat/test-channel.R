@@ -366,6 +366,7 @@ test_that("a closure over a missing namespace reads as unserialize does", {
 })
 
 test_that("an overlong liveness directory is rejected before create", {
+  skip_on_cran() # liveness-dir validation via a process-wide env var
   old <- Sys.getenv("MIZU_LIVENESS_DIR", unset = NA)
   on.exit(
     if (is.na(old)) {
@@ -421,6 +422,7 @@ test_that("attach rejects a non-R drop and reads a source drop", {
 })
 
 test_that("create fails when the liveness directory is unusable", {
+  skip_on_cran() # OS file-creation failure paths via a process-wide env var
   old <- Sys.getenv("MIZU_LIVENESS_DIR", unset = NA)
   on.exit(
     if (is.na(old)) {

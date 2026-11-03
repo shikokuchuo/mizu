@@ -72,6 +72,7 @@ test_that("sentinels print as their class", {
 })
 
 test_that("a finalized in-process peer handle reads closed at print", {
+  skip_on_cran() # the close signal rides the peer handle's finalizer at gc()
   p <- channel_pair()
   host <- p[["host"]]
   rm(p)

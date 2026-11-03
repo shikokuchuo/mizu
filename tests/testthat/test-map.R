@@ -1198,6 +1198,7 @@ test_that("an external cancel before any claim raises cancelled at collect", {
 })
 
 test_that("the jump kernel agrees with set.seed and parallel", {
+  skip_on_cran() # switches the process's RNG kind, installing an L'Ecuyer state
   base <- .Call(mizu:::mizu_map_rng_base, 42L)
   old_seed <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
   old_kind <- RNGkind()
