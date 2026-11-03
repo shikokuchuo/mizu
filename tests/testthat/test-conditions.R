@@ -73,6 +73,7 @@ test_that("region open failure raises mizu_error_shm with NA bytes", {
 })
 
 test_that("region create failure raises mizu_error_shm carrying bytes", {
+  skip_on_cran() # asserts an OS resource limit (no platform maps 2^52 bytes)
   # 2^52 bytes passes argument validation but no platform can map it
   err <- tryCatch(.Call(mizu:::mizu_region_create, 2^52), error = identity)
   expect_s3_class(err, "mizu_error_shm")
@@ -84,6 +85,7 @@ test_that("channel create failure raises mizu_error_shm carrying bytes", {
   # ftruncate out of hand; macOS and Windows map lazily, so the create
   # there may not fail at all
   skip_on_os(c("mac", "windows"))
+  skip_on_cran() # a >2.2 TB tmpfs clears the statvfs gate: grind, then success
   err <- tryCatch(
     .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 1.1e12, FALSE),
     error = function(e) e

@@ -218,7 +218,8 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
 
 test_that("a lone worker's death fails its claimed blob chunk as died", {
   skip_if_no_child_mizu()
-  # one worker: host + worker fits the two-process budget — no skip_on_cran
+  # one worker: host + worker fits the two-process budget; skip_if_no_child_mizu
+  # already covers CRAN
   p <- mizu_pool(n_workers = 1L, slot_size = 1024L)
   expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 1L))
   f <- function(i) {
