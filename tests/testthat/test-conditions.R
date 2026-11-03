@@ -212,6 +212,7 @@ test_that("a task error with a non-string message flattens to the fallback", {
 })
 
 test_that("a condition the assembly cannot carry keeps its dropped names", {
+  skip_on_cran() # a 500-deep nested field drives the depth cap
   p <- pool_pair(slot_size = 8192L)
   on.exit(pool_end(p))
   # the field probes within the depth cap alone, but the assembly's own

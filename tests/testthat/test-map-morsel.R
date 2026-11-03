@@ -174,6 +174,7 @@ test_that("reset re-arms every CLAIM word under a bumped generation", {
 })
 
 test_that("batch sizing grows <=2x toward the target and settles", {
+  skip_on_cran() # the exact batch sizes ride a 1-2 ulp floating-point margin
   h <- stage_h(1e6, 1)
   t <- 0
   b <- anxt(h, t)

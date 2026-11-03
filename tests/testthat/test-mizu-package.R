@@ -3,6 +3,7 @@
 # exercised only by an actual DLL unload.
 
 test_that(".onLoad's platform probe passes on this platform", {
+  skip_on_cran() # re-runs .onLoad() in the test process
   expect_null(mizu:::.onLoad(NULL, "mizu"))
 })
 

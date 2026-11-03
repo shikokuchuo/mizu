@@ -157,6 +157,7 @@ test_that("attach rejects a preamble with a missing liveness dir", {
 })
 
 test_that("attach fails when the host pid cannot be watched", {
+  skip_on_cran() # a death watch on pid 0: the verdict is kernel-specific
   # POSIX-only arm: on Windows an unopenable pid is ERROR_INVALID_PARAMETER,
   # which the core treats as already-gone (fires the watch, attach succeeds).
   skip_on_os("windows")
@@ -392,6 +393,7 @@ test_that("the test identity override validates its shape", {
 })
 
 test_that("attach rejects a non-R drop and reads a source drop", {
+  skip_on_cran() # the failed attach's finalizer releases the peer lock at gc()
   host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 0L, FALSE)
   suffix <- .Call(mizu:::mizu_channel_suffix, host)
   rw <- .Call(

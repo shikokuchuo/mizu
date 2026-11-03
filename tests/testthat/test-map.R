@@ -344,6 +344,7 @@ test_that("character templates assemble through the generic path", {
 })
 
 test_that("a view x rides the descriptor by reference and reads off the shared pages", {
+  skip_on_cran() # 1e5 element evaluations in one step: minutes under valgrind
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], seq_len(100000) + 0.5)
   pool_step(p)
@@ -373,6 +374,7 @@ test_that("a view x rides the descriptor by reference and reads off the shared p
 })
 
 test_that("a map over a string view x reads elements off the shared pages", {
+  skip_on_cran() # 5e4 string element evaluations: slow under valgrind
   p <- pool_pair()
   on.exit(pool_end(p))
   t <- mizu_submit(p[["ctrl"]], paste0("s", 1:50000))
@@ -407,6 +409,7 @@ test_that("a map over a list view x reads elements off the shared pages", {
 })
 
 test_that("a small map over a view stays inline and reads off the pages", {
+  skip_on_cran() # the count check assumes no GC runs inside the step
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], seq_len(10000) + 0)
   pool_step(p)
@@ -1111,6 +1114,7 @@ test_that("two submitters' maps hold two contexts on one worker", {
 })
 
 test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
+  skip_on_cran() # a 0.2 s submit deadline must outlast the first submit
   p <- pool_pair(workers = 2L, injection_cap = 2L, slot_size = 256L)
   filler <- mizu_submit(p[["ctrl"]], "filler") # ring holds 2: one slot left
   st <- mizu:::map_stage(p[["ctrl"]], 1:4, identity, list(), chunks = 2)
@@ -1212,6 +1216,7 @@ test_that("the jump kernel agrees with set.seed and parallel", {
 })
 
 test_that("a doorbell help beat draws the worker's RNG, not the map stream", {
+  skip_on_cran() # 1e5 seeded element evaluations: slow under valgrind
   p <- pool_pair()
   on.exit(pool_end(p))
   set.seed(42)
@@ -1321,6 +1326,7 @@ test_that("seeded chunks restore the evaluating process's RNG state", {
 })
 
 test_that("seeded chunks restore RNG kinds a task's f switched (L34)", {
+  skip_on_cran() # switches the process's RNG kinds
   p <- pool_pair()
   # the lazy-worker shape: with no .Random.seed of its own, nothing masks
   # an f that switches normal.kind or sample.kind
@@ -1414,6 +1420,7 @@ test_that("map_submit_handle rejects an NA .timeout instead of waiting forever (
 })
 
 test_that("blob-path collect times out, cancels, and re-signals f's errors", {
+  skip_on_cran() # a finalizer must free the slot at gc()
   p <- pool_pair()
   f <- function(i) stop("blob boom") # a conditional f overflows the budget
   environment(f) <- globalenv()
@@ -1559,6 +1566,7 @@ test_that("RNG stream arguments are validated; an empty lost set labels", {
 })
 
 test_that("rng_install installs the stream state and returns its jump", {
+  skip_on_cran() # installs an L'Ecuyer state into the session's .Random.seed
   base <- .Call(mizu:::mizu_map_rng_base, 42L)
   old_seed <- get0(".Random.seed", envir = globalenv(), inherits = FALSE)
   on.exit(

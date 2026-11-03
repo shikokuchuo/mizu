@@ -4,6 +4,7 @@
 # poke test surface, as test-preamble.R does for channel regions.
 
 test_that("staging validates geometry before creating anything", {
+  skip_on_cran() # asserts an OS resource limit (a 2^45-byte region create)
   desc <- list(identity, list())
   expect_error(
     .Call(mizu:::mizu_map_stage, desc, NULL, NULL, 0, NULL, 1),

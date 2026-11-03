@@ -378,6 +378,7 @@ test_that("collect_any and collect_all cross languages", {
 })
 
 test_that("task arguments cross by reference: the SHM_VEC stage and the REF re-send", {
+  skip_on_cran() # a refcount drop rides a finalizer at gc()
   p <- pool_pair()
   on.exit(pool_end(p))
   big <- runif(200000L) # 1.6 MB — past the zero-copy floor
@@ -402,6 +403,7 @@ test_that("task arguments cross by reference: the SHM_VEC stage and the REF re-s
 })
 
 test_that("multiple ref args and a nested view cross, loans balanced", {
+  skip_on_cran() # a refcount drop rides a finalizer at gc()
   p <- pool_pair()
   on.exit(pool_end(p))
   ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
@@ -451,6 +453,7 @@ test_that("a list-tree view arg resolves to the element view", {
 })
 
 test_that("result-is-the-arg keeps the loan through the publish (D5)", {
+  skip_on_cran() # a refcount drop rides a finalizer at gc()
   p <- pool_pair()
   on.exit(pool_end(p))
   ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
@@ -473,6 +476,7 @@ test_that("result-is-the-arg keeps the loan through the publish (D5)", {
 })
 
 test_that("the emitted set keeps loans: attribute and condition-field probes", {
+  skip_on_cran() # a refcount drop rides a finalizer at gc()
   p <- pool_pair()
   on.exit(pool_end(p))
   ch <- channel_pair(capacity = 128L, slot_size = 512L, arena_size = 8192)
@@ -615,6 +619,7 @@ test_that("the no_zc degrade writes a large argument by value", {
 })
 
 test_that("a view x crosses as a ref on a spec map, read off the pages (D6)", {
+  skip_on_cran() # finalizer-driven, polled against a wall-clock deadline
   p <- pool_pair()
   on.exit(pool_end(p))
   big <- runif(100000L)
@@ -651,6 +656,7 @@ test_that("mizu_submit_call validates the spec and the name shape", {
 })
 
 test_that("the zc-selection fold matches the legacy loop: candidate matrix", {
+  skip_on_cran() # ten pool regions, MBs of R hex encoding: slow under valgrind
   # a fresh pool_pair per row: a pool's first zc submit always selects
   # (the lent-region ledger is empty), keeping the rows deterministic
   # under the Linux churn fallback
@@ -709,6 +715,7 @@ test_that("the zc-selection fold matches the legacy loop: candidate matrix", {
 })
 
 test_that("the zc-selection fold matches the legacy loop: randomized specs", {
+  skip_on_cran() # 24 randomized specs, tens of MB: minutes under valgrind
   # one fresh pool_pair per spec — the first-submit guarantee (above)
   ident <- c(2L, 8L) # TASKREF only: the exact-model caps
   p <- pool_pair(ident = ident)

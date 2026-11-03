@@ -11,6 +11,7 @@ chan_ledger <- function(ch) {
 chan_fl <- function(ch) .Call(mizu:::mizu_channel_stat, ch)[["fl_entries"]]
 
 test_that("tier selection: big atomic vectors cross as views, others copy", {
+  skip_on_cran() # a 2^27 compact sequence: 512 MiB if any path materializes it
   p <- channel_pair(arena_size = 0)
   x <- runif(100000) # 800 KB: past budget and floor
   mizu_send(p[["host"]], x)
@@ -151,6 +152,7 @@ test_that("rc_of on a non-view returns integer(0) (no chain walk)", {
 })
 
 test_that("a held view pins its region in the ledger until release", {
+  skip_on_cran() # the ledger drain rides the views' finalizers at gc()
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
   mizu_send(p[["host"]], x)
@@ -258,6 +260,7 @@ test_that("view summaries read off the region without materializing", {
 })
 
 test_that("element and range reads keep the view's loan (R-07)", {
+  skip_on_cran() # ~50 send/recv/gc rounds over 2e5 elements: slow on valgrind
   p <- channel_pair(arena_size = 0)
   set.seed(1)
   fresh <- function(x) {
@@ -323,6 +326,7 @@ test_that("element and range reads keep the view's loan (R-07)", {
 })
 
 test_that("a REF-sent view is not retained across later stages (R-09)", {
+  skip_on_cran() # a refcount drop rides a finalizer at gc()
   p <- channel_pair(arena_size = 0)
   mizu_send(p[["host"]], runif(2e5))
   v <- mizu_recv(p[["peer"]], 5)
@@ -432,6 +436,7 @@ test_that("a REF slot validates its identifier at read", {
 })
 
 test_that("a SHM_VEC slot cross-checks its header against the aux word", {
+  skip_on_cran() # a finalizer frees the region; the free list must hand it back
   hush_error_print()
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
@@ -548,6 +553,7 @@ test_that("a REF slot with len past inline_max is rejected before reading", {
 })
 
 test_that("pool results cross as views; a held result pins the worker's region", {
+  skip_on_cran() # the worker's region release rides a finalizer at gc()
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], runif(100000))
   pool_step(p)
@@ -615,6 +621,7 @@ test_that("the exec-entry boundary fires past the byte gate", {
 })
 
 test_that("the collect-entry boundary fires past the gate; dead views never leak", {
+  skip_on_cran() # ~32 MiB of regions held; the ledger drains at gc() finalizers
   p <- channel_pair(arena_size = 0)
   pp <- pool_pair()
   armed <- function() .Call(mizu:::mizu_zc_armed_bytes)
@@ -697,6 +704,7 @@ test_that("the mizu.gc_boundary option is validated at package load", {
 })
 
 test_that(".onLoad validates and applies the mizu.gc_boundary option", {
+  skip_on_cran() # re-runs .onLoad() in the test process
   set <- function(x) invisible(.Call(mizu:::mizu_zc_gc_boundary_set, x))
   on.exit(set(8 * 1024 * 1024))
   opts <- options(mizu.gc_boundary = 2^20)
@@ -746,6 +754,7 @@ test_that("REF round-trips at any viewed size", {
 })
 
 test_that("a uint64 frame column lands as the converting view and REFs", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   uv <- bit64::as.integer64(rep(1, 6000))
   uv[2] <- bit64::as.integer64("9223372036854775807")
@@ -790,6 +799,7 @@ test_that("string vectors cross as views (MORS), small ones copy", {
 })
 
 test_that("the MIZS string block is Arrow large_utf8-shaped", {
+  skip_on_cran() # latin1 and bytes encoding marks: locale-sensitive
   p <- channel_pair(arena_size = 0)
   lat <- iconv("caf\u00e9", "UTF-8", "latin1")
   byt <- "\xff\xfe"
@@ -927,6 +937,7 @@ test_that("the capped tree probe keeps decisions and values exact", {
 })
 
 test_that("a remote leaf (tag 33) resolves to a view over its region", {
+  skip_on_cran() # a refcount drop rides a finalizer at gc()
   x <- runif(50000)
   fx <- remote_leaf_pair(x)
   poke_remote(fx, len = length(x))
@@ -1570,6 +1581,7 @@ test_that("an element extracted from a list view re-sends as path-form REF", {
 })
 
 test_that("an extracted element view pins the region past the root view's GC", {
+  skip_on_cran() # the ledger drain rides a finalizer at gc()
   p <- channel_pair(arena_size = 0)
   x <- list(a = runif(100000), b = runif(100000))
   mizu_send(p[["host"]], x)
@@ -1772,6 +1784,7 @@ test_that("a view nested in a larger payload resolves counted (channel)", {
 })
 
 test_that("wire resolves cluster on the mapping cache; counts stay per-view", {
+  skip_on_cran() # 50 counted resolves release through finalizers at gc()
   p <- channel_pair(arena_size = 0)
   x1 <- runif(100000)
   x2 <- runif(100000)
@@ -1798,6 +1811,7 @@ test_that("wire resolves cluster on the mapping cache; counts stay per-view", {
 })
 
 test_that("cache eviction never unmaps under live views; counts rebalance after GC", {
+  skip_on_cran() # 36 regions and views held; the counts rebalance at gc()
   p <- channel_pair(arena_size = 0)
   xs <- lapply(1:18, function(i) runif(100000))
   vs <- lapply(xs, function(xi) {
@@ -1967,6 +1981,7 @@ test_that("a pool result holding a nested view keeps the pin until collect", {
 })
 
 test_that("foreign mori objects ride the serialize-hook path", {
+  skip_on_cran() # mori's vendored view layer may lag this layout
   skip_if_not_installed("mori")
   p <- channel_pair(arena_size = 0)
   x <- runif(100000)
@@ -2168,6 +2183,7 @@ test_that("vec views serve element, region, and serialize reads off the mapping"
 })
 
 test_that("a verbatim uint64 frame column serves view reads", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   p <- channel_pair(ident = c(2L, 71L)) # MIZS + ATTRS + MIZL + U64V
@@ -2393,6 +2409,7 @@ test_that("the pin chain splices its tombstoned cells", {
 })
 
 test_that("a uint64 frame column serves summary, serialize, and COW reads", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   p <- channel_pair(ident = c(2L, 71L)) # MIZS + ATTRS + MIZL + U64V
@@ -2572,6 +2589,7 @@ test_that("a remote leaf records its claim in the frame's validity table", {
 })
 
 test_that("a view name is NULL for a non-view and a foreign-class view", {
+  skip_on_cran() # mori's vendored view layer may lag this layout
   skip_if_not_installed("mori")
   expect_null(.Call(mizu:::mizu_zc_view_name, 1:10)) # a compact sequence
   expect_null(.Call(mizu:::mizu_zc_view_name, mori::share(runif(100))))
@@ -2720,6 +2738,7 @@ test_that("an identifier past the readers' span cap falls back, values cross", {
 })
 
 test_that("verbatim ns temporal columns land as POSIXct and difftime", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   p <- foreign_pair(caps = 127L) # the full set incl. MIZL_TSN
@@ -2761,6 +2780,7 @@ test_that("a named tree declines the foreign layout short of ATTRS", {
 })
 
 test_that("a foreign-class string view takes the foreign copy path", {
+  skip_on_cran() # mori's vendored view layer may lag this layout
   skip_if_not_installed("mori")
   p <- foreign_pair(caps = 1L) # MIZS
   on.exit(channel_end(p))
@@ -2781,6 +2801,7 @@ test_that("an attributed string vector stages foreign by exact size", {
 })
 
 test_that("the foreign size gate uses the inline budget past the floor", {
+  skip_on_cran() # three 16 MiB pre-populated channel regions: a small tmpfs
   p <- foreign_pair(caps = 1L, slot_size = 131072L)
   on.exit(channel_end(p))
   s <- rep(c("alpha", "beta"), length.out = 70000)

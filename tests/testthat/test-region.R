@@ -14,6 +14,7 @@ test_that("regions are created under the mizu namespace with correct size", {
 })
 
 test_that("mizu regions are invisible to mori", {
+  skip_on_cran() # mori's vendored view layer may lag this layout
   skip_if_not_installed("mori")
   xp <- .Call(mizu:::mizu_region_create, 4096)
   expect_null(mori::map_shared(.Call(mizu:::mizu_region_name, xp)))
@@ -61,6 +62,7 @@ test_that("invalid creates and opens error cleanly", {
 })
 
 test_that("producer GC releases the name; live consumers keep reading", {
+  skip_on_cran() # the unlink rides the producer's finalizer at gc()
   xp <- .Call(mizu:::mizu_region_create, 4096)
   nm <- .Call(mizu:::mizu_region_name, xp)
   .Call(mizu:::mizu_poke, xp, 0, as.raw(42))

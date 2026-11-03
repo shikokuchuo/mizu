@@ -3,6 +3,7 @@
 # means the previous holder is dead; HELD means alive.
 
 test_that("the lock excludes other open file descriptions, even in-process", {
+  skip_on_cran() # in-process flock exclusion on TMPDIR: NFS locks per process
   lf <- tempfile()
   h1 <- .Call(mizu:::mizu_live_open_call, lf)
   expect_identical(.Call(mizu:::mizu_live_try_call, h1), 0L) # ACQUIRED

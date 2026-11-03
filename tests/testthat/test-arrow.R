@@ -1,4 +1,5 @@
 test_that("a frame stages as one region past the gate, views at receive", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -52,6 +53,7 @@ test_that("the Arrow send path errors plainly without nanoarrow", {
 })
 
 test_that("the mapped families round-trip with NAs", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -61,6 +63,7 @@ test_that("the mapped families round-trip with NAs", {
 })
 
 test_that("a small table crosses below the gate, claiming no region", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   df <- data.frame(a = 1:3, b = c("x", "y", NA))
   p <- channel_pair()
@@ -79,6 +82,7 @@ test_that("a small table crosses below the gate, claiming no region", {
 })
 
 test_that("a below-gate frame round-trips per column kind", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -98,6 +102,7 @@ test_that("a below-gate frame round-trips per column kind", {
 })
 
 test_that("a below-gate frame claims keeperless inline", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -110,6 +115,7 @@ test_that("a below-gate frame claims keeperless inline", {
 })
 
 test_that("a below-gate frame crosses the arena and spill tiers", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -124,6 +130,7 @@ test_that("a below-gate frame crosses the arena and spill tiers", {
 })
 
 test_that("a non-struct nanoarrow_array arrives as a vector", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -137,6 +144,7 @@ test_that("a non-struct nanoarrow_array arrives as a vector", {
 })
 
 test_that("non-struct nanoarrow payloads re-enter inside a send batch", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -156,6 +164,7 @@ test_that("non-struct nanoarrow payloads re-enter inside a send batch", {
 })
 
 test_that("a bare integer64 array keeps its class", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("bit64")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -170,6 +179,7 @@ test_that("a bare integer64 array keeps its class", {
 })
 
 test_that("an ordered dictionary array keeps its class", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -179,6 +189,7 @@ test_that("an ordered dictionary array keeps its class", {
 })
 
 test_that("a zero-row table arrives empty", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   z <- data.frame(
     f = factor(character(0), levels = c("a", "b")),
@@ -199,6 +210,7 @@ test_that("a zero-row table arrives empty", {
 })
 
 test_that("NaN stays NaN across the frame", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -210,6 +222,7 @@ test_that("NaN stays NaN across the frame", {
 })
 
 test_that("the conversion counts warn at send", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   uv <- bit64::as.integer64(rep(1, 6000))
   uv[2] <- bit64::as.integer64("9223372036854775807")
@@ -280,6 +293,7 @@ test_that("the conversion counts warn at send", {
 })
 
 test_that("an int64 column's nulls and valid INT64_MIN cross exact", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   lv <- c(1, -9.2233720368547758e18, NA, 3, runif(5996))
   orig <- arrow::Array$create(lv)$cast(arrow::int64(), safe = FALSE)
@@ -299,6 +313,7 @@ test_that("an int64 column's nulls and valid INT64_MIN cross exact", {
 })
 
 test_that("the uint64 view exports exact past reads; a write degrades it", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   uv <- bit64::as.integer64(rep(1, 6000))
   uv[2] <- bit64::as.integer64("9223372036854775807")
@@ -325,6 +340,7 @@ test_that("the uint64 view exports exact past reads; a write degrades it", {
 })
 
 test_that("declines name the column", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -343,6 +359,7 @@ test_that("declines name the column", {
 })
 
 test_that("an ordered arrow table crosses; the caps gate declines loudly", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -360,6 +377,7 @@ test_that("an ordered arrow table crosses; the caps gate declines loudly", {
 })
 
 test_that("the conversion bail keeps the ordered class", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   # a peer with the ordered bit but short of the frame conjunction bails
   # to the value conversion: the rebuilt factor column re-marks ordered
@@ -371,6 +389,7 @@ test_that("the conversion bail keeps the ordered class", {
 })
 
 test_that("mizu_as_arrow exports an ordered factor with the flag", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
@@ -387,6 +406,7 @@ test_that("mizu_as_arrow exports an ordered factor with the flag", {
 })
 
 test_that("a decline leaves the handle consistent", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -399,6 +419,7 @@ test_that("a decline leaves the handle consistent", {
 })
 
 test_that("chunked batches round-trip", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -414,6 +435,7 @@ test_that("chunked batches round-trip", {
 })
 
 test_that("a capable foreign peer takes the frame region; view_peek smoke", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- foreign_pair(caps = 7L) # MIZS + ATTRS + MIZL
   on.exit(channel_end(p))
@@ -430,6 +452,7 @@ test_that("a capable foreign peer takes the frame region; view_peek smoke", {
 })
 
 test_that("a caps-less foreign peer takes the conversion bail", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- foreign_pair(caps = 0L)
   on.exit(channel_end(p))
@@ -445,6 +468,7 @@ test_that("a caps-less foreign peer takes the conversion bail", {
 })
 
 test_that("the conversion bail re-marks an ordered dictionary column", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   # past the region gate with a peer short of the frame conjunction: the
   # held batches convert — the ordered column's flag strips for the
@@ -460,6 +484,7 @@ test_that("the conversion bail re-marks an ordered dictionary column", {
 })
 
 test_that("mizu_as_arrow borrows the borrowable columns", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -482,6 +507,7 @@ test_that("mizu_as_arrow borrows the borrowable columns", {
 })
 
 test_that("mizu_as_arrow holds the region past the frame", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -500,6 +526,7 @@ test_that("mizu_as_arrow holds the region past the frame", {
 })
 
 test_that("mizu_as_arrow converts the copy-path classes", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -533,6 +560,7 @@ test_that("mizu_as_arrow converts the copy-path classes", {
 })
 
 test_that("a timestamp[ns] column lands as POSIXct double seconds", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -574,6 +602,7 @@ test_that("a timestamp[ns] column lands as POSIXct double seconds", {
 })
 
 test_that("a duration[ns] column lands as difftime seconds", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -608,6 +637,7 @@ test_that("a duration[ns] column lands as difftime seconds", {
 })
 
 test_that("mizu_as_arrow exports integer64 as int64", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -624,6 +654,7 @@ test_that("mizu_as_arrow exports integer64 as int64", {
 })
 
 test_that("mizu_as_arrow falls back for a plain data frame", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   df <- data.frame(x = 1:5, s = c("a", "b", "c", "d", "e"))
   st <- mizu_as_arrow(df)
@@ -632,6 +663,7 @@ test_that("mizu_as_arrow falls back for a plain data frame", {
 })
 
 test_that("mizu_as_arrow declines are informative", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   expect_error(mizu_as_arrow(1:5), "expected a data frame")
   p <- channel_pair()
@@ -643,6 +675,7 @@ test_that("mizu_as_arrow declines are informative", {
 })
 
 test_that("a latin1 string column takes the copy path", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("arrow")
   p <- channel_pair()
@@ -659,6 +692,7 @@ test_that("a latin1 string column takes the copy path", {
 })
 
 test_that("a relayed frame borrows remote and local columns uniformly", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
@@ -688,6 +722,7 @@ test_that("a relayed frame borrows remote and local columns uniformly", {
 })
 
 test_that("relayed root views borrow through the rc-0 arms", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
@@ -724,6 +759,7 @@ test_that("relayed root views borrow through the rc-0 arms", {
 })
 
 test_that("the export borrows a crafted remote column (path target)", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   x <- runif(50000)
   fx <- remote_leaf_pair(x)
@@ -736,6 +772,7 @@ test_that("the export borrows a crafted remote column (path target)", {
 })
 
 test_that("the export borrows a crafted remote int64 column with NA", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
   x <- bit64::as.integer64(c(1, 2, NA, seq_len(50000)))
@@ -751,6 +788,7 @@ test_that("the export borrows a crafted remote int64 column with NA", {
 })
 
 test_that("the export borrows a crafted remote string column with NA", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   x <- rep(c("alpha", NA, "héllo ✓"), length.out = 50000)
   fx <- remote_leaf_pair(x)
@@ -765,6 +803,7 @@ test_that("the export borrows a crafted remote string column with NA", {
 })
 
 test_that("the string export's null count masks the tail byte", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   x <- rep(c("alpha", "beta", "héllo ✓"), length.out = 20001)
   x[c(2L, 1000L, 20001L)] <- NA_character_ # a null in the tail byte's used bit
@@ -780,6 +819,7 @@ test_that("the string export's null count masks the tail byte", {
 })
 
 test_that("a depth-2 remote borrow flattens to the final region", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   x <- runif(50000)
   fx <- remote_leaf_pair(x)
@@ -805,6 +845,7 @@ test_that("a depth-2 remote borrow flattens to the final region", {
 })
 
 test_that("a mixed-region frame borrows each view column off its region", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
@@ -826,6 +867,7 @@ test_that("a mixed-region frame borrows each view column off its region", {
 })
 
 test_that("a subset frame borrows its live view columns", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -846,6 +888,7 @@ test_that("a subset frame borrows its live view columns", {
 })
 
 test_that("a received vector assembled into a data.frame borrows", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -861,6 +904,7 @@ test_that("a received vector assembled into a data.frame borrows", {
 })
 
 test_that("duplicated columns borrow off one loan", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -874,6 +918,7 @@ test_that("duplicated columns borrow off one loan", {
 })
 
 test_that("a latin1-marked remote string column copies", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   x <- rep(c("héllo", "plain"), length.out = 50000)
   Encoding(x) <- ifelse(x == "héllo", "latin1", "unknown")
@@ -888,6 +933,7 @@ test_that("a latin1-marked remote string column copies", {
 })
 
 test_that("a materialized remote column copies", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   x <- runif(50000)
   fx <- remote_leaf_pair(x)
@@ -902,6 +948,7 @@ test_that("a materialized remote column copies", {
 })
 
 test_that("a dead referenced region degrades only its own columns", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p1 <- channel_pair()
@@ -962,6 +1009,7 @@ test_that("an orphaned referenced region still borrows", {
 })
 
 test_that("a pool result past the gate stages as one frame region", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -979,6 +1027,7 @@ test_that("a pool result past the gate stages as one frame region", {
 })
 
 test_that("a below-gate pool result crosses as a data.frame", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -996,6 +1045,7 @@ test_that("a below-gate pool result crosses as a data.frame", {
 })
 
 test_that("a non-struct nanoarrow payload re-enters the pool tiers", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1019,6 +1069,7 @@ test_that("a non-struct nanoarrow payload re-enters the pool tiers", {
 })
 
 test_that("a table spliced as the task expression round-trips by reference", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
@@ -1034,6 +1085,7 @@ test_that("a table spliced as the task expression round-trips by reference", {
 })
 
 test_that("a nested table arg crosses as a frame leaf; a second converts", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair(slot_size = 1024L)
@@ -1061,6 +1113,7 @@ test_that("a nested table arg crosses as a frame leaf; a second converts", {
 })
 
 test_that("a converting table's lazy list-column elements cross by value", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
@@ -1085,6 +1138,7 @@ test_that("a converting table's lazy list-column elements cross by value", {
 })
 
 test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
@@ -1111,6 +1165,7 @@ test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
 })
 
 test_that("an over-budget stream converts the table and still crosses", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1136,6 +1191,7 @@ test_that("an over-budget stream converts the table and still crosses", {
 })
 
 test_that("a nested table crosses a channel as a frame leaf", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1148,6 +1204,7 @@ test_that("a nested table crosses a channel as a frame leaf", {
 })
 
 test_that("a non-subset sibling takes the fallback with nothing consumed", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1169,6 +1226,7 @@ test_that("a non-subset sibling takes the fallback with nothing consumed", {
 })
 
 test_that("conversion counts fire at a pool publish after the write half", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1188,6 +1246,7 @@ test_that("conversion counts fire at a pool publish after the write half", {
 })
 
 test_that("a nested table at or under the gate converts by value", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -1200,6 +1259,7 @@ test_that("a nested table at or under the gate converts by value", {
 })
 
 test_that("a table occurring twice dedupes to one frame leaf", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1211,6 +1271,7 @@ test_that("a table occurring twice dedupes to one frame leaf", {
 })
 
 test_that("an ALTREP sibling of a table falls back to R_Serialize", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1222,6 +1283,7 @@ test_that("an ALTREP sibling of a table falls back to R_Serialize", {
 })
 
 test_that("a table nested past the depth bound hits the serialize fallback", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   rdr <- arrow::RecordBatchReader$create(arrow::record_batch(x = 1:3))
   x <- rdr
@@ -1241,6 +1303,7 @@ test_that("a table nested past the depth bound hits the serialize fallback", {
 })
 
 test_that("a frame declined at the stage converts and crosses by value", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities
   on.exit(channel_end(p))
@@ -1254,6 +1317,7 @@ test_that("a frame declined at the stage converts and crosses by value", {
 })
 
 test_that("a declined frame's lazy columns materialize plain", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities
   on.exit(channel_end(p))
@@ -1268,6 +1332,7 @@ test_that("a declined frame's lazy columns materialize plain", {
 })
 
 test_that("a released stream raises the pull failure", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1277,6 +1342,7 @@ test_that("a released stream raises the pull failure", {
 })
 
 test_that("the export call validates its arguments", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   arr <- nanoarrow::nanoarrow_allocate_array()
   expect_error(
@@ -1290,6 +1356,7 @@ test_that("the export call validates its arguments", {
 })
 
 test_that("a cleared array extptr fails the export pre-fill", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1303,6 +1370,7 @@ test_that("a cleared array extptr fails the export pre-fill", {
 })
 
 test_that("the export borrows fixed-width views across the NA forms", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1323,6 +1391,7 @@ test_that("the export borrows fixed-width views across the NA forms", {
 })
 
 test_that("a frame column's export borrows its tail bitmap verbatim", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1337,6 +1406,7 @@ test_that("a frame column's export borrows its tail bitmap verbatim", {
 })
 
 test_that("the string borrow gates on the wire encodings", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1358,6 +1428,7 @@ test_that("the string borrow gates on the wire encodings", {
 })
 
 test_that("a list-view column takes the copy path", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1412,6 +1483,7 @@ test_that("a dead producer degrades only its own columns to the copy path", {
 })
 
 test_that("arrow_ptype keeps dictionary and int64 column forms", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
   sch <- nanoarrow::infer_nanoarrow_schema(
@@ -1425,6 +1497,7 @@ test_that("arrow_ptype keeps dictionary and int64 column forms", {
 })
 
 test_that("a clean large_string column crosses past the gate", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   x <- paste0("s", seq_len(6000))
   tab <- arrow::arrow_table(
@@ -1437,6 +1510,7 @@ test_that("a clean large_string column crosses past the gate", {
 })
 
 test_that("a clean bool column crosses past the gate", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   x <- rep(c(TRUE, FALSE), 2500)
   p <- channel_pair()
@@ -1446,6 +1520,7 @@ test_that("a clean bool column crosses past the gate", {
 })
 
 test_that("a column with a run of 64+ nulls crosses", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   x <- rep(c(2.5, rep(NA_real_, 65)), 80)
   p <- channel_pair()
@@ -1455,6 +1530,7 @@ test_that("a column with a run of 64+ nulls crosses", {
 })
 
 test_that("a sliced table crosses with its column offsets", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   df <- data.frame(
     x = c(1.5, rep(c(2.5, NA), 4000)),
@@ -1470,6 +1546,7 @@ test_that("a sliced table crosses with its column offsets", {
 })
 
 test_that("a factor with a single level crosses", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   f <- factor(rep("a", 8000), levels = "a")
   p <- channel_pair()
@@ -1479,6 +1556,7 @@ test_that("a factor with a single level crosses", {
 })
 
 test_that("dictionary index widths round-trip", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   f <- factor(rep(c("a", "b", NA), 3000), levels = c("a", "b"))
   p <- channel_pair()
@@ -1501,6 +1579,7 @@ test_that("dictionary index widths round-trip", {
 })
 
 test_that("dictionary declines name the reason", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1527,6 +1606,7 @@ test_that("dictionary declines name the reason", {
 })
 
 test_that("a binary column declines", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   sch <- nanoarrow::na_struct(list(v = nanoarrow::na_binary()))
@@ -1556,6 +1636,7 @@ test_that("a binary column declines", {
 })
 
 test_that("a nested table below the gate converts, its lazies served", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   df <- data.frame(s = rep(c("alpha", "beta"), 50), n = runif(100))
   p <- channel_pair()
@@ -1565,6 +1646,7 @@ test_that("a nested table below the gate converts, its lazies served", {
 })
 
 test_that("a zero-column table declines", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   mk <- function() {
@@ -1587,6 +1669,7 @@ test_that("a zero-column table declines", {
 })
 
 test_that("frame schema declines name the reason", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1640,6 +1723,7 @@ test_that("frame schema declines name the reason", {
 })
 
 test_that("frame batch declines name the reason", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1771,6 +1855,7 @@ test_that("frame batch declines name the reason", {
 })
 
 test_that("unknown null counts and string-view columns cross", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1795,6 +1880,7 @@ test_that("unknown null counts and string-view columns cross", {
 })
 
 test_that("float16 specials cross exactly", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1809,6 +1895,7 @@ test_that("float16 specials cross exactly", {
 })
 
 test_that("matching dictionaries across batches cross", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1827,6 +1914,7 @@ test_that("matching dictionaries across batches cross", {
 })
 
 test_that("the export degrades a column whose root header changed", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   x <- runif(50000)
   p <- channel_pair()
@@ -1859,6 +1947,7 @@ test_that("the export degrades a column whose root header changed", {
 })
 
 test_that("the export degrades a remote column whose path has no entry", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   x <- runif(50000)
   fx <- remote_leaf_pair(x)
@@ -1878,6 +1967,7 @@ test_that("the export degrades a remote column whose path has no entry", {
 })
 
 test_that("the bail converts int64- and uint64-index dictionary tables", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
@@ -1907,6 +1997,7 @@ test_that("the bail converts int64- and uint64-index dictionary tables", {
 })
 
 test_that("delta dictionary batches rebuild factors on the union of levels", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("nanoarrow")
   b1 <- arrow::record_batch(data.frame(v = factor(c("a", "b"))))

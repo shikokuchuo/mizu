@@ -211,6 +211,7 @@ test_that("help mode flattens a hostile condition at the in-band publish", {
 })
 
 test_that("nested collect helps through recursion past the depth limit", {
+  skip_on_cran() # 40 nested help-collect levels on one C stack
   p <- pool_pair(max_submitters = 2L, result_slots = 128L)
   # each level nested-submits the next and collects it: help depth climbs
   # past HELP_DEPTH_LIMIT (32), where only ownerless work — here the own

@@ -200,6 +200,7 @@ test_that("a fully occupied subrange errors before any region exists", {
 })
 
 test_that("mizu_map_xslice slices every supported shape, names dropped", {
+  skip_on_cran() # a 10^9 compact sequence: an OOM if any path materializes it
   x <- setNames(seq_len(100L) + 0.5, paste0("e", 1:100))
   s <- .Call(mizu:::mizu_map_xslice, x, 3, 7)
   expect_identical(s, (seq_len(100L) + 0.5)[3:7] |> unname())
@@ -675,6 +676,7 @@ test_that("an unannotated chunk outcome stays fatal", {
 })
 
 test_that("a deadline expiring mid-run cancels the window, sentinel returned", {
+  skip_on_cran() # a 50 ms submit deadline must expire mid-run
   p <- pool_pair()
   st <- mizu:::map_stage_stream(p[["ctrl"]], 1:8, identity, list())
   mizu:::map_submit_stream(p[["ctrl"]], st, mizu:::mono_time() + 0.05)

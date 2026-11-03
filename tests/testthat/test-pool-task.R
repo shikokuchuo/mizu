@@ -258,6 +258,7 @@ test_that("a field past the budget is dropped and named; smaller fields arrive",
 })
 
 test_that("a message past its budget share arrives truncated at a character boundary", {
+  skip_on_cran() # multibyte truncation: locale-sensitive
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], {
     msg <- paste(rep("x", 1000), collapse = "")
@@ -429,6 +430,7 @@ test_that("the terminal fallback itself spills at the minimum slot size", {
 })
 
 test_that("a non-UTF-8 message crosses translated to UTF-8", {
+  skip_on_cran() # latin1 translation: locale-sensitive
   p <- pool_pair()
   lat <- iconv("café au lait", from = "UTF-8", to = "latin1")
   cond <- structure(
@@ -494,6 +496,7 @@ test_that("an NA message falls back; unnamed elements drop silently", {
 })
 
 test_that("an over-deep field is dropped and named, worker stays live", {
+  skip_on_cran() # a 600-deep nested field drives the codec's recursion bound
   p <- pool_pair()
   # past the codec's recursion bound the vet fails cleanly — no crash, no
   # zombie: the field drops and is named
@@ -576,6 +579,7 @@ test_that("cancel is too late once the task has completed", {
 })
 
 test_that("a dropped handle cancels its pending task at finalization", {
+  skip_on_cran() # a finalizer must cancel the task at gc()
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], "orphaned")
   rm(t)
@@ -590,6 +594,7 @@ test_that("a dropped handle cancels its pending task at finalization", {
 })
 
 test_that("a dropped handle frees an uncollected published result", {
+  skip_on_cran() # a finalizer must free the slot at gc()
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], "never collected")
   pool_step(p)

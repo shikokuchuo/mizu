@@ -267,6 +267,7 @@ test_that("the same pinned payload crosses twice, collected one at a time", {
 })
 
 test_that("pinned payloads round-trip under gctorture", {
+  skip_on_cran() # gctorture: a full gc per allocation; minutes under valgrind
   p <- channel_pair(arena_size = 0)
   e <- new.env()
   e$x <- "pin me"
@@ -288,6 +289,7 @@ test_that("pinned payloads round-trip under gctorture", {
 })
 
 test_that("channel teardown releases outstanding pins to GC", {
+  skip_on_cran() # finalizer-driven, polled against a wall-clock deadline
   p <- channel_pair()
   flag <- new.env()
   flag$n <- 0L
@@ -319,6 +321,7 @@ test_that("pinned payloads cycle intact across many rounds", {
 })
 
 test_that("a consumer-done pin releases the staged object to GC", {
+  skip_on_cran() # finalizer-driven, polled against a wall-clock deadline
   p <- channel_pair()
   flag <- new.env()
   flag$done <- FALSE
@@ -349,6 +352,7 @@ test_that("pure-spin mode moves messages without parking", {
 })
 
 test_that("mori-shared payloads ride the hooks and map zero-copy", {
+  skip_on_cran() # mori's vendored view layer may lag this layout
   skip_if_not_installed("mori")
   p <- channel_pair()
   x <- mori::share(runif(1000))

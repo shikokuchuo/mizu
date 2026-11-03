@@ -4,6 +4,7 @@
 # process by the pool_pair()/pool_step() harness.
 
 test_that("mizu_current_pool() is NULL outside a task", {
+  skip_on_cran() # a finalizer from an earlier file's test must have run at gc()
   # a prior file's erroring stepped task may have stranded the borrowed
   # global on a since-unreachable worker: its finalizer clears it
   gc()

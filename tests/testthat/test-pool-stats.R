@@ -6,6 +6,7 @@
 # and the publish cadence deterministic.
 
 test_that("worker stats count tasks and publish at park cadence, not per task", {
+  skip_on_cran() # a timed idle step must park: wall-clock cadence
   p <- pool_pair()
   zero <- mizu_pool_stats(p[["ctrl"]])[["workers"]]
   expect_identical(zero[["tasks"]], 0)

@@ -553,6 +553,7 @@ test_that("attach rejects each corrupted pool header field", {
 })
 
 test_that("dropping the controller handle shuts the pool down at GC", {
+  skip_on_cran() # a finalizer must tear the pool down at gc()
   ctrl <- .Call(mizu:::mizu_pool_create, 1L, 8L, 64L, 64L, 64L, 256L)
   suffix <- .Call(mizu:::mizu_pool_suffix, ctrl)
   rm(ctrl)
@@ -598,6 +599,7 @@ test_that("a forked child's GC does not destroy the parent's pool (R-14)", {
 })
 
 test_that("pool teardown releases outstanding submitter pins", {
+  skip_on_cran() # finalizer-driven, polled against a wall-clock deadline
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], runif(100000))
   pool_step(p)
@@ -622,6 +624,7 @@ test_that("pool teardown releases outstanding submitter pins", {
 })
 
 test_that("a collected result's worker-side pin releases to GC", {
+  skip_on_cran() # finalizer-driven, polled against a wall-clock deadline
   p <- pool_pair()
   tv <- mizu_submit(p[["ctrl"]], runif(100000))
   pool_step(p)
@@ -653,6 +656,7 @@ test_that("a collected result's worker-side pin releases to GC", {
 })
 
 test_that("a serialize-tier result with no nested view pins nothing", {
+  skip_on_cran() # finalizer-driven, polled against a wall-clock deadline
   p <- pool_pair()
   f <- tfile()
   on.exit(unlink(f), add = TRUE)

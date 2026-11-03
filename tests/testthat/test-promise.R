@@ -937,6 +937,7 @@ test_that("bulk waiters hash the conflict check: disjoint coexist, overlapping e
 })
 
 test_that("a map waiter's dropped runners announce only the live tasks", {
+  skip_if_no_promises()
   p <- pool_pair()
   on.exit(pool_end(p))
   ctrl <- p[["ctrl"]]

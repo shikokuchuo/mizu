@@ -596,6 +596,7 @@ test_that("a non-ALTREP compact row.names qualifies with the 1:n verdict", {
 })
 
 test_that("an unmarked native non-ASCII UTF-8 string round-trips", {
+  skip_on_cran() # a native-marked non-ASCII string: needs a UTF-8 locale
   p <- foreign_pair()
   on.exit(channel_end(p))
   x <- "héllo ✓"
