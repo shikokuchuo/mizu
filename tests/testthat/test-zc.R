@@ -1642,6 +1642,7 @@ test_that("a view nested in a big list tree keeps the tree on the serialize tier
 })
 
 test_that("a remote leaf's region is held from the root's wrap (R-02)", {
+  skip_on_cran() # the free-list exclusion verdict follows rm() + gc()
   ch1 <- channel_pair()
   ch2 <- channel_pair()
   set.seed(3)

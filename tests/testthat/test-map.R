@@ -511,6 +511,7 @@ test_that("a re-sent map out view degrades to a materializing copy", {
 })
 
 test_that("a held view gates map-region teardown; a prepared re-run restages", {
+  skip_on_cran() # the teardown-gating read follows rm() + gc()
   p <- pool_pair()
   pm <- mizu_map_prepare(
     p[["ctrl"]],
@@ -999,6 +1000,7 @@ test_that("a small map rides entirely inline, no region", {
 })
 
 test_that("an inline map splits unevenly when n is not a chunk multiple", {
+  skip_on_cran() # bytes from the inline budget: locale-sized serialize header
   p <- pool_pair(workers = 2L)
   st <- mizu:::map_stage(p[["ctrl"]], 1:5, identity, list(), chunks = 2)
   expect_type(st[["blob"]], "raw") # 3 + 2 elements over two chunk tasks

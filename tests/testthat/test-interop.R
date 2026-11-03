@@ -9,6 +9,7 @@ ix_rt <- function(p, x, timeout = 5) {
 }
 
 test_that("per-tag identical() round-trips over a foreign channel", {
+  skip_on_cran() # latin1 translation: locale-sensitive
   skip_if_not_installed("bit64")
   p <- foreign_pair()
   on.exit(channel_end(p))
@@ -738,6 +739,7 @@ test_that("a seq-columned frame crosses as MIZL on a foreign handle, sender comp
 })
 
 test_that("the foreign zero-copy filter gates the layouts by capability", {
+  skip_on_cran() # latin1 translation: locale-sensitive
   # a factor past the floor: SHM_VEC only when the peer advertises ATTRS
   big <- factor(rep(c("a", "b"), 20000), levels = c("a", "b"))
   p <- foreign_pair(caps = 0L)
@@ -1277,6 +1279,7 @@ test_that("the stream read dispatches, declines and fails informatively", {
 })
 
 test_that("the foreign string gate declines latin1 and bytes marks", {
+  skip_on_cran() # latin1 translation: locale-sensitive
   p <- foreign_pair(caps = 1L) # MIZS
   on.exit(channel_end(p))
   lx <- iconv(
