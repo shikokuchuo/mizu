@@ -1,6 +1,6 @@
 # mizu
 
-Async and parallel R at thread speed over shared memory.
+Thread-speed async and parallel R over shared memory.
 
 A task round trip drops from ~100 µs over sockets to \< 1 µs, so you can
 divide work as finely as you would with threads (see

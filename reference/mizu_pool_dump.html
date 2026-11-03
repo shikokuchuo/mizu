@@ -9,7 +9,7 @@ than mizu_pool_info(). It shows per-slot registry detail and every occupied
 result slot. State is distributed across processes and execution is
 non-deterministic, so start here when a pool hangs. The scan takes no locks
 and can race with in-flight transitions: each field is a single consistent
-read, but the rows need not be consistent with each other."><meta property="og:image" content="https://shikokuchuo.net/mizu/og-image.png"><meta property="og:image:alt" content="mizu: async and parallel R at thread speed over shared memory"></head><body>
+read, but the rows need not be consistent with each other."><meta property="og:image" content="https://shikokuchuo.net/mizu/og-image.png"><meta property="og:image:alt" content="mizu: thread-speed async and parallel R over shared memory"></head><body>
     <a href="#container" class="visually-hidden-focusable">Skip to content</a>
 
 
@@ -109,18 +109,18 @@ this handle parked waiting for a result), and <code>ledger_entries</code>
 <span class="r-in"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fu"><a href="https://rdrr.io/r/stats/Uniform.html" class="external-link">runif</a></span><span class="op">(</span><span class="fl">1</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu">mizu_pool_dump</span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $name</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_1a49_7ad0795e"</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "/mizu_19d0_5b9a6c65"</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $shutdown</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $workers</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   slot status  pid park_state parked top bottom in_flight</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 8128     parked   TRUE   0      0        -1</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 7994     parked   TRUE   0      0        -1</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $submitters</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span>   slot status  pid rs_start rs_count queued ready full_waiter</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 6729        0      512      0 FALSE       FALSE</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> 1    0   live 6608        0      512      0 FALSE       FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 2    1   free    0        0        0      0 FALSE       FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 3    2   free    0        0        0      0 FALSE       FALSE</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> 4    3   free    0        0        0      0 FALSE       FALSE</span>
@@ -169,10 +169,10 @@ this handle parked waiting for a result), and <code>ledger_entries</code>
 <span class="r-out co"><span class="r-pr">#&gt;</span> [1] 479</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> $token</span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "1a49_7ad0795e"</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] "19d0_5b9a6c65"</span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> </span>
 <span class="r-in"><span><span class="fu"><a href="mizu_submit.html">mizu_collect</a></span><span class="op">(</span><span class="va">t</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.980328</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> [1] 0.5485893</span>
 <span class="r-in"><span><span class="fu"><a href="mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
 <span class="r-in"><span></span></span>
 </code></pre></div>

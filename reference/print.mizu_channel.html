@@ -23,7 +23,7 @@ specification prints its qualified name, or the first line of its source
 string truncated, and its argument counts. Sentinels print as their class.
 The handle methods never error and never touch the rings, and a handle whose
 resources are released (a closed channel, a stopped pool) prints as closed,
-so auto-printing is always safe."><meta property="og:image" content="https://shikokuchuo.net/mizu/og-image.png"><meta property="og:image:alt" content="mizu: async and parallel R at thread speed over shared memory"></head><body>
+so auto-printing is always safe."><meta property="og:image" content="https://shikokuchuo.net/mizu/og-image.png"><meta property="og:image:alt" content="mizu: thread-speed async and parallel R over shared memory"></head><body>
     <a href="#container" class="visually-hidden-focusable">Skip to content</a>
 
 
@@ -136,7 +136,7 @@ so auto-printing is always safe.</p>
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_pool.html">mizu_pool</a></span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">p</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1a49_7ad07967: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_19d0_5b9a6c6e: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span> <span class="op">+</span> <span class="fl">1</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">t</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_task: ok&gt;</span>
