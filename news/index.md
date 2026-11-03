@@ -46,6 +46,9 @@ Initial release.
   [`as.promise()`](https://rstudio.github.io/promises/reference/is.promise.html)
   methods for channels, tasks, and maps over later and promises, ready
   for Shiny.
+- Agent skill — an agent skill for AI coding assistants ships in the
+  installed package at `skills/mizu`, picked up automatically by `btw`
+  and other tools following that convention.
 - Housekeeping —
   [`mizu_prune()`](https://shikokuchuo.net/mizu/reference/mizu_prune.md)
   reclaims shared memory orphaned by dead processes;
