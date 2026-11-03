@@ -39,4 +39,5 @@ mizu_is_remote_error(x)
 #> [1] TRUE
 conditionMessage(x)
 #> [1] "simpleError: boom"
+mizu_close(ch)
 ```
