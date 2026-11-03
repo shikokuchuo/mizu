@@ -41,7 +41,7 @@ created. The payload rules for a non-R channel peer apply: only vectors and
 strings cross (see \code{\link[=mizu_send]{mizu_send()}}).
 }
 \examples{
-\dontrun{
+\dontshow{if (interactive()) withAutoprint(\{ # examplesIf}
 ch <- mizu_channel(
   r"(
 import pymizu
@@ -61,6 +61,5 @@ p <- mizu_pool(2, launcher = mizu_py_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
 mizu_collect(t)
 mizu_pool_stop(p)
-}
-
+\dontshow{\}) # examplesIf}
 }

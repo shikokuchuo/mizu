@@ -52,12 +52,11 @@
 #' mizu_collect(t)
 #' mizu_pool_stop(p)
 #'
-#' \dontrun{
+#' @examplesIf interactive()
 #' p <- mizu_pool(2, launcher = mizu_py_launcher())
 #' t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
 #' mizu_collect(t)
 #' mizu_pool_stop(p)
-#' }
 #'
 #' @export
 mizu_call <- function(.name = NULL, ..., .source = NULL) {

@@ -307,8 +307,7 @@ py_module_launcher <- function(python, module, stdout, stderr) {
 #'   [mizu_spawn_workers()] call it with both arguments to spawn the
 #'   worker for `slot`.
 #'
-#' @examples
-#' \dontrun{
+#' @examplesIf interactive()
 #' ch <- mizu_channel(
 #'   r"(
 #' import pymizu
@@ -328,7 +327,6 @@ py_module_launcher <- function(python, module, stdout, stderr) {
 #' t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
 #' mizu_collect(t)
 #' mizu_pool_stop(p)
-#' }
 #'
 #' @export
 mizu_py_launcher <- function(python = NULL, stdout = "", stderr = "") {

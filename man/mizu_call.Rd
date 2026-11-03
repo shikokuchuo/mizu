@@ -73,11 +73,10 @@ t <- mizu_submit_call(p, mizu_call("stats::quantile", runif(100)))
 mizu_collect(t)
 mizu_pool_stop(p)
 
-\dontrun{
+\dontshow{if (interactive()) withAutoprint(\{ # examplesIf}
 p <- mizu_pool(2, launcher = mizu_py_launcher())
 t <- mizu_submit_call(p, mizu_call("numpy.mean", runif(100)))
 mizu_collect(t)
 mizu_pool_stop(p)
-}
-
+\dontshow{\}) # examplesIf}
 }
