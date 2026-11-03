@@ -9,8 +9,8 @@ vignette: >
   %\VignetteEncoding{UTF-8}
 ---
 
-Two measurements against mirai, timed with [bench](https://bench.r-lib.org), with four mizu workers against four mirai daemons.
-Setup is excluded from the timings:
+Two comparisons with mirai, timed with [bench](https://bench.r-lib.org), using four mizu workers and four mirai daemons.
+Setup time is excluded from the timings:
 
 ``` r
 library(mizu)
@@ -30,15 +30,17 @@ enrich <- evalq(
 )
 
 # Speedup multiple of one bench row over another, from the medians
-speedup <- function(b, over, base) signif(as.numeric(b$median[over]) / as.numeric(b$median[base]), 2L)
+speedup <- function(b, over, base) {
+  signif(as.numeric(b$median[over]) / as.numeric(b$median[base]), digits = 2L)
+}
 ```
 
 ## A data frame round trip
 
-The `enrich()` task receives the 3.3 MB `diamonds` data frame, adds a column, and returns it.
-mirai serializes the data once per direction and copies it through a socket.
+The `enrich()` task takes the 3.3 MB `diamonds` data frame, adds a column, and returns it.
+mirai serializes the data in each direction and copies it through a socket.
 mizu stages the frame once in shared memory.
-The worker reads it in place, and the enriched frame crosses back the same way:
+The worker reads it in place, and the enriched frame comes back the same way:
 
 ``` r
 roundtrip <- bench::mark(
@@ -49,18 +51,20 @@ roundtrip
 #> # A tibble: 2 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 mizu       511.48µs 582.75µs     1135.  483.41KB      0  
-#> 2 mirai        5.66ms   7.53ms      131.    3.82MB     21.9
+#> 1 mizu       498.48µs  567.6µs     1162.  483.41KB      0  
+#> 2 mirai        6.55ms    7.4ms      133.    3.82MB     17.0
 ```
 
-End to end, mizu is **13x** faster (medians).
-Every timed run stages the frame, computes the new column over all 53,940 rows, and returns the enriched frame.
+End to end, mizu is **13x** faster (median).
+Each timed run stages the frame, computes the new column over all 53,940 rows, and returns the enriched frame.
 
 ## Five thousand small tasks
 
 Each task computes the mean and standard deviation of a sliding window of 1,000 prices, about 10 µs of work.
-mirai sends one task per element through its dispatcher, and the per-task cost alone exceeds the work.
-mizu stages the map once, and the workers claim element ranges from a shared cursor.
+
+- mirai sends one task per element through its dispatcher, and the per-task cost alone exceeds the work.
+- mizu stages the map once, and the workers claim element ranges from a shared cursor.
+
 The serial `lapply()` row is the baseline a parallel map has to beat:
 
 ``` r
@@ -80,12 +84,12 @@ tasks
 #> # A tibble: 3 × 6
 #>   expression      min   median `itr/sec` mem_alloc `gc/sec`
 #>   <bch:expr> <bch:tm> <bch:tm>     <dbl> <bch:byt>    <dbl>
-#> 1 serial       51.9ms   59.9ms     15.6       77MB    39.0 
-#> 2 mizu         13.3ms   14.7ms     55.9    535.9KB     0   
-#> 3 mirai       521.4ms  521.4ms      1.92    47.4MB     1.92
+#> 1 serial       43.7ms   59.8ms     16.6     77.1MB    40.6 
+#> 2 mizu         12.5ms   14.4ms     57.2    544.4KB     0   
+#> 3 mirai       532.6ms  532.6ms      1.88    47.4MB     3.76
 ```
 
-With four workers, mizu is **4.1x** faster than the serial loop and **35x** faster than mirai (medians).
+With four workers, mizu is **4.2x** faster than the serial loop and **37x** faster than mirai (median).
 
 ``` r
 daemons(0L)
@@ -98,9 +102,8 @@ On one machine, mizu removes that cost: data movement is an order of magnitude c
 
 ## How mizu compares
 
-mizu targets parallelism across processes on a single machine, with data moving through shared memory instead of serialized copies.
-The tools below overlap at the edges.
-They differ in what has to run, how data moves, and where workers can run.
+mizu is built for parallelism across processes on one machine, with data moving through shared memory instead of serialized copies.
+The tools below differ in what has to run, how data moves, and where workers can run:
 
 | Tool | What runs | How data moves | Best for |
 |----|----|----|----|
@@ -121,22 +124,21 @@ A fork is cheap because it shares the parent’s pages copy-on-write, but it is 
 
 mirai dispatches tasks to daemon processes over nanonext sockets.
 Its dispatcher runs through callbacks rather than as a separate broker process.
-Socket copies are the price of its generality: daemons can run anywhere a network reaches, including other machines and HPC clusters, where shared memory cannot.
+The socket copies are the trade-off: daemons can run anywhere a network reaches, including other machines and HPC clusters that shared memory cannot span.
 crew builds auto-scaling worker management on mirai for bursty pipelines.
 
 future layers a backend-agnostic interface over these and other backends (multisession, multicore, or mirai itself via future.mirai), so code ports between them unchanged.
-The cost of that abstraction is much higher per-task overhead than either mirai or crew, on top of the backend’s own transport cost.
+That abstraction costs much higher per-task overhead than either mirai or crew, on top of the backend’s own transport cost.
 
 ### callr
 
-callr answers a different question.
-It evaluates R code in a fresh, isolated session with no carry-over of state, and pays for that isolation with a process spawn and a serialized round trip per call.
-It is the right tool for one-off isolation, not for dividing a loop.
+callr does something different.
+It evaluates R code in a fresh, isolated session with no state carried over, paying for the isolation with a process spawn and a serialized round trip per call.
+Use it for one-off isolation, not for splitting a loop.
 
 ### Python workers
 
 Only mizu runs a pool whose workers are Python processes, exchanging vectors and data frames as shared-memory views (see [Python interop](interop.html)).
-None of the tools above cross the language boundary.
 
-Choose mizu when the work fits on one machine, when tasks are fine-grained or the data is large, or when Python needs to be in the loop.
-Choose mirai or crew when workers must run on other machines or under a scheduler, and callr when a task needs a fresh session.
+Use mizu when the work fits on one machine, when tasks are fine-grained or the data is large, or when you need Python workers.
+Use mirai or crew when workers must run on other machines or under a scheduler, and callr when a task needs a fresh session.
