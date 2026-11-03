@@ -1022,6 +1022,7 @@ test_that("the err tag reads as a mizu_error_remote value, index 1-based", {
 })
 
 test_that("the err framer writes class, message and call text, bounded", {
+  skip_on_cran() # multibyte truncation: locale-sensitive
   cond <- errorCondition(
     "region create failed",
     call = quote(f(x)),

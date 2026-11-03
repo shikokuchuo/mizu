@@ -128,6 +128,7 @@ test_that("attach validates the region: absent, malformed, or not a channel", {
 })
 
 test_that("a second attach finds the peer liveness lock held", {
+  skip_on_cran() # in-process flock exclusion on TMPDIR: NFS locks per process
   p <- channel_pair()
   on.exit(channel_end(p))
   expect_error(

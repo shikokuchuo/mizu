@@ -1917,6 +1917,7 @@ test_that("nested references dedupe to one mapping per region (Linux VMAs)", {
 })
 
 test_that("pool task args carry views counted; a returned view echoes by REF", {
+  skip_on_cran() # the count check assumes no GC runs inside the step
   p <- pool_pair()
   t <- mizu_submit(p[["ctrl"]], runif(100000))
   pool_step(p)

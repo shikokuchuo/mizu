@@ -284,6 +284,7 @@ test_that("the reader rejects malformed streams", {
 })
 
 test_that("the reader validates stream bounds and shapes", {
+  skip_on_cran() # a 501-deep stream drives the codec's recursion bound
   u32 <- function(x) writeBin(as.integer(x), raw(4L), endian = "little")
   u64 <- function(x) {
     stopifnot(x >= 0 && x < 2^53)

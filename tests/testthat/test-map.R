@@ -1312,17 +1312,18 @@ test_that("seeded chunks restore the evaluating process's RNG state", {
   # not leak. With a pre-existing state, it is restored exactly ...
   set.seed(1)
   before <- .Random.seed
+  kind <- RNGkind()[1L]
   invisible(run_map(p, 1:4, function(i) runif(1), chunks = 2, seed = 9L))
   expect_identical(.Random.seed, before)
   # ... and the generator kind rides along (R-19): the batch's L'Ecuyer-CMRG
   # draws must not leave the process switched
-  expect_identical(RNGkind()[1L], "Mersenne-Twister")
+  expect_identical(RNGkind()[1L], kind)
   # ... and a worker with no .Random.seed yet (workers seed lazily) is
   # left with none
   rm(".Random.seed", envir = globalenv())
   invisible(run_map(p, 1:4, function(i) runif(1), chunks = 2, seed = 9L))
   expect_false(exists(".Random.seed", envir = globalenv(), inherits = FALSE))
-  expect_identical(RNGkind()[1L], "Mersenne-Twister")
+  expect_identical(RNGkind()[1L], kind)
   pool_end(p)
 })
 
