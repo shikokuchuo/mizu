@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="3ddee6d9e39786472c097ba17be5232e5c8fc641"  # libmizu: Shadow each handle's error record per calling thread
+PIN="6c87ad3cdef71f6793975e6492395266f27dc281"  # libmizu: Record the const snapshot getters through the error shadow; bound the split-threads test's window
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
