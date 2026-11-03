@@ -89,7 +89,7 @@ library(promises)
 ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
 mizu_recv_async(ch) %...>% print()
 mizu_send(ch, 42L)
-for (i in 1:4) later::run_now(1) # pump the loop until the resolution lands
+while (!later::loop_empty()) later::run_now(1) # pump the loop until the resolution lands
 #> [1] 42
 mizu_close(ch)
 ```
