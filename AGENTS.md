@@ -177,7 +177,10 @@ SEXP. The binding registers callbacks per handle at create/attach/join
 (interrupt poll — wraps `R_CheckUserInterrupt()`), `sweep` (idle cache
 drop), `drop` (pin release — the pin is a cons cell pushed on the
 handle’s prot-anchored chain at stage, tombstoned in the hook: no
-allocation, finalizer-safe), `park` NULL (R has no global lock). Staging
+allocation, finalizer-safe), `park` NULL (R has no global lock), and
+`flags` zero — R is one thread per session, so the submitter’s submit
+and collect halves share it and `MIZU_BINDING_SPLIT_WAITER` (pymizu sets
+it: its executor collects on the listener thread) stays clear. Staging
 is transactional: the core mutates no shared state before `stage`
 returns, so a mid-stage raise (the codec’s ALTREP rejection, an
 allocation longjmp) leaves the handle consistent. The `mizu_r_*` hook
