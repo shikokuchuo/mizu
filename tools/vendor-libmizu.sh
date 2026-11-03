@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="8ea7867f7eb0bef4b7939e80fa9e1c6095d0cc2a"  # libmizu: Fix dead-parked-worker wakes and the unlimited-tmpfs probe, add the split-waiter release seam
+PIN="3ddee6d9e39786472c097ba17be5232e5c8fc641"  # libmizu: Shadow each handle's error record per calling thread
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
