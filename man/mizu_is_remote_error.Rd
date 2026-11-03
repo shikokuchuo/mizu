@@ -29,5 +29,6 @@ ch <- mizu_channel(quote(stop("boom")))
 x <- mizu_recv(ch, timeout = 5)
 mizu_is_remote_error(x)
 conditionMessage(x)
+mizu_close(ch)
 
 }

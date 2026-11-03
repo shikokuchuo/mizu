@@ -238,6 +238,7 @@ mizu_is_sentinel <- function(x) .Call(mizu_sentinel_check, x)
 #' x <- mizu_recv(ch, timeout = 5)
 #' mizu_is_remote_error(x)
 #' conditionMessage(x)
+#' mizu_close(ch)
 #'
 #' @export
 mizu_is_remote_error <- function(x) inherits(x, "mizu_error_remote")
