@@ -6,6 +6,7 @@ worker processes that each own a work-stealing deque, with no dispatcher
 process in between. A submitted task goes from your process into shared
 memory, where a worker claims it. Idle workers steal from busy ones, so
 the load balances itself.
+
 [`mizu_submit()`](https://shikokuchuo.net/mizu/reference/mizu_submit.md)
 captures an expression together with the values it needs and returns a
 task handle immediately. Your session stays free to continue.
@@ -44,7 +45,10 @@ Divide-and-conquer has little overhead and cannot deadlock the pool:
 t <- mizu_submit(
   p,
   {
-    subtasks <- lapply(parts, \(part) mizu_submit(mizu_current_pool(), sum(x), x = part))
+    subtasks <- lapply(
+      parts,
+      \(part) mizu_submit(mizu_current_pool(), sum(x), x = part)
+    )
     do.call(sum, lapply(subtasks, mizu_collect))
   },
   parts = split(1:1000, rep(1:4, each = 250))
@@ -132,7 +136,7 @@ ts <- list(
 )
 mizu_collect_all(ts, timeout = 5)
 #> $total
-#> [1] 5.269821
+#> [1] 3.628258
 #> 
 #> $label
 #> [1] "done"

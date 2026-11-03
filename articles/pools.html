@@ -87,7 +87,8 @@
 
 
 
-    <p><code><a href="../reference/mizu_pool.html">mizu_pool()</a></code> builds on the same shared-memory transport as a channel. It spawns worker processes that each own a work-stealing deque, with no dispatcher process in between. A submitted task goes from your process into shared memory, where a worker claims it. Idle workers steal from busy ones, so the load balances itself. <code><a href="../reference/mizu_submit.html">mizu_submit()</a></code> captures an expression together with the values it needs and returns a task handle immediately. Your session stays free to continue. <code><a href="../reference/mizu_submit.html">mizu_collect()</a></code> waits for the result of that task:</p>
+    <p><code><a href="../reference/mizu_pool.html">mizu_pool()</a></code> builds on the same shared-memory transport as a channel. It spawns worker processes that each own a work-stealing deque, with no dispatcher process in between. A submitted task goes from your process into shared memory, where a worker claims it. Idle workers steal from busy ones, so the load balances itself.</p>
+<p><code><a href="../reference/mizu_submit.html">mizu_submit()</a></code> captures an expression together with the values it needs and returns a task handle immediately. Your session stays free to continue. <code><a href="../reference/mizu_submit.html">mizu_collect()</a></code> waits for the result of that task:</p>
 <div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://shikokuchuo.net/mizu/">mizu</a></span><span class="op">)</span></span>
 <span></span>
@@ -104,7 +105,10 @@
 <code class="sourceCode R"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span></span>
 <span>  <span class="va">p</span>,</span>
 <span>  <span class="op">{</span></span>
-<span>    <span class="va">subtasks</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="va">parts</span>, \<span class="op">(</span><span class="va">part</span><span class="op">)</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="fu"><a href="../reference/mizu_current_pool.html">mizu_current_pool</a></span><span class="op">(</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum</a></span><span class="op">(</span><span class="va">x</span><span class="op">)</span>, x <span class="op">=</span> <span class="va">part</span><span class="op">)</span><span class="op">)</span></span>
+<span>    <span class="va">subtasks</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span></span>
+<span>      <span class="va">parts</span>,</span>
+<span>      \<span class="op">(</span><span class="va">part</span><span class="op">)</span> <span class="fu"><a href="../reference/mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="fu"><a href="../reference/mizu_current_pool.html">mizu_current_pool</a></span><span class="op">(</span><span class="op">)</span>, <span class="fu"><a href="https://rdrr.io/r/base/sum.html" class="external-link">sum</a></span><span class="op">(</span><span class="va">x</span><span class="op">)</span>, x <span class="op">=</span> <span class="va">part</span><span class="op">)</span></span>
+<span>    <span class="op">)</span></span>
 <span>    <span class="fu"><a href="https://rdrr.io/r/base/do.call.html" class="external-link">do.call</a></span><span class="op">(</span><span class="va">sum</span>, <span class="fu"><a href="https://rdrr.io/r/base/lapply.html" class="external-link">lapply</a></span><span class="op">(</span><span class="va">subtasks</span>, <span class="va">mizu_collect</span><span class="op">)</span><span class="op">)</span></span>
 <span>  <span class="op">}</span>,</span>
 <span>  parts <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/split.html" class="external-link">split</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">1000</span>, <span class="fu"><a href="https://rdrr.io/r/base/rep.html" class="external-link">rep</a></span><span class="op">(</span><span class="fl">1</span><span class="op">:</span><span class="fl">4</span>, each <span class="op">=</span> <span class="fl">250</span><span class="op">)</span><span class="op">)</span></span>
@@ -149,7 +153,7 @@
 <span><span class="op">)</span></span>
 <span><span class="fu"><a href="../reference/mizu_collect_all.html">mizu_collect_all</a></span><span class="op">(</span><span class="va">ts</span>, timeout <span class="op">=</span> <span class="fl">5</span><span class="op">)</span></span>
 <span><span class="co">#&gt; $total</span></span>
-<span><span class="co">#&gt; [1] 5.269821</span></span>
+<span><span class="co">#&gt; [1] 3.628258</span></span>
 <span><span class="co">#&gt; </span></span>
 <span><span class="co">#&gt; $label</span></span>
 <span><span class="co">#&gt; [1] "done"</span></span></code></pre></div>

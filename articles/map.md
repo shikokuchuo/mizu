@@ -84,9 +84,9 @@ identical(mizu_collect(m1), mizu_collect(m2))
 ## Prepared maps
 
 [`mizu_map_prepare()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
-stages a map (the function, its constant arguments, and the data)
-without running it, so the serialization and region creation happen
-once. Each
+stages a map — creating the shared-memory region and writing the
+function, its constant arguments, and the data into it — without running
+it, so that cost is paid once. Each
 [`mizu_map_run()`](https://shikokuchuo.net/mizu/reference/mizu_map_prepare.md)
 then costs only task submission and collection, and reuses the map
 context cached on each worker. Repeated stochastic simulation is the
@@ -100,7 +100,7 @@ runs <- lapply(1:4, \(s) {
   m <- mizu_map_run(pm, .seed = s)
   mizu_collect(m)
 })
-vapply(runs, \(r) r[[1L]], numeric(1))
+vapply(runs, `[[`, numeric(1), 1L)
 #> [1] 0.13109678 0.08153219 0.17986914 0.17683176
 ```
 
