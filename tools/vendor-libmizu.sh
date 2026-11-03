@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="5b6c9683674968af854a7220fc59db71625b02be"  # libmizu: Fix the notify arm: drain once per cycle, report the recv verdict
+PIN="8ea7867f7eb0bef4b7939e80fa9e1c6095d0cc2a"  # libmizu: Fix dead-parked-worker wakes and the unlimited-tmpfs probe, add the split-waiter release seam
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
