@@ -28,6 +28,9 @@ Initial release.
 * Event-driven async — `mizu_recv_async()`, `mizu_recv_handler()`,
   `mizu_collect_async()`, and `as.promise()` methods for channels,
   tasks, and maps over later and promises, ready for Shiny.
+* Agent skill — an agent skill for AI coding assistants ships in the
+  installed package at `skills/mizu`, picked up automatically by `btw`
+  and other tools following that convention.
 * Housekeeping — `mizu_prune()` reclaims shared memory orphaned by dead
   processes; `mizu_pool_dump()` introspects a running or hung pool.
 
