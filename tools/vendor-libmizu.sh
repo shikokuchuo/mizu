@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="fe512e6bef4a43834a01b81a0d7fec6a28004957"  # libmizu: Restore wake-one unparks; reserve wake-all for split-waiter submitter parkers
+PIN="a504a28121cc39309879f69aa266ca6ccfac6f73"  # libmizu: Close the final pre-release review findings
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
