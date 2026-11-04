@@ -1,0 +1,129 @@
+# Package index
+
+## Channels
+
+- [`mizu_channel()`](https://shikokuchuo.net/mizu/dev/reference/mizu_channel.md)
+  : Create a Channel and Spawn Its Peer
+- [`mizu_send()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send.md)
+  [`mizu_recv()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send.md)
+  : Send and Receive over a Channel
+- [`mizu_send_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send_batch.md)
+  [`mizu_recv_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send_batch.md)
+  : Batched Send and Receive
+- [`mizu_close()`](https://shikokuchuo.net/mizu/dev/reference/mizu_close.md)
+  : Close a Channel
+- [`mizu_alive()`](https://shikokuchuo.net/mizu/dev/reference/mizu_alive.md)
+  : Check Whether the Channel Peer Is Alive
+- [`mizu_channel_info()`](https://shikokuchuo.net/mizu/dev/reference/mizu_channel_info.md)
+  : Inspect a Channel
+
+## Pools
+
+- [`mizu_pool()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool.md)
+  : Create a Task Pool and Spawn Its Workers
+- [`mizu_pool_attach()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool_attach.md)
+  : Attach to a Pool as a Submitter
+- [`mizu_submit()`](https://shikokuchuo.net/mizu/dev/reference/mizu_submit.md)
+  [`mizu_collect()`](https://shikokuchuo.net/mizu/dev/reference/mizu_submit.md)
+  : Submit a Task and Collect Its Result
+- [`mizu_submit_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_submit_batch.md)
+  : Submit a Batch of Tasks
+- [`mizu_collect_any()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_any.md)
+  : Collect the First Available Result From Several Tasks
+- [`mizu_collect_all()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all.md)
+  : Collect the Results of Several Tasks, in Order
+- [`mizu_cancel()`](https://shikokuchuo.net/mizu/dev/reference/mizu_cancel.md)
+  : Cancel a Task or a Map
+- [`mizu_current_pool()`](https://shikokuchuo.net/mizu/dev/reference/mizu_current_pool.md)
+  : The Evaluating Worker's Own Pool Handle
+- [`mizu_default_pool()`](https://shikokuchuo.net/mizu/dev/reference/mizu_default_pool.md)
+  [`mizu_set_default_pool()`](https://shikokuchuo.net/mizu/dev/reference/mizu_default_pool.md)
+  [`mizu_with_pool()`](https://shikokuchuo.net/mizu/dev/reference/mizu_default_pool.md)
+  [`mizu_local_pool()`](https://shikokuchuo.net/mizu/dev/reference/mizu_default_pool.md)
+  : The Process-Wide Default Pool
+- [`mizu_spawn_workers()`](https://shikokuchuo.net/mizu/dev/reference/mizu_spawn_workers.md)
+  [`mizu_retire_worker()`](https://shikokuchuo.net/mizu/dev/reference/mizu_spawn_workers.md)
+  : Grow or Shrink the Worker Set of a Pool
+- [`mizu_pool_stop()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool_stop.md)
+  : Stop a Pool
+
+## Parallel map
+
+- [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
+  : Parallel Map Over a Pool
+- [`mizu_map_prepare()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map_prepare.md)
+  [`mizu_map_run()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map_prepare.md)
+  : Prepared Maps: Stage Once, Run Many
+
+## Promises and handlers
+
+- [`mizu_recv_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
+  [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
+  [`as.promise(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
+  [`is.promising(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
+  : Receive Channel Messages as a Promise or a Stream
+- [`mizu_collect_all_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  [`mizu_collect_any_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  [`mizu_collect_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  [`as.promise(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  [`is.promising(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  [`as.promise(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  [`is.promising(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  : Collect Pool Results as Promises
+
+## Monitoring and debugging
+
+- [`mizu_pool_info()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool_info.md)
+  : Inspect a Pool
+- [`mizu_pool_stats()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool_stats.md)
+  : Cumulative Pool Counters
+- [`mizu_pool_dump()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool_dump.md)
+  : Dump the Distributed State of a Pool
+- [`mizu_pool_trace()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool_trace.md)
+  : Trace Task Lifecycle Events
+
+## Cross-language interop
+
+- [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md)
+  : Convert a Received Frame to an Arrow Stream
+- [`mizu_call()`](https://shikokuchuo.net/mizu/dev/reference/mizu_call.md)
+  [`mizu_submit_call()`](https://shikokuchuo.net/mizu/dev/reference/mizu_call.md)
+  : Call a Function in Another Language
+- [`mizu_launcher()`](https://shikokuchuo.net/mizu/dev/reference/mizu_launcher.md)
+  : Default Child Process Launcher
+- [`mizu_py_launcher()`](https://shikokuchuo.net/mizu/dev/reference/mizu_py_launcher.md)
+  : Python Launcher
+
+## Conditions and sentinels
+
+- [`mizu_error`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_submit_timeout`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_slots_exhausted`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_stopped`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_cancelled`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_worker_died`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_task_lost`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_startup`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_shm`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_not_portable`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_python_payload`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  [`mizu_error_remote`](https://shikokuchuo.net/mizu/dev/reference/mizu_error.md)
+  : Error Conditions
+- [`mizu_is_remote_error()`](https://shikokuchuo.net/mizu/dev/reference/mizu_is_remote_error.md)
+  : Remote Errors
+- [`mizu_is_sentinel()`](https://shikokuchuo.net/mizu/dev/reference/mizu_is_sentinel.md)
+  : Test for a mizu Sentinel
+
+## Utilities
+
+- [`mizu_prune()`](https://shikokuchuo.net/mizu/dev/reference/mizu_prune.md)
+  : Remove Orphaned Shared Memory Regions
+- [`print(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_pool>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_task>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_call>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_map>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_map_prepared>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_sentinel>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  [`print(`*`<mizu_error_remote>`*`)`](https://shikokuchuo.net/mizu/dev/reference/print.mizu_channel.md)
+  : Print Methods for mizu Objects
