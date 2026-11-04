@@ -67,6 +67,15 @@
       Error:
       ! mizu: value is not portable to the peer (a named atomic vector has no portable home at x$v)
 
+---
+
+    Code
+      mizu_send(p$host, structure(list(a = 1:2, s = methods::new("ixS4lst", list(1, 2))),
+      class = "data.frame", row.names = c(NA_integer_, -2L)))
+    Condition
+      Error:
+      ! mizu: value is not portable to the peer (an S4 object has no portable home at x$s)
+
 # the decline diagnoses the frame's own shape and keeps prior text
 
     Code

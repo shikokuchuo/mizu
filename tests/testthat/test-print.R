@@ -45,6 +45,7 @@ test_that("call specs print the head and argument counts", {
   expect_snapshot(print(mizu_call(.source = "x + 1\nx + 2")))
   expect_snapshot(print(mizu_call(.source = strrep("x", 100L))))
   expect_snapshot(print(mizu_call("base::sqrt")))
+  expect_snapshot(print(mizu_call("stats::quantile", 1:10)))
 })
 
 test_that("sentinels print as their class", {

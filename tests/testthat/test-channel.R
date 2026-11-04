@@ -79,6 +79,7 @@ test_that("a fresh channel reports its layout and state", {
     .Call(mizu:::mizu_channel_stat, p[["peer"]])[["side"]],
     "peer"
   )
+  expect_identical(mizu_channel_info(p[["host"]]), st)
   expect_s3_class(p[["host"]], "mizu_channel")
 })
 

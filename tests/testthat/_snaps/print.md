@@ -131,6 +131,13 @@
     Output
       <mizu_call: base::sqrt>
 
+---
+
+    Code
+      print(mizu_call("stats::quantile", 1:10))
+    Output
+      <mizu_call: stats::quantile, 1 positional>
+
 # sentinels print as their class
 
     Code

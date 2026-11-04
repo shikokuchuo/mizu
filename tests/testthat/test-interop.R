@@ -306,6 +306,8 @@ test_that("the attr decline names the offending attributes", {
 test_that("the decline diagnoses a frame's failing column", {
   methods::setClass("ixS4col", contains = "integer")
   on.exit(methods::removeClass("ixS4col"), add = TRUE)
+  methods::setClass("ixS4lst", contains = "list")
+  on.exit(methods::removeClass("ixS4lst"), add = TRUE)
   p <- foreign_pair()
   on.exit(channel_end(p))
 
@@ -376,6 +378,18 @@ test_that("the decline diagnoses a frame's failing column", {
   e <- tryCatch(mizu_send(p$host, bad), error = function(e) e)
   expect_identical(e$reason, "a named atomic vector has no portable home")
   expect_identical(e$remedy, character(0))
+  # an S4 column over a non-atomic data part takes the same decline
+  expect_snapshot(
+    mizu_send(
+      p$host,
+      structure(
+        list(a = 1:2, s = methods::new("ixS4lst", list(1, 2))),
+        class = "data.frame",
+        row.names = c(NA_integer_, -2L)
+      )
+    ),
+    error = TRUE
+  )
 })
 
 test_that("the decline diagnoses the frame's own shape and keeps prior text", {
