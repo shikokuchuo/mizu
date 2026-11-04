@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="a504a28121cc39309879f69aa266ca6ccfac6f73"  # libmizu: Close the final pre-release review findings
+PIN="5012d52cf7dfe5e3adb28288b51423d742b1cbb7"  # libmizu: v0.1.0
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
