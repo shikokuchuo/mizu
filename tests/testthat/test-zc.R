@@ -646,6 +646,46 @@ test_that("the collect-entry boundary fires past the gate; dead views never leak
   pool_end(pp)
 })
 
+test_that("an aliased re-wrap charges its region once per pending lifetime", {
+  skip_on_cran() # ~24 MiB of regions held; the ledger drains at gc() finalizers
+  p <- channel_pair(arena_size = 0)
+  armed <- function() .Call(mizu:::mizu_zc_armed_bytes)
+  x <- runif(2^20) # 8 MB region: one wrap crosses the gate
+  mizu_send(p[["host"]], 1L)
+  mizu_recv(p[["peer"]], 5) # fires any standing charge through the recv boundary
+  expect_identical(armed(), 0)
+  mizu_send(p[["host"]], x)
+  y1 <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y1))
+  expect_gt(armed(), 8 * 1024 * 1024)
+  mizu_send(p[["peer"]], y1) # REF: the region identifier, zero bytes
+  y2 <- mizu_recv(p[["host"]], 5)
+  expect_true(is_view(y2))
+  mizu_send(p[["host"]], y2)
+  y3 <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y3))
+  # the peer's re-wrap of the same region re-charges nothing (this recv's
+  # entry boundary fired on the standing charge, leaving zero)
+  expect_identical(armed(), 0)
+  # a distinct region still charges
+  mizu_send(p[["host"]], x)
+  y4 <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y4))
+  expect_gt(armed(), 8 * 1024 * 1024)
+  # the releases drain the pending set: a fresh wrap charges again
+  rm(y1, y2, y3, y4)
+  invisible(gc())
+  mizu_send(p[["host"]], 1L)
+  mizu_recv(p[["peer"]], 5)
+  expect_identical(armed(), 0)
+  mizu_send(p[["host"]], x)
+  y5 <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y5))
+  expect_gt(armed(), 8 * 1024 * 1024)
+  rm(y5)
+  channel_end(p)
+})
+
 test_that("a zero mizu.gc_boundary disables the boundary collection", {
   p <- pool_pair()
   armed <- function() .Call(mizu:::mizu_zc_armed_bytes)

@@ -1979,3 +1979,30 @@ placed beside ntfy_lock; exports unchanged (201). mizu full suite green
 in-process reproduction scripts at 0 hung (pre-fix on this host: pool
 3/200, channel close race 3/100, after-the-fact enroll 100%). Best-known
 table untouched — no row moved.
+
+## 2026-11-04 — zc gc boundary: charge each region once per pending lifetime
+
+Regression find and fix: 53382e7 (the zc gc boundary on the recv verbs)
+charged the boundary counter per view wrap, so an 80 MB region re-wrapped
+per receive — the cross-language frame REF relay, or a pool worker
+re-resolving one big REF argument — crossed the 8 MB gate on every verb
+and paid a full minor collection per frame (82-98% of receiver CPU in
+RunGenCollect): the frame 10col unmodified REF relay read 6.2 -> ~190
+us/rt, strcol 2.4 -> 10.2 ms, and the staged resolve-only probe (200
+pre-queued REF relays) 200-225 us/frame vs 5-10 on parent c3fce68.
+src/zc.c now keeps a process-global pending set keyed by the mapping
+pointer: a region charges on the first arm of its pending lifetime,
+re-wraps ride the standing charge, and the release destroy decrements
+(releases still never refund — eviction/re-open over-charges, the safe
+direction).
+
+Results: the probe at HEAD reads 10.0 us/frame with the default
+boundary, 5.0 with it off (proc.time's ~1 ms tick quantizes both); the
+pymizu frame rows are back at their records — 10col unmodified REF 5.9
+us/rt (a table swap there), one computed col 246.8 us/rt (band), strcol
+2,442.6 us/rt (the 2,410.8 band). Trimmed mizu-bench (sections 1-3; the
+wake rows the fix cannot touch): sequential rt 1.1 channel / 1.8 pool,
+pipelined and payload rows inside their bands.
+Status: full suite green (5995 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs), the new aliased-re-wrap case
+included.

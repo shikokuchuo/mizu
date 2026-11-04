@@ -547,7 +547,9 @@ void mizu_zc_cache_store(mizu_zc_cache *oc, const unsigned char *name,
 /* The byte-gated minor collection at a pool task boundary: releases the
    views the finished task left behind while they are still in New space.
    Past MIZU_R_GC_BYTES of armed view bytes only — a task that wrapped
-   nothing or only small views pays one load. The idle sweep hook
+   nothing or only small views pays one load. The gate charges each region
+   once per pending lifetime (zc.c), so re-wrapping one region across many
+   receives cannot fire it per verb. The idle sweep hook
    deliberately never collects: at idle the previous REF result is still
    retained, and a collection there would promote it to Old[0], slipping
    its release to the level-1 cadence (the generation trap). */
