@@ -56,14 +56,14 @@ p <- mizu_pool()
 t <- mizu_submit(p, runif(1))
 mizu_pool_dump(p)
 #> $name
-#> [1] "/mizu_1a27_e13282e7"
+#> [1] "/mizu_1a27_1251f858"
 #> 
 #> $shutdown
 #> [1] FALSE
 #> 
 #> $workers
 #>   slot status  pid park_state parked top bottom in_flight
-#> 1    0   live 8162     parked   TRUE   0      0        -1
+#> 1    0   live 8082     parked   TRUE   0      0        -1
 #> 
 #> $submitters
 #>   slot status  pid rs_start rs_count queued ready full_waiter
@@ -116,9 +116,9 @@ mizu_pool_dump(p)
 #> [1] 479
 #> 
 #> $token
-#> [1] "1a27_e13282e7"
+#> [1] "1a27_1251f858"
 #> 
 mizu_collect(t)
-#> [1] 0.7362478
+#> [1] 0.8813543
 mizu_pool_stop(p)
 ```

@@ -57,11 +57,11 @@ reset when a new joiner reuses a slot.
 p <- mizu_pool()
 t <- mizu_submit(p, runif(5))
 mizu_collect(t)
-#> [1] 0.2164447 0.9063634 0.8784624 0.2661826 0.7421043
+#> [1] 0.7245141 0.4841932 0.7910879 0.4970860 0.8310544
 mizu_pool_stats(p)
 #> $workers
 #>   slot status  pid tasks steals injections parks helps deque
-#> 1    0   live 8244     1      0          1     1     0     0
+#> 1    0   live 8165     1      0          1     1     0     0
 #> 
 #> $submitters
 #>   slot status  pid injected claimed spills spill_reuse queued
