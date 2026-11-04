@@ -1,7 +1,5 @@
 # Changelog
 
-## mizu (development version)
-
 ## mizu 0.1.0
 
 CRAN release: 2026-11-04
