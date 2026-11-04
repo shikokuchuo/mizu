@@ -16,11 +16,11 @@
 Source:
 [`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/main/DESCRIPTION)
 
-Gao C (2026). *mizu: Thread-Speed Async and Parallel R over Shared
+Gao C (2026). *mizu: Thread-Speed 'Async' and Parallel R over Shared
 Memory*. R package version 0.0.1.9000, <https://shikokuchuo.net/mizu/>.
 
     @Manual{,
-      title = {mizu: Thread-Speed Async and Parallel R over Shared Memory},
+      title = {mizu: Thread-Speed 'Async' and Parallel R over Shared Memory},
       author = {Charlie Gao},
       year = {2026},
       note = {R package version 0.0.1.9000},
