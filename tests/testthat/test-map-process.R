@@ -130,7 +130,7 @@ test_that("a worker killed mid-chunk fails the map with its element range", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
       hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L
@@ -191,7 +191,7 @@ test_that("worker death fails a blob-path map with the chunk's exact range", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
       hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L
@@ -238,7 +238,7 @@ test_that("a lone worker's death fails its claimed blob chunk as died", {
       d <- mizu_pool_dump(p)
       any(d[["tasks"]][["status"]] == "ok") &&
         any(
-          d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L
+          d[["tasks"]][["status"]] %in% c("pending", "running") & d[["tasks"]][["worker"]] >= 0L
         )
     },
     timeout = 10
@@ -295,7 +295,7 @@ test_that("a streaming map's sweep reports a sibling's death over the error", {
       d <- mizu_pool_dump(p)
       any(d[["tasks"]][["status"]] == "err") &&
         any(
-          d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L
+          d[["tasks"]][["status"]] %in% c("pending", "running") & d[["tasks"]][["worker"]] >= 0L
         )
     },
     timeout = 10
@@ -334,7 +334,7 @@ test_that("worker death on the template path never exposes partial output", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
       hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L
@@ -505,7 +505,7 @@ test_that(".timeout under executing chunks returns the sentinel, cleans up", {
   # the executing chunk finishes, its publish CAS consumes the CANCEL; the
   # queued chunk drops at claim: every slot frees without a collect
   expect_true(wait_until(
-    identical(unname(mizu_pool_info(p)[["tasks"]]), rep(0L, 6L)),
+    identical(unname(mizu_pool_info(p)[["tasks"]]), rep(0L, 7L)),
     timeout = 10
   ))
   expect_identical(
@@ -749,7 +749,7 @@ test_that("killing the re-homer leaves no wedge: the survivor drains", {
   # the survivor drains the orphaned deque — the re-homed entry drops at
   # the CANCEL skip once collect's cancel lands — and the pool empties
   expect_true(wait_until(
-    identical(unname(mizu_pool_info(p)[["tasks"]]), rep(0L, 6L)),
+    identical(unname(mizu_pool_info(p)[["tasks"]]), rep(0L, 7L)),
     timeout = 30
   ))
   d <- mizu_pool_dump(p)
@@ -820,7 +820,7 @@ test_that("a mid-map worker death reports the gap between survivor batches", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
       hit <- sum(d[["tasks"]][["status"]] == "ok") == 2L &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L

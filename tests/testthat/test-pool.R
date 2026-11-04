@@ -110,7 +110,7 @@ test_that("a fresh pool reports its layout and registry state", {
   expect_identical(st[["workers"]], "live")
   expect_identical(st[["submitters"]], c("live", rep("free", 3L)))
   expect_identical(st[["injection"]], 0)
-  expect_identical(unname(st[["tasks"]]), rep(0L, 6L))
+  expect_identical(unname(st[["tasks"]]), rep(0L, 7L))
   expect_false(st[["shutdown"]])
   expect_identical(mizu_pool_info(p[["wk"]])[["role"]], "worker")
   expect_s3_class(p[["ctrl"]], "mizu_pool")
@@ -1395,15 +1395,18 @@ test_that("collect_all attaches the consumed prefix to a mid-batch read failure"
   # result slots follow the header, worker/submitter tables, the injection
   # rings, and the worker deques (pool_pair's default geometry)
   off <- 128L + 256L + 8L * 128L + 256L + 8L * (256L + 64L * 512L) + 64L * 512L
+  # the slot's tagged state word (mizu_rs_hdr.state): the MIZU_RS_* state
+  # is its low nibble, the claimant and the incarnation ride above it
   status_at <- function(k) {
-    readBin(
+    word <- readBin(
       .Call(mizu:::mizu_peek, rw, off + k * 512L, 4L),
       "integer",
       size = 4L,
       endian = "little"
     )
+    bitwAnd(word, 15L)
   }
-  expect_identical(c(status_at(0L), status_at(1L)), c(2L, 2L)) # both OK
+  expect_identical(c(status_at(0L), status_at(1L)), c(3L, 3L)) # both OK
   # t2's result payload reads as a language-private stream at collect
   .Call(mizu:::mizu_poke, rw, off + 512L + 40L, charToRaw("P"))
   cnd <- tryCatch(

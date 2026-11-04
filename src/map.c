@@ -946,7 +946,8 @@ int mizu_map_runners_done(SEXP wrap, mizu_pool *p, const uint64_t *words,
   for (uint32_t i = 0; i < n; i++) {
     if (words[i] == 0) continue;
     mizu_task t = { words[i] };
-    if (mizu_pool_task_state(p, &t) != MIZU_RS_PENDING) continue;
+    int st = mizu_pool_task_state(p, &t);
+    if (st != MIZU_RS_PENDING && st != MIZU_RS_RUNNING) continue;
     if (mh != NULL &&
         mizu_morsel_abandon(mh->shm->addr, &mh->h, i, gen) ==
           MIZU_MORSEL_ABANDONED)

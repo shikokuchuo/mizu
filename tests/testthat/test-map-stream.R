@@ -433,7 +433,7 @@ test_that("fail-fast reports the failing element and cancels the window", {
   expect_identical(e[["mizu_map_index"]], 3)
   # the window was cancelled: chunk 3 never ran and reads cancel
   d <- mizu_pool_dump(p[["ctrl"]])
-  expect_false("pending" %in% d[["tasks"]][["status"]])
+  expect_false(any(d[["tasks"]][["status"]] %in% c("pending", "running")))
   expect_true("cancel" %in% d[["tasks"]][["status"]])
   pool_end(p)
 })
@@ -692,7 +692,7 @@ test_that("a deadline expiring mid-run cancels the window, sentinel returned", {
   }
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -781,7 +781,7 @@ test_that("worker death fails a streaming map with the chunk's exact range", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
       hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L
@@ -845,7 +845,7 @@ test_that("a drained worker death wins over the observed error", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
       hit <- any(d[["tasks"]][["status"]] == "err") &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L
@@ -862,7 +862,7 @@ test_that("a drained worker death wins over the observed error", {
   kill_hard(victim)
   # the drain sweeps non-blockingly: the death verdict must have landed
   expect_true(wait_until(
-    !any(mizu_pool_dump(p)[["tasks"]][["status"]] == "pending"),
+    !any(mizu_pool_dump(p)[["tasks"]][["status"]] %in% c("pending", "running")),
     timeout = 10
   ))
   e <- tryCatch(
@@ -894,7 +894,7 @@ test_that("deaths on both workers accumulate every lost range", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] == "pending", ]
+      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
       hit <- nrow(pend) == 2L && all(pend[["worker"]] >= 0L)
       if (hit) {
         victims <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
@@ -909,7 +909,7 @@ test_that("deaths on both workers accumulate every lost range", {
   kill_hard(victims[[1L]])
   kill_hard(victims[[2L]])
   expect_true(wait_until(
-    !any(mizu_pool_dump(p)[["tasks"]][["status"]] == "pending"),
+    !any(mizu_pool_dump(p)[["tasks"]][["status"]] %in% c("pending", "running")),
     timeout = 10
   ))
   e <- tryCatch(
@@ -1137,7 +1137,7 @@ test_that("a worker death in a streaming spec map fails with its range", {
     {
       d <- mizu_pool_dump(p)
       pend <- d[["tasks"]][
-        d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L,
+        d[["tasks"]][["status"]] %in% c("pending", "running") & d[["tasks"]][["worker"]] >= 0L,
       ]
       hit <- any(d[["tasks"]][["status"]] == "ok") && nrow(pend) >= 1L
       if (hit) {
@@ -1183,7 +1183,7 @@ test_that("a death drained beside an error takes the death verdict", {
     {
       d <- mizu_pool_dump(p)
       pend <- d[["tasks"]][
-        d[["tasks"]][["status"]] == "pending" & d[["tasks"]][["worker"]] >= 0L,
+        d[["tasks"]][["status"]] %in% c("pending", "running") & d[["tasks"]][["worker"]] >= 0L,
       ]
       hit <- any(d[["tasks"]][["status"]] == "err") && nrow(pend) >= 1L
       if (hit) {

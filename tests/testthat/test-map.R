@@ -730,7 +730,7 @@ test_that("a runner error stores the cancel word before its ERR publish", {
   }
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -833,7 +833,7 @@ test_that("a full deque falls back to executing the claimed runner inline", {
   expect_identical(collect30(p[["ctrl"]], st), list(10L, 20L))
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -884,7 +884,7 @@ test_that("collect trims never-claimed runners once the cursor exhausts", {
   }
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -917,7 +917,7 @@ test_that("n = 0, n = 1, and n < chunks all behave", {
   )
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   expect_identical(run_map(p, 5, function(i) i * 2), list(10))
   # more morsels requested than elements: the count clamps to n
@@ -1137,7 +1137,7 @@ test_that(".timeout expiring mid-submit cancels and returns the sentinel", {
   expect_identical(mizu_collect(filler, timeout = 5), "filler")
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -1156,7 +1156,7 @@ test_that(".timeout expiring in collect cancels the outstanding chunks", {
   }
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -1172,7 +1172,7 @@ test_that(".timeout expiring in a region map's collect cancels the runners", {
   }
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -1385,7 +1385,7 @@ test_that("a nested map runs on the worker's own deque, help-collected", {
   )
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -1406,7 +1406,7 @@ test_that("a deadline already expired at submit stages no tasks", {
   expect_true(all(vapply(st[["handles"]], is.null, NA)))
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -1457,7 +1457,7 @@ test_that("blob-path collect times out, cancels, and re-signals f's errors", {
   gc() # chunk 2's discarded ERR result frees with its dropped handle
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })

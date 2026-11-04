@@ -664,13 +664,28 @@ typedef struct {
   size_t done;
   int timeout_ms;
   mizu_status st;
+  int finished;
 } pool_batch_s;
 
 static SEXP pool_batch_run(void *d) {
   pool_batch_s *b = (pool_batch_s *) d;
   b->st = mizu_pool_submit_batch_fn(b->p, mizu_batch_supply_next, b->supply,
                                     b->n, b->ts, &b->done, b->timeout_ms);
+  b->finished = 1;
   return R_NilValue;
+}
+
+/* The unwind: a stage raise mid-burst (the codec's ALTREP rejection, an
+   allocation failure) leaves the accepted prefix published and executing
+   with no handle to return. The core reports the accepted count per task,
+   so the prefix is released here — a pending task cancels, a completed
+   slot frees — ahead of the batch scope's own cleanup. */
+static void pool_batch_cleanup(void *d) {
+  pool_batch_s *b = (pool_batch_s *) d;
+  if (!b->finished)
+    for (size_t i = 0; i < b->done; i++)
+      (void) mizu_pool_task_release(b->p, &b->ts[i]);
+  mizu_stage_batch_clean(NULL);
 }
 
 SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
@@ -687,9 +702,10 @@ SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   supply.pairs = PROTECT(Rf_allocVector(VECSXP, n));
   mizu_task *ts = (mizu_task *) R_alloc(n, sizeof(mizu_task));
   pool_batch_s b = { p, &supply, (size_t) n, ts, 0,
-                     mizu_timeout_ms(mizu_r_timeout_arg(timeout)), MIZU_OK };
+                     mizu_timeout_ms(mizu_r_timeout_arg(timeout)), MIZU_OK,
+                     0 };
   mizu_stage_batch_begin();
-  R_ExecWithCleanup(pool_batch_run, &b, mizu_stage_batch_clean, NULL);
+  R_ExecWithCleanup(pool_batch_run, &b, pool_batch_cleanup, &b);
   UNPROTECT(1);
   if (b.st == MIZU_ERR) pool_raise(p);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) b.done));
@@ -998,6 +1014,7 @@ SEXP mizu_pool_task_state_call(SEXP xp) {
   mizu_task t = { (uint64_t) word };
   switch (mizu_pool_task_state((mizu_pool *) h->core, &t)) {
   case MIZU_RS_PENDING: return Rf_mkString("pending");
+  case MIZU_RS_RUNNING: return Rf_mkString("running");
   case MIZU_RS_OK:      return Rf_mkString("ok");
   case MIZU_RS_ERR:     return Rf_mkString("err");
   case MIZU_RS_CANCEL:  return Rf_mkString("cancel");
@@ -1025,7 +1042,7 @@ SEXP mizu_pool_stop_call(SEXP xp, SEXP timeout) {
 
 SEXP mizu_pool_info_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
-  mizu_pool_info st;
+  mizu_pool_info st = { .size = sizeof(mizu_pool_info) };
   if (mizu_pool_info_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
   const char *names[] = {"name", "role", "max_workers", "max_submitters",
                          "injection_cap", "result_slots", "slot_size",
@@ -1059,10 +1076,11 @@ SEXP mizu_pool_info_call(SEXP xp) {
   }
   SET_VECTOR_ELT(out, 10, Rf_ScalarReal(queued));
 
-  /* pending ok err cancel died lost (MIZU_RS_PENDING .. MIZU_RS_LOST) */
-  SEXP tasks = Rf_allocVector(INTSXP, 6);
+  /* pending running ok err cancel died lost (MIZU_RS_PENDING ..
+     MIZU_RS_LOST) */
+  SEXP tasks = Rf_allocVector(INTSXP, 7);
   SET_VECTOR_ELT(out, 11, tasks);
-  for (int s = 0; s < 6; s++)
+  for (int s = 0; s < 7; s++)
     INTEGER(tasks)[s] = (int) st.tasks_by_state[s + MIZU_RS_PENDING];
 
   SEXP dq = Rf_allocVector(REALSXP, (R_xlen_t) st.max_workers);
@@ -1079,7 +1097,7 @@ SEXP mizu_pool_info_call(SEXP xp) {
    fields; per-submitter injection totals are the ring positions themselves. */
 SEXP mizu_pool_stats_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
-  mizu_pool_dump d;
+  mizu_pool_dump d = { .size = sizeof(mizu_pool_dump) };
   if (mizu_pool_dump_get(p, &d) != MIZU_OK) mizu_r_raise_tls();
   uint32_t mw = d.info.max_workers, ms = d.info.max_submitters;
   const char *names[] = {"workers", "submitters", ""};
@@ -1129,7 +1147,7 @@ SEXP mizu_pool_stats_call(SEXP xp) {
    move mid-fill — a cold-path snapshot. */
 SEXP mizu_pool_dump_call(SEXP xp) {
   mizu_pool *p = pool_core(xp);
-  mizu_pool_dump d;
+  mizu_pool_dump d = { .size = sizeof(mizu_pool_dump) };
   if (mizu_pool_dump_get(p, &d) != MIZU_OK) mizu_r_raise_tls();
   uint32_t mw = d.info.max_workers, ms = d.info.max_submitters;
   const char *names[] = {"name", "shutdown", "workers", "submitters",
@@ -1238,7 +1256,7 @@ SEXP mizu_pool_map_caps_call(SEXP xp) {
   /* map_caps records on the handle (pool_get); status_get thread-locally */
   if (mizu_pool_map_caps(p, &free_rs, &inj_cap, &inline_entry) != 0)
     pool_raise(p);
-  mizu_pool_info st;
+  mizu_pool_info st = { .size = sizeof(mizu_pool_info) };
   if (mizu_pool_info_get(p, &st) != MIZU_OK) mizu_r_raise_tls();
   int live = 0;
   for (uint32_t i = 0; i < st.max_workers; i++)

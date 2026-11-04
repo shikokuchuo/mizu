@@ -18,7 +18,8 @@ debugging), \code{role}, \code{max_workers},
 \code{max_submitters}, \code{injection_cap}, \code{result_slots}, \code{slot_size},
 \code{workers} (per-slot states), \code{parked}, \code{submitters} (per-slot states),
 \code{injection} (entries queued and unclaimed), \code{tasks} (result slots by
-state: pending / ok / err / cancel / died / lost), \code{deque} (per-worker
+state: pending / running / ok / err / cancel / died / lost), \code{deque}
+(per-worker
 deque depths), and \code{shutdown}.
 }
 \description{

@@ -708,7 +708,9 @@ mizu_pool_stop <- function(pool, timeout = 5) {
 # codes + 1, so a core-side enum change touches exactly these lines.
 worker_states <- c("free", "claiming", "live", "leaving", "reaping")
 submitter_states <- c("free", "live", "reaping")
-slot_states <- c("free", "pending", "ok", "err", "cancel", "died", "lost")
+slot_states <- c(
+  "free", "pending", "running", "ok", "err", "cancel", "died", "lost"
+)
 park_states <- c("running", "idle", "parked", "waking")
 
 # Recode a C registry enum vector onto its labels (C enums are 0-based).
@@ -736,7 +738,8 @@ slot_frame <- function(x, states) {
 #'   `max_submitters`, `injection_cap`, `result_slots`, `slot_size`,
 #'   `workers` (per-slot states), `parked`, `submitters` (per-slot states),
 #'   `injection` (entries queued and unclaimed), `tasks` (result slots by
-#'   state: pending / ok / err / cancel / died / lost), `deque` (per-worker
+#'   state: pending / running / ok / err / cancel / died / lost), `deque`
+#'   (per-worker
 #'   deque depths), and `shutdown`.
 #'
 #' @examples

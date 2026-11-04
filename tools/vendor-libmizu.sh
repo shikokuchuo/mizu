@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="94ba3ee9d7e1b992a5f300c4864649ef99ad930b"  # libmizu: Close the review findings: dead-producer consume, batch and reap wakes, the false-DIED Dekker pair, handle guards, and packaging
+PIN="43fb6cadbb248e0709980c92e79f0677bb7c55f4"  # libmizu: Fold the result-slot state, claimant and incarnation into one tagged word, add RUNNING, and close the pre-release review findings
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

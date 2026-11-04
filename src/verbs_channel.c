@@ -482,7 +482,7 @@ SEXP mizu_channel_keep_out_call(SEXP xp) {
 SEXP mizu_channel_stat(SEXP xp) {
   mizu_r_handle *h = chan_get(xp);
   mizu_channel *c = (mizu_channel *) h->core;
-  mizu_channel_info info;
+  mizu_channel_info info = { .size = sizeof(mizu_channel_info) };
   if (mizu_channel_info_get(c, &info) != MIZU_OK) chan_raise(c);
   const char *names[] = {"name", "side", "capacity", "slot_size",
                          "arena_size", "inline_max", "spin", "ready",

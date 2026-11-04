@@ -407,7 +407,8 @@ static void ntfy_reg_reserve(mizu_r_notify *rec) {
 
 static int task_term(mizu_pool *p, uint64_t word) {
   mizu_task t = { word };
-  return mizu_pool_task_state(p, &t) != MIZU_RS_PENDING;
+  int st = mizu_pool_task_state(p, &t);
+  return st != MIZU_RS_PENDING && st != MIZU_RS_RUNNING;
 }
 
 /* The settle verdict: mode 0 the task, 1 any terminal, 2 all terminal

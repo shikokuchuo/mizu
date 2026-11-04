@@ -5,11 +5,12 @@
 #' reported by [mizu_alive()], probed at print. A pool prints its region name,
 #' the role of this handle, live workers out of registry capacity, and pending
 #' (uncompleted) tasks. A task handle prints its state, probed without consuming
-#' the result. The state is `pending`, `ok`, `err`, `cancel`, `died`, or `lost`
-#' in the result-slot vocabulary of [mizu_pool_info()], `collected` once the
-#' result is taken, or `dropped` when its pool is gone. A [mizu_call()] task
-#' specification prints its qualified name, or the first line of its source
-#' string truncated, and its argument counts. Sentinels print as their class.
+#' the result. The state is `pending`, `running`, `ok`, `err`, `cancel`,
+#' `died`, or `lost` in the result-slot vocabulary of [mizu_pool_info()],
+#' `collected` once the result is taken, or `dropped` when its pool is gone. A
+#' [mizu_call()] task specification prints its qualified name, or the first
+#' line of its source string truncated, and its argument counts. Sentinels
+#' print as their class.
 #' The handle methods never error and never touch the rings, and a handle whose
 #' resources are released (a closed channel, a stopped pool) prints as closed,
 #' so auto-printing is always safe.
@@ -68,7 +69,7 @@ print.mizu_pool <- function(x, ...) {
         st[["role"]],
         sum(st[["workers"]] == "live"),
         st[["max_workers"]],
-        st[["tasks"]][["pending"]],
+        st[["tasks"]][["pending"]] + st[["tasks"]][["running"]],
         if (st[["shutdown"]]) ", shutdown" else ""
       )
     }

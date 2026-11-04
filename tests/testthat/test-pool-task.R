@@ -109,7 +109,7 @@ test_that("a task error is published and re-signalled at collect", {
   # the slot released with the collect: reusable immediately
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -564,7 +564,7 @@ test_that("cancel discards a still-queued task; the worker frees the slot", {
   pool_step(p)
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -588,7 +588,7 @@ test_that("a dropped handle cancels its pending task at finalization", {
   pool_step(p) # consume + free
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
@@ -603,7 +603,7 @@ test_that("a dropped handle frees an uncollected published result", {
   gc() # OK -> FREE without mapping
   expect_identical(
     unname(mizu_pool_info(p[["ctrl"]])[["tasks"]]),
-    rep(0L, 6L)
+    rep(0L, 7L)
   )
   pool_end(p)
 })
