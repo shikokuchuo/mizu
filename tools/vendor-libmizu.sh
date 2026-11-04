@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="43fb6cadbb248e0709980c92e79f0677bb7c55f4"  # libmizu: Fold the result-slot state, claimant and incarnation into one tagged word, add RUNNING, and close the pre-release review findings
+PIN="fe512e6bef4a43834a01b81a0d7fec6a28004957"  # libmizu: Restore wake-one unparks; reserve wake-all for split-waiter submitter parkers
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
