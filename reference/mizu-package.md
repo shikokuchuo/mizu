@@ -4,7 +4,8 @@ mizu provides parallel computation and data exchange between R processes
 on the same machine: lock-free channels and work-stealing task pools
 over POSIX shared memory (Linux, macOS) or Win32 file mappings
 (Windows), with the hot path entirely in user space. Communication is
-cheap enough that work can be divided as finely as with threads.
+cheap enough that work can be divided at granularities usually reserved
+for threads.
 
 ## Linux memory allocator
 
