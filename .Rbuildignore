@@ -21,3 +21,4 @@
 ^vignettes/\.quarto$
 ^\.ruff_cache$
 ^\.pytest_cache$
+^cran-comments\.md$
