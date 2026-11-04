@@ -331,9 +331,6 @@ mizu_submit <- function(.pool, .expr, ..., .timeout = Inf) {
 #' @rdname mizu_submit
 #' @export
 mizu_collect <- function(task, timeout = Inf) {
-  if (inherits(task, "mizu_map")) {
-    return(map_collect_handle(task, timeout))
-  }
   .Call(mizu_pool_collect, task, timeout)
 }
 
@@ -709,7 +706,14 @@ mizu_pool_stop <- function(pool, timeout = 5) {
 worker_states <- c("free", "claiming", "live", "leaving", "reaping")
 submitter_states <- c("free", "live", "reaping")
 slot_states <- c(
-  "free", "pending", "running", "ok", "err", "cancel", "died", "lost"
+  "free",
+  "pending",
+  "running",
+  "ok",
+  "err",
+  "cancel",
+  "died",
+  "lost"
 )
 park_states <- c("running", "idle", "parked", "waking")
 

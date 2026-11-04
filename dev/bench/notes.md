@@ -2006,3 +2006,41 @@ pipelined and payload rows inside their bands.
 Status: full suite green (5995 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs), the new aliased-re-wrap case
 included.
+
+## 2026-11-04 — pool sequential rt: the mizu_collect map dispatch moves to C
+
+Sequential-rt drift hunt (fine probe: gc() between reps, n = 100000 for
+0.01 us granularity; each build installed to its own library and probed
+palindromically to cancel host drift): the channel row has no drift —
+every build in 65e56b4..31b0dac reads 0.94-0.97 us/rt. The pool row's
++0.10 (65e56b4 1.05-1.09 -> HEAD 1.15-1.21) is two parts, both from
+dc1d2a5 (the async integration): the R-level waiter-registry check per
+blocking collect (+0.37 at the time, already recovered by 5816d7b's C
+registry) and the inherits(task, "mizu_map") dispatch it left on
+mizu_collect() (+0.04-0.05 per collect). The dispatch now lives in
+mizu_pool_collect_call: one TYPEOF compare on the task path (a map
+handle is an environment, a task handle an extptr; the class is checked
+only for environments, so a misused plain env still errors "not a task
+handle"), the closure and namespace cached on first use.
+
+Results (fine probe, pool rt medians, quiet host): n147 (9e60f15, the
+last pre-async build) 1.08-1.10, HEAD 1.17-1.21, HEAD + the fix
+1.13-1.15 — identical to HEAD with the gate deleted outright, so the C
+gate is free. The remaining +0.04-0.05 vs n147 is the async layer's
+binary footprint, not an executed line: exonerated the vendored core
+(n149 + the n152 / HEAD cores both read 1.09-1.11), the wake flags
+(2a0ef35 vs 55762c8 level; mizu_unpark is byte-identical across the
+gap), notify_refuse, pool geometry, per-rt allocation, dead-text
+padding, and the R/ tree (HEAD src + n149 R/ matches the fixed HEAD);
+a no-LTO rebuild keeps the gap, and the sampled profile smears it
+across pool_submit / mizu_pool_collect / the R evaluator with no hot
+spot — code/data placement. Today's re-reads under host load inflate
+every build ~0.15 (n147 1.27, fixed 1.35) with the same relatives.
+Quiet-host confirmation after the commit (fine probe, 40 reps/build):
+old 1.08, n147 1.10, HEAD 1.20, HEAD + the fix 1.15 — the 0.05
+recovery and the +0.05-0.07 placement residual both replicate; the
+channel row stays flat at 0.95-0.97 everywhere.
+Status: full suite green (5995 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs); mizu-bench, crosslang-channel,
+crosslang-map and pymizu's mizu-bench.py inside their bands (the
+masked-int64 outlier unchanged). Best-known table untouched.

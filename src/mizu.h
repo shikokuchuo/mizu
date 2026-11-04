@@ -661,7 +661,7 @@ enum {
   MIZU_PRIV_ZC_MARKS,          /* zc.c: REFHELD mark list (growable) */
   MIZU_PRIV_VIEW_WRAPS,        /* view.c: consumer-mapping cache wraps
                                   (borrowed there) */
-  MIZU_PRIV_MIZU_NS,           /* arrow.c: the mizu namespace */
+  MIZU_PRIV_MIZU_NS,           /* arrow.c / verbs_pool.c: the mizu namespace */
   MIZU_PRIV_FN_ARROW_NS,
   MIZU_PRIV_FN_ARROW_TO_VALUE,
   MIZU_PRIV_FN_BATCHES_TO_VALUE,
@@ -673,6 +673,8 @@ enum {
   MIZU_PRIV_FN_MAP_RUNNER,
   MIZU_PRIV_GC_MINOR,          /* zc.c: the cached .Internal(gc(FALSE, FALSE,
                                   FALSE)) of the boundary collection */
+  MIZU_PRIV_FN_MAP_COLLECT,    /* verbs_pool.c: the map_collect_handle
+                                  closure */
   MIZU_PRIV_MAX
 };
 
