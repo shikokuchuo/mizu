@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="6c87ad3cdef71f6793975e6492395266f27dc281"  # libmizu: Record the const snapshot getters through the error shadow; bound the split-threads test's window
+PIN="94ba3ee9d7e1b992a5f300c4864649ef99ad930b"  # libmizu: Close the review findings: dead-producer consume, batch and reap wakes, the false-DIED Dekker pair, handle guards, and packaging
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
