@@ -37,7 +37,7 @@ A list with elements `token` (the join identity: pass it to
 p <- mizu_pool()
 mizu_pool_info(p)
 #> $name
-#> [1] "/mizu_195f_e5ea9995"
+#> [1] "/mizu_1a23_6cd6bf8f"
 #> 
 #> $role
 #> [1] "controller"
@@ -80,7 +80,7 @@ mizu_pool_info(p)
 #> [1] FALSE
 #> 
 #> $token
-#> [1] "195f_e5ea9995"
+#> [1] "1a23_6cd6bf8f"
 #> 
 mizu_pool_stop(p)
 ```
