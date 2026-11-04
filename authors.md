@@ -17,12 +17,12 @@ Source:
 [`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/main/DESCRIPTION)
 
 Gao C (2026). *mizu: Thread-Speed 'Async' and Parallel R over Shared
-Memory*. R package version 0.0.1.9000, <https://shikokuchuo.net/mizu/>.
+Memory*. R package version 0.1.0, <https://shikokuchuo.net/mizu/>.
 
     @Manual{,
       title = {mizu: Thread-Speed 'Async' and Parallel R over Shared Memory},
       author = {Charlie Gao},
       year = {2026},
-      note = {R package version 0.0.1.9000},
+      note = {R package version 0.1.0},
       url = {https://shikokuchuo.net/mizu/},
     }
