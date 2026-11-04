@@ -1,5 +1,8 @@
 url: https://shikokuchuo.net/mizu/
 
+development:
+  mode: auto
+
 template:
   package: tidytemplate
   bootstrap: 5
