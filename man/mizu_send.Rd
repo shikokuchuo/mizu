@@ -76,8 +76,8 @@ Large payloads can arrive as zero-copy views over shared memory. A view is a
 small R object that pins memory the garbage collector cannot see. To return
 that memory promptly, the receive functions (and worker task boundaries) run
 a minor garbage collection once 8 MiB of released view memory has
-accumulated. The threshold counts distinct regions pending release, so
-re-receiving the same region does not re-trigger it. This is an occasional
+accumulated. Re-receiving the same region does not re-trigger it. This
+is an occasional
 pause of about 0.2 ms, the largest latency outlier in the system. Set
 \code{options(mizu.gc_boundary)} (in bytes; \code{0} disables it) before loading the
 package to tune the threshold.

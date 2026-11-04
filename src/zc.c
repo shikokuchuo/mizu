@@ -72,104 +72,18 @@ static size_t mizu_zc_armed;
    cadence). A plain static — the verb path pays one load and compare. */
 static size_t mizu_zc_gc_bytes = MIZU_R_GC_BYTES;
 
-/* The pending set: regions holding at least one armed-unreleased release
-   record, keyed by the process-local mapping pointer (stable per region
-   while cached — the per-handle consumer caches dedupe mappings, so an
-   aliased re-wrap resolves to the same pointer; a re-opened region reads
-   as new, an over-charge — the safe direction). Open addressing, linear
-   probing, backward-shift delete, doubling at ~70% load; malloc only, no R
-   allocation. R is one thread per session (arm, finalizer, and boundary
-   all run on it), so no locking. */
-typedef struct {
-  const mizu_shm *shm;
-  size_t pending;
-} mizu_zc_pend;
-
-static mizu_zc_pend *zc_pend;      /* NULL until the first insert */
-static size_t zc_pend_cap;         /* a power of two */
-static size_t zc_pend_n;           /* live entries */
-
-#define ZC_PEND_INIT 64
-
-static size_t zc_pend_slot(const mizu_shm *shm, size_t cap) {
-  return (size_t) (((uintptr_t) shm * UINT64_C(0x9E3779B97F4A7C15)) >> 32) &
-         (cap - 1);
-}
-
-static size_t zc_pend_find(const mizu_shm *shm) {
-  if (zc_pend == NULL) return SIZE_MAX;
-  size_t i = zc_pend_slot(shm, zc_pend_cap);
-  while (zc_pend[i].shm != NULL) {
-    if (zc_pend[i].shm == shm) return i;
-    i = (i + 1) & (zc_pend_cap - 1);
-  }
-  return SIZE_MAX;
-}
-
-/* Grow before an insert would cross 70% load; the old table survives an
-   allocation failure, so the raise leaves the set consistent. */
-static void zc_pend_grow(void) {
-  const size_t ncap = zc_pend_cap * 2;
-  mizu_zc_pend *nt = calloc(ncap, sizeof(mizu_zc_pend));
-  if (nt == NULL) Rf_error("mizu: allocation failure");
-  for (size_t i = 0; i < zc_pend_cap; i++) {
-    if (zc_pend[i].shm == NULL) continue;
-    size_t j = zc_pend_slot(zc_pend[i].shm, ncap);
-    while (nt[j].shm != NULL) j = (j + 1) & (ncap - 1);
-    nt[j] = zc_pend[i];
-  }
-  free(zc_pend);
-  zc_pend = nt;
-  zc_pend_cap = ncap;
-}
-
-/* Find-or-insert: 1 on a new entry (the caller charges the boundary), 0 on
-   a hit (the count rides the standing charge). Raises before mutating on
-   allocation failure. */
-static int zc_pend_insert(const mizu_shm *shm) {
-  if (zc_pend == NULL) {
-    zc_pend = calloc(ZC_PEND_INIT, sizeof(mizu_zc_pend));
-    if (zc_pend == NULL) Rf_error("mizu: allocation failure");
-    zc_pend_cap = ZC_PEND_INIT;
-  } else if (10 * (zc_pend_n + 1) >= 7 * zc_pend_cap) {
-    zc_pend_grow();
-  }
-  size_t i = zc_pend_slot(shm, zc_pend_cap);
-  while (zc_pend[i].shm != NULL) {
-    if (zc_pend[i].shm == shm) {
-      zc_pend[i].pending++;
-      return 0;
-    }
-    i = (i + 1) & (zc_pend_cap - 1);
-  }
-  zc_pend[i].shm = shm;
-  zc_pend[i].pending = 1;
-  zc_pend_n++;
-  return 1;
-}
-
-/* The destroy half: decrement, and on zero delete with backward shifts so
-   probe chains stay intact. A miss is the fini-freed or fork-inherited
-   table — nothing to do. mizu_zc_armed is never refunded: the removal only
-   permits a future re-charge once the region fully drains. */
-static void zc_pend_remove(const mizu_shm *shm) {
-  size_t i = zc_pend_find(shm);
-  if (i == SIZE_MAX || --zc_pend[i].pending > 0) return;
-  zc_pend_n--;
-  for (;;) {
-    zc_pend[i].shm = NULL;
-    size_t j = i;
-    for (;;) {
-      j = (j + 1) & (zc_pend_cap - 1);
-      if (zc_pend[j].shm == NULL) return;
-      const size_t k = zc_pend_slot(zc_pend[j].shm, zc_pend_cap);
-      const int in_span = i < j ? (k > i && k <= j) : (k > i || k <= j);
-      if (!in_span) break;
-    }
-    zc_pend[i] = zc_pend[j];
-    i = j;
-  }
-}
+/* The dedup: a re-arm of a region with a record already armed rides the
+   standing charge — the case the per-wrap charge broke on (one big
+   region re-wrapped per receive, a REF relay) hits one of these slots
+   every wrap, so it cannot fire the boundary per frame. The slots cover
+   one region wrapped through the several mappings an in-process relay
+   resolves; past them, interleaved regions degrade to the old
+   charge-per-wrap (an over-charge, the safe direction). A hash set here
+   measured as a broad fire-rate tax (every release finalizer paid the
+   remove at GC time): a short scan of static storage instead. */
+#define ZC_ARMED_SLOTS 8
+static const mizu_shm *zc_armed_recent[ZC_ARMED_SLOTS];
+static int zc_armed_next;
 
 static void zc_list_clear(SEXP list, int *pn) {
   const int n = *pn;
@@ -236,10 +150,8 @@ void mizu_zc_fini(void) {
   mizu_priv_set(MIZU_PRIV_GC_MINOR, R_NilValue);
   mizu_zc_armed = 0;
   mizu_zc_nmarks = 0;
-  free(zc_pend);
-  zc_pend = NULL;
-  zc_pend_cap = 0;
-  zc_pend_n = 0;
+  for (int i = 0; i < ZC_ARMED_SLOTS; i++) zc_armed_recent[i] = NULL;
+  zc_armed_next = 0;
 }
 
 // View release ------------------------------------------------------------------
@@ -271,7 +183,11 @@ typedef struct mizu_zc_rel_s {
 static void mizu_zc_rel_destroy(mizu_zc_rel *rel) {
   if (rel->armed && rel->pid == mizu_self_pid()) {
     mizu_zc_unref(rel->shm);
-    zc_pend_remove(rel->shm);
+    for (int i = 0; i < ZC_ARMED_SLOTS; i++)
+      if (zc_armed_recent[i] == rel->shm) {
+        zc_armed_recent[i] = NULL;
+        break;
+      }
   }
   for (int i = 0; i < rel->nloans; i++) {
     mizu_shm *loan = rel->loans[i];
@@ -309,8 +225,17 @@ static void mizu_zc_rel_fire(void *arg) {
    before the record arms, so its raise leaves the finalizer with nothing
    to decrement. */
 static void mizu_zc_rel_arm(mizu_zc_rel *rel, const mizu_shm *shm) {
-  if (zc_pend_insert(shm))
+  int hit = 0;
+  for (int i = 0; i < ZC_ARMED_SLOTS; i++)
+    if (zc_armed_recent[i] == shm) {
+      hit = 1;
+      break;
+    }
+  if (!hit) {
     mizu_zc_armed += shm->size;
+    zc_armed_recent[zc_armed_next] = shm;
+    zc_armed_next = (zc_armed_next + 1) % ZC_ARMED_SLOTS;
+  }
   rel->armed = 1;
 }
 
