@@ -14,7 +14,7 @@
 ## Citation
 
 Source:
-[`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/main/DESCRIPTION)
+[`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/v0.1.0/DESCRIPTION)
 
 Gao C (2026). *mizu: Thread-Speed 'Async' and Parallel R over Shared
 Memory*. R package version 0.1.0, <https://shikokuchuo.net/mizu/>.
