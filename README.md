@@ -5,6 +5,7 @@
 
 <!-- badges: start -->
 
+[![CRAN status](https://www.r-pkg.org/badges/version/mizu)](https://CRAN.R-project.org/package=mizu)
 [![R-CMD-check](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml)
 [![Codecov test coverage](https://codecov.io/gh/shikokuchuo/mizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/mizu)
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
@@ -30,7 +31,13 @@ mizu is built on [libmizu](https://github.com/shikokuchuo/libmizu), a C library 
 
 ## Installation
 
-Install the development version from GitHub:
+Install from CRAN:
+
+``` r
+install.packages("mizu")
+```
+
+Or the development version from GitHub:
 
 ``` r
 pak::pak("shikokuchuo/mizu")

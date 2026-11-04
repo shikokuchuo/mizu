@@ -21,7 +21,7 @@ processes through shared memory. A task round trip costs under a microsecond
 and large vectors and data frames arrive as zero-copy views instead of copies.
 
 Requirements: R >= 4.3, 64-bit; Linux kernel >= 5.3. Install with
-`pak::pak("shikokuchuo/mizu")`. The package is experimental: where an
+`install.packages("mizu")`. The package is experimental: where an
 installed version disagrees with this skill, its help page is the authority.
 
 ## mizu or mirai?
