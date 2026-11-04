@@ -1,5 +1,5 @@
 Package: mizu
-Title: Thread-Speed Async and Parallel R over Shared Memory
+Title: Thread-Speed 'Async' and Parallel R over Shared Memory
 Version: 0.0.1.9000
 Authors@R: c(
     person("Charlie", "Gao", , "charlie.gao@posit.co", role = c("aut", "cre"),
@@ -12,16 +12,15 @@ Description: Parallel computation and data exchange between R processes on
     the same machine: lock-free channels, work-stealing task pools, and a
     parallel map over 'POSIX' shared memory (Linux, macOS) or 'Win32' file
     mappings (Windows), with the hot path entirely in user space.
-    Communication is cheap enough that work can be divided at
-    granularities usually reserved for threads. Vectors and data frames
-    transfer zero-copy, received as 'ALTREP' views over the shared pages,
-    and 'Apache Arrow' tables and record batches travel as a single frame
-    with zero-copy conversion in both directions. Receives and task
-    results integrate with 'later' and 'promises' for non-blocking,
-    event-driven applications such as 'shiny'. Channels, pools, and maps
-    interoperate with 'pymizu', so a peer or worker can equally be a
-    Python process. It complements 'mirai', and its payloads interoperate
-    with 'mori' shared objects.
+    Communication is cheap enough that work can be divided as finely as
+    with threads. Vectors and data frames transfer zero-copy, received as
+    'ALTREP' views over the shared pages, and 'Apache Arrow' tables and
+    record batches travel as a single frame with zero-copy conversion in
+    both directions. Receives and task results integrate with 'later' and
+    'promises' for non-blocking, event-driven applications such as
+    'shiny'. Channels, pools, and maps interoperate with 'pymizu', so a
+    peer or worker can equally be a Python process. It complements
+    'mirai', and its payloads interoperate with 'mori' shared objects.
 License: MIT + file LICENSE
 URL: https://shikokuchuo.net/mizu/, https://github.com/shikokuchuo/mizu
 BugReports: https://github.com/shikokuchuo/mizu/issues

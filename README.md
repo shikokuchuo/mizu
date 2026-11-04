@@ -9,7 +9,7 @@
 [![R-CMD-check](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/shikokuchuo/mizu/actions/workflows/R-CMD-check.yaml)
 [![Codecov test coverage](https://codecov.io/gh/shikokuchuo/mizu/graph/badge.svg)](https://app.codecov.io/gh/shikokuchuo/mizu)
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE.md)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 <!-- badges: end -->
 
 Thread-speed async and parallel R over shared memory.
