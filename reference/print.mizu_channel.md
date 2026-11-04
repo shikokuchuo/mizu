@@ -7,8 +7,8 @@ or `peer gone` as reported by
 probed at print. A pool prints its region name, the role of this handle,
 live workers out of registry capacity, and pending (uncompleted) tasks.
 A task handle prints its state, probed without consuming the result. The
-state is `pending`, `ok`, `err`, `cancel`, `died`, or `lost` in the
-result-slot vocabulary of
+state is `pending`, `running`, `ok`, `err`, `cancel`, `died`, or `lost`
+in the result-slot vocabulary of
 [`mizu_pool_info()`](https://shikokuchuo.net/mizu/reference/mizu_pool_info.md),
 `collected` once the result is taken, or `dropped` when its pool is
 gone. A
@@ -66,7 +66,7 @@ print(x, ...)
 ``` r
 p <- mizu_pool()
 p
-#> <mizu_pool /mizu_1a23_6cd6bf97: controller, 1/1 workers live, 0 pending>
+#> <mizu_pool /mizu_1992_d6c6c11b: controller, 1/1 workers live, 0 pending>
 t <- mizu_submit(p, 1 + 1)
 t
 #> <mizu_task: ok>

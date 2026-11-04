@@ -28,8 +28,8 @@ A list with elements `token` (the join identity: pass it to
 `max_workers`, `max_submitters`, `injection_cap`, `result_slots`,
 `slot_size`, `workers` (per-slot states), `parked`, `submitters`
 (per-slot states), `injection` (entries queued and unclaimed), `tasks`
-(result slots by state: pending / ok / err / cancel / died / lost),
-`deque` (per-worker deque depths), and `shutdown`.
+(result slots by state: pending / running / ok / err / cancel / died /
+lost), `deque` (per-worker deque depths), and `shutdown`.
 
 ## Examples
 
@@ -37,7 +37,7 @@ A list with elements `token` (the join identity: pass it to
 p <- mizu_pool()
 mizu_pool_info(p)
 #> $name
-#> [1] "/mizu_1a23_6cd6bf8f"
+#> [1] "/mizu_1992_d6c6c113"
 #> 
 #> $role
 #> [1] "controller"
@@ -70,8 +70,8 @@ mizu_pool_info(p)
 #> [1] 0
 #> 
 #> $tasks
-#> pending      ok     err  cancel    died    lost 
-#>       0       0       0       0       0       0 
+#> pending running      ok     err  cancel    died    lost 
+#>       0       0       0       0       0       0       0 
 #> 
 #> $deque
 #> [1] 0
@@ -80,7 +80,7 @@ mizu_pool_info(p)
 #> [1] FALSE
 #> 
 #> $token
-#> [1] "1a23_6cd6bf8f"
+#> [1] "1992_d6c6c113"
 #> 
 mizu_pool_stop(p)
 ```

@@ -35,7 +35,14 @@ Python, so R and Python can talk to each other.
 
 ## Installation
 
-Install the development version from GitHub:
+Install from CRAN:
+
+``` r
+
+install.packages("mizu")
+```
+
+Or the development version from GitHub:
 
 ``` r
 

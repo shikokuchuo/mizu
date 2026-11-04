@@ -4,11 +4,12 @@ state: open, closed once either side signalled close, or peer gone as
 reported by mizu_alive(), probed at print. A pool prints its region name,
 the role of this handle, live workers out of registry capacity, and pending
 (uncompleted) tasks. A task handle prints its state, probed without consuming
-the result. The state is pending, ok, err, cancel, died, or lost
-in the result-slot vocabulary of mizu_pool_info(), collected once the
-result is taken, or dropped when its pool is gone. A mizu_call() task
-specification prints its qualified name, or the first line of its source
-string truncated, and its argument counts. Sentinels print as their class.
+the result. The state is pending, running, ok, err, cancel,
+died, or lost in the result-slot vocabulary of mizu_pool_info(),
+collected once the result is taken, or dropped when its pool is gone. A
+mizu_call() task specification prints its qualified name, or the first
+line of its source string truncated, and its argument counts. Sentinels
+print as their class.
 The handle methods never error and never touch the rings, and a handle whose
 resources are released (a closed channel, a stopped pool) prints as closed,
 so auto-printing is always safe."><meta property="og:description" content="One-line summaries. A channel prints its region name, side, and conversation
@@ -16,11 +17,12 @@ state: open, closed once either side signalled close, or peer gone as
 reported by mizu_alive(), probed at print. A pool prints its region name,
 the role of this handle, live workers out of registry capacity, and pending
 (uncompleted) tasks. A task handle prints its state, probed without consuming
-the result. The state is pending, ok, err, cancel, died, or lost
-in the result-slot vocabulary of mizu_pool_info(), collected once the
-result is taken, or dropped when its pool is gone. A mizu_call() task
-specification prints its qualified name, or the first line of its source
-string truncated, and its argument counts. Sentinels print as their class.
+the result. The state is pending, running, ok, err, cancel,
+died, or lost in the result-slot vocabulary of mizu_pool_info(),
+collected once the result is taken, or dropped when its pool is gone. A
+mizu_call() task specification prints its qualified name, or the first
+line of its source string truncated, and its argument counts. Sentinels
+print as their class.
 The handle methods never error and never touch the rings, and a handle whose
 resources are released (a closed channel, a stopped pool) prints as closed,
 so auto-printing is always safe."><meta property="og:image" content="https://shikokuchuo.net/mizu/og-image.png"><meta property="og:image:alt" content="mizu: thread-speed async and parallel R over shared memory"></head><body>
@@ -78,11 +80,12 @@ state: <code>open</code>, <code>closed</code> once either side signalled close, 
 reported by <code><a href="mizu_alive.html">mizu_alive()</a></code>, probed at print. A pool prints its region name,
 the role of this handle, live workers out of registry capacity, and pending
 (uncompleted) tasks. A task handle prints its state, probed without consuming
-the result. The state is <code>pending</code>, <code>ok</code>, <code>err</code>, <code>cancel</code>, <code>died</code>, or <code>lost</code>
-in the result-slot vocabulary of <code><a href="mizu_pool_info.html">mizu_pool_info()</a></code>, <code>collected</code> once the
-result is taken, or <code>dropped</code> when its pool is gone. A <code><a href="mizu_call.html">mizu_call()</a></code> task
-specification prints its qualified name, or the first line of its source
-string truncated, and its argument counts. Sentinels print as their class.
+the result. The state is <code>pending</code>, <code>running</code>, <code>ok</code>, <code>err</code>, <code>cancel</code>,
+<code>died</code>, or <code>lost</code> in the result-slot vocabulary of <code><a href="mizu_pool_info.html">mizu_pool_info()</a></code>,
+<code>collected</code> once the result is taken, or <code>dropped</code> when its pool is gone. A
+<code><a href="mizu_call.html">mizu_call()</a></code> task specification prints its qualified name, or the first
+line of its source string truncated, and its argument counts. Sentinels
+print as their class.
 The handle methods never error and never touch the rings, and a handle whose
 resources are released (a closed channel, a stopped pool) prints as closed,
 so auto-printing is always safe.</p>
@@ -136,7 +139,7 @@ so auto-printing is always safe.</p>
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="va">p</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_pool.html">mizu_pool</a></span><span class="op">(</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">p</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1a23_6cd6bf97: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1992_d6c6c11b: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span><span class="va">t</span> <span class="op">&lt;-</span> <span class="fu"><a href="mizu_submit.html">mizu_submit</a></span><span class="op">(</span><span class="va">p</span>, <span class="fl">1</span> <span class="op">+</span> <span class="fl">1</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="va">t</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_task: ok&gt;</span>
