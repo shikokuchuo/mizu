@@ -44,7 +44,13 @@ local_* pattern)."><meta property="og:image" content="https://shikokuchuo.net/mi
     <li><h6 class="dropdown-header" data-toc-skip>Operations</h6></li>
     <li><a class="dropdown-item" href="../articles/operations.html">Operations</a></li>
   </ul></li>
-<li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
+<li class="nav-item dropdown">
+  <button class="nav-link dropdown-toggle" type="button" id="dropdown-news" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">News</button>
+  <ul class="dropdown-menu" aria-labelledby="dropdown-news"><li><h6 class="dropdown-header" data-toc-skip>Releases</h6></li>
+    <li><a class="external-link dropdown-item" href="https://opensource.posit.co/blog/2026-11-05_mizu-0-1-0/">mizu 0.1.0</a></li>
+    <li><hr class="dropdown-divider"></li>
+    <li><a class="dropdown-item" href="../news/index.html">Changelog</a></li>
+  </ul></li>
       </ul><ul class="navbar-nav"><li class="nav-item"><form class="form-inline" role="search">
  <input class="form-control" type="search" name="search-input" id="search-input" autocomplete="off" aria-label="Search site" placeholder="Search for" data-search-index="../search.json"></form></li>
 <li class="nav-item"><a class="external-link nav-link" href="https://github.com/shikokuchuo/mizu/" aria-label="GitHub"><span class="fa fab fa-github fa-lg"></span></a></li>
@@ -149,7 +155,7 @@ it.</p>
 <span class="r-in"><span><span class="fu">mizu_with_pool</span><span class="op">(</span><span class="cn">NULL</span>, <span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span><span class="op">)</span></span></span>
 <span class="r-out co"><span class="r-pr">#&gt;</span> NULL</span>
 <span class="r-in"><span><span class="fu">mizu_default_pool</span><span class="op">(</span><span class="op">)</span></span></span>
-<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1970_e5576145: controller, 1/1 workers live, 0 pending&gt;</span>
+<span class="r-out co"><span class="r-pr">#&gt;</span> &lt;mizu_pool /mizu_1b39_aab7be77: controller, 1/1 workers live, 0 pending&gt;</span>
 <span class="r-in"><span></span></span>
 <span class="r-in"><span><span class="fu">mizu_set_default_pool</span><span class="op">(</span><span class="va">old</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="mizu_pool_stop.html">mizu_pool_stop</a></span><span class="op">(</span><span class="va">p</span><span class="op">)</span></span></span>
