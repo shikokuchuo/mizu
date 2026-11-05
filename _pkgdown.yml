@@ -80,3 +80,8 @@ articles:
     navbar: Operations
     contents:
       - operations
+
+news:
+  releases:
+    - text: "mizu 0.1.0"
+      href: https://opensource.posit.co/blog/2026-11-05_mizu-0-1-0/
