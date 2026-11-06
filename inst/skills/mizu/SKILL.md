@@ -3,10 +3,10 @@ name: mizu
 description: >
   Write correct R code for async and parallel computing with mizu: task pools,
   parallel map, channels and promises over shared memory on one machine. Use
-  when the user wants to run R code in parallel or in the background, speed
-  up a loop or lapply, use promises or Shiny ExtendedTask, share data with R
-  or Python processes, or convert from future, parallel or mirai. Defer to the
-  mirai skill only for work spanning more than one machine (SSH, HPC).
+  when running R code in parallel or in the background, speeding up a loop or
+  lapply, using promises or Shiny ExtendedTask, sharing data with R or Python
+  processes, or converting from future, parallel or mirai. Defer to the mirai
+  skill for work spanning more than one machine (SSH, HPC).
 metadata:
   author: Charlie Gao (@shikokuchuo)
   version: "1.0"
