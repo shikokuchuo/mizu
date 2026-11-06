@@ -1150,6 +1150,24 @@ test_that("chunked seq scans and ALTREP regions write through", {
   expect_identical(mizu_recv(p$peer, 5), x)
 })
 
+test_that("attributed ALTREP atomics cross through the region accessors", {
+  # attributes<- on a bound vector wraps it: a wrapper with a data pointer
+  # rides the resident call, one over a compact sequence the aligned
+  # scratch loop
+  zz <- structure(complex(70000, 1, 2), dim = c(100L, 700L))
+  ii <- structure(1:600, dim = c(20L, 30L))
+  expect_true(is_altrep(zz))
+  expect_true(is_altrep(ii))
+  expect_identical(ix_read(ix_write(zz)), zz)
+  expect_identical(ix_read(ix_write(ii)), ii)
+  p <- foreign_pair()
+  on.exit(channel_end(p))
+  mizu_send(p$host, zz) # past the inline budget: the spill path
+  expect_identical(mizu_recv(p$peer, 5), zz)
+  mizu_send(p$host, ii)
+  expect_identical(mizu_recv(p$peer, 5), ii)
+})
+
 test_that("dict keys and task fields decline at the writer", {
   expect_error(
     ix_write(structure(list(1), names = NA_character_)),
