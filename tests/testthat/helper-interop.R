@@ -14,6 +14,17 @@ ix_raw_to_hex <- function(r) {
   paste(sprintf("%02x", as.integer(r)), collapse = "")
 }
 
+# TRUE when x is an ALTREP object (a wrapper, a compact sequence, a view):
+# the fixtures that must reach the writer's region-accessor branch assert
+# this, so a future R that stops wrapping can't silently turn a test into
+# a plain-vector round trip.
+is_altrep <- function(x) {
+  any(grepl(
+    "wrapper|compact|altrep",
+    capture.output(.Internal(inspect(x)))[1L]
+  ))
+}
+
 ix_cases <- function() {
   lines <- readLines(
     test_path("interop-corpus", "cases.txt"),

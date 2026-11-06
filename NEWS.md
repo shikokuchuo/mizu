@@ -1,5 +1,7 @@
 # mizu (development version)
 
+* No user-facing changes.
+
 # mizu 0.1.0
 
 Initial release.

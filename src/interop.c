@@ -950,26 +950,25 @@ static void ixw_atomic_put(mizu_ixw *w, int wire_type, SEXP x) {
     }
   }
   w->total += 9;
+  /* The element bytes start at a packed offset (the 1-byte tag and
+     8-byte length ahead of them), so the destination is misaligned
+     for every element type and R's exported getters store typed
+     elements on an ALTREP source: fill an explicitly aligned scratch
+     buffer and land the bytes by memcpy — the stream is unchanged. */
   const size_t elt = mizu_view_sizeof_elt(TYPEOF(x));
-  const R_xlen_t chunk = (R_xlen_t) (4096 / elt);
+  _Alignas(Rcomplex) unsigned char buf[4096];
+  const R_xlen_t chunk = (R_xlen_t) (sizeof buf / elt);
   for (R_xlen_t i = 0; i < n; i += chunk) {
     const R_xlen_t m = n - i < chunk ? n - i : chunk;
     if (w->dst != NULL && w->total + (size_t) m * elt <= w->limit) {
       switch (TYPEOF(x)) {
-      case LGLSXP:
-      case INTSXP:
-        INTEGER_GET_REGION(x, i, m, (int *) (w->dst + w->total));
-        break;
-      case REALSXP:
-        REAL_GET_REGION(x, i, m, (double *) (w->dst + w->total));
-        break;
-      case CPLXSXP:
-        COMPLEX_GET_REGION(x, i, m, (Rcomplex *) (w->dst + w->total));
-        break;
-      default:
-        RAW_GET_REGION(x, i, m, (Rbyte *) (w->dst + w->total));
-        break;
+      case LGLSXP: LOGICAL_GET_REGION(x, i, m, (int *) buf); break;
+      case INTSXP: INTEGER_GET_REGION(x, i, m, (int *) buf); break;
+      case REALSXP: REAL_GET_REGION(x, i, m, (double *) buf); break;
+      case CPLXSXP: COMPLEX_GET_REGION(x, i, m, (Rcomplex *) buf); break;
+      default: RAW_GET_REGION(x, i, m, (Rbyte *) buf); break;
       }
+      memcpy(w->dst + w->total, buf, (size_t) m * elt);
     } else if (w->dst != NULL) {
       w->overflow = 1;
       w->dst = NULL;

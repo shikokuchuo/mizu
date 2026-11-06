@@ -132,6 +132,10 @@ test_that("a compact sequence stays compact through a batch (R-11)", {
 })
 
 test_that("map staging is keep.source-invariant", {
+  skip_if_not(
+    l10n_info()[["UTF-8"]],
+    "the chunk-payload inline gate assumes UTF-8 serialize headers"
+  )
   p <- pool_pair()
   sourced <- eval(parse(
     text = "function(i) {\n  g <- function(j) j + 1\n  g(i)\n}",

@@ -254,7 +254,7 @@ static SEXP arrow_plain(SEXP x) {
   } else {
     const size_t elt = mizu_view_sizeof_elt((int) ty);
     unsigned char *dst = (unsigned char *) mizu_vec_ptr(out);
-    unsigned char buf[8192];
+    _Alignas(Rcomplex) unsigned char buf[8192];
     for (R_xlen_t i = 0; i < n; ) {
       R_xlen_t m = (R_xlen_t) (sizeof buf / elt);
       if (m > n - i) m = n - i;
