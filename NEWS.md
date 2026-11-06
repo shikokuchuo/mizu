@@ -1,6 +1,8 @@
 # mizu (development version)
 
-* No user-facing changes.
+* Faster sends of ALTREP atomic vectors to a Python peer: an attributed
+  vector or a view now crosses in a single copy, and a compact sequence
+  copies through an aligned buffer instead of element by element.
 
 # mizu 0.1.0
 

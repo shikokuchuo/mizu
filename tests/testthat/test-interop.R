@@ -1151,10 +1151,11 @@ test_that("chunked seq scans and ALTREP regions write through", {
 })
 
 test_that("attributed ALTREP atomics cross through the region accessors", {
-  # attributes<- on a bound vector wraps it: the exported getters' typed
-  # loops land in the packed stream through the aligned scratch buffer
+  # attributes<- on a bound vector wraps it: a wrapper with a data pointer
+  # rides the resident call, one over a compact sequence the aligned
+  # scratch loop
   zz <- structure(complex(70000, 1, 2), dim = c(100L, 700L))
-  ii <- structure(1:600, dim = c(20L, 30L)) # a wrapper over a compact seq
+  ii <- structure(1:600, dim = c(20L, 30L))
   expect_true(is_altrep(zz))
   expect_true(is_altrep(ii))
   expect_identical(ix_read(ix_write(zz)), zz)

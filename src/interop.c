@@ -927,15 +927,18 @@ static void ixw_str_put(mizu_ixw *w, const char *u, int32_t len, int bare) {
   }
 }
 
-/* An atomic vector tag: resident data rides mizu_ix_put_vec's one call;
-   ALTREP crosses by value — a manual header, then *_GET_REGION in
-   bounded chunks (a compact sequence is never expanded on the sender).
-   The tag byte is the core's mizu_ix_tag_of table (only the six atomic
-   wire types reach here). */
+/* An atomic vector tag: resident data — and an ALTREP whose data
+   pointer answers (a wrapper over a bound vector, an unmaterialized
+   view) — rides mizu_ix_put_vec's one call; a pointer-less ALTREP
+   crosses by value — a manual header, then *_GET_REGION in bounded
+   chunks (a compact sequence is never expanded on the sender). The tag
+   byte is the core's mizu_ix_tag_of table (only the six atomic wire
+   types reach here). */
 static void ixw_atomic_put(mizu_ixw *w, int wire_type, SEXP x) {
   const R_xlen_t n = XLENGTH(x);
-  if (!ALTREP(x)) {
-    IXW_PUT(w, mizu_ix_put_vec, wire_type, mizu_vec_ptr(x), (uint64_t) n);
+  const void *p = ALTREP(x) ? DATAPTR_OR_NULL(x) : mizu_vec_ptr(x);
+  if (p != NULL) {
+    IXW_PUT(w, mizu_ix_put_vec, wire_type, p, (uint64_t) n);
     return;
   }
   const uint32_t tag = (uint32_t) mizu_ix_tag_of(wire_type);
@@ -952,9 +955,9 @@ static void ixw_atomic_put(mizu_ixw *w, int wire_type, SEXP x) {
   w->total += 9;
   /* The element bytes start at a packed offset (the 1-byte tag and
      8-byte length ahead of them), so the destination is misaligned
-     for every element type and R's exported getters store typed
-     elements on an ALTREP source: fill an explicitly aligned scratch
-     buffer and land the bytes by memcpy — the stream is unchanged. */
+     for every element type and the class's Get_region stores typed
+     elements: fill an explicitly aligned scratch buffer and land the
+     bytes by memcpy — the stream is unchanged. */
   const size_t elt = mizu_view_sizeof_elt(TYPEOF(x));
   _Alignas(Rcomplex) unsigned char buf[4096];
   const R_xlen_t chunk = (R_xlen_t) (sizeof buf / elt);
