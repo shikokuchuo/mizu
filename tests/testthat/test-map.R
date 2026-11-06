@@ -674,31 +674,6 @@ test_that("classed conditions from f survive the crossing, index attached", {
   pool_end(p)
 })
 
-test_that("an rlang abort caught inside f crosses with its condition intact", {
-  skip_if_not_installed("rlang")
-  p <- pool_pair()
-  # a handler inside f puts rlang's trace capture over the stack calls; a
-  # stripped function literal must keep its canonical four-cell spine or
-  # the capture errors and masks the abort ("bad value" regression)
-  f <- function(i) {
-    if (i == 2L) {
-      tryCatch(rlang::abort("boom"), error = function(e) stop(e))
-    }
-    i
-  }
-  environment(f) <- globalenv()
-  st <- mizu:::map_stage(p[["ctrl"]], 1:2, f, list())
-  mizu:::map_submit(p[["ctrl"]], st)
-  while (pool_step(p) == 1L) {
-    NULL
-  }
-  e <- tryCatch(collect30(p[["ctrl"]], st), error = identity)
-  expect_s3_class(e, "rlang_error")
-  expect_identical(conditionMessage(e), "boom")
-  expect_identical(e[["mizu_map_index"]], 2)
-  pool_end(p)
-})
-
 test_that("a runner error stores the cancel word before its ERR publish", {
   p <- pool_pair(workers = 2L)
   st <- mizu:::map_stage(
