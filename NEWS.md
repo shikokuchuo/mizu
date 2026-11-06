@@ -1,4 +1,4 @@
-# mizu (development version)
+# mizu 0.1.1
 
 * Faster sends of ALTREP atomic vectors to a Python peer.
 
