@@ -1,5 +1,7 @@
 # mizu (development version)
 
+* Fixes `mizu_send()` of an Arrow table failing with "attempt to apply non-function" once a `mizu_map()` result had been collected in the session (#19).
+
 # mizu 0.1.1
 
 * Faster sends of ALTREP atomic vectors to a Python peer.

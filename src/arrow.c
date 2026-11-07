@@ -54,22 +54,22 @@ int mizu_arrow_check(SEXP x) {
   return 0;
 }
 
-/* The mizu namespace and the R helpers, cached on first use on the precious
-   root (they do not exist when R_init_mizu runs — the namespace's R code
-   loads after the DLL — and R_FindNamespace + the lookups otherwise repeat
-   per send). The nanoarrow namespace and its entry points sit behind the
-   requireNamespace gate (mizu:::arrow_ns), cached by nano_gate on the first
-   pull. */
+/* The R helpers, cached on first use on the precious root (they do not
+   exist when R_init_mizu runs — the namespace's R code loads after the
+   DLL — and the lookups otherwise repeat per send); the namespace itself
+   rides the shared memo mizu_r_ns(). The nanoarrow namespace and its
+   entry points sit behind the requireNamespace gate (mizu:::arrow_ns),
+   cached by nano_gate on the first pull. */
 static void arrow_ns(void) {
-  if (mizu_priv(MIZU_PRIV_MIZU_NS) != R_NilValue) return;
-  SEXP mizu_ns =
-    PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
+  /* The guard is this path's own slot: verbs_pool.c's map_collect_fn
+     populates the namespace memo without the Arrow helpers. */
+  if (mizu_priv(MIZU_PRIV_FN_ARROW_NS) != R_NilValue) return;
+  SEXP mizu_ns = PROTECT(mizu_r_ns());
   SEXP fn_arrow_ns = PROTECT(Rf_findFun(Rf_install("arrow_ns"), mizu_ns));
   SEXP fn_arrow_to_value =
     PROTECT(Rf_findFun(Rf_install("arrow_to_value"), mizu_ns));
   SEXP fn_batches_to_value =
     PROTECT(Rf_findFun(Rf_install("arrow_batches_to_value"), mizu_ns));
-  mizu_priv_set(MIZU_PRIV_MIZU_NS, mizu_ns);
   mizu_priv_set(MIZU_PRIV_FN_ARROW_NS, fn_arrow_ns);
   mizu_priv_set(MIZU_PRIV_FN_ARROW_TO_VALUE, fn_arrow_to_value);
   mizu_priv_set(MIZU_PRIV_FN_BATCHES_TO_VALUE, fn_batches_to_value);

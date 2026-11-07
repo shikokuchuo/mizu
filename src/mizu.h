@@ -619,6 +619,9 @@ void mizu_r_sweep(void *ctx);
 /* Raise a create/attach/join failure off the core's thread-local slot. */
 NORET void mizu_r_raise_tls(void) MIZU_COLD;
 int mizu_r_pow2(uint64_t v);
+/* The mizu namespace memo: the single writer of MIZU_PRIV_MIZU_NS.
+   Caching sites guard on their own slots and call this. */
+SEXP mizu_r_ns(void);
 double mizu_r_size_arg(SEXP x, const char *what);
 const char *mizu_r_suffix_arg(SEXP suffix_sexp);
 uint64_t mizu_r_ident_override(SEXP ident_sexp, uint64_t dflt);
@@ -661,7 +664,7 @@ enum {
   MIZU_PRIV_ZC_MARKS,          /* zc.c: REFHELD mark list (growable) */
   MIZU_PRIV_VIEW_WRAPS,        /* view.c: consumer-mapping cache wraps
                                   (borrowed there) */
-  MIZU_PRIV_MIZU_NS,           /* arrow.c / verbs_pool.c: the mizu namespace */
+  MIZU_PRIV_MIZU_NS,           /* the mizu namespace memo (mizu_r_ns) */
   MIZU_PRIV_FN_ARROW_NS,
   MIZU_PRIV_FN_ARROW_TO_VALUE,
   MIZU_PRIV_FN_BATCHES_TO_VALUE,

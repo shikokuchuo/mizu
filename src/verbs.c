@@ -43,6 +43,21 @@ int mizu_r_pow2(uint64_t v) {
   return v != 0 && (v & (v - 1)) == 0;
 }
 
+/* The mizu namespace memo: the one writer of the MIZU_PRIV_MIZU_NS slot.
+   Caching sites (arrow.c's helpers, verbs_pool.c's map_collect_fn) guard
+   on their own slots and take the namespace from here, never populating
+   it themselves — one site's memo can never stand in for another's cache.
+   Rooted by the precious root before return on every path. */
+SEXP mizu_r_ns(void) {
+  SEXP ns = mizu_priv(MIZU_PRIV_MIZU_NS);
+  if (ns == R_NilValue) {
+    ns = PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
+    mizu_priv_set(MIZU_PRIV_MIZU_NS, ns);
+    UNPROTECT(1);
+  }
+  return ns;
+}
+
 /* A create-geometry argument, gated before any range check: Rf_asInteger
    on a fractional double truncates (4.9 -> 4) and NA/Inf wrap, so
    integrality is rejected first and the per-argument range message stays
