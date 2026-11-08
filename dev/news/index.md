@@ -51,7 +51,7 @@ Initial release.
   methods for channels, tasks, and maps over later and promises, ready
   for Shiny.
 - Agent skill — an agent skill for AI coding assistants ships in the
-  installed package at `skills/mizu`, picked up automatically by `btw`
+  installed package at `skills/r-mizu`, picked up automatically by `btw`
   and similar tools.
 - Housekeeping —
   [`mizu_prune()`](https://shikokuchuo.net/mizu/dev/reference/mizu_prune.md)
