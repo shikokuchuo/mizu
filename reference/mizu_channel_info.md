@@ -33,7 +33,7 @@ debugging), `side`, `capacity`, `slot_size`, `arena_size`, `inline_max`,
 ch <- mizu_channel(quote(mizu_recv(ch)))
 mizu_channel_info(ch)
 #> $name
-#> [1] "/mizu_195a_49a20a2f"
+#> [1] "/mizu_194c_922db632"
 #> 
 #> $side
 #> [1] "host"
@@ -60,7 +60,7 @@ mizu_channel_info(ch)
 #> [1] 0
 #> 
 #> $peer_pid
-#> [1] 7361
+#> [1] 7345
 #> 
 #> $tx_sent
 #> [1] 0
