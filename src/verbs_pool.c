@@ -841,22 +841,17 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
 /* The map dispatch: a mizu_map handle collects through the R-level map
    machinery, so the verb gates on the handle form here — one TYPEOF
    compare on the task path, the forms never overlapping (a task handle
-   is an extptr, a map handle an environment). The closure and namespace
-   cache lazily on first use (they do not exist when R_init_mizu runs,
-   and a pool-only session may never run arrow.c's own caching). */
+   is an extptr, a map handle an environment). The closure caches lazily
+   on first use (it does not exist when R_init_mizu runs — the namespace's
+   R code loads after the DLL), its guard this path's own slot; the
+   namespace itself rides the shared memo mizu_r_ns(). */
 static SEXP map_collect_fn(void) {
   SEXP fn = mizu_priv(MIZU_PRIV_FN_MAP_COLLECT);
   if (fn != R_NilValue) return fn;
-  if (mizu_priv(MIZU_PRIV_MIZU_NS) == R_NilValue) {
-    SEXP mizu_ns =
-      PROTECT(R_FindNamespace(Rf_ScalarString(Rf_mkChar("mizu"))));
-    mizu_priv_set(MIZU_PRIV_MIZU_NS, mizu_ns);
-    UNPROTECT(1);
-  }
-  fn = PROTECT(
-    Rf_findFun(Rf_install("map_collect_handle"), mizu_priv(MIZU_PRIV_MIZU_NS)));
+  SEXP mizu_ns = PROTECT(mizu_r_ns());
+  fn = PROTECT(Rf_findFun(Rf_install("map_collect_handle"), mizu_ns));
   mizu_priv_set(MIZU_PRIV_FN_MAP_COLLECT, fn);
-  UNPROTECT(1);
+  UNPROTECT(2);
   return fn;
 }
 

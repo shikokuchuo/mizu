@@ -1,3 +1,17 @@
+test_that("arrow staging works after a map collect caches the namespace", {
+  # Issue 19: map_collect_fn() sets MIZU_PRIV_MIZU_NS without the Arrow
+  # helpers; the arrow_ns() guard must not treat that slot as its own.
+  # Runs first in the suite, before any Arrow send populates the cache.
+  skip_if_not_installed("nanoarrow")
+  fake <- structure(new.env(), class = "mizu_map")
+  try(mizu_collect(fake, 0), silent = TRUE)
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(x = 1:3)
+  mizu_send(p$host, nanoarrow::as_nanoarrow_array_stream(df))
+  expect_identical(mizu_recv(p$peer, 5), df)
+})
+
 test_that("a frame stages as one region past the gate, views at receive", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
