@@ -585,13 +585,33 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
 
 // Pool read (collect) ------------------------------------------------------------
 
+/* The pool drain's batch-collect anchor (notify_r.c): while set, each
+   read product is pushed here — the single collect's product discipline
+   below holds only until the verb returns, which a batch breaks (item i's
+   value would sit bare while item i + 1's read allocates). The scan sizes
+   the anchor to the batch (one push per collected task: the read's
+   product or its failure box), PROTECTs it across the batch, and resets
+   the static under unwind protection. */
+static SEXP mizu_r_batch_anchor;
+static R_xlen_t mizu_r_batch_n;
+
+void mizu_r_batch_anchor_set(SEXP anchor) {
+  mizu_r_batch_anchor = anchor;
+  mizu_r_batch_n = 0;
+}
+
+void mizu_r_batch_anchor_push(SEXP v) {
+  SET_VECTOR_ELT(mizu_r_batch_anchor, mizu_r_batch_n++, v);
+}
+
 /* The pool's read_fn: materialize a collected result. ctx->outcome carries
    the terminal state: OK/ERR read the payload frame (ERR's is the flattened
    transport condition), CANCEL/DIED carry no payload and build the binding's
    error object from the claimant record. Non-OK outcomes come back boxed in
    a mizu_caught list — the marker the collect veneer branches on (a task
    value that is itself a condition stays bare). The product is unprotected:
-   the core's claim tail allocates nothing before the verb returns it. */
+   the core's claim tail allocates nothing before the verb returns it (in a
+   batch collect the anchor above roots it). */
 static void *mizu_r_read_pool_impl(const mizu_slot_hdr *hdr,
                                    const unsigned char *payload,
                                    size_t limit, mizu_read_ctx *ctx) {
@@ -625,19 +645,25 @@ static void *mizu_r_read_pool_impl(const mizu_slot_hdr *hdr,
    pymizu's deliberate pool choice; the stash surfaces at the collect
    veneers). The trivial tiers stay unguarded, as the channel's: a NIL
    header also stands in for the CANCEL / DIED / LOST outcomes, whose
-   caught-box builds cannot raise short of allocation failure. */
+   caught-box builds cannot raise short of allocation failure. The anchor
+   push is the batch collect's rooting (above); the compare is the single
+   collect's only cost. */
 void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                        size_t limit, mizu_read_ctx *ctx) {
+  void *v;
   switch (hdr->kind) {
   case MIZU_KIND_NIL:
   case MIZU_KIND_STR1:
   case MIZU_KIND_RAWVEC:
   case MIZU_KIND_RAWSPILL:
-    return mizu_r_read_pool_impl(hdr, payload, limit, ctx);
+    v = mizu_r_read_pool_impl(hdr, payload, limit, ctx);
+    break;
   default:
-    return mizu_read_guard(mizu_r_read_pool_impl, hdr, payload, limit,
-                           ctx, 0);
+    v = mizu_read_guard(mizu_r_read_pool_impl, hdr, payload, limit, ctx, 0);
   }
+  if (mizu_r_batch_anchor != NULL && v != NULL)
+    mizu_r_batch_anchor_push((SEXP) v);
+  return v;
 }
 
 // Pool exec ---------------------------------------------------------------------

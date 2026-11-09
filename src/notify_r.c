@@ -73,6 +73,7 @@ static SEXP mizu_ntfy_chan_tag;
 static SEXP mizu_ntfy_pool_tag;
 static SEXP mizu_ntfy_task_tag;
 static SEXP mizu_ntfy_drain_sym;
+static SEXP mizu_ntfy_value_sym;
 
 static void mizu_notify_drain(void *);
 
@@ -81,6 +82,7 @@ void mizu_notify_init(void) {
   mizu_ntfy_pool_tag = Rf_install("mizu_pool");
   mizu_ntfy_task_tag = Rf_install("mizu_task");
   mizu_ntfy_drain_sym = Rf_install(".drain");
+  mizu_ntfy_value_sym = Rf_install("value");
 }
 
 /* later's execLaterNative2, loaded once (nanonext's nano_load_later
@@ -664,6 +666,53 @@ SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
   return Rf_ScalarLogical(0);
 }
 
+/* The task waiters' batch collect: claim every word in one core call,
+   values into vals (the anchor roots the read products — set and reset by
+   the caller under this unwind protection). A per-item failure stops the
+   core verb at fail_out: box it from the handle record as mizu_caught (the
+   single settle's tryflag = 2 discipline — decline stash first, the read
+   hook's own box products ride the batch untouched) and resume the batch
+   at the next index. A hoisted failure names no item (fail_out unset —
+   unreachable here: the scan armed the pool on this thread), and the
+   initialized zero degrades to boxing every remaining item with the
+   recorded condition. */
+struct ntfy_batch {
+  mizu_r_handle *h;
+  mizu_pool *p;
+  mizu_task *ts;
+  void **vals;
+  R_xlen_t n;
+};
+
+static SEXP ntfy_batch_run(void *d) {
+  struct ntfy_batch *b = (struct ntfy_batch *) d;
+  R_xlen_t i0 = 0;
+  while (i0 < b->n) {
+    size_t fail = 0;
+    if (mizu_pool_collect_terminal(b->p, b->ts + i0, (size_t) (b->n - i0),
+                                   b->vals + i0, NULL, &fail) == MIZU_OK)
+      break;
+    const R_xlen_t fi = i0 + (R_xlen_t) fail;
+    if (fi >= b->n) break;
+    SEXP cond = PROTECT(mizu_r_pool_collect_cond(b->h, b->p));
+    SEXP box = PROTECT(mizu_caught(cond));
+    mizu_r_batch_anchor_push(box);
+    b->vals[fi] = (void *) box;
+    UNPROTECT(2);
+    /* the decline slot holds this item's stash: a later item's plain
+       failure must not re-read it */
+    SET_VECTOR_ELT(b->h->prot, b->h->decline_slot, R_NilValue);
+    i0 = fi + 1;
+  }
+  return R_NilValue;
+}
+
+static void ntfy_batch_clean(void *d, Rboolean jump) {
+  (void) d;
+  (void) jump;
+  mizu_r_batch_anchor_set(NULL);
+}
+
 /* The per-wake scan (the drain): re-arm the edge the waking publish
    cleared, then collect up to max settled waiters in registry order —
    unlinked, their announces withdrawn. A re-arm of a continuously armed
@@ -674,7 +723,15 @@ SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
    collect_async row); only a wake that finds nothing enrolled at all
    disarms — the worked flag tells that spurious first scan from the
    drain's own closing scan. Lenient on a released pool (the empty list):
-   a queued drain may outlive its handle. */
+   a queued drain may outlive its handle.
+   Settled task waiters collect in one batch ahead of the unlink: the
+   single collect's per-task ceremony (the extptr unwrap, the conflict
+   walk over the registry) is wasted work here — the scan proved every
+   word terminal and enrolled. Each value attaches to its waiter env as
+   `value` (a mizu_caught box on failure), so R settles without a collect
+   of its own; a word the batch left live (the DIED take-back: the slot
+   runs again) keeps its entry enrolled. Collective and map waiters settle
+   R-side as before — one gather per collection already. */
 SEXP mizu_pool_notify_scan(SEXP pool_xp, SEXP max_sexp) {
   mizu_r_handle *h = mizu_r_handle_peek(pool_xp, mizu_ntfy_pool_tag, "pool");
   mizu_r_notify *rec = h == NULL ? NULL : h->notify;
@@ -694,16 +751,61 @@ SEXP mizu_pool_notify_scan(SEXP pool_xp, SEXP max_sexp) {
     return Rf_allocVector(VECSXP, 0);
   }
   const R_xlen_t lim = max < rec->n ? max : rec->n;
-  SEXP out = PROTECT(Rf_allocVector(VECSXP, lim));
-  R_xlen_t k = 0, j = 0;
+  /* the settled entries in registry order, capped at lim; the task
+     waiters among them collect in one batch below */
+  R_xlen_t *sel = (R_xlen_t *) R_alloc(rec->n, sizeof(R_xlen_t));
+  R_xlen_t nsel = 0, ntask = 0;
+  for (R_xlen_t i = 0; i < rec->n && nsel < lim; i++) {
+    if (!ent_done(p, &rec->ents[i])) continue;
+    if (rec->ents[i].mode == NTFY_TASK) ntask++;
+    sel[nsel++] = i;
+  }
+  if (nsel == 0) return Rf_allocVector(VECSXP, 0);
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, nsel));
+  SEXP anchor = PROTECT(Rf_allocVector(VECSXP, ntask));
+  SEXP vvals = PROTECT(Rf_allocVector(VECSXP, ntask));
+  if (ntask > 0) {
+    mizu_task *ts = (mizu_task *) R_alloc(ntask, sizeof(mizu_task));
+    void **vals = (void **) R_alloc(ntask, sizeof(void *));
+    R_xlen_t c = 0;
+    for (R_xlen_t k = 0; k < nsel; k++) {
+      const ntfy_ent *e = &rec->ents[sel[k]];
+      if (e->mode != NTFY_TASK) continue;
+      mizu_task t = { ent_words(e)[0] };
+      ts[c++] = t;
+    }
+    mizu_r_recv_begin(h);
+    mizu_r_batch_anchor_set(anchor);
+    struct ntfy_batch b = { h, p, ts, vals, ntask };
+    R_UnwindProtect(ntfy_batch_run, &b, ntfy_batch_clean, &b, NULL);
+    /* root the products in vvals past the anchor's reset: R_UnboundValue
+       marks a word the batch left live (the DIED take-back — its waiter
+       stays enrolled) */
+    for (R_xlen_t t = 0; t < ntask; t++)
+      SET_VECTOR_ELT(vvals, t,
+                     vals[t] == NULL ? R_UnboundValue : (SEXP) vals[t]);
+  }
+  R_xlen_t s = 0, c = 0, j = 0, nout = 0;
   for (R_xlen_t i = 0; i < rec->n; i++) {
     ntfy_ent *e = &rec->ents[i];
-    if (k < lim && ent_done(p, e)) {
-      SET_VECTOR_ELT(out, k++, VECTOR_ELT(rec->ws, i));
-      ent_withdraw(p, e);
-      rec->nwords -= e->n;
-      free(e->words);
-      continue;
+    if (s < nsel && i == sel[s]) {
+      s++;
+      int keep = 0;
+      if (e->mode == NTFY_TASK) {
+        SEXP v = VECTOR_ELT(vvals, c++);
+        if (v == R_UnboundValue) {
+          keep = 1;
+        } else {
+          Rf_defineVar(mizu_ntfy_value_sym, v, VECTOR_ELT(rec->ws, i));
+        }
+      }
+      if (!keep) {
+        SET_VECTOR_ELT(out, nout++, VECTOR_ELT(rec->ws, i));
+        ent_withdraw(p, e);
+        rec->nwords -= e->n;
+        free(e->words);
+        continue;
+      }
     }
     if (j != i) {
       rec->ents[j] = *e;
@@ -713,9 +815,9 @@ SEXP mizu_pool_notify_scan(SEXP pool_xp, SEXP max_sexp) {
   }
   for (R_xlen_t i = j; i < rec->n; i++) SET_VECTOR_ELT(rec->ws, i, R_NilValue);
   rec->n = j;
-  if (k > 0) rec->worked = 1;
-  if (k < lim) out = Rf_lengthgets(out, (R_len_t) k);
-  UNPROTECT(1);
+  if (nout > 0) rec->worked = 1;
+  if (nout < nsel) out = Rf_lengthgets(out, (R_len_t) nout);
+  UNPROTECT(3);
   return out;
 }
 

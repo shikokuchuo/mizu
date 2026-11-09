@@ -605,6 +605,13 @@ int mizu_r_stage_pool(void *obj, mizu_slot_hdr *hdr,
                       mizu_handle *h, void *ctx);
 void *mizu_r_read_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                        size_t limit, mizu_read_ctx *ctx);
+/* The pool drain's batch collect (notify_r.c): while the anchor is set,
+   mizu_r_read_pool pushes each product here — the single collect's product
+   is unprotected by design ("the core's claim tail allocates nothing"),
+   which a batch breaks: item i's value would sit bare while item i + 1's
+   read allocates. Sized to the batch — one push per collected task. */
+void mizu_r_batch_anchor_set(SEXP anchor);
+void mizu_r_batch_anchor_push(SEXP v);
 int mizu_r_exec_pool(const mizu_slot_hdr *hdr, const unsigned char *payload,
                      size_t limit, mizu_result_sink *sink, int catching,
                      mizu_read_ctx *ctx);
@@ -639,6 +646,13 @@ mizu_r_handle *mizu_r_handle_get(SEXP xp, SEXP tag, const char *what);
    promote the task's live views; then the decline slot cleared, so the
    verb's read hook stashes a fresh caught condition there on MIZU_ERR. */
 void mizu_r_recv_begin(mizu_r_handle *h);
+
+// Pool collect helpers (verbs_pool.c) ----------------------------------------
+
+/* A pool collect's MIZU_ERR as a classed condition VALUE (the settle
+   boxing; the decline stash wins over the handle's recorded error).
+   UNPROTECTED — PROTECT at the call site (nothing allocates between). */
+SEXP mizu_r_pool_collect_cond(mizu_r_handle *h, mizu_pool *p);
 
 // Pool-signal unwrap (verbs_pool.c; map.c's runner reads the words) -------
 
