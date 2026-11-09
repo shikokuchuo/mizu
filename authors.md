@@ -7,6 +7,7 @@
 
 - **[![Posit](https://www.tidyverse.org/posit-logo.svg)](https://www.posit.co)**.
   Copyright holder, funder.
+  [![ROR](https://raw.githubusercontent.com/ror-community/ror-logos/main/ror-icon-rgb.svg)](https://ror.org/03wc8by49)
 
 - **Pierre L'Ecuyer**. Copyright holder.  
   RngStreams library
@@ -14,7 +15,7 @@
 ## Citation
 
 Source:
-[`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/v0.1.1/DESCRIPTION)
+[`DESCRIPTION`](https://github.com/shikokuchuo/mizu/blob/release/DESCRIPTION)
 
 Gao C (2026). *mizu: Thread-Speed Async and Parallel R over Shared
 Memory*. R package version 0.1.1, <https://shikokuchuo.net/mizu/>.

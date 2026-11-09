@@ -2,6 +2,8 @@
 
 ## mizu 0.1.1
 
+CRAN release: 2026-11-08
+
 - Faster sends of ALTREP atomic vectors to a Python peer.
 
 ## mizu 0.1.0
@@ -49,7 +51,7 @@ Initial release.
   methods for channels, tasks, and maps over later and promises, ready
   for Shiny.
 - Agent skill — an agent skill for AI coding assistants ships in the
-  installed package at `skills/mizu`, picked up automatically by `btw`
+  installed package at `skills/r-mizu`, picked up automatically by `btw`
   and similar tools.
 - Housekeeping —
   [`mizu_prune()`](https://shikokuchuo.net/mizu/reference/mizu_prune.md)
