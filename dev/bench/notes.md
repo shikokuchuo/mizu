@@ -2044,3 +2044,27 @@ Status: full suite green (5995 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs); mizu-bench, crosslang-channel,
 crosslang-map and pymizu's mizu-bench.py inside their bands (the
 masked-int64 outlier unchanged). Best-known table untouched.
+
+## 2026-11-09 — sticky pool async arm (port of pymizu #25's arm half)
+
+The pool notify arm no longer drops when the waiter registry empties: a
+settle or a timeout detach leaves it standing for the next enrollment,
+and only a wake that finds nothing enrolled disarms (the scan's `worked`
+flag tells that spurious first scan from the drain's own closing scan).
+pymizu measured an arm+disarm pair at a quarter of its sequential
+collect_async row; on mizu the pair is unmeasurable — the suite's
+per-task burst pays it once per 2000 tasks, and a sequential-await
+probe's ~110 us/iter floor (submit, worker round trip, two later turns)
+hides a ~us syscall pair.
+
+Results (interleaved A/B, 3 rounds per build; A = 98b21b2 pre-change, B
+= the sticky arm; the three suite rows extracted to a standalone
+harness): collect_all_async 2.38M/2.56M/2.50M vs 2.56M/2.44M/2.50M
+tasks/s; many waiters (64 x 31) 152.6k/165.3k/165.3k vs 165.3k flat;
+per-task promises (2000) 9756/9569/9852 vs 9524/8969/9009 (bands
+overlap — B's decline across rounds reads as thermal, the burst path is
+instruction-identical bar one branch); sequential collect_async probe
+(300 awaits on a real 1-worker pool) 113.3/106.7/110.0 vs
+116.7/106.7/110.0 us/iter.
+Status: full suite green (6009 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs). Best-known table untouched.
