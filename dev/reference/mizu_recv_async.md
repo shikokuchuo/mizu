@@ -14,6 +14,8 @@ or the promise pipe `%...>%`.
 ``` r
 mizu_recv_async(ch, timeout = Inf)
 
+mizu_recv_batch_async(ch, n = 256L, timeout = Inf)
+
 mizu_recv_handler(ch, fn, batch = FALSE)
 
 # S3 method for class 'mizu_channel'
@@ -37,6 +39,11 @@ is.promising(x)
   seconds after which the promise rejects with the `mizu_timeout`
   classed error. `Inf` (the default) waits indefinitely.
 
+- n:
+
+  for `mizu_recv_batch_async()`: the maximum number of messages per
+  resolution; at least 1.
+
 - fn:
 
   a `function(x)` called with each received message (or, with
@@ -57,8 +64,10 @@ is.promising(x)
 
 `mizu_recv_async()`: a
 [`promises::promise()`](https://rstudio.github.io/promises/reference/promise.html)
-resolving with the next message. `mizu_recv_handler()`: the channel
-handle, invisibly.
+resolving with the next message. `mizu_recv_batch_async()`: a
+[`promises::promise()`](https://rstudio.github.io/promises/reference/promise.html)
+resolving with a list of up to `n` messages. `mizu_recv_handler()`: the
+channel handle, invisibly.
 
 ## Details
 
@@ -72,6 +81,13 @@ Several outstanding calls on one channel resolve in FIFO call order, one
 message each. No message is lost: messages already in the ring resolve
 immediately (still asynchronously, as promises require), and only
 messages yet to arrive wait on the event.
+
+`mizu_recv_batch_async()` is the burst form: the promise resolves with a
+list of up to `n` messages in arrival order — possibly short, as it
+resolves as soon as at least one message is available, never waiting to
+fill. Single and batch waiters resolve in FIFO call order, each batch
+taking up to its `n` from the arrivals. One resolution per burst rather
+than one per message makes it the high-throughput receive form.
 
 `mizu_recv_handler()` is the stream form. It installs `fn` on the
 channel, and the event loop delivers each burst of messages to it
@@ -104,7 +120,8 @@ Every main-thread drain is bounded per event-loop turn and re-scheduled,
 so a saturated ring starves neither Shiny nor
 [`later::run_now()`](https://later.r-lib.org/reference/run_now.html).
 
-Requires the later package, and promises for `mizu_recv_async()`.
+Requires the later package, and promises for `mizu_recv_async()` and
+`mizu_recv_batch_async()`.
 
 ## Examples
 
@@ -114,6 +131,12 @@ library(promises)
 ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
 mizu_recv_async(ch) %...>% print()
 mizu_send(ch, 42L)
+later::run_now()
+mizu_close(ch)
+
+ch <- mizu_channel(quote(mizu_send_batch(ch, mizu_recv_batch(ch, 3L))))
+mizu_recv_batch_async(ch, 3L) %...>% print()
+mizu_send_batch(ch, list(1, 2, 3))
 later::run_now()
 mizu_close(ch)
 }

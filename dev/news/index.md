@@ -2,12 +2,25 @@
 
 ## mizu (development version)
 
+- New
+  [`mizu_recv_batch_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md):
+  the promise counterpart of
+  [`mizu_recv_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send_batch.md)
+  — one promise resolves with a list of up to `n` messages, the
+  high-throughput async receive.
 - Fixes
   [`mizu_send()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send.md)
   of an Arrow table failing with “attempt to apply non-function” once a
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   result had been collected in the session
   ([\#19](https://github.com/shikokuchuo/mizu/issues/19)).
+- Faster sends of large payloads and of Arrow tables with missing
+  values, and faster first reads of large zero-copy views on Linux.
+- Faster resolution of pool task promises with
+  [`mizu_collect_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
+  and
+  [`as.promise()`](https://rstudio.github.io/promises/reference/is.promise.html),
+  particularly when many tasks are awaiting collection.
 
 ## mizu 0.1.1
 

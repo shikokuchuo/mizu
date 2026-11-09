@@ -605,6 +605,11 @@ later’s own unwind protection surfaces an escaping error at the
 prot slots;
 [`mizu_recv_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
 (pending FIFO, `later()` timer per promise with FIFO removal),
+[`mizu_recv_batch_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
+(the burst form — the waiter’s `batch_n` field makes the drain’s promise
+branch receive with the batch verb when it reaches the head, resolving
+with a list of up to n, short when the burst runs out; singles and
+batches interleave in FIFO order),
 [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
 (the stream form — `batch = TRUE` collects a burst into one VECSXP in C
 for a single `fn(list)` call; terminal conditions delivered as the final
@@ -635,24 +640,38 @@ site without ever arming (returns TRUE, nothing registered; the post-arm
 re-check is the parker transplant); `mizu_pool_notify_scan` is the
 per-wake drain step (re-arm the edge the waking publish cleared, then up
 to `max` settled waiters in registry order, unlinked with announces
-withdrawn, disarming when the registry empties — the R drain loops scan
-→ settle → scan until an empty scan proves the re-armed word saw
-nothing); `mizu_pool_notify_remove` (a timeout) and
-`mizu_pool_notify_find` (the cached-promise lookup). The map kind’s
-verdict is `mizu_map_runners_done` (map.c: terminal or abandonable per
-runner). The blocking collect verbs’ refusal (“one consumer per result”)
-is `mizu_r_notify_refuse` inside the C veneers — one pointer test when
+withdrawn — the R drain loops scan → settle → scan until an empty scan
+proves the re-armed word saw nothing); settled task waiters collect in
+one `mizu_pool_collect_terminal` batch ahead of the unlink (the scan
+proved every word terminal and enrolled, so the single collect’s unwrap
+and registry conflict walk are wasted work there), each value preset as
+`value` on its waiter env — a `mizu_caught` box from the handle record
+on a per-item failure, and a word the batch left live (the DIED
+take-back) keeps its entry enrolled; the read products root in a sized
+anchor (stage_r.c’s `mizu_r_batch_anchor`, set/reset under
+`R_UnwindProtect`), the single collect’s unprotected-product discipline
+not surviving a batch; the pool arm is sticky: it survives the registry
+emptying (a settle or a timeout detach never disarms) and drops only on
+a wake that finds nothing enrolled, the scan’s `worked` flag telling
+that spurious first scan from the drain’s own closing scan;
+`mizu_pool_notify_remove` (a timeout) and `mizu_pool_notify_find` (the
+cached-promise lookup). The map kind’s verdict is
+`mizu_map_runners_done` (map.c: terminal or abandonable per runner). The
+blocking collect verbs’ refusal (“one consumer per result”) is
+`mizu_r_notify_refuse` inside the C veneers — one pointer test when
 nothing is enrolled, so the sync rows pay nothing. The task kind settles
-through `mizu_pool_collect_settle` (every failure boxed `mizu_caught`,
-no handler frame per task); the collective forms keep one tryCatch per
-collection. Discipline: the enroll runs ahead of `promise()`’s action
-(it converts action errors into rejections, but a conflict, a spin
-channel or a stale task is a call-site error), the settle of an
-already-terminal waiter inside it; every drain is bounded per callback
-(`notify_quantum_n` = 2048 items or ~1 ms, whichever first — 256 left
-the batch handler 2.2x off the sync row; the pool drain scans in batches
-of 64 so the clock check between batches is honest) and re-scheduled
-with `later(secs = 0)`;
+the scan’s preset `value` (a `mizu_caught` box rejects; the call-site
+settle of an already-terminal task falls back to
+`mizu_pool_collect_settle` — every failure boxed, no handler frame per
+task); the collective forms keep one tryCatch per collection.
+Discipline: the enroll runs ahead of `promise()`’s action (it converts
+action errors into rejections, but a conflict, a spin channel or a stale
+task is a call-site error), the settle of an already-terminal waiter
+inside it; every drain is bounded per callback (`notify_quantum_n` =
+2048 items or ~1 ms, whichever first — 256 left the batch handler 2.2x
+off the sync row; the pool drain scans in batches of 64 so the clock
+check between batches is honest) and re-scheduled with
+`later(secs = 0)`;
 [`mizu_cancel()`](https://shikokuchuo.net/mizu/dev/reference/mizu_cancel.md)
 stays allowed throughout (the cancel publishes, the drain rejects).
 later and promises sit in Suggests, guarded with informative errors; the
@@ -661,14 +680,15 @@ S3 methods defer-register through `S3method(promises::as.promise, *)`
 from within a callback run on the next loop turn (the registry’s `now`
 is captured once per batch), so a resolve’s fulfillment fires a tick
 after the drain. The surface mirrors pymizu’s async verbs one-for-one
-(`mizu_recv_async` / `mizu_recv_handler` ≈ `recv_async` / `async for`,
-`mizu_collect_async` ≈ `Task.collect_async` / `await task`, the
-collective forms, the map await) with three deliberate idiom
-adaptations: terminal states reject with classed errors where pymizu
-resolves sentinels as values, the per-task promise is cached where
-pymizu refuses a second enrollment, and the timeout timer is the detach
-where asyncio cancels the Future; the one pymizu piece without an R
-analog is the `PoolExecutor` concurrent.futures adapter.
+(`mizu_recv_async` / `mizu_recv_batch_async` / `mizu_recv_handler` ≈
+`recv_async` / `recv_batch_async` / `async for`, `mizu_collect_async` ≈
+`Task.collect_async` / `await task`, the collective forms, the map
+await) with three deliberate idiom adaptations: terminal states reject
+with classed errors where pymizu resolves sentinels as values, the
+per-task promise is cached where pymizu refuses a second enrollment, and
+the timeout timer is the detach where asyncio cancels the Future; the
+one pymizu piece without an R analog is the `PoolExecutor`
+concurrent.futures adapter.
 
 [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
 (`R/map.R`, `src/map.c`, `src/rng.c`) stages f/`...`/x once per call —

@@ -58,6 +58,7 @@
 ## Promises and handlers
 
 - [`mizu_recv_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
+  [`mizu_recv_batch_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
   [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
   [`as.promise(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
   [`is.promising(`*`<mizu_channel>`*`)`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)
