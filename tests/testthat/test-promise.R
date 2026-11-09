@@ -1153,6 +1153,24 @@ test_that("several workers publishing to one armed submitter send one signal", {
   expect_identical(sends, 1)
 })
 
+test_that("sequential async collects keep resolving across an emptied registry", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  wk <- p[["wks"]][[1L]]
+  # the arm outlives each emptied registry, so every enroll after the first
+  # takes the fence path relying on the standing word: a lost wake here
+  # hangs the pump
+  for (i in 1:3) {
+    t <- mizu_submit(p[["ctrl"]], 1L)
+    o <- observe(promises::as.promise(t))
+    pool_step(p)
+    expect_true(pump_until(function() settled(o)))
+    expect_identical(o[["value"]], 1L)
+  }
+  expect_identical(mizu_pool_dump(wk)[["local"]][["notify_sends"]], 3)
+})
+
 # Handle-first map -------------------------------------------------------------
 
 test_that("mizu_map returns a handle; mizu_collect gathers in input order", {

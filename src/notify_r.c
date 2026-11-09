@@ -30,6 +30,9 @@ typedef struct mizu_r_notify_s {
   int is_pool;
   int watching;                   /* the core watch is active */
   int armed;                      /* the core arm and the armed ref are held */
+  int worked;                     /* pool: the last scan settled entries — the
+                                     sticky arm drops only on a wake that
+                                     finds nothing enrolled */
   SEXP state;                     /* the R state env, preserved while armed */
   /* the pool waiter registry (main thread only): one entry per enrolled
      async consumer, the waiter envs in a parallel preserved VECSXP */
@@ -444,8 +447,9 @@ static void ent_withdraw(mizu_pool *p, const ntfy_ent *e) {
   }
 }
 
-/* Unlink entry i: words freed, the tail shifted down, the registry
-   disarmed when it empties. */
+/* Unlink entry i: words freed, the tail shifted down. The arm stands on
+   empty (a settle or a timeout detach never disarms) — only the scan's
+   empty-entry branch drops it, on a wake that finds nothing enrolled. */
 static void ntfy_reg_drop(mizu_r_handle *h, R_xlen_t i) {
   mizu_r_notify *rec = h->notify;
   ntfy_ent *e = &rec->ents[i];
@@ -457,7 +461,6 @@ static void ntfy_reg_drop(mizu_r_handle *h, R_xlen_t i) {
   }
   rec->n--;
   SET_VECTOR_ELT(rec->ws, rec->n, R_NilValue);
-  if (rec->n == 0) mizu_r_notify_disarm(h);
 }
 
 /* The entry holding a task word, or -1. */
@@ -566,7 +569,9 @@ void mizu_r_notify_refuse(mizu_r_handle *h, const mizu_task *ts, size_t n) {
    cycle, on the first enrollment; while armed the enroll fences instead
    (the word either stands, or a publish cleared it with its signal in
    flight, and that signal's drain re-arms and scans the whole
-   registry). */
+   registry). The arm is sticky — it survives the registry emptying and
+   drops only on a wake that finds nothing enrolled — so the fence path
+   is the common one. */
 SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
                              SEXP mode_sexp, SEXP wrap) {
   mizu_r_handle *h = mizu_r_handle_get(pool_xp, mizu_ntfy_pool_tag, "pool");
@@ -661,17 +666,23 @@ SEXP mizu_pool_notify_enroll(SEXP pool_xp, SEXP state, SEXP w, SEXP tasks,
 
 /* The per-wake scan (the drain): re-arm the edge the waking publish
    cleared, then collect up to max settled waiters in registry order —
-   unlinked, their announces withdrawn — disarming when the registry
-   empties. A re-arm of a continuously armed word is a load and a fence,
-   so the drain's loop of scan-settle-scan ends on the empty scan that
-   proves the re-armed word saw nothing. Lenient on a released pool
-   (the empty list): a queued drain may outlive its handle. */
+   unlinked, their announces withdrawn. A re-arm of a continuously armed
+   word is a load and a fence, so the drain's loop of scan-settle-scan ends
+   on the empty scan that proves the re-armed word saw nothing. The arm is
+   sticky: a drain that worked leaves it standing for the next enrollment
+   (pymizu measured an arm+disarm pair at a quarter of its sequential
+   collect_async row); only a wake that finds nothing enrolled at all
+   disarms — the worked flag tells that spurious first scan from the
+   drain's own closing scan. Lenient on a released pool (the empty list):
+   a queued drain may outlive its handle. */
 SEXP mizu_pool_notify_scan(SEXP pool_xp, SEXP max_sexp) {
   mizu_r_handle *h = mizu_r_handle_peek(pool_xp, mizu_ntfy_pool_tag, "pool");
   mizu_r_notify *rec = h == NULL ? NULL : h->notify;
   const int max = Rf_asInteger(max_sexp);
-  if (rec == NULL || rec->n == 0 || max <= 0) {
-    if (rec != NULL && rec->n == 0) mizu_r_notify_disarm(h);
+  if (rec == NULL || max <= 0) return Rf_allocVector(VECSXP, 0);
+  if (rec->n == 0) {
+    if (!rec->worked) mizu_r_notify_disarm(h);
+    rec->worked = 0;
     return Rf_allocVector(VECSXP, 0);
   }
   mizu_pool *p = (mizu_pool *) h->core;
@@ -702,7 +713,7 @@ SEXP mizu_pool_notify_scan(SEXP pool_xp, SEXP max_sexp) {
   }
   for (R_xlen_t i = j; i < rec->n; i++) SET_VECTOR_ELT(rec->ws, i, R_NilValue);
   rec->n = j;
-  if (j == 0) mizu_r_notify_disarm(h);
+  if (k > 0) rec->worked = 1;
   if (k < lim) out = Rf_lengthgets(out, (R_len_t) k);
   UNPROTECT(1);
   return out;
