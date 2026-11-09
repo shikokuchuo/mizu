@@ -11,6 +11,8 @@
 
 ## mizu 0.1.1
 
+CRAN release: 2026-11-08
+
 - Faster sends of ALTREP atomic vectors to a Python peer.
 
 ## mizu 0.1.0
