@@ -165,6 +165,12 @@ SEXP mizu_sentinel_check(SEXP x) {
                           x == mizu_sent_closed || x == mizu_sent_gone);
 }
 
+/* The drain's decline test, the same discipline: identity with the
+   interned condition, so a payload merely carrying the class is data. */
+SEXP mizu_decline_check(SEXP x) {
+  return Rf_ScalarLogical(x == mizu_decline_python);
+}
+
 // Create (host) -------------------------------------------------------------------
 
 SEXP mizu_channel_create_call(SEXP expr, SEXP cap_sexp, SEXP slot_sexp,
@@ -425,6 +431,60 @@ SEXP mizu_channel_recv_batch_call(SEXP xp, SEXP n_sexp, SEXP timeout) {
     return status_sentinel(st);
   }
   if (count < (size_t) n) {
+    SEXP res = PROTECT(Rf_lengthgets(out, (R_xlen_t) count));
+    UNPROTECT(2);
+    return res;
+  }
+  UNPROTECT(1);
+  return out;
+}
+
+/* The async drain's receive (R/promise.R): n == 0 a single message,
+   n >= 1 a batch of up to n; never parks — the drain holds its arm's
+   availability verdict and re-arms on the timeout sentinel. A
+   foreign-payload decline comes back as the interned condition VALUE
+   (the drain matches it by identity with mizu_decline_check) instead of
+   a signal: a per-message tryCatch was the drain's per-item floor.
+   Genuine failures raise as the public verbs do. */
+SEXP mizu_channel_recv_notify(SEXP xp, SEXP n_sexp) {
+  mizu_r_handle *h = chan_get(xp);
+  mizu_channel *c = (mizu_channel *) h->core;
+  const int n = Rf_asInteger(n_sexp);
+  if (n == NA_INTEGER || n < 0) Rf_error("mizu: n must be non-negative");
+  /* the consumer-side boundary collection and a fresh decline slot (verbs.c) */
+  mizu_r_recv_begin(h);
+  if (n == 0) {
+    void *obj = NULL;
+    mizu_status st = mizu_channel_recv(c, &obj, 0);
+    if (st == MIZU_ERR) {
+      SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
+      if (decline != R_NilValue) return decline;
+      chan_raise(c);
+    }
+    if (st != MIZU_OK) return status_sentinel(st);
+    return (SEXP) obj;
+  }
+  /* the batch form, sized from availability as mizu_channel_recv_batch */
+  size_t cap = (size_t) n;
+  const size_t avail = mizu_channel_avail(c);
+  if (avail != 0 && avail < cap) cap = avail;
+  SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) cap));
+  size_t count = 0;
+  mizu_status st = mizu_channel_recv_batch_fn(c, cap, &count,
+                                            mizu_vec_sink, out, 0);
+  if (st == MIZU_ERR) {
+    /* keep the protect balance on the decline's return path */
+    if (VECTOR_ELT(h->prot, h->decline_slot) != R_NilValue) {
+      UNPROTECT(1);
+      return VECTOR_ELT(h->prot, h->decline_slot);
+    }
+    chan_raise(c);
+  }
+  if (st != MIZU_OK) {
+    UNPROTECT(1);
+    return status_sentinel(st);
+  }
+  if (count < cap) {
     SEXP res = PROTECT(Rf_lengthgets(out, (R_xlen_t) count));
     UNPROTECT(2);
     return res;

@@ -792,12 +792,14 @@ SEXP mizu_channel_send_error_call(SEXP, SEXP);
 SEXP mizu_channel_send_batch_call(SEXP, SEXP);
 SEXP mizu_channel_recv_call(SEXP, SEXP);
 SEXP mizu_channel_recv_batch_call(SEXP, SEXP, SEXP);
+SEXP mizu_channel_recv_notify(SEXP, SEXP);
 SEXP mizu_channel_close_call(SEXP, SEXP);
 SEXP mizu_channel_close_signal_call(SEXP);
 SEXP mizu_channel_alive_call(SEXP);
 SEXP mizu_channel_keep_out_call(SEXP);
 SEXP mizu_channel_stat(SEXP);
 SEXP mizu_sentinel_check(SEXP);
+SEXP mizu_decline_check(SEXP);
 SEXP mizu_now_call(void);
 /* verbs_pool.c */
 SEXP mizu_pool_create_call(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
