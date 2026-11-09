@@ -27,6 +27,9 @@
    real header, so every core TU compiles the same paths whatever its
    headers: support is a kernel property, probed at run time — an older
    kernel EINVALs into the existing fallbacks. */
+#  ifndef MADV_POPULATE_READ
+#    define MADV_POPULATE_READ 22    /* kernel >= 5.14 */
+#  endif
 #  ifndef MADV_POPULATE_WRITE
 #    define MADV_POPULATE_WRITE 23   /* kernel >= 5.14 */
 #  endif
@@ -445,6 +448,10 @@ typedef struct mizu_spill_fl_s {
   uint64_t tick;
   size_t   total;
   uint32_t n;
+  /* one over-cap region (size > MIZU_SPILL_FL_BYTES) retained against a
+     same-class relay re-stage, outside the list accounting. Newest
+     insert wins. */
+  mizu_shm *large;
   int      last_reused;               /* whether the last pop hit */
   uint64_t hits;                      /* process-local, dump-only */
   mizu_shm *led_regions[MIZU_LEDGER_MAX];  /* lent: views outstanding */
