@@ -108,20 +108,6 @@ chan_fifo_push <- function(state, w) {
   invisible()
 }
 
-# Pop the head waiter, or NULL when empty.
-chan_fifo_pop <- function(state) {
-  w <- state[["fifo_head"]]
-  if (is.null(w)) {
-    return(NULL)
-  }
-  state[["fifo_head"]] <- w[["next"]]
-  if (is.null(state[["fifo_head"]])) {
-    state[["fifo_tail"]] <- NULL
-  }
-  w[["next"]] <- NULL
-  w
-}
-
 # Remove a waiter from the FIFO by identity (its timer fired, or it
 # settled); disarm when the FIFO runs empty.
 chan_fifo_remove <- function(state, w) {
@@ -170,73 +156,59 @@ chan_terminal <- function(state, cond) {
   invisible()
 }
 
-# One handler call with the error discipline: an erroring handler is
-# removed (the consumer disarmed), then the error propagates out of the
-# drain — later surfaces it at the loop's run site.
-chan_call_fn <- function(state, arg) {
-  tryCatch(
-    state[["fn"]](arg),
-    error = function(e) {
-      chan_disarm(state)
-      stop(e)
-    }
-  )
-}
-
 # The main-thread channel drain: resolve waiters / deliver to the handler
 # out of the ring, bounded per callback. Ends disarmed (nothing pending),
 # armed-and-sleeping (the watch fires on the next burst), or re-scheduled
-# (the quantum is spent and work remains).
+# (the quantum is spent and work remains). The receive is
+# mizu_channel_recv_notify throughout: a foreign-payload decline comes
+# back as the interned condition VALUE, matched by identity — never class,
+# so a payload carrying the class is just data — instead of a raised
+# error, so no per-message tryCatch rides the loop.
 chan_drain <- function(state) {
   # a timer can disarm between the watch's signal and this callback, so
-  # the mode may be gone at entry — read it (and the batch flag) once,
-  # not per item; the loop head re-checks it in handler mode, whose fn
-  # is user code run mid-pass
+  # the mode may be gone at entry
   mode <- state[["mode"]]
   if (is.null(mode)) {
     return(invisible())
   }
-  batch <- isTRUE(state[["batch"]])
+  if (identical(mode, "handler")) {
+    chan_drain_handler(state)
+  } else {
+    chan_drain_promise(state)
+  }
+  invisible()
+}
+
+# The promise drain: no user code runs mid-pass (resolve/reject only
+# schedule fulfillment on later loop turns), so the mode needs no
+# re-check and the FIFO unlink is inlined — the per-item floor is the
+# receive itself. The receive form keys on the consumer at the head: a
+# batch waiter takes up to its n as one list, short when the burst runs
+# out — capped at the quantum, as the seconds bound cannot see inside
+# one read.
+chan_drain_promise <- function(state) {
+  ch <- state[["ch"]]
   t0 <- mono_time()
   items <- 0L
   repeat {
-    # fn can remove or replace the consumer mid-pass: end the pass — the
-    # replacement's own arm covers the ring, and a removed consumer is
-    # never re-armed below
-    if (identical(mode, "handler") && !identical(state[["mode"]], mode)) {
-      return(invisible())
-    }
+    w <- state[["fifo_head"]]
     # the FIFO can empty mid-pass with messages still in the ring: disarm
     # ahead of consuming anything with nobody waiting (the next arm's
     # availability report picks those messages up)
-    if (identical(mode, "promise") && is.null(state[["fifo_head"]])) {
+    if (is.null(w)) {
       chan_disarm(state)
       return(invisible())
     }
-    # the receive form keys on the consumer at the head: a batch waiter
-    # takes up to its n as one list, short when the burst runs out
-    bn <- if (identical(mode, "promise")) state[["fifo_head"]][["batch_n"]]
-    x <- if (identical(mode, "handler") && batch) {
-      tryCatch(
-        .Call(mizu_channel_recv_batch, state[["ch"]], notify_quantum_n, 0),
-        mizu_error_python_payload = identity
-      )
-    } else if (is.null(bn)) {
-      tryCatch(
-        .Call(mizu_channel_recv, state[["ch"]], 0),
-        mizu_error_python_payload = identity
-      )
-    } else {
-      tryCatch(
-        .Call(mizu_channel_recv_batch, state[["ch"]], bn, 0),
-        mizu_error_python_payload = identity
-      )
-    }
+    bn <- w[["batch_n"]]
+    x <- .Call(
+      mizu_channel_recv_notify,
+      ch,
+      if (is.null(bn)) 0L else min(bn, notify_quantum_n)
+    )
     if (mizu_is_sentinel(x)) {
       if (inherits(x, "mizu_timeout")) {
-        # ring empty: re-arm and re-check (the loop head owns the
-        # nothing-pending disarm; no waiter can leave the FIFO mid-pass)
-        avail <- .Call(mizu_chan_notify_arm, state[["ch"]], state)
+        # ring empty: re-arm and re-check
+        avail <- .Call(mizu_chan_notify_arm, ch, state)
         if (!avail) {
           return(invisible())
         }
@@ -249,31 +221,22 @@ chan_drain <- function(state) {
         chan_terminal(state, cond)
         return(invisible())
       }
-    } else if (inherits(x, "mizu_error_python_payload")) {
-      # the foreign decline: consumed, the channel keeps flowing — reject
-      # the head waiter / deliver to the handler as the condition
-      items <- items + 1L
-      if (identical(mode, "handler")) {
-        chan_call_fn(state, x)
-      } else {
-        w <- chan_fifo_pop(state)
-        cancel_timer(w)
-        w[["reject"]](x)
-      }
     } else {
-      items <- items +
-        if (identical(mode, "handler") && batch) {
-          chan_call_fn(state, x)
-          length(x)
-        } else if (identical(mode, "handler")) {
-          chan_call_fn(state, x)
-          1L
-        } else {
-          w <- chan_fifo_pop(state)
-          cancel_timer(w)
-          w[["resolve"]](x)
-          if (is.null(bn)) 1L else length(x)
-        }
+      nxt <- w[["next"]]
+      state[["fifo_head"]] <- nxt
+      if (is.null(nxt)) {
+        state[["fifo_tail"]] <- NULL
+      }
+      w[["next"]] <- NULL
+      cancel_timer(w)
+      if (.Call(mizu_decline_check, x)) {
+        # the foreign decline: consumed, the channel keeps flowing
+        w[["reject"]](x)
+        items <- items + 1L
+      } else {
+        w[["resolve"]](x)
+        items <- items + if (is.null(bn)) 1L else length(x)
+      }
     }
     # the clock read strides (per item it was a .Call per message): the
     # quantum's seconds bound is advisory
@@ -285,6 +248,74 @@ chan_drain <- function(state) {
       return(invisible())
     }
   }
+}
+
+# The handler drain: fn is user code run mid-pass — it can remove or
+# replace the consumer, so the loop head re-checks the mode. One
+# tryCatch frames the whole pass instead of one per call: an erroring
+# fn ends the pass either way — the consumer is disarmed, then the error
+# propagates out of the drain (later surfaces it at the loop's run site).
+chan_drain_handler <- function(state) {
+  # the batch flag is read once: the loop head ends the pass when the
+  # mode goes (a removed consumer or a switch to promise mode); a
+  # handler->handler replacement keeps the mode and rides this pass with
+  # the new fn — fn is looked up per call for exactly that case
+  batch <- isTRUE(state[["batch"]])
+  ch <- state[["ch"]]
+  t0 <- mono_time()
+  items <- 0L
+  tryCatch(
+    repeat {
+      if (!identical(state[["mode"]], "handler")) {
+        return(invisible())
+      }
+      x <- .Call(
+        mizu_channel_recv_notify,
+        ch,
+        if (batch) notify_quantum_n else 0L
+      )
+      if (mizu_is_sentinel(x)) {
+        if (inherits(x, "mizu_timeout")) {
+          # ring empty: re-arm and re-check
+          avail <- .Call(mizu_chan_notify_arm, ch, state)
+          if (!avail) {
+            return(invisible())
+          }
+        } else {
+          cond <- if (inherits(x, "mizu_closed")) {
+            cond_closed()
+          } else {
+            cond_peer_gone()
+          }
+          chan_terminal(state, cond)
+          return(invisible())
+        }
+      } else {
+        state[["fn"]](x)
+        # a delivered decline counts its one consumed slot; a batch list
+        # its length
+        items <- items +
+          if (batch && !.Call(mizu_decline_check, x)) {
+            length(x)
+          } else {
+            1L
+          }
+      }
+      # as in the promise drain: the strided clock read
+      if (
+        items >= notify_quantum_n ||
+          (items %% 64L == 0L && mono_time() - t0 >= notify_quantum_secs)
+      ) {
+        later::later(state[[".drain"]], 0)
+        return(invisible())
+      }
+    },
+    error = function(e) {
+      chan_disarm(state)
+      stop(e)
+    }
+  )
+  invisible()
 }
 
 #' Receive Channel Messages as a Promise or a Stream
