@@ -8,6 +8,10 @@
   [`mizu_recv_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send_batch.md)
   — one promise resolves with a list of up to `n` messages, the
   high-throughput async receive.
+- Faster message delivery for the async channel verbs
+  ([`mizu_recv_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md),
+  [`mizu_recv_batch_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md),
+  [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)).
 - Fixes
   [`mizu_send()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send.md)
   of an Arrow table failing with “attempt to apply non-function” once a
