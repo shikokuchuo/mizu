@@ -82,6 +82,69 @@ test_that("a drain queued behind a timeout disarm leaves the message in the ring
   expect_identical(mizu_recv(p[["host"]], 0), 3L)
 })
 
+test_that("a batch promise resolves with up to n messages as one list", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o <- observe(mizu_recv_batch_async(p[["host"]], 3L))
+  expect_false(settled(o))
+  mizu_send_batch(p[["peer"]], list(1L, 2L, 3L))
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, list(1L, 2L, 3L))
+  expect_null(o$error)
+})
+
+test_that("a batch promise resolves short, never waiting to fill", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  mizu_send_batch(p[["peer"]], list(1L, 2L))
+  o <- observe(mizu_recv_batch_async(p[["host"]], 4L))
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, list(1L, 2L))
+})
+
+test_that("single and batch promises resolve in FIFO call order", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o1 <- observe(mizu_recv_async(p[["host"]]))
+  o2 <- observe(mizu_recv_batch_async(p[["host"]], 2L))
+  o3 <- observe(mizu_recv_async(p[["host"]]))
+  mizu_send_batch(p[["peer"]], list(1L, 2L, 3L, 4L))
+  expect_true(pump_until(function() {
+    all(vapply(list(o1, o2, o3), settled, TRUE))
+  }))
+  expect_identical(o1$value, 1L)
+  expect_identical(o2$value, list(2L, 3L))
+  expect_identical(o3$value, 4L)
+})
+
+test_that("a batch promise rejects with the terminal condition", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o <- observe(mizu_recv_batch_async(p[["host"]]))
+  .Call(mizu:::mizu_channel_close_signal, p[["peer"]])
+  expect_true(pump_until(function() settled(o)))
+  expect_s3_class(o$error, "mizu_closed")
+  expect_s3_class(o$error, "mizu_error")
+})
+
+test_that("a timed-out batch promise leaves the FIFO; the message goes to the next waiter", {
+  skip_if_no_promises()
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  o1 <- observe(mizu_recv_batch_async(p[["host"]], 2L, timeout = 0.1))
+  o2 <- observe(mizu_recv_async(p[["host"]], timeout = 5))
+  expect_true(pump_until(function() settled(o1)))
+  expect_s3_class(o1$error, "mizu_timeout")
+  expect_s3_class(o1$error, "mizu_error")
+  mizu_send(p[["peer"]], 7L)
+  expect_true(pump_until(function() settled(o2)))
+  expect_identical(o2$value, 7L)
+})
+
 test_that("a handler installed over queued messages drains them from the arm", {
   skip_if_no_promises()
   p <- channel_pair()
@@ -144,6 +207,7 @@ test_that("handler and promise on one channel are mutually exclusive", {
   on.exit(channel_end(p))
   mizu_recv_handler(p[["host"]], function(x) invisible())
   expect_error(mizu_recv_async(p[["host"]]), "mutually exclusive")
+  expect_error(mizu_recv_batch_async(p[["host"]]), "mutually exclusive")
   mizu_recv_handler(p[["host"]], NULL)
   o <- observe(mizu_recv_async(p[["host"]]))
   expect_error(
@@ -199,6 +263,9 @@ test_that("the channel async verbs validate their arguments", {
   on.exit(channel_end(p))
   expect_snapshot(error = TRUE, mizu_recv_async(p[["host"]], NA))
   expect_snapshot(error = TRUE, mizu_recv_async(p[["host"]], "5"))
+  expect_snapshot(error = TRUE, mizu_recv_batch_async(p[["host"]], 0L))
+  expect_snapshot(error = TRUE, mizu_recv_batch_async(p[["host"]], NA))
+  expect_snapshot(error = TRUE, mizu_recv_batch_async(p[["host"]], 2L, "5"))
   expect_snapshot(error = TRUE, mizu_recv_handler(p[["host"]], 1))
 })
 

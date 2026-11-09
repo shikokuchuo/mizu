@@ -2,12 +2,15 @@
 % Please edit documentation in R/promise.R
 \name{mizu_recv_async}
 \alias{mizu_recv_async}
+\alias{mizu_recv_batch_async}
 \alias{mizu_recv_handler}
 \alias{as.promise.mizu_channel}
 \alias{is.promising.mizu_channel}
 \title{Receive Channel Messages as a Promise or a Stream}
 \usage{
 mizu_recv_async(ch, timeout = Inf)
+
+mizu_recv_batch_async(ch, n = 256L, timeout = Inf)
 
 mizu_recv_handler(ch, fn, batch = FALSE)
 
@@ -24,6 +27,9 @@ publish path skips the wake checkpoint by design.}
 \code{mizu_timeout} classed error. \code{Inf} (the default) waits
 indefinitely.}
 
+\item{n}{for \code{mizu_recv_batch_async()}: the maximum number of messages
+per resolution; at least 1.}
+
 \item{fn}{a \verb{function(x)} called with each received message (or, with
 \code{batch = TRUE}, each burst as one list), and finally with a
 terminal condition. \code{NULL} removes the handler.}
@@ -36,8 +42,9 @@ single call, instead of one call per message.}
 }
 \value{
 \code{mizu_recv_async()}: a \code{\link[promises:promise]{promises::promise()}} resolving with
-the next message. \code{mizu_recv_handler()}: the channel handle,
-invisibly.
+the next message. \code{mizu_recv_batch_async()}: a \code{\link[promises:promise]{promises::promise()}}
+resolving with a list of up to \code{n} messages. \code{mizu_recv_handler()}:
+the channel handle, invisibly.
 }
 \description{
 \code{mizu_recv_async()} returns a \code{\link[promises:promise]{promises::promise()}} immediately, without
@@ -56,6 +63,13 @@ Several outstanding calls on one channel resolve in FIFO call order,
 one message each. No message is lost: messages already in the ring
 resolve immediately (still asynchronously, as promises require), and
 only messages yet to arrive wait on the event.
+
+\code{mizu_recv_batch_async()} is the burst form: the promise resolves with a
+list of up to \code{n} messages in arrival order — possibly short, as it
+resolves as soon as at least one message is available, never waiting to
+fill. Single and batch waiters resolve in FIFO call order, each batch
+taking up to its \code{n} from the arrivals. One resolution per burst rather
+than one per message makes it the high-throughput receive form.
 
 \code{mizu_recv_handler()} is the stream form. It installs \code{fn} on the channel,
 and the event loop delivers each burst of messages to it without allocating a
@@ -83,7 +97,8 @@ Every main-thread drain is bounded per event-loop turn and
 re-scheduled, so a saturated ring starves neither Shiny nor
 \code{\link[later:run_now]{later::run_now()}}.
 
-Requires the \pkg{later} package, and \pkg{promises} for \code{mizu_recv_async()}.
+Requires the \pkg{later} package, and \pkg{promises} for
+\code{mizu_recv_async()} and \code{mizu_recv_batch_async()}.
 }
 \examples{
 \dontshow{if (interactive() && requireNamespace("promises", quietly = TRUE)) withAutoprint(\{ # examplesIf}
@@ -91,6 +106,12 @@ library(promises)
 ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
 mizu_recv_async(ch) \%...>\% print()
 mizu_send(ch, 42L)
+later::run_now()
+mizu_close(ch)
+
+ch <- mizu_channel(quote(mizu_send_batch(ch, mizu_recv_batch(ch, 3L))))
+mizu_recv_batch_async(ch, 3L) \%...>\% print()
+mizu_send_batch(ch, list(1, 2, 3))
 later::run_now()
 mizu_close(ch)
 \dontshow{\}) # examplesIf}

@@ -213,14 +213,22 @@ chan_drain <- function(state) {
       chan_disarm(state)
       return(invisible())
     }
+    # the receive form keys on the consumer at the head: a batch waiter
+    # takes up to its n as one list, short when the burst runs out
+    bn <- if (identical(mode, "promise")) state[["fifo_head"]][["batch_n"]]
     x <- if (identical(mode, "handler") && batch) {
       tryCatch(
         .Call(mizu_channel_recv_batch, state[["ch"]], notify_quantum_n, 0),
         mizu_error_python_payload = identity
       )
-    } else {
+    } else if (is.null(bn)) {
       tryCatch(
         .Call(mizu_channel_recv, state[["ch"]], 0),
+        mizu_error_python_payload = identity
+      )
+    } else {
+      tryCatch(
+        .Call(mizu_channel_recv_batch, state[["ch"]], bn, 0),
         mizu_error_python_payload = identity
       )
     }
@@ -264,7 +272,7 @@ chan_drain <- function(state) {
           w <- chan_fifo_pop(state)
           cancel_timer(w)
           w[["resolve"]](x)
-          1L
+          if (is.null(bn)) 1L else length(x)
         }
     }
     # the clock read strides (per item it was a .Call per message): the
@@ -297,6 +305,13 @@ chan_drain <- function(state) {
 #' resolve immediately (still asynchronously, as promises require), and
 #' only messages yet to arrive wait on the event.
 #'
+#' `mizu_recv_batch_async()` is the burst form: the promise resolves with a
+#' list of up to `n` messages in arrival order — possibly short, as it
+#' resolves as soon as at least one message is available, never waiting to
+#' fill. Single and batch waiters resolve in FIFO call order, each batch
+#' taking up to its `n` from the arrivals. One resolution per burst rather
+#' than one per message makes it the high-throughput receive form.
+#'
 #' `mizu_recv_handler()` is the stream form. It installs `fn` on the channel,
 #' and the event loop delivers each burst of messages to it without allocating a
 #' promise per message. With `batch = TRUE`, each drained burst is delivered as
@@ -323,7 +338,8 @@ chan_drain <- function(state) {
 #' re-scheduled, so a saturated ring starves neither Shiny nor
 #' [later::run_now()].
 #'
-#' Requires the \pkg{later} package, and \pkg{promises} for `mizu_recv_async()`.
+#' Requires the \pkg{later} package, and \pkg{promises} for
+#' `mizu_recv_async()` and `mizu_recv_batch_async()`.
 #'
 #' @param ch a channel handle from [mizu_channel()] (or the `ch` binding
 #'   inside a peer expression). Arming a `spin` channel errors: its
@@ -331,6 +347,8 @@ chan_drain <- function(state) {
 #' @param timeout seconds after which the promise rejects with the
 #'   `mizu_timeout` classed error. `Inf` (the default) waits
 #'   indefinitely.
+#' @param n for `mizu_recv_batch_async()`: the maximum number of messages
+#'   per resolution; at least 1.
 #' @param fn a `function(x)` called with each received message (or, with
 #'   `batch = TRUE`, each burst as one list), and finally with a
 #'   terminal condition. `NULL` removes the handler.
@@ -340,14 +358,21 @@ chan_drain <- function(state) {
 #'   `mizu_recv_async(x)`.
 #'
 #' @return `mizu_recv_async()`: a [promises::promise()] resolving with
-#'   the next message. `mizu_recv_handler()`: the channel handle,
-#'   invisibly.
+#'   the next message. `mizu_recv_batch_async()`: a [promises::promise()]
+#'   resolving with a list of up to `n` messages. `mizu_recv_handler()`:
+#'   the channel handle, invisibly.
 #'
 #' @examplesIf interactive() && requireNamespace("promises", quietly = TRUE)
 #' library(promises)
 #' ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
 #' mizu_recv_async(ch) %...>% print()
 #' mizu_send(ch, 42L)
+#' later::run_now()
+#' mizu_close(ch)
+#'
+#' ch <- mizu_channel(quote(mizu_send_batch(ch, mizu_recv_batch(ch, 3L))))
+#' mizu_recv_batch_async(ch, 3L) %...>% print()
+#' mizu_send_batch(ch, list(1, 2, 3))
 #' later::run_now()
 #' mizu_close(ch)
 #'
@@ -375,6 +400,48 @@ mizu_recv_async <- function(ch, timeout = Inf) {
     w <- new.env(parent = emptyenv())
     w[["resolve"]] <- resolve
     w[["reject"]] <- reject
+    chan_fifo_push(state, w)
+    if (is.finite(timeout)) {
+      w[["timer"]] <- later::later(
+        function() {
+          chan_fifo_remove(state, w)
+          reject(cond_timeout())
+        },
+        timeout
+      )
+    }
+    if (avail) {
+      chan_drain(state)
+    }
+  })
+}
+
+#' @rdname mizu_recv_async
+#' @export
+mizu_recv_batch_async <- function(ch, n = 256L, timeout = Inf) {
+  notify_requires()
+  check_timeout(timeout)
+  n <- as.integer(n)
+  if (is.na(n) || n < 1L) {
+    stop("mizu: n must be at least 1", call. = FALSE)
+  }
+  state <- notify_chan_state(ch)
+  if (identical(state[["mode"]], "handler")) {
+    stop(
+      "mizu: a handler is installed on this channel \u2014 ",
+      "mizu_recv_batch_async() and mizu_recv_handler() are mutually exclusive",
+      call. = FALSE
+    )
+  }
+  # as in mizu_recv_async: the arm (and its spin refusal) runs ahead of the
+  # promise action; the mode is set only once the arm stands
+  avail <- .Call(mizu_chan_notify_arm, ch, state)
+  state[["mode"]] <- "promise"
+  promises::promise(function(resolve, reject) {
+    w <- new.env(parent = emptyenv())
+    w[["resolve"]] <- resolve
+    w[["reject"]] <- reject
+    w[["batch_n"]] <- n
     chan_fifo_push(state, w)
     if (is.finite(timeout)) {
       w[["timer"]] <- later::later(

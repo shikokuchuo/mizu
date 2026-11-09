@@ -309,7 +309,8 @@ helper a clean enclosure with `environment(f) <- globalenv()` so it crosses by
 reference under Rule 3.
 
 Channel messages flow into the event loop too: `mizu_recv_async(ch)` for the
-next message, `mizu_recv_handler(ch, fn, batch = TRUE)` for a stream.
+next message, `mizu_recv_batch_async(ch, n)` for a burst as one list,
+`mizu_recv_handler(ch, fn, batch = TRUE)` for a stream.
 
 ## Channels
 

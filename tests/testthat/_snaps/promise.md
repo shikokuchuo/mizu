@@ -17,6 +17,30 @@
 ---
 
     Code
+      mizu_recv_batch_async(p[["host"]], 0L)
+    Condition
+      Error:
+      ! mizu: n must be at least 1
+
+---
+
+    Code
+      mizu_recv_batch_async(p[["host"]], NA)
+    Condition
+      Error:
+      ! mizu: n must be at least 1
+
+---
+
+    Code
+      mizu_recv_batch_async(p[["host"]], 2L, "5")
+    Condition
+      Error:
+      ! mizu: timeout must be a number of seconds, not NA
+
+---
+
+    Code
       mizu_recv_handler(p[["host"]], 1)
     Condition
       Error:
