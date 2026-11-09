@@ -196,8 +196,9 @@ NORET static void pool_collect_raise(mizu_r_handle *h, mizu_pool *p) {
   pool_raise(p);
 }
 
-/* The same condition as a value (the settle box below). UNPROTECTED. */
-static SEXP pool_collect_cond(mizu_r_handle *h, mizu_pool *p) {
+/* The same condition as a value (the settle box below, and the pool
+   drain's batch collect in notify_r.c). UNPROTECTED. */
+SEXP mizu_r_pool_collect_cond(mizu_r_handle *h, mizu_pool *p) {
   SEXP decline = VECTOR_ELT(h->prot, h->decline_slot);
   return decline != R_NilValue ? decline : pool_cond(p);
 }
@@ -825,7 +826,7 @@ static SEXP pool_collect_impl(SEXP xp, SEXP timeout, int tryflag) {
   }
   if (st == MIZU_ERR) {
     if (tryflag != 2) pool_collect_raise(h, (mizu_pool *) h->core);
-    SEXP cond = PROTECT(pool_collect_cond(h, (mizu_pool *) h->core));
+    SEXP cond = PROTECT(mizu_r_pool_collect_cond(h, (mizu_pool *) h->core));
     SEXP box = mizu_caught(cond);
     UNPROTECT(1);
     return box;

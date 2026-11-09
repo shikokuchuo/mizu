@@ -2068,3 +2068,29 @@ instruction-identical bar one branch); sequential collect_async probe
 116.7/106.7/110.0 us/iter.
 Status: full suite green (6009 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs). Best-known table untouched.
+
+## 2026-11-09 — batch collect in the pool drain (port of pymizu #34)
+
+Settled task waiters now collect in one mizu_pool_collect_terminal call
+per scan batch (values preset as `value` on the waiter envs, a
+mizu_caught box from the handle record on a per-item failure) instead of
+one mizu_pool_collect_settle per task from R: the per-settle extptr
+unwrap, the O(registry) conflict walk (mizu_r_notify_refuse — the
+waiter was provably unlinked by the scan, so the walk was wasted work
+by construction), and the collect-call checks are gone or hoisted.
+Collective (any/all) and map waiters settle R-side unchanged.
+
+Results (A/B on a quiet machine, 3 timed reps per build; A = 7e1c386
+pre-change, B = the batch collect; suite rows extracted to a standalone
+harness): many waiters (64 x 31) A 79.4k/283k/331k, B 82.7k/331k/117k
+tasks/s — bands overlap fully, as expected (collective waiters settle
+R-side, untouched); per-task promises (2000) A 9.05k/8.62k/13.16k, B
+9.48k/8.70k/11.70k tasks/s; depth probe (6000 waiters, one burst) A
+9.77k/10.55k/8.19k, B 9.57k/10.58k/9.65k tasks/s — flat within noise at
+both depths: the rows sit in the promises machinery (~100 us/task)
+while the removed ceremony is ~us-scale; the win is asymptotic (no more
+O(W) walk per settle, so no O(W^2) drain at depth), not a measured
+delta at report-row scale.
+Status: full suite green (6018 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs); rchk clean. Best-known table
+untouched.

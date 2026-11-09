@@ -511,14 +511,21 @@ pool_enroll <- function(state, w, tasks, wrap = NULL) {
 # Resolve or reject a settled waiter (unlinked by the scan, its announces
 # withdrawn). The collects run non-blocking — the scan proved terminal —
 # and a raised condition becomes the rejection: the same classed
-# condition the sync verb raises, index fields included. The task kind's
-# settle collect boxes every failure (no handler frame per task); the
-# collective forms keep the one tryCatch per collection.
+# condition the sync verb raises, index fields included. The task kind
+# resolves/rejects the scan's batch-collected `value` (a mizu_caught box
+# rejects), falling back to the settle collect — every failure boxed, no
+# handler frame per task — only when none was preset (the call-site
+# settle of an already-terminal task, never scanned); the collective
+# forms keep the one tryCatch per collection.
 settle_waiter <- function(w) {
   cancel_timer(w)
   kind <- w[["kind"]]
   if (kind == "task") {
-    v <- .Call(mizu_pool_collect_settle, w[["tasks"]][[1L]])
+    v <- if (exists("value", envir = w, inherits = FALSE)) {
+      w[["value"]]
+    } else {
+      .Call(mizu_pool_collect_settle, w[["tasks"]][[1L]])
+    }
     if (inherits(v, "mizu_caught")) {
       w[["reject"]](v[[1L]])
     } else {

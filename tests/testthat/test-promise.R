@@ -827,6 +827,57 @@ test_that("a pool drain over the quantum reschedules and settles every waiter", 
   expect_identical(vapply(os, function(o) o$value, 1L), seq_len(n))
 })
 
+test_that("a burst of task waiters settles across scan batches, values matched", {
+  skip_if_no_promises()
+  p <- pool_pair(max_submitters = 1L, injection_cap = 256L, result_slots = 256L)
+  on.exit(pool_end(p))
+  n <- 2L * 64L + 1L # crosses the scan's 64-entry cap twice
+  ts <- lapply(seq_len(n), function(i) mizu_submit(p[["ctrl"]], i, i = i))
+  os <- lapply(ts, function(t) observe(promises::as.promise(t)))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() all(vapply(os, settled, TRUE)), 30))
+  expect_identical(vapply(os, function(o) o$value, 1L), seq_len(n))
+  expect_identical(.Call(mizu:::mizu_pool_notify_count, p[["ctrl"]]), 0L)
+})
+
+test_that("task and collective waiters settle in one scan batch", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ctrl <- p[["ctrl"]]
+  t1 <- mizu_submit(ctrl, 1L)
+  t2 <- mizu_submit(ctrl, 2L)
+  t3 <- mizu_submit(ctrl, 3L)
+  o1 <- observe(promises::as.promise(t1))
+  o2 <- observe(mizu_collect_all_async(list(t2, t3)))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o1) && settled(o2)))
+  expect_identical(o1$value, 1L)
+  expect_identical(o2$value, list(2L, 3L))
+})
+
+test_that("a lost task's waiter rejects boxed; batch siblings resolve", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  ctrl <- p[["ctrl"]]
+  .Call(mizu:::mizu_pool_exec_fail, p[["wk"]], 2L)
+  t1 <- mizu_submit(ctrl, "lost")
+  o1 <- observe(promises::as.promise(t1))
+  t2 <- mizu_submit(ctrl, "kept")
+  o2 <- observe(promises::as.promise(t2))
+  pool_step(p) # t1: the LOST publish (test-pool-task.R's exec seam)
+  .Call(mizu:::mizu_pool_exec_fail, p[["wk"]], 0L)
+  pool_step(p) # t2: ordinary value
+  expect_true(pump_until(function() settled(o1) && settled(o2)))
+  expect_s3_class(o1$error, "mizu_error_task_lost")
+  expect_identical(o2$value, "kept")
+})
+
 test_that("a timed-out collection releases its tasks for re-enrollment", {
   skip_if_no_promises()
   p <- pool_pair()

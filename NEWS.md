@@ -2,6 +2,7 @@
 
 * Fixes `mizu_send()` of an Arrow table failing with "attempt to apply non-function" once a `mizu_map()` result had been collected in the session (#19).
 * Faster sends of large payloads and of Arrow tables with missing values, and faster first reads of large zero-copy views on Linux.
+* Faster resolution of pool task promises with `mizu_collect_async()` and `as.promise()`, particularly when many tasks are awaiting collection.
 
 # mizu 0.1.1
 
