@@ -18,8 +18,9 @@
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   result had been collected in the session
   ([\#19](https://github.com/shikokuchuo/mizu/issues/19)).
-- Faster sends of large payloads and of Arrow tables with missing
-  values, and faster first reads of large zero-copy views on Linux.
+- Faster sends of large payloads and of Arrow tables with scattered
+  missing values or factor columns, and faster first reads of large
+  zero-copy views on Linux.
 - Faster resolution of pool task promises with
   [`mizu_collect_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
   and
