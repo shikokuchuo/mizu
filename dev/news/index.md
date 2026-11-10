@@ -21,6 +21,8 @@
 - Faster sends of large payloads and of Arrow tables with missing values
   or factor columns, and faster first reads of large zero-copy views on
   Linux.
+- Faster by-value sends of Arrow tables, including nested tables and
+  sends that cannot use a shared-memory frame region.
 - Faster resolution of pool task promises with
   [`mizu_collect_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_collect_all_async.md)
   and

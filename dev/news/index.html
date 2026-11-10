@@ -59,6 +59,7 @@
 <li>Faster message delivery for the async channel verbs (<code><a href="../reference/mizu_recv_async.html">mizu_recv_async()</a></code>, <code><a href="../reference/mizu_recv_async.html">mizu_recv_batch_async()</a></code>, <code><a href="../reference/mizu_recv_async.html">mizu_recv_handler()</a></code>).</li>
 <li>Fixes <code><a href="../reference/mizu_send.html">mizu_send()</a></code> of an Arrow table failing with “attempt to apply non-function” once a <code><a href="../reference/mizu_map.html">mizu_map()</a></code> result had been collected in the session (<a href="https://github.com/shikokuchuo/mizu/issues/19" class="external-link">#19</a>).</li>
 <li>Faster sends of large payloads and of Arrow tables with missing values or factor columns, and faster first reads of large zero-copy views on Linux.</li>
+<li>Faster by-value sends of Arrow tables, including nested tables and sends that cannot use a shared-memory frame region.</li>
 <li>Faster resolution of pool task promises with <code><a href="../reference/mizu_collect_all_async.html">mizu_collect_async()</a></code> and <code><a href="https://rstudio.github.io/promises/reference/is.promise.html" class="external-link">as.promise()</a></code>, particularly when many tasks are awaiting collection.</li>
 </ul></div>
     <div class="section level2">
