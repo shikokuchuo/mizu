@@ -2,6 +2,7 @@ test_that("arrow staging works after a map collect caches the namespace", {
   # Issue 19: map_collect_fn() sets MIZU_PRIV_MIZU_NS without the Arrow
   # helpers; the arrow_ns() guard must not treat that slot as its own.
   # Runs first in the suite, before any Arrow send populates the cache.
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   fake <- structure(new.env(), class = "mizu_map")
   try(mizu_collect(fake, 0), silent = TRUE)
@@ -1187,17 +1188,24 @@ test_that("an over-budget stream writes the table directly by value", {
   # past the slot's inline budget but below the zc floor, so the payload
   # reaches the codec tier (a bigger vector stages SHM_VEC ahead of it)
   v <- runif(200)
+  b <- arrow::arrow_table(
+    x = arrow::Array$create(list(1:2, 3L, 4:6)),
+    o = ordered(c("a", "b", "a"), levels = c("a", "b"))
+  )
   t <- mizu_submit(
     p$ctrl,
-    list(.Call(mizu:::mizu_zc_view_check, a), a, v),
+    list(.Call(mizu:::mizu_zc_view_check, a), a, b, v),
     a = m$tab,
+    b = b,
     v = v
   )
   pool_step(p)
   out <- mizu_collect(t, 5)
   expect_false(out[[1L]])
   expect_identical(out[[2L]], m$want)
-  expect_identical(out[[3L]], v)
+  expect_identical(as.list(out[[3L]]$x), list(1:2, 3L, 4:6))
+  expect_identical(out[[3L]]$o, ordered(c("a", "b", "a"), levels = c("a", "b")))
+  expect_identical(out[[4L]], v)
 })
 
 test_that("a nested table crosses a channel as a frame leaf", {
@@ -1951,6 +1959,54 @@ test_that("unknown null counts and string-view columns cross", {
   a <- nanoarrow::as_nanoarrow_array(s, schema = nanoarrow::na_string_view())
   mizu_send(p$host, arrow_one_col_stream(nanoarrow::na_string_view(), a))
   expect_identical(mizu_recv(p$peer, 5)[[1L]], s)
+})
+
+test_that("sliced multi-batch validity and unknown null counts cross exact", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  check <- function(lens, offs) {
+    batches <- vector("list", 4L)
+    want <- integer()
+    for (b in seq_len(3L)) {
+      x <- seq_len(offs[b] + lens[b])
+      if (b == 2L) {
+        a <- nanoarrow::as_nanoarrow_array(x, schema = nanoarrow::na_int32())
+        a$buffers[[1L]] <- rep(as.raw(0xff), ceiling(length(x) / 8))
+      } else {
+        x[seq(offs[b] + 1L, offs[b] + lens[b], by = 2L)] <- NA_integer_
+        a <- nanoarrow::as_nanoarrow_array(x, schema = nanoarrow::na_int32())
+      }
+      batches[[b]] <- nanoarrow::nanoarrow_array_modify(
+        a,
+        list(offset = offs[b], length = lens[b], null_count = -1),
+        validate = FALSE
+      )
+      want <- c(want, x[offs[b] + seq_len(lens[b])])
+    }
+    x <- rep(NA_integer_, 9000L)
+    batches[[4L]] <- nanoarrow::nanoarrow_array_modify(
+      nanoarrow::as_nanoarrow_array(x, schema = nanoarrow::na_int32()),
+      list(null_count = -1),
+      validate = FALSE
+    )
+    want <- c(want, x)
+    p <- channel_pair()
+    on.exit(channel_end(p))
+    mizu_send(p$host, arrow_one_col_batches(nanoarrow::na_int32(), batches))
+    out <- mizu_recv(p$peer, 5)
+    back <- arrow::as_arrow_table(mizu_as_arrow(out))$v
+    expect_identical(back$null_count, sum(is.na(want)))
+    expect_identical(
+      back$cast(arrow::utf8())$as_vector(),
+      as.character(want)
+    )
+    expect_identical(out$v, want)
+    rm(out, back)
+    invisible(gc())
+  }
+  check(c(131L, 64L, 197L), c(3L, 0L, 13L))
+  check(c(131L, 64L, 197L), c(8L, 11L, 3L))
+  check(c(63L, 2L, 300L), c(3L, 6L, 9L))
 })
 
 test_that("float16 specials cross exactly", {

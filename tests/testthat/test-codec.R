@@ -359,6 +359,9 @@ test_that("a pre-encoded interop leaf round-trips and validates its span", {
   bad <- b
   bad[11L] <- as.raw(0L)
   expect_error(.Call(mizu:::mizu_codec_read_call, bad))
+  ix <- .Call(mizu:::mizu_interop_write_call, 1L)
+  bad <- c(as.raw(0x52), as.raw(0x29), u64(length(ix)), ix)
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
   bad <- c(b, raw(1L))
   expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
   deep <- c(
