@@ -62,24 +62,19 @@
    declines to write and the caller re-frames through R_Serialize,
    exactly as before.
 
-   The one addition to the subset above, riding the mizu_frame_tier entry
-   rather than the plain pass: an ArrowTabular nested in the payload
-   crosses as a frame leaf — the SC_FRAME tag (0x28 = SC_HASTAG | SC_VEC,
-   a byte today's plain writer can never emit, since SC_HASTAG is emitted
-   only on SC_LIST/SC_LANG chain nodes, and one a stale reader rejects
-   loudly through its flag validation), a u8 name length, and the staged
-   frame region's name. The leaf is sized at the 'I' writer's
-   MIZU_IX_ZC_RESERVE bound in the plan walks, the actual write never
-   exceeding it. A stream carrying the leaf is not self-contained: its
-   header stamps aux = 0 in place of the keeperless claim, the frame
-   checkout's retain riding the handle's retain table like a SHM_VEC
-   stage's. At most one leaf per payload (the core's single-checkout
-   rule); every other table converts to its value and rides the ordinary
-   nodes. The resolve is mizu_view_resolve_id — the one path behind the
-   serialize consumer and the 'I' ref leaf — so the reader needs no new
-   view export and every consumer of a codec stream (the pool collect,
-   the channel recv, the worker task decode) covers the leaf through
-   scr_body.
+   The additions to the subset above ride the mizu_frame_tier entry rather
+   than the plain pass. One past-gate ArrowTabular can cross as SC_FRAME
+   (0x28 = SC_HASTAG | SC_VEC), a u8 name length and the staged region name.
+   A stream carrying it is not self-contained: aux = 0 replaces the
+   keeperless claim and the checkout rides the retain table. At most one such
+   leaf exists per payload (the core's single-checkout rule). Every other
+   frameable table crosses as SC_IX (0x29 = SC_HASTAG | SC_EXPR), a u64 byte
+   length and one complete 'I' stream written straight off the Arrow buffers.
+   Both tags are bytes the plain writer cannot emit and a stale reader rejects
+   through flag validation. SC_FRAME resolves through mizu_view_resolve_id;
+   SC_IX reads through mizu_interop_read, so every codec consumer covers both
+   through scr_body. Tables the core cannot open keep the nanoarrow conversion
+   and ride the ordinary nodes.
 
    Faithfulness: values, types, attributes (order included), and the
    object bit (via the class attribute, as R's own setAttrib maintains
@@ -118,6 +113,7 @@ enum {
    validation. The reader dispatches on one full-byte compare ahead of the
    nibble mask. */
 #define SC_FRAME (SC_HASTAG | SC_VEC)
+#define SC_IX    (SC_HASTAG | SC_EXPR)
 /* Closure environment reference kinds (the byte after an SC_CLOS tag):
    global / base / empty by kind, a package namespace by name — the
    by-reference discipline of R's own serializer, the only environments
@@ -136,17 +132,16 @@ enum { SC_ENV_GLOBAL = 0, SC_ENV_BASE, SC_ENV_EMPTY, SC_ENV_NS };
    NULL on the plain walk — zero per-node cost on every existing caller).
    Record mode detects the ArrowTabular nodes and counts each occurrence
    at the leaf reserve; write mode identity-matches against the recorded
-   candidates — the frame node emits the leaf, every other walks its
-   anchored by-value form. cand borrows into the staged tree; anchor is
-   the one PROTECTed VECSXP carrying the per-candidate values (R_NilValue
-   for the frame) and, in its last slot, the frame's open handle extptr.
-   Duplicate occurrences of one table dedupe to one candidate (one pull —
-   a RecordBatchReader is consumed by pulling) with occ counting them, so
-   the sizing arithmetic reconciles occurrence-for-occurrence. depth is
-   the candidate's deepest occurrence: a converted value is sized at the
-   depth its deepest write runs at, so a table nested past the depth
-   bound declines to the serialize fallback instead of failing the write
-   walk mid-stream. */
+   candidates — the frame node emits its region leaf, a pre-encoded candidate
+   splices its 'I' bytes, and a converted candidate walks its anchored value.
+   cand borrows into the staged tree; anchor is the one PROTECTed VECSXP
+   carrying the per-candidate representation and, in its last slot, the
+   frame's open handle extptr. ix_size distinguishes pre-encoded bytes from a
+   converted raw vector. Duplicate occurrences dedupe to one candidate (one
+   pull and one conversion) with occ counting them, so the sizing arithmetic
+   reconciles occurrence-for-occurrence. depth is the candidate's deepest
+   occurrence: a converted value is sized there so a table nested past the
+   depth bound declines instead of failing the write walk mid-stream. */
 #define MIZU_FRAME_MAX_CAND 16            /* the fold's candidate cap */
 typedef struct {
   int mode;                          /* 0 record (count-only), 1 write */
@@ -154,7 +149,9 @@ typedef struct {
   SEXP cand[MIZU_FRAME_MAX_CAND];
   int occ[MIZU_FRAME_MAX_CAND];
   unsigned depth[MIZU_FRAME_MAX_CAND];
+  size_t ix_size[MIZU_FRAME_MAX_CAND]; /* 0 = converted, else 'I' bytes */
   int ncand, frame;                  /* frame = -1: by-value */
+  mizu_arrow_warn warn;              /* the pre-encoded candidates, total */
   unsigned char name[MIZU_NAME_MAX]; /* the staged region (write mode) */
   uint32_t name_len;
 } mizu_frameplan;
@@ -379,6 +376,10 @@ static void scw_node(mizu_scw *w, SEXP x, unsigned depth) {
             scw_u8(w, SC_FRAME);
             scw_u8(w, fp->name_len);
             scw_bytes(w, fp->name, fp->name_len);
+          } else if (fp->ix_size[i] != 0) {
+            scw_u8(w, SC_IX);
+            scw_u64(w, (uint64_t) fp->ix_size[i]);
+            scw_bytes(w, RAW(VECTOR_ELT(fp->anchor, i)), fp->ix_size[i]);
           } else {
             scw_node(w, VECTOR_ELT(fp->anchor, i), depth);
           }
@@ -587,20 +588,24 @@ static size_t frame_walk(unsigned char *dst, size_t limit, SEXP x,
 }
 
 /* The frame-aware codec tier, owning the codec-tier decision for its call
-   sites once the plain pass declined (the hot path never pays for it):
-   an ArrowTabular nested in the payload stages as one MIZL frame region
-   and crosses in the stream as a frame leaf. Proof before any R call,
-   plan before the write (the fold's plan.cand discipline): the record
-   walk proves the whole tree in-subset ahead of any stream pull — the
-   pull consumes a RecordBatchReader, and the serialize fallback must not
-   ship a drained one. First-past-the-gate selection: the first
-   table whose frame span passes the gate is the frame (its by-value size
-   would cost a conversion to learn, and a past-gate table's stream
-   exceeds the budget on its own in all but a string-heavy corner — the
-   fold's remainder-fit rule and the gate coincide); every other table
-   converts. Stage FIRST, ahead of any stream byte — a decline converts
-   the frame too, never a partial stream, never an orphaned checkout (the
-   core rolls back an uncommitted checkout at the next verb). */
+   sites once the plain pass declined (the hot path never pays for it). Proof
+   before any R call: the record walk proves the whole tree in-subset ahead of
+   any consuming stream pull. The first past-gate frame is the one region
+   candidate; every other frameable table is pre-encoded once as a complete
+   'I' value. A later table the core cannot open keeps the nanoarrow
+   conversion. The region stages ahead of the final stream write; a decline
+   takes the same pre-encoded form, never a partial stream or a second
+   checkout. */
+typedef struct {
+  SEXP x;
+  mizu_frameplan *plan;
+} frame_write_ctx;
+
+static size_t frame_write_bytes(void *ctx, unsigned char *dst, size_t limit) {
+  frame_write_ctx *w = (frame_write_ctx *) ctx;
+  return frame_walk(dst, limit, w->x, w->plan, 0);
+}
+
 int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
                     uint32_t inline_max, SEXP x, mizu_handle *h) {
   mizu_frameplan plan;
@@ -609,22 +614,22 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
   plan.ncand = 0;
   plan.frame = -1;
   plan.name_len = 0;
+  plan.warn = (mizu_arrow_warn) { 0, 0, 0 };
   /* 1. the record walk: count-only, every table counted as the reserve.
      A decline is the plain pass's non-table node (or past the candidate
      cap): the serialize fallback runs with nothing consumed. */
   size_t total = frame_walk(NULL, 0, x, &plan, 0);
   if (total == 0 || plan.ncand == 0) return 0;
 
-  /* 2. pull / open / convert in pre-order between the walks; every fresh
-     value anchors in the one PROTECTed vector, the frame's pulled-state
-     extptr in the last slot (its finalizer releases the pull either
-     way). */
+  /* 2. pull / open / pre-encode in pre-order. Every representation anchors
+     in one PROTECTed vector; a selected frame's pulled-state extptr rides
+     the last slot, its finalizer the longjmp backstop. */
   plan.anchor = PROTECT(Rf_allocVector(VECSXP, plan.ncand + 1));
   const size_t gate = mizu_zc_gate(inline_max);
   for (int i = 0; i < plan.ncand; i++) {
     SEXP xp = PROTECT(mizu_arrow_pull(plan.cand[i]));
+    plan.ix_size[i] = 0;
     if (mizu_arrow_nonstruct(xp)) {
-      /* a non-struct stream converts on the unconsumed stream */
       SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_value(xp));
       UNPROTECT(1);
       continue;
@@ -638,37 +643,42 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
         UNPROTECT(1);
         continue;
       }
-      mizu_arrow_close_held(xp);
+    } else {
+      size_t fsize;
+      if (mizu_arrow_try_open_r(xp, MIZU_R_CAPS, &fsize) != 0) {
+        /* an unsupported later table retains the conversion fallback */
+        SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_value(xp));
+        UNPROTECT(1);
+        continue;
+      }
     }
-    SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_value(xp));
+    SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_ix_value(xp, &plan.warn));
+    plan.ix_size[i] = (size_t) XLENGTH(VECTOR_ELT(plan.anchor, i));
     UNPROTECT(1);
   }
 
-  /* 3. size each converted value individually at its candidate's deepest
-     occurrence (the encoding is context-free — no ref table — so one
-     count-only write per value replaces a second tree walk, and the
-     depth guard's verdict there covers every shallower occurrence), the
-     slot's reserve coming out of the record walk's total
-     occurrence-for-occurrence. The write-mode walk carries any lazy
-     ALTREP left inside the converted values (the bail materializes the
-     top level; a list column's elements can still arrive lazy). */
+  /* 3. replace each reserve occurrence-for-occurrence. A converted value is
+     sized at its deepest occurrence (its encoding is context-free); an 'I'
+     leaf needs no recursive walk of its own. */
   plan.mode = 1;
   for (int i = 0; i < plan.ncand; i++) {
     if (i == plan.frame) continue;
+    total -= (size_t) plan.occ[i] * MIZU_IX_ZC_RESERVE;
+    if (plan.ix_size[i] != 0) {
+      total += (size_t) plan.occ[i] * (9 + plan.ix_size[i]);
+      continue;
+    }
     size_t vn = frame_walk(NULL, 0, VECTOR_ELT(plan.anchor, i), &plan,
                            plan.depth[i]);
     if (vn == 0) {
-      /* nested past the depth bound — the caller's fallback ships the
-         original tree */
       UNPROTECT(1);
       return 0;
     }
-    total -= (size_t) plan.occ[i] * MIZU_IX_ZC_RESERVE;
     total += (size_t) plan.occ[i] * (vn - 1);
   }
 
-  /* 4. the frame branch: the stream carrying the leaf must fit INLINE —
-     a SHM_RAW spill would need a second checkout */
+  /* 4. the region leaf's containing stream must fit INLINE — a spill would
+     need a second checkout */
   if (plan.frame >= 0 && total <= (size_t) inline_max) {
     mizu_arrow_warn warn = { 0, 0, 0 };
     SEXP xp = VECTOR_ELT(plan.anchor, plan.ncand);
@@ -682,55 +692,29 @@ int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
       hdr->len = (uint32_t) n;
       hdr->aux = 0;      /* the checkout retains — no keeperless claim */
       UNPROTECT(1);
-      /* the conversion counts raise after the write half completed */
+      mizu_arrow_warn_raise(&plan.warn);
       mizu_arrow_warn_raise(&warn);
       return 1;
     }
-    /* a stage decline (a churn race) converts below, like the skip */
   }
   if (plan.frame >= 0) {
-    /* the frame is unstaged — the remainder over budget above, or a stage
-       decline: the held batches convert and the whole payload crosses by
-       value — never a partial stream, never an orphaned checkout (the
-       core rolls back an uncommitted checkout at the next verb).
-       mizu_arrow_value's closed-core-handle precondition is discharged by
-       mizu_arrow_stage_held, which closes the handle on either outcome */
+    /* over budget or a stage decline: the still-open handle writes the 'I'
+       form directly, and the whole payload stays self-contained */
+    const int i = plan.frame;
     SEXP xp = VECTOR_ELT(plan.anchor, plan.ncand);
-    SET_VECTOR_ELT(plan.anchor, plan.frame, mizu_arrow_value(xp));
-    size_t vn = frame_walk(NULL, 0, VECTOR_ELT(plan.anchor, plan.frame),
-                           &plan, plan.depth[plan.frame]);
-    if (vn == 0) {
-      UNPROTECT(1);
-      return 0;
-    }
-    total -= (size_t) plan.occ[plan.frame] * MIZU_IX_ZC_RESERVE;
-    total += (size_t) plan.occ[plan.frame] * (vn - 1);
+    SET_VECTOR_ELT(plan.anchor, i, mizu_arrow_ix_value(xp, &plan.warn));
+    plan.ix_size[i] = (size_t) XLENGTH(VECTOR_ELT(plan.anchor, i));
+    total -= (size_t) plan.occ[i] * MIZU_IX_ZC_RESERVE;
+    total += (size_t) plan.occ[i] * (9 + plan.ix_size[i]);
     plan.frame = -1;
   }
 
-  /* 5. by value: inline when the remainder fits, else a SHM_RAW spill
-     (the channel's arena is skipped here — a performance tier, not a
-     correctness one). The write walk is deterministic — a byte-count
-     mismatch is the other spills' raise */
-  if (total <= (size_t) inline_max) {
-    size_t n = frame_walk(payload, inline_max, x, &plan, 0);
-    if (n != total) Rf_error("mizu: codec write mismatch");
-    hdr->kind = MIZU_KIND_INLINE;
-    hdr->len = (uint32_t) n;
-    hdr->aux = MIZU_AUX_F_KEEPERLESS;
-    UNPROTECT(1);
-    return 1;
-  }
-  mizu_stage_reap(h);
-  mizu_shm *shm = mizu_spill_get_raise(h, total);
-  size_t n = frame_walk((unsigned char *) shm->addr, shm->size, x, &plan, 0);
-  if (n != total) Rf_error("mizu: codec write mismatch");
-  hdr->kind = MIZU_KIND_SHM_RAW;
-  hdr->len = (uint32_t) shm->name_len;
-  hdr->aux = (uint64_t) total;
-  memcpy(payload, shm->name, shm->name_len);
-  mizu_stage_retain(h, shm);
+  /* 5. by value over the shared copy-tier ladder */
+  frame_write_ctx ctx = { x, &plan };
+  mizu_payload_stage_bytes(hdr, payload, inline_max, total, h,
+                           frame_write_bytes, &ctx);
   UNPROTECT(1);
+  mizu_arrow_warn_raise(&plan.warn);
   return 1;
 }
 
@@ -814,6 +798,9 @@ static void scr_attrs(mizu_scr *r, SEXP x, unsigned depth) {
 }
 
 static SEXP scr_body(mizu_scr *r, uint32_t tag, unsigned depth) {
+  if (depth > MIZU_CODEC_MAXDEPTH)
+    Rf_error("mizu: corrupt payload stream");
+  R_CheckStack();
   if (tag == SC_FRAME) {
     /* the frame leaf: u8 name length, the region name — resolved to the
        list view through the one resolve path (the serialize consumer's
@@ -833,9 +820,21 @@ static SEXP scr_body(mizu_scr *r, uint32_t tag, unsigned depth) {
       Rf_error("mizu: corrupt payload stream");
     return v;
   }
-  if (depth > MIZU_CODEC_MAXDEPTH)
-    Rf_error("mizu: corrupt payload stream");
-  R_CheckStack();
+  if (tag == SC_IX) {
+    /* a complete self-contained 'I' frame, spliced without a codec walk */
+    uint64_t n = scr_u64(r);
+    if (n > (uint64_t) (r->end - r->p))
+      Rf_error("mizu: corrupt payload stream");
+    const unsigned char *ix = r->p;
+    r->p += (size_t) n;
+    SEXP out = PROTECT(mizu_interop_read(ix, (size_t) n));
+    if (TYPEOF(out) != VECSXP || !Rf_inherits(out, "data.frame")) {
+      UNPROTECT(1);
+      Rf_error("mizu: corrupt payload stream");
+    }
+    UNPROTECT(1);
+    return out;
+  }
   uint32_t ty = tag & 0x0f;
   /* flags the writer never produces on these types are corruption */
   if ((tag & SC_HASTAG) && ty != SC_LIST && ty != SC_LANG)

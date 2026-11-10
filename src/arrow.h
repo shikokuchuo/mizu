@@ -18,11 +18,10 @@ int mizu_arrow_check(SEXP x);
 /* Stage x as one MIZL frame region through the core's mizu_arrow_stage,
    or — at or under the size pre-gate (the region-span proxy) — as one 'I'
    stream written straight off the Arrow buffers (the core's
-   mizu_arrow_write_ix) over the INLINE / arena / SHM_RAW tiers. A stage
-   decline (or a non-struct stream) converts the held batches to a value
-   and re-enters through the stage-fn parameter (mizu_r_stage_channel or
-   mizu_r_stage_pool); the writer's declines raise
-   mizu_error_not_portable. caps is the capability word the core's
+   mizu_arrow_write_ix) over the INLINE / arena / SHM_RAW tiers. A region-stage
+   decline takes the same by-value form; only a non-struct stream converts to
+   an R value and re-enters through the stage-fn parameter. The writer's open
+   declines raise mizu_error_not_portable. caps is the capability word the core's
    conjunction gates on: the channel passes the peer's (rh->peer_caps),
    the pool this build's (MIZU_R_CAPS — a task frame is same-language by
    construction). */
@@ -47,22 +46,26 @@ int mizu_arrow_nonstruct(SEXP xp);
    raises not-portable with the core's decline text, as the channel does
    today. */
 void mizu_arrow_open_r(SEXP xp, uint32_t caps, size_t *fsize);
+/* The non-raising form for a nested non-selected candidate: 0 opened,
+   -1 the core's decline (the caller can still convert by value). Allocation
+   failure raises. */
+int mizu_arrow_try_open_r(SEXP xp, uint32_t caps, size_t *fsize);
 /* The by-value form of a pulled candidate: arrow_to_value on a non-struct
-   stream; the held schema and batches moved into fresh nanoarrow extptrs
-   (the ABI move) and re-streamed through arrow_batches_to_value — R calls,
-   fresh, UNPROTECTED. At most once per pull, the core handle closed. */
+   stream; a struct the core cannot frame moves its held schema and batches
+   into fresh nanoarrow extptrs and re-streams through
+   arrow_batches_to_value — R calls, fresh, UNPROTECTED. At most once per
+   pull, the core handle closed. */
 SEXP mizu_arrow_value(SEXP xp);
-/* Close a held handle early (the finalizer frees the struct either way):
-   the convert path's early close — the core's classification state need
-   not wait on the GC. The pulled batches stay held for the bail. */
-void mizu_arrow_close_held(SEXP xp);
+/* One complete 'I' stream off an open struct candidate, as a fresh RAWSXP
+   returned UNPROTECTED. The core handle and pulled batches are released. */
+SEXP mizu_arrow_ix_value(SEXP xp, mizu_arrow_warn *warn);
 /* The stage of an open handle into the stage's single checkout (pure C:
    mizu_arrow_stage, then close; a successful stage releases the pulled
    structs — the frame is self-contained). 0 = staged, name/name_len
    filled, warn the conversion counts, the checkout held; nonzero =
    declined (the caps gate, a churn race, a region failure) with nothing
-   claimed — the handle closed either way, the pull kept, the caller
-   converts. The core's mizu_arrow_stage takes hdr/payload: the extptr
+   claimed — the handle and pull stay open for the caller's by-value write.
+   The core's mizu_arrow_stage takes hdr/payload: the extptr
    struct carries a scratch slot header and name buffer for the call — a
    top-level caller copies the SHM_VEC stamp onto its own hdr/payload, the
    codec's frame leaf reads name/name_len off the scratch and the

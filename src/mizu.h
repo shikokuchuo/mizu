@@ -193,13 +193,13 @@ int mizu_codec_read_task(const unsigned char *buf, size_t len, SEXP *expr,
                          SEXP *args);
 SEXP mizu_empty_args(void);
 /* The frame-aware codec tier (codec.c), called from the two same-language
-   codec sites after the plain pass declined: an ArrowTabular nested in
-   the payload crosses as one frame leaf (the tag, a u8 length, the region
-   name) — at most one per payload, its stream always INLINE (the core's
-   single-checkout rule). 1 = hdr filled (INLINE or SHM_RAW, aux stamped);
-   0 = no ArrowTabular found, past the candidate cap, or the rest of the
-   tree outside the codec subset — the caller's serialize fallback runs,
-   exactly as today and with no Arrow stream consumed. */
+   codec sites after the plain pass declined: one past-gate ArrowTabular can
+   cross as a frame leaf (the tag, a u8 length, the region name) — at most one
+   per payload, its stream always INLINE (the core's single-checkout rule).
+   Every other frameable table crosses as a pre-encoded 'I' value leaf.
+   1 = hdr filled (INLINE, ARENA or SHM_RAW, aux stamped); 0 = no ArrowTabular
+   found, past the candidate cap, or the rest of the tree outside the codec
+   subset — the caller's serialize fallback runs with no Arrow stream consumed. */
 int mizu_frame_tier(mizu_slot_hdr *hdr, unsigned char *payload,
                     uint32_t inline_max, SEXP x, mizu_handle *h);
 
@@ -420,8 +420,20 @@ void mizu_r_pin(mizu_handle *h, void *ctx, SEXP x) MIZU_COLD;
    identifiers (the codec stream is ALTREP-free and pins nothing). */
 void mizu_payload_spill_shm(mizu_slot_hdr *hdr, unsigned char *payload, SEXP x,
                             size_t n, mizu_handle *h, void *ctx);
-void mizu_payload_spill_codec(mizu_slot_hdr *hdr, unsigned char *payload,
-                              SEXP x, size_t n, mizu_handle *h);
+/* A self-contained byte stream over INLINE / arena / SHM_RAW. The writer
+   repeats the sizing pass into each destination and must return n. Inline
+   claims keeperless; the out-of-line tiers retain no pin. */
+typedef size_t (*mizu_payload_write_fn)(void *ctx, unsigned char *dst,
+                                        size_t limit);
+void mizu_payload_stage_bytes(mizu_slot_hdr *hdr, unsigned char *payload,
+                              uint32_t inline_max, size_t n, mizu_handle *h,
+                              mizu_payload_write_fn write, void *ctx);
+void mizu_payload_stage_codec(mizu_slot_hdr *hdr, unsigned char *payload,
+                              uint32_t inline_max, SEXP x, size_t n,
+                              mizu_handle *h);
+void mizu_payload_stage_interop(mizu_slot_hdr *hdr, unsigned char *payload,
+                                uint32_t inline_max, SEXP x, size_t n,
+                                mizu_handle *h, uint32_t caps);
 /* The pool framing (no arena tier): REF, RAWVEC, STR1, INLINE, SHM_VEC, or
    SHM_RAW. ctx is the stage hook's binding ctx. */
 void mizu_payload_stage(mizu_slot_hdr *hdr, unsigned char *payload,
@@ -446,9 +458,6 @@ SEXP mizu_payload_read(const mizu_slot_hdr *hdr, const unsigned char *payload,
    decode (its tag check branches ahead of the 'I' case). */
 SEXP mizu_stream_read(const unsigned char *buf, size_t len,
                       mizu_read_ctx *ctx, int consume_foreign);
-void mizu_payload_spill_interop(mizu_slot_hdr *hdr, unsigned char *payload,
-                                SEXP x, size_t n, mizu_handle *h,
-                                uint32_t caps);
 /* The SHM_RAW spill of a task stream (a pool has no arena): the ordinary
    SHM_RAW retain, no keeperless claim (§4.0). Refs stay on (a REF leaf
    needs no checkout) with no_zc forced — the fresh values cross by

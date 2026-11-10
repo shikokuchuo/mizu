@@ -162,12 +162,24 @@ static void arrow_release_pulled(mizu_arrow_held *hd) {
   }
 }
 
+static void arrow_close_core(mizu_arrow_held *hd) {
+  if (hd->a != NULL) {
+    mizu_arrow_close(hd->a);
+    hd->a = NULL;
+  }
+  free(hd->bp);
+  hd->bp = NULL;
+}
+
+static void arrow_finish_held(mizu_arrow_held *hd) {
+  arrow_close_core(hd);
+  arrow_release_pulled(hd);
+}
+
 static void mizu_arrow_held_finalize(SEXP xp) {
   mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
   if (hd == NULL) return;
-  if (hd->a != NULL) mizu_arrow_close(hd->a);
-  arrow_release_pulled(hd);
-  free(hd->bp);
+  arrow_finish_held(hd);
   free(hd);
   R_ClearExternalPtr(xp);
 }
@@ -190,11 +202,12 @@ SEXP mizu_arrow_pull(SEXP x) {
   nano_gate();
   SEXP stream = PROTECT(arrow_call1(mizu_priv(MIZU_PRIV_FN_AS_STREAM), x));
   ArrowArrayStream *st = (ArrowArrayStream *) R_ExternalPtrAddr(stream);
+  SEXP xp = PROTECT(
+    R_MakeExternalPtr(NULL, Rf_install("mizu_arrow_held"), stream)
+  );
   mizu_arrow_held *hd = (mizu_arrow_held *) calloc(1, sizeof *hd);
   if (hd == NULL) Rf_error("mizu: allocation failure");
-  SEXP xp = PROTECT(
-    R_MakeExternalPtr(hd, Rf_install("mizu_arrow_held"), stream)
-  );
+  R_SetExternalPtrAddr(xp, hd);
   R_RegisterCFinalizerEx(xp, mizu_arrow_held_finalize, TRUE);
   if (st->get_schema(st, &hd->schema) != 0) arrow_stream_raise(st);
   if (hd->schema.format == NULL || strcmp(hd->schema.format, "+s") != 0) {
@@ -274,29 +287,19 @@ static SEXP arrow_plain(SEXP x) {
   return out;
 }
 
-/* The conversion bail's lazies materialized: the bare vector itself, or
-   each ALTREP column of the converted frame (a list column's elements
-   can still arrive lazy — the codec's frame-tier write walk serves them
-   through the region accessors). */
+/* The unsupported-struct bail's lazy top-level columns materialized. A list
+   column's elements can still arrive lazy — the codec's frame-tier write walk
+   serves them through the region accessors. */
 static SEXP arrow_materialize(SEXP x) {
-  const SEXPTYPE ty = TYPEOF(x);
-  if (ALTREP(x)) {
-    if (ty == STRSXP || ty == LGLSXP || ty == INTSXP || ty == REALSXP ||
-        ty == CPLXSXP || ty == RAWSXP)
-      return arrow_plain(x);
-    return x;
-  }
-  if (ty == VECSXP) {
-    for (R_xlen_t i = 0, n = XLENGTH(x); i < n; i++) {
-      SEXP col = VECTOR_ELT(x, i);
-      const SEXPTYPE cty = TYPEOF(col);
-      if (ALTREP(col) &&
-          (cty == STRSXP || cty == LGLSXP || cty == INTSXP ||
-           cty == REALSXP || cty == CPLXSXP || cty == RAWSXP)) {
-        SEXP plain = PROTECT(arrow_plain(col));
-        SET_VECTOR_ELT(x, i, plain);
-        UNPROTECT(1);
-      }
+  for (R_xlen_t i = 0, n = XLENGTH(x); i < n; i++) {
+    SEXP col = VECTOR_ELT(x, i);
+    const SEXPTYPE cty = TYPEOF(col);
+    if (ALTREP(col) &&
+        (cty == STRSXP || cty == LGLSXP || cty == INTSXP ||
+         cty == REALSXP || cty == CPLXSXP || cty == RAWSXP)) {
+      SEXP plain = PROTECT(arrow_plain(col));
+      SET_VECTOR_ELT(x, i, plain);
+      UNPROTECT(1);
     }
   }
   return x;
@@ -360,38 +363,43 @@ NORET static void arrow_open_raise(int rc) {
   mizu_stop_not_portable("the Arrow frame", mizu_last_error_message(), "");
 }
 
+int mizu_arrow_try_open_r(SEXP xp, uint32_t caps, size_t *fsize) {
+  const int rc =
+    arrow_open_into((mizu_arrow_held *) R_ExternalPtrAddr(xp), caps, fsize);
+  if (rc == -2) Rf_error("mizu: allocation failure");
+  return rc;
+}
+
 void mizu_arrow_open_r(SEXP xp, uint32_t caps, size_t *fsize) {
   const int rc =
     arrow_open_into((mizu_arrow_held *) R_ExternalPtrAddr(xp), caps, fsize);
   if (rc != 0) arrow_open_raise(rc);
 }
 
-void mizu_arrow_close_held(SEXP xp) {
+SEXP mizu_arrow_ix_value(SEXP xp, mizu_arrow_warn *warn) {
   mizu_arrow_held *hd = (mizu_arrow_held *) R_ExternalPtrAddr(xp);
-  if (hd->a != NULL) {
-    mizu_arrow_close(hd->a);
-    hd->a = NULL;
+  const size_t n = mizu_arrow_write_ix(hd->a, NULL, warn);
+  SEXP out = PROTECT(Rf_allocVector(RAWSXP, (R_xlen_t) n));
+  if (mizu_arrow_write_ix(hd->a, RAW(out), warn) != n) {
+    UNPROTECT(1);
+    Rf_error("mizu: Arrow write mismatch");
   }
-  free(hd->bp);
-  hd->bp = NULL;
+  arrow_finish_held(hd);
+  UNPROTECT(1);
+  return out;
 }
 
-/* The stage over a held handle, closed either way: 0 staged, the pulled
-   structs released with the close (the frame is self-contained off the
-   Arrow buffers), the (hdr, payload) stamp left in the struct's scratch;
-   -1 declined (the gate or the reservation), the pull kept for the
-   caller's conversion bail. */
+/* The stage over a held handle: 0 staged, the core handle and pulled structs
+   released (the frame is self-contained off the Arrow buffers), the
+   (hdr, payload) stamp left in the struct's scratch; -1 declined (the gate or
+   the reservation), both kept for the caller's direct by-value write. */
 static int arrow_stage_held(mizu_arrow_held *hd, mizu_handle *h,
                             unsigned char *name, uint32_t *name_len,
                             mizu_arrow_warn *warn) {
   const int staged =
     mizu_arrow_stage(h, hd->a, &hd->hdr, hd->name, warn) == MIZU_OK;
-  mizu_arrow_close(hd->a);
-  hd->a = NULL;
-  free(hd->bp);
-  hd->bp = NULL;
   if (!staged) return -1;
-  arrow_release_pulled(hd);
+  arrow_finish_held(hd);
   if (name != NULL) memcpy(name, hd->name, hd->hdr.len);
   if (name_len != NULL) *name_len = (uint32_t) hd->hdr.len;
   return 0;
@@ -422,6 +430,28 @@ void mizu_arrow_warn_raise(const mizu_arrow_warn *warn) {
     );
 }
 
+typedef struct {
+  mizu_arrow *a;
+  mizu_arrow_warn *warn;
+} arrow_ix_writer;
+
+static size_t arrow_ix_write(void *ctx, unsigned char *dst, size_t limit) {
+  (void) limit;                 /* the sizing pass proved the destination */
+  arrow_ix_writer *w = (arrow_ix_writer *) ctx;
+  return mizu_arrow_write_ix(w->a, dst, w->warn);
+}
+
+/* The self-contained by-value form, straight off the held Arrow buffers. */
+static void arrow_stage_ix(mizu_arrow_held *hd, mizu_slot_hdr *hdr,
+                           unsigned char *payload, uint32_t inline_max,
+                           mizu_handle *h, mizu_arrow_warn *warn) {
+  const size_t n = mizu_arrow_write_ix(hd->a, NULL, warn);
+  arrow_ix_writer writer = { hd->a, warn };
+  mizu_payload_stage_bytes(hdr, payload, inline_max, n, h, arrow_ix_write,
+                           &writer);
+  arrow_finish_held(hd);
+}
+
 void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, mizu_handle *h, void *ctx,
                         uint32_t caps, mizu_stage_fn reenter) {
@@ -438,80 +468,21 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
     UNPROTECT(2);
     return;
   }
-  const size_t gate =
-    inline_max > MIZU_ZC_FLOOR ? (size_t) inline_max : MIZU_ZC_FLOOR;
-  /* the pulled structs ride the extptr: the conversion bail's R calls run
-     while batches are C-owned, so the finalizer is the longjmp backstop
-     on this path too */
+  const size_t gate = mizu_zc_gate(inline_max);
+  /* the pulled structs ride the extptr: the finalizer is the longjmp
+     backstop for every R allocation and transport raise */
   size_t fsize;
   const int orc = arrow_open_into(hd, caps, &fsize);
   if (orc != 0) arrow_open_raise(orc);
-  if (fsize <= gate) {
-    /* at or under the region tier: one 'I' stream straight off the Arrow
-       buffers (the core's inline frame form, dst NULL sizing) — inline
-       within the budget with the keeperless claim (the stream commits no
-       retain-table entry of its own), else the arena copy or a SHM_RAW
-       spill per the tier machinery. No convert back to a value, no
-       serialize pass; the same-language read paths dispatch the stream on
-       its 0x49 first byte (mizu_stream_read), the foreign reader always
-       did. */
-    mizu_arrow_warn warn = { 0, 0, 0 };
-    const size_t n = mizu_arrow_write_ix(hd->a, NULL, &warn);
-    if (n <= (size_t) inline_max) {
-      mizu_arrow_write_ix(hd->a, payload, &warn);
-      hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) n;
-      hdr->aux = MIZU_AUX_F_KEEPERLESS;
-    } else {
-      uint64_t off;
-      unsigned char *chunk =
-        mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off);
-      if (chunk != NULL) {
-        mizu_arrow_write_ix(hd->a, chunk, &warn);
-        hdr->kind = MIZU_KIND_ARENA;
-        hdr->len = 0;
-        hdr->aux = off;
-        uint64_t n64 = (uint64_t) n;
-        memcpy(payload, &n64, sizeof(n64));
-      } else {
-        /* the pool has no arena (and a full channel arena declines): the
-           SHM_RAW spill, the region alone retained — the stream is
-           self-contained */
-        mizu_stage_reap(h);
-        mizu_shm *shm = mizu_spill_get_raise(h, n);
-        mizu_arrow_write_ix(hd->a, (unsigned char *) shm->addr, &warn);
-        hdr->kind = MIZU_KIND_SHM_RAW;
-        hdr->len = (uint32_t) shm->name_len;
-        hdr->aux = (uint64_t) n;
-        memcpy(payload, shm->name, shm->name_len);
-        mizu_stage_retain(h, shm);
-      }
-    }
-    mizu_arrow_close(hd->a);
-    hd->a = NULL;
-    free(hd->bp);
-    hd->bp = NULL;
-    arrow_release_pulled(hd);
-    UNPROTECT(1);
-    /* the conversion counts raise after the write half completed (the
-       MIZL path's discipline below) */
-    mizu_arrow_warn_raise(&warn);
-    return;
-  }
   mizu_arrow_warn warn = { 0, 0, 0 };
-  if (arrow_stage_held(hd, h, NULL, NULL, &warn) != 0) {
-    /* declined by the stage's caps/churn gate or a failed reservation:
-       the held batches convert and re-enter as an ordinary data.frame */
-    SEXP value = PROTECT(mizu_arrow_value(xp));
-    mizu_qc_scope temp;
-    mizu_stage_temp_begin(&temp);
-    reenter((void *) value, hdr, payload, inline_max, h, ctx);
-    mizu_stage_temp_end(&temp);
-    UNPROTECT(2);
-    return;
+  if (fsize > gate && arrow_stage_held(hd, h, NULL, NULL, &warn) == 0) {
+    *hdr = hd->hdr;
+    memcpy(payload, hd->name, hd->hdr.len);
+  } else {
+    /* below the region gate, or declined by its caps/churn/reservation:
+       one complete 'I' stream over the shared copy-tier ladder */
+    arrow_stage_ix(hd, hdr, payload, inline_max, h, &warn);
   }
-  *hdr = hd->hdr;
-  memcpy(payload, hd->name, hd->hdr.len);
   UNPROTECT(1);
   /* the conversion counts raise after the write half completed: a handler
      longjmp abandons the stage here with the unpublished reservation
@@ -566,7 +537,7 @@ typedef struct {
   R_xlen_t i;              /* the column index in x */
   mizu_shm *region;        /* resolved at the acquire; NULL = declined */
   char name[MIZU_NAME_MAX];
-  int kind;                /* 1..4; zeroed by a failed acquire */
+  int kind;                /* ARROW_BORROW_*; zeroed by a failed acquire */
   int64_t data_off;        /* region-relative: element data / the MIZS block */
   int64_t length;
   int64_t voff, vcount;    /* the flattened validity pair (fixed width) */
@@ -682,7 +653,7 @@ typedef struct mizu_arrow_owned_s {
 
 typedef struct {
   mizu_shm **regions;        /* open_view mappings + counted loans */
-  size_t nregions, cap;
+  size_t nregions;
   long pid;
   _Atomic size_t refs;
   mizu_arrow_owned *owned;   /* sentinel-derived validity bitmaps */
@@ -802,7 +773,6 @@ SEXP mizu_arrow_export_call(SEXP x, SEXP arrays) {
     Rf_error("mizu: allocation failure");
   }
   atomic_init(&hd->refs, 0);
-  hd->cap = (size_t) nb;
   hd->pid = mizu_self_pid();
   for (int j = 0; j < nb; j++) {
     if (plans[j].kind == 0) continue;

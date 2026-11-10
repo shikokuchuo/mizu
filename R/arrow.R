@@ -1,9 +1,11 @@
 # The Arrow send path's R half (called from src/arrow.c): nanoarrow is the
 # hub. The pull (mizu_arrow_pull) keeps the one R call
 # (as_nanoarrow_array_stream — arrow's own S3 export) and reads the schema
-# and batches off the stream extptr in C; the bails below convert the held
-# state back to a value. Neither bail ever re-streams x: a released stream
-# errors on a re-read, a consumed-but-unreleased one yields zero batches,
+# and batches off the stream extptr in C. Struct streams the core can frame
+# write straight off those batches; only non-struct streams and unsupported
+# nested tables convert through the bails below. Neither bail re-streams x: a
+# released stream errors on a re-read, a consumed-but-unreleased one yields
+# zero batches,
 # and a re-streamed RecordBatchReader likewise (nanoarrow 0.9.0 behaviour)
 # — the bails hold the pulled batches or the unconsumed stream.
 
@@ -99,7 +101,7 @@ arrow_to_value <- function(stream) {
   out
 }
 
-# The post-collect bails: the held batches stream back as a struct — a
+# The unsupported-struct bail: the held batches stream back as a struct — a
 # data.frame. The C pull moves bare batch structs into fresh extptrs (the
 # ABI move), so each takes its schema association here. String dictionary
 # columns convert flat, then rebuild as the factor they encode off the
@@ -108,8 +110,7 @@ arrow_to_value <- function(stream) {
 # all). nanoarrow 0.9.0's validation rejects ARROW_FLAG_DICTIONARY_ORDERED
 # outright (its "only relevant for dictionaries" error, on a dictionary),
 # so an ordered dictionary's bit strips for the conversion and the rebuilt
-# factor re-marks ordered — fidelity kept when a *different* column
-# declines the frame.
+# factor re-marks ordered — fidelity kept when a column declines the frame.
 arrow_batches_to_value <- function(schema, batches) {
   ns <- arrow_ns()
   ch <- schema$children
@@ -153,11 +154,11 @@ arrow_batches_to_value <- function(schema, batches) {
 #' `nanoarrow_array_stream`, ready for `nanoarrow::convert_array_stream()`,
 #' `arrow::as_arrow_table()`, or any other Arrow C Data Interface consumer.
 #'
-#' Frames arrive over channels and pools alike. Arrow data sent at top level is
-#' staged as one frame region, and Arrow data nested inside a payload (a list
-#' element, a task argument, the task expression itself) crosses by reference,
-#' so the received object holds a view in place of the table. A collected pool
-#' result is that view, and this function converts it back explicitly. One
+#' Frames arrive over channels and pools alike. Top-level Arrow data past the
+#' zero-copy floor stages as one frame region; smaller data and region-stage
+#' declines arrive as an ordinary data frame. One nested table (a list element,
+#' a task argument, or the task expression itself) can cross by reference, with
+#' the others arriving as data frames. This function accepts either form. One
 #' caveat on sends: the conversion warnings (a uint64 past 2^63 - 1 becoming
 #' `NA`, an int32 or int64 minimum reading as `NA`) fire at send over a channel,
 #' but at a pool publish they fire on the worker and the submitter never sees

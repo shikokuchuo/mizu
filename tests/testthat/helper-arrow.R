@@ -31,6 +31,22 @@ arrow_export <- function(x) {
   list(kinds = .Call(mizu:::mizu_arrow_export, x, arrays), arrays = arrays)
 }
 
+# A one-column frame stream assembled from independently sliced batches.
+arrow_one_col_batches <- function(schema, arrays, name = "v") {
+  sch <- nanoarrow::na_struct(setNames(list(schema), name))
+  parents <- lapply(arrays, function(array) {
+    parent <- nanoarrow::nanoarrow_array_init(sch)
+    parent <- nanoarrow::nanoarrow_array_modify(
+      parent,
+      list(children = list(array), length = array$length),
+      validate = FALSE
+    )
+    nanoarrow::nanoarrow_array_set_schema(parent, sch, validate = FALSE)
+    parent
+  })
+  nanoarrow::basic_array_stream(parents, schema = sch, validate = FALSE)
+}
+
 # Read a filled borrowed array back as an R vector.
 array_value <- function(array, schema) {
   nanoarrow::nanoarrow_array_set_schema(array, schema)
