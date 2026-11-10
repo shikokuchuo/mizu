@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="7b4231101bac6e3b4c7908e593a2cb1b0d58e566"  # libmizu: batch collect_terminal, spill large slot (#4)
+PIN="e3099f2f5a6fdfbef4ee0c20f7e15de9cfd1af70"  # libmizu: Arrow conversion kernels (#5)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"
