@@ -1098,7 +1098,7 @@ test_that("a table spliced as the task expression round-trips by reference", {
   expect_identical(bitwAnd(rc[2L], 1L), 1L) # REFHELD: the reference path
 })
 
-test_that("a nested table arg crosses as a frame leaf; a second converts", {
+test_that("a nested table arg crosses as a frame leaf; a second is pre-encoded", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
@@ -1178,7 +1178,7 @@ test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
   expect_null(rdr$read_next_batch())
 })
 
-test_that("an over-budget stream converts the table and still crosses", {
+test_that("an over-budget stream writes the table directly by value", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- pool_pair()
@@ -1196,11 +1196,7 @@ test_that("an over-budget stream converts the table and still crosses", {
   pool_step(p)
   out <- mizu_collect(t, 5)
   expect_false(out[[1L]])
-  # the by-value conversion lands uint8 as integer (R raw has no NA),
-  # where the frame region's landing is raw
-  want <- m$want
-  want$u8 <- as.integer(want$u8)
-  expect_identical(out[[2L]], want)
+  expect_identical(out[[2L]], m$want)
   expect_identical(out[[3L]], v)
 })
 
@@ -1259,7 +1255,7 @@ test_that("conversion counts fire at a pool publish after the write half", {
   expect_identical(out$i[1:3], c(1L, NA_integer_, NA_integer_))
 })
 
-test_that("a nested table at or under the gate converts by value", {
+test_that("a nested table at or under the gate crosses by value", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   skip_if_not_installed("bit64")
@@ -1270,6 +1266,44 @@ test_that("a nested table at or under the gate converts by value", {
   out <- mizu_recv(p$peer, 5)
   expect_identical(out, list(df, "x"))
   expect_false(is_view(out[[1L]]))
+})
+
+test_that("a nested below-gate table crosses as a pre-encoded value", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  i <- c(0L, 1L, 255L)
+  tab <- arrow::arrow_table(
+    u8 = arrow::Array$create(i)$cast(arrow::uint8()),
+    s = paste(rep("a", 6000L), collapse = "")
+  )
+  mizu_send(p$host, list(tab, "x"))
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(out[[1L]]$u8, as.raw(i))
+  expect_false(is_view(out[[1L]]))
+  expect_identical(out[[2L]], "x")
+})
+
+test_that("a duplicated pre-encoded table warns once", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  tab <- arrow::arrow_table(
+    i = arrow::Array$create(
+      c(-2147483648, 1),
+      type = arrow::int32()
+    )
+  )
+  ws <- grab_warnings(mizu_send(p$host, list(tab, tab)))
+  expect_length(ws, 1L)
+  expect_match(ws, "-2147483648 read as NA_integer_")
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(
+    out,
+    list(data.frame(i = c(NA, 1L)), data.frame(i = c(NA, 1L)))
+  )
 })
 
 test_that("a table occurring twice dedupes to one frame leaf", {
@@ -1296,27 +1330,36 @@ test_that("an ALTREP sibling of a table falls back to R_Serialize", {
   expect_identical(out[[2L]], 1:5)
 })
 
-test_that("a table nested past the depth bound hits the serialize fallback", {
+test_that("a pre-encoded table respects the codec depth bound", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
   rdr <- arrow::RecordBatchReader$create(arrow::record_batch(x = 1:3))
   x <- rdr
   for (i in seq_len(500L)) {
     x <- list(x)
   }
-  p <- channel_pair()
-  on.exit(channel_end(p))
-  # sized at its occurrence depth, the converted value declines the frame
-  # tier — sizing at depth 0 was the "codec write mismatch" bug
   mizu_send(p$host, x)
   out <- mizu_recv(p$peer, 5)
   for (i in seq_len(500L)) {
     out <- out[[1L]]
   }
+  expect_identical(out, data.frame(x = 1:3))
+  rdr <- arrow::RecordBatchReader$create(arrow::record_batch(x = 1:3))
+  x <- rdr
+  for (i in seq_len(501L)) {
+    x <- list(x)
+  }
+  mizu_send(p$host, x)
+  out <- mizu_recv(p$peer, 5)
+  for (i in seq_len(501L)) {
+    out <- out[[1L]]
+  }
   expect_s3_class(out, "RecordBatchReader")
 })
 
-test_that("a frame declined at the stage converts and crosses by value", {
+test_that("a frame declined at the stage writes Arrow values directly", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities
@@ -1328,9 +1371,28 @@ test_that("a frame declined at the stage converts and crosses by value", {
   mizu_send(p$host, nanoarrow::as_nanoarrow_array_stream(df))
   out <- mizu_recv(p$peer, 5)
   expect_identical(out[], df)
+  expect_false(is_view(out$x))
+  mizu_send(p$host, 1:5)
+  expect_identical(mizu_recv(p$peer, 5), 1:5)
 })
 
-test_that("a declined frame's lazy columns materialize plain", {
+test_that("a stage-declined uint8 column keeps the direct Arrow landing", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities
+  on.exit(channel_end(p))
+  i <- rep(c(0L, 1L, 255L), length.out = 6000L)
+  tab <- arrow::arrow_table(
+    u8 = arrow::Array$create(i)$cast(arrow::uint8()),
+    x = runif(6000L)
+  )
+  mizu_send(p$host, tab)
+  out <- mizu_recv(p$peer, 5)
+  expect_identical(out$u8, as.raw(i))
+  expect_identical(out$x, as.data.frame(tab)$x)
+})
+
+test_that("a stage-declined frame crosses without views", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
   p <- channel_pair(ident = c(2L, 0L)) # an R peer with no capabilities
@@ -1339,8 +1401,6 @@ test_that("a declined frame's lazy columns materialize plain", {
     s = rep(c("alpha", "beta", NA), length.out = 6000),
     x = runif(6000)
   )
-  # a libarrow-produced string column converts lazy (nanoarrow altrep_chr),
-  # exercising the conversion bail's materializing copy
   mizu_send(p$host, arrow::arrow_table(df))
   expect_identical(mizu_recv(p$peer, 5)[], df)
 })
@@ -1649,7 +1709,7 @@ test_that("a binary column declines", {
   expect_identical(mizu_recv(p$peer, 5), 1:5)
 })
 
-test_that("a nested table below the gate converts, its lazies served", {
+test_that("a nested table below the gate crosses directly", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   df <- data.frame(s = rep(c("alpha", "beta"), 50), n = runif(100))

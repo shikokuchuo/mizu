@@ -336,6 +336,39 @@ test_that("the reader validates stream bounds and shapes", {
   expect_error(.Call(mizu:::mizu_codec_read_call, deep), "corrupt")
 })
 
+test_that("a pre-encoded interop leaf round-trips and validates its span", {
+  u64 <- function(x) {
+    lo <- x %% 2^32
+    hi <- (x - lo) / 2^32
+    c(writeBin(as.integer(lo), raw(4L)), writeBin(as.integer(hi), raw(4L)))
+  }
+  df <- data.frame(x = 1:3, s = c("a", "b", NA))
+  ix <- .Call(mizu:::mizu_interop_write_call, df)
+  b <- c(as.raw(0x52), as.raw(0x29), u64(length(ix)), ix)
+  expect_identical(.Call(mizu:::mizu_codec_read_call, b), df)
+  expect_error(
+    .Call(mizu:::mizu_codec_read_call, b[seq_len(length(b) - 1L)]),
+    "corrupt"
+  )
+  bad <- b
+  bad[3L:10L] <- u64(length(ix) + 1L)
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  bad <- c(b, raw(1L))
+  bad[3L:10L] <- u64(length(ix) + 1L)
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad))
+  bad <- b
+  bad[11L] <- as.raw(0L)
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad))
+  bad <- c(b, raw(1L))
+  expect_error(.Call(mizu:::mizu_codec_read_call, bad), "corrupt")
+  deep <- c(
+    as.raw(0x52),
+    rep(c(as.raw(0x08), u64(1)), 501L),
+    b[-1L]
+  )
+  expect_error(.Call(mizu:::mizu_codec_read_call, deep), "corrupt")
+})
+
 test_that("row.names that are not the 1:n sequence decline the codec", {
   df <- data.frame(x = c(1L, 2L, 3L))
   row.names(df) <- 2:4

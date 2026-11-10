@@ -19,11 +19,11 @@ channel or collected from a pool, into a struct-typed
 \code{arrow::as_arrow_table()}, or any other Arrow C Data Interface consumer.
 }
 \details{
-Frames arrive over channels and pools alike. Arrow data sent at top level is
-staged as one frame region, and Arrow data nested inside a payload (a list
-element, a task argument, the task expression itself) crosses by reference,
-so the received object holds a view in place of the table. A collected pool
-result is that view, and this function converts it back explicitly. One
+Frames arrive over channels and pools alike. Top-level Arrow data past the
+zero-copy floor stages as one frame region; smaller data and region-stage
+declines arrive as an ordinary data frame. One nested table (a list element,
+a task argument, or the task expression itself) can cross by reference, with
+the others arriving as data frames. This function accepts either form. One
 caveat on sends: the conversion warnings (a uint64 past 2^63 - 1 becoming
 \code{NA}, an int32 or int64 minimum reading as \code{NA}) fire at send over a channel,
 but at a pool publish they fire on the worker and the submitter never sees

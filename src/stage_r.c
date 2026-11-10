@@ -25,7 +25,7 @@
    consultation, so no unwind cleanup rides this per-element path (the
    2026-10-22 bisection: one R_ExecWithCleanup per staged element cost
    the batch verbs ~28%; the plain arm is three stores). Re-entrant by
-   construction — the Arrow decline path re-enters the stage hook, whose
+   construction — the non-struct Arrow path re-enters the stage hook, whose
    arm simply starts another generation (the outer stage resumes
    disarmed, computing fresh, as it always has). Also resets the
    by-reference mark list at entry: the list is one stage's emission
@@ -59,7 +59,7 @@ void mizu_stage_batch_clean(void *ignored) {
   mizu_stage_batch_end();
 }
 
-/* The converted-temporary scope inside a batch stage (arrow.c's decline
+/* The converted-temporary scope inside a batch stage (arrow.c's non-struct
    re-entries): the temporary's verdict keys must die with it, not ride
    the batch's generation. Outside batch mode the guard's per-stage arm
    already scopes the re-entry. */
@@ -222,24 +222,8 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
     size_t n = mizu_interop_write_scoped(payload, inline_max, x, &rec,
                                          rh->peer_caps);
     if (n == 0) mizu_stop_not_portable(rec.path, rec.reason, rec.remedy);
-    if (n <= inline_max) {
-      hdr->kind = MIZU_KIND_INLINE;
-      hdr->len = (uint32_t) n;
-      hdr->aux = MIZU_AUX_F_KEEPERLESS;
-      return 0;
-    }
-    if ((chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off)) != NULL) {
-      if (mizu_interop_write_scoped(chunk, n, x, NULL, rh->peer_caps) != n)
-        Rf_error("mizu: interop write mismatch");
-      hdr->kind = MIZU_KIND_ARENA;
-      hdr->len = 0;
-      hdr->aux = off;
-      uint64_t n64 = (uint64_t) n;
-      memcpy(payload, &n64, sizeof(n64));
-      return 0;
-    }
-    mizu_stage_reap(h);
-    mizu_payload_spill_interop(hdr, payload, x, n, h, rh->peer_caps);
+    mizu_payload_stage_interop(hdr, payload, inline_max, x, n, h,
+                               rh->peer_caps);
     return 0;
   }
   /* the compact codec ahead of R_Serialize (payload.c): a codec stream
@@ -256,37 +240,33 @@ static int mizu_r_stage_channel_impl(void *obj, mizu_slot_hdr *hdr,
     mizu_zc_ref_reset();
     n = mizu_serialize_bounded(payload, inline_max, x);
   }
+  if (self_contained) {
+    mizu_payload_stage_codec(hdr, payload, inline_max, x, n, h);
+    return 0;
+  }
   if (n <= inline_max) {
     hdr->kind = MIZU_KIND_INLINE;
     hdr->len = (uint32_t) n;
     hdr->aux = MIZU_AUX_F_KEEPERLESS;
-    if (!self_contained && mizu_zc_ref_fired()) {
+    if (mizu_zc_ref_fired()) {
       hdr->aux = 0;
       mizu_r_pin(h, ctx, x);
     }
   } else {
     if ((chunk = mizu_stage_arena_alloc(h, MIZU_ALIGN64(n), &off)) != NULL) {
-      if (self_contained) {
-        if (mizu_codec_write(chunk, n, x) != n)
-          Rf_error("mizu: codec write mismatch");
-      } else {
-        mizu_view_serialize_into(chunk, x);
-      }
+      mizu_view_serialize_into(chunk, x);
       hdr->kind = MIZU_KIND_ARENA;
       hdr->len = 0;
       hdr->aux = off;
       uint64_t n64 = (uint64_t) n;
       memcpy(payload, &n64, sizeof(n64));
-      if (!self_contained && mizu_zc_ref_fired())
+      if (mizu_zc_ref_fired())
         mizu_r_pin(h, ctx, x);
     } else {
       /* reap before staging: the consumer's latest head publish may
          have released a fitting region for this very spill to pop */
       mizu_stage_reap(h);
-      if (self_contained)
-        mizu_payload_spill_codec(hdr, payload, x, n, h);
-      else
-        mizu_payload_spill_shm(hdr, payload, x, n, h, ctx);
+      mizu_payload_spill_shm(hdr, payload, x, n, h, ctx);
     }
   }
   return 0;
