@@ -1,8 +1,9 @@
 # mizu (development version)
 
 * New `mizu_recv_batch_async()`: the promise counterpart of `mizu_recv_batch()` — one promise resolves with a list of up to `n` messages, the high-throughput async receive.
-* Faster message delivery for the async channel verbs (`mizu_recv_async()`, `mizu_recv_batch_async()`, `mizu_recv_handler()`).
+* Fixed pool shutdown often waiting an extra 50 ms after its workers had exited cleanly.
 * Fixes `mizu_send()` of an Arrow table failing with "attempt to apply non-function" once a `mizu_map()` result had been collected in the session (#19).
+* Faster message delivery for the async channel verbs (`mizu_recv_async()`, `mizu_recv_batch_async()`, `mizu_recv_handler()`).
 * Faster sends of large payloads and of Arrow tables with missing values or factor columns, and faster first reads of large zero-copy views on Linux.
 * Faster by-value sends of Arrow tables, including nested tables and sends that cannot use a shared-memory frame region.
 * Faster resolution of pool task promises with `mizu_collect_async()` and `as.promise()`, particularly when many tasks are awaiting collection.
