@@ -8,16 +8,18 @@
   [`mizu_recv_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send_batch.md)
   — one promise resolves with a list of up to `n` messages, the
   high-throughput async receive.
-- Faster message delivery for the async channel verbs
-  ([`mizu_recv_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md),
-  [`mizu_recv_batch_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md),
-  [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)).
+- Fixed pool shutdown often waiting an extra 50 ms after its workers had
+  exited cleanly.
 - Fixes
   [`mizu_send()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send.md)
   of an Arrow table failing with “attempt to apply non-function” once a
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   result had been collected in the session
   ([\#19](https://github.com/shikokuchuo/mizu/issues/19)).
+- Faster message delivery for the async channel verbs
+  ([`mizu_recv_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md),
+  [`mizu_recv_batch_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md),
+  [`mizu_recv_handler()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md)).
 - Faster sends of large payloads and of Arrow tables with missing values
   or factor columns, and faster first reads of large zero-copy views on
   Linux.
