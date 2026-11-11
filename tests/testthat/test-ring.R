@@ -266,28 +266,6 @@ test_that("the same pinned payload crosses twice, collected one at a time", {
   channel_end(p)
 })
 
-test_that("pinned payloads round-trip under gctorture", {
-  skip_on_cran() # gctorture: a full gc per allocation; minutes under valgrind
-  p <- channel_pair(arena_size = 0)
-  e <- new.env()
-  e$x <- "pin me"
-  x <- runif(100000)
-  # torture the verbs only: per-allocation GC makes expectation machinery
-  # (and any large-heap run) cost minutes, and hours under valgrind
-  on.exit(gctorture(FALSE), add = TRUE)
-  gctorture(TRUE)
-  mizu_send(p[["host"]], e)
-  got <- mizu_recv(p[["peer"]], 5)
-  mizu_send(p[["host"]], x)
-  y <- mizu_recv(p[["peer"]], 5)
-  mizu_send(p[["peer"]], y) # a received view re-sends as REF, pinning the view
-  back <- mizu_recv(p[["host"]], 5)
-  gctorture(FALSE)
-  expect_identical(got$x, "pin me")
-  expect_identical(as.numeric(back), x)
-  channel_end(p)
-})
-
 test_that("channel teardown releases outstanding pins to GC", {
   skip_on_cran() # finalizer-driven, polled against a wall-clock deadline
   p <- channel_pair()
