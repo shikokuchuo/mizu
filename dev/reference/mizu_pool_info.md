@@ -37,7 +37,7 @@ lost), `deque` (per-worker deque depths), and `shutdown`.
 p <- mizu_pool()
 mizu_pool_info(p)
 #> $name
-#> [1] "/mizu_1961_fc92829a"
+#> [1] "/mizu_1a2f_5d99be5f"
 #> 
 #> $role
 #> [1] "controller"
@@ -80,7 +80,7 @@ mizu_pool_info(p)
 #> [1] FALSE
 #> 
 #> $token
-#> [1] "1961_fc92829a"
+#> [1] "1a2f_5d99be5f"
 #> 
 mizu_pool_stop(p)
 ```
