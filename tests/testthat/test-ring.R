@@ -268,24 +268,40 @@ test_that("the same pinned payload crosses twice, collected one at a time", {
 
 test_that("pinned payloads round-trip under gctorture", {
   skip_on_cran() # gctorture: a full gc per allocation; minutes under valgrind
-  p <- channel_pair(arena_size = 0)
-  e <- new.env()
-  e$x <- "pin me"
-  x <- runif(100000)
-  # torture the verbs only: per-allocation GC makes expectation machinery
-  # (and any large-heap run) cost minutes, and hours under valgrind
-  on.exit(gctorture(FALSE), add = TRUE)
-  gctorture(TRUE)
-  mizu_send(p[["host"]], e)
-  got <- mizu_recv(p[["peer"]], 5)
-  mizu_send(p[["host"]], x)
-  y <- mizu_recv(p[["peer"]], 5)
-  mizu_send(p[["peer"]], y) # a received view re-sends as REF, pinning the view
-  back <- mizu_recv(p[["host"]], 5)
-  gctorture(FALSE)
-  expect_identical(got$x, "pin me")
-  expect_identical(as.numeric(back), x)
-  channel_end(p)
+  skip_if_no_child_mizu()
+  # a fresh child's small heap keeps the per-allocation full GCs cheap; in
+  # the suite's process the same round-trip can take many minutes
+  f <- tfile()
+  mizu:::mizu_spawn(sprintf(
+    '
+    library(mizu)
+    host <- .Call(mizu:::mizu_channel_create, quote(NULL), 64L, 256L, 0L, FALSE)
+    peer <- .Call(
+      mizu:::mizu_channel_attach,
+      .Call(mizu:::mizu_channel_suffix, host),
+      NULL
+    )[[1L]]
+    e <- new.env()
+    e$x <- "pin me"
+    x <- runif(100000)
+    gctorture(TRUE)
+    mizu_send(host, e)
+    got <- mizu_recv(peer, 5)
+    mizu_send(host, x)
+    y <- mizu_recv(peer, 5)
+    mizu_send(peer, y) # a received view re-sends as REF, pinning the view
+    back <- mizu_recv(host, 5)
+    gctorture(FALSE)
+    stopifnot(identical(got$x, "pin me"), identical(as.numeric(back), x))
+    .Call(mizu:::mizu_channel_close_signal, peer)
+    .Call(mizu:::mizu_channel_close, host, 5)
+    .Call(mizu:::mizu_channel_close, peer, 5)
+    writeLines("ok", %s)
+    ',
+    deparse(f)
+  ))
+  expect_true(wait_for_file(f, 60))
+  expect_identical(readLines(f), "ok")
 })
 
 test_that("channel teardown releases outstanding pins to GC", {
