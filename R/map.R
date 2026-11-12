@@ -153,9 +153,12 @@ mono_time <- function() .Call(mizu_now_call)
 #' runners observe cancellation within about one batch (one element where `.f`
 #' is expensive), independent of `length(.x)`. The slot of a published but
 #' uncollected result is released only when the dropped handle's finalizer runs
-#' at the next garbage collection, and the map's staging region is deleted then
-#' too. A later map absorbs these temporarily occupied slots by using fewer
-#' runners.
+#' at the next garbage collection. For a non-prepared map, successful collection
+#' with `.collect = "copy"` releases its shared memory immediately. After an
+#' error or timeout, or when an uncollected handle is dropped, this memory is
+#' released at the next garbage collection. With `.collect = "view"`, the
+#' returned view takes ownership of the shared memory. A later map absorbs
+#' temporarily occupied slots by using fewer runners.
 #'
 #' @section Reproducible RNG:
 #' By default, nothing is guaranteed about random draws inside `.f`. The workers
@@ -432,6 +435,23 @@ map_cond_cancelled <- function() {
   )
 }
 
+# Finish a clean collect: a prepared handle gets its state back (unless a
+# view consumed the region); a one-shot non-view region has no owner left,
+# so unlink it now rather than leaving its x copy and output area to a
+# later GC. Blob and spec-stream maps have no main region to close.
+map_collect_clean <- function(m, st) {
+  if (isTRUE(st[["consumed"]])) {
+    return(invisible())
+  }
+  pm <- m[["pm"]]
+  if (!is.null(pm)) {
+    pm[["st"]] <- st
+  } else if (!is.null(st[["wrap"]])) {
+    .Call(mizu_map_close, st[["wrap"]])
+  }
+  invisible()
+}
+
 # The blocking collect of a map handle (mizu_collect's map case): the
 # existing map_collect machinery one verb deeper — the gather (or the
 # "view" wrap), element-indexed errors, the lost-set scan — against the
@@ -461,19 +481,18 @@ map_collect_handle <- function(m, timeout) {
     return(map_empty_result(st))
   }
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
-  on.exit(map_cancel(st), add = TRUE)
+  clean <- FALSE
+  on.exit(if (!clean) map_cancel(st), add = TRUE)
   r <- if (isTRUE(st[["stream"]])) {
     map_collect_stream(st, deadline, m[["collect"]])
   } else {
     map_collect(st, deadline, m[["collect"]])
   }
-  # a clean value collect hands the state back to a prepared handle (a
-  # view collect consumed its region); timeout and error leaves it stale
-  pm <- m[["pm"]]
-  if (
-    !is.null(pm) && !inherits(r, "mizu_timeout") && !isTRUE(st[["consumed"]])
-  ) {
-    pm[["st"]] <- st
+  # timeout and error leave a prepared handle stale; a clean collect
+  # restores it and releases a one-shot non-view region
+  if (!inherits(r, "mizu_timeout")) {
+    map_collect_clean(m, st)
+    clean <- TRUE
   }
   r
 }
@@ -493,8 +512,8 @@ map_collect_handle <- function(m, timeout) {
 #' Between runs, the region's shared scheduling state resets in O(1). The cursor
 #' and cancel word clear, and the run generation embedded in every claim word
 #' advances, so a leftover task from a previous run can never interfere with the
-#' new run. After an unclean run (a `.timeout` expiry, an error in `.f`, a
-#' worker death) the handle is marked stale, and the next `mizu_map_run()`
+#' new run. After a run ends with a `.timeout` expiry, an error in `.f`, or a
+#' worker death, the handle is marked stale, and the next `mizu_map_run()`
 #' restages into a fresh region automatically (the old one is deleted at garbage
 #' collection, once any leftover tasks are done with it). A run collected with
 #' `.collect = "view"` restages likewise: the returned view keeps its region

@@ -1326,6 +1326,38 @@ test_that("a map promise resolves with the gather and refuses a blocking collect
   expect_identical(v, (1:4) + 1L)
 })
 
+test_that("a clean map promise leaves the cancel word clear and closes one-shot regions", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- runif(100000) # region path
+  pm <- mizu_map_prepare(p[["ctrl"]], x, identity)
+  m <- mizu_map_run(pm)
+  o <- observe(promises::as.promise(m))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o)))
+  expect_identical(o$value, as.list(x))
+  expect_false(.Call(mizu:::mizu_map_cancel_get, m[["st"]][["wrap"]]))
+  m2 <- mizu_map(p[["ctrl"]], x, identity)
+  st2 <- m2[["st"]]
+  o2 <- observe(promises::as.promise(m2))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o2)))
+  expect_identical(o2$value, as.list(x))
+  expect_error(
+    .Call(mizu:::mizu_map_info, st2[["wrap"]]),
+    "map handle is closed"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_open, st2[["name"]], TRUE),
+    "cannot open map region"
+  )
+})
+
 test_that("a rejected map promise makes later cancellation a no-op", {
   skip_if_no_promises()
   p <- pool_pair()

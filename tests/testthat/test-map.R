@@ -1233,6 +1233,71 @@ test_that("cancel is a no-op after map collection errors and timeouts", {
   expect_false(m2[["cancelled"]])
 })
 
+test_that("clean collection leaves the region cancel word clear", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- runif(100000) # region path
+  pm <- mizu_map_prepare(p[["ctrl"]], x, identity)
+  m <- mizu_map_run(pm)
+  wrap <- m[["st"]][["wrap"]]
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list(x))
+  expect_false(.Call(mizu:::mizu_map_cancel_get, wrap))
+  # the unclean backstop still cancels on timeout
+  mt <- mizu_map(p[["ctrl"]], x, identity)
+  wt <- mt[["st"]][["wrap"]]
+  expect_s3_class(mizu_collect(mt, timeout = 0), "mizu_timeout")
+  expect_true(.Call(mizu:::mizu_map_cancel_get, wt))
+})
+
+test_that("a clean one-shot collect closes its region", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- runif(100000)
+  m <- mizu_map(p[["ctrl"]], x, identity)
+  st <- m[["st"]]
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list(x))
+  expect_error(
+    .Call(mizu:::mizu_map_info, st[["wrap"]]),
+    "map handle is closed"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_open, st[["name"]], TRUE),
+    "cannot open map region"
+  )
+})
+
+test_that("a late runner after a clean close leaves the pool healthy", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  on.exit(mizu_pool_stop(p))
+  late_runner <- function(n, a, s = NULL) {
+    if (a[[1L]] == 1) {
+      Sys.sleep(1)
+    }
+    mizu:::map_runner(n, a, s)
+  }
+  environment(late_runner) <- globalenv()
+  local_mocked_bindings(map_runner_ref = late_runner)
+  x <- runif(100000)
+  m <- mizu_map(p, x, identity, .n_chunks = 2L)
+  late <- m[["st"]][["handles"]][[2L]]
+  expect_true(wait_until(.Call(mizu:::mizu_pool_task_state, late) == "running"))
+  expect_identical(mizu_collect(m, timeout = 30), as.list(x))
+  expect_error(
+    .Call(mizu:::mizu_map_info, m[["st"]][["wrap"]]),
+    "map handle is closed"
+  )
+  # the delayed open fails after the unlink; the cancelled task absorbs it
+  expect_true(wait_until(mizu_pool_info(p)[["parked"]] == 2L))
+  expect_identical(mizu_collect(mizu_map(p, 1:4, identity)), as.list(1:4))
+})
+
 test_that("cancel remains active while map collection is in progress", {
   p <- pool_pair()
   on.exit(pool_end(p))

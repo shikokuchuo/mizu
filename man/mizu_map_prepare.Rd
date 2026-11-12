@@ -90,8 +90,8 @@ runner payloads rather than the region.
 Between runs, the region's shared scheduling state resets in O(1). The cursor
 and cancel word clear, and the run generation embedded in every claim word
 advances, so a leftover task from a previous run can never interfere with the
-new run. After an unclean run (a \code{.timeout} expiry, an error in \code{.f}, a
-worker death) the handle is marked stale, and the next \code{mizu_map_run()}
+new run. After a run ends with a \code{.timeout} expiry, an error in \code{.f}, or a
+worker death, the handle is marked stale, and the next \code{mizu_map_run()}
 restages into a fresh region automatically (the old one is deleted at garbage
 collection, once any leftover tasks are done with it). A run collected with
 \code{.collect = "view"} restages likewise: the returned view keeps its region

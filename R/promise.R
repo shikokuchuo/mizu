@@ -651,10 +651,7 @@ settle_waiter <- function(w) {
       finally = m[["settled"]] <- TRUE
     )
     if (!inherits(v, "error")) {
-      pm <- m[["pm"]]
-      if (!is.null(pm) && !isTRUE(st[["consumed"]])) {
-        pm[["st"]] <- st
-      }
+      map_collect_clean(m, st)
     }
     v
   }

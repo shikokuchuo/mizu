@@ -796,6 +796,40 @@ test_that("mizu_map(.stream) end-to-end and out-of-order completion", {
   expect_true(mizu_pool_stop(p))
 })
 
+test_that("clean spec streaming skips the cancellation scan", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  on.exit(mizu_pool_stop(p))
+  local_mocked_bindings(map_cancel = function(st) {
+    stop("unexpected cancellation after a clean collect")
+  })
+  out <- mizu_collect(mizu_map(
+    p,
+    seq_len(2048L),
+    mizu_call("base::abs"),
+    .stream = TRUE,
+    .n_chunks = 256L
+  ))
+  expect_identical(out, as.list(seq_len(2048L)))
+})
+
+test_that("a clean native stream collect closes its region", {
+  skip_if_no_child_mizu()
+  p <- mizu_pool(n_workers = 2L)
+  on.exit(mizu_pool_stop(p))
+  m <- mizu_map(p, seq_len(256L), identity, .stream = TRUE, .n_chunks = 8L)
+  st <- m[["st"]]
+  expect_identical(mizu_collect(m), as.list(seq_len(256L)))
+  expect_error(
+    .Call(mizu:::mizu_map_info, st[["wrap"]]),
+    "map handle is closed"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_open, st[["name"]], TRUE),
+    "cannot open map region"
+  )
+})
+
 test_that("mizu_map(.stream) needs no pool round-trip for empty x", {
   skip_if_no_child_mizu()
   p <- mizu_pool(n_workers = 1L)
