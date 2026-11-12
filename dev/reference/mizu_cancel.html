@@ -83,9 +83,11 @@ handle raises <code>mizu_error_cancelled</code> (see <a href="mizu_error.html">m
 </dl></div>
     <div class="section level2">
     <h2 id="value">Value<a class="anchor" aria-label="anchor" href="#value"></a></h2>
-    <p>Invisibly, <code>TRUE</code> if this call cancelled the task. <code>FALSE</code> if
-the call was too late: the task completed, was already cancelled, or
-its pool is gone.</p>
+    <p>Invisibly, <code>TRUE</code> if this call cancelled the task or map. <code>FALSE</code> if
+the call was too late: the task completed, was already cancelled, or its
+pool is gone; or the map was already cancelled or its collection had
+finished. Cancelling a collected map handle is a no-op and never affects a
+later run of the same prepared map.</p>
     </div>
     <div class="section level2">
     <h2 id="details">Details<a class="anchor" aria-label="anchor" href="#details"></a></h2>

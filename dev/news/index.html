@@ -55,7 +55,10 @@
 
     <div class="section level2">
 <h2 class="pkg-version" data-toc-text="development version" id="mizu-development-version">mizu (development version)<a class="anchor" aria-label="anchor" href="#mizu-development-version"></a></h2>
-<ul><li>New <code><a href="../reference/mizu_recv_async.html">mizu_recv_batch_async()</a></code>: the promise counterpart of <code><a href="../reference/mizu_send_batch.html">mizu_recv_batch()</a></code> — one promise resolves with a list of up to <code>n</code> messages, the high-throughput async receive.</li>
+<ul><li>Native <code><a href="../reference/mizu_map.html">mizu_map()</a></code> character-template results are validated and flattened per worker batch; a type or length mismatch now fails fast with its element index. Spec maps retain submitter-side validation.</li>
+<li>
+<code><a href="../reference/mizu_cancel.html">mizu_cancel()</a></code> on a collected map handle no longer disrupts a later run of the same prepared map.</li>
+<li>New <code><a href="../reference/mizu_recv_async.html">mizu_recv_batch_async()</a></code>: the promise counterpart of <code><a href="../reference/mizu_send_batch.html">mizu_recv_batch()</a></code> — one promise resolves with a list of up to <code>n</code> messages, the high-throughput async receive.</li>
 <li>Fixed pool shutdown often waiting an extra 50 ms after its workers had exited cleanly.</li>
 <li>Fixes <code><a href="../reference/mizu_send.html">mizu_send()</a></code> of an Arrow table failing with “attempt to apply non-function” once a <code><a href="../reference/mizu_map.html">mizu_map()</a></code> result had been collected in the session (<a href="https://github.com/shikokuchuo/mizu/issues/19" class="external-link">#19</a>).</li>
 <li>Faster message delivery for the async channel verbs (<code><a href="../reference/mizu_recv_async.html">mizu_recv_async()</a></code>, <code><a href="../reference/mizu_recv_async.html">mizu_recv_batch_async()</a></code>, <code><a href="../reference/mizu_recv_async.html">mizu_recv_handler()</a></code>).</li>

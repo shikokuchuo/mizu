@@ -195,9 +195,11 @@ is a copy-on-write view over the shared output area itself, for
 pipelines that reduce it immediately. A template of length `m > 1`
 gathers an `m * length(.x)` matrix with the names of the template as row
 names, as [`vapply()`](https://rdrr.io/r/base/lapply.html) does.
-Character templates are assembled through the generic result path
-instead, so their type checks surface at assembly rather than per
-element on the workers. Large results of a consistent shape belong on
+Character templates use the generic result path. On native, non-spec
+maps, workers validate each result and flatten each batch before
+publishing it, so a type or length mismatch fails fast with its element
+index. Spec maps retain list-shaped results and validate them at
+assembly on the submitter. Large results of a consistent shape belong on
 the template path. A runner's generic results accumulate on the worker
 and publish once, so `.template` both caps worker memory and moves the
 values across processes without serialization. For readers of

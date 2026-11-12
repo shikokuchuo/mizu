@@ -25,9 +25,11 @@ mizu_cancel(task)
 
 ## Value
 
-Invisibly, `TRUE` if this call cancelled the task. `FALSE` if the call
-was too late: the task completed, was already cancelled, or its pool is
-gone.
+Invisibly, `TRUE` if this call cancelled the task or map. `FALSE` if the
+call was too late: the task completed, was already cancelled, or its
+pool is gone; or the map was already cancelled or its collection had
+finished. Cancelling a collected map handle is a no-op and never affects
+a later run of the same prepared map.
 
 ## Details
 

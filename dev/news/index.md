@@ -2,6 +2,14 @@
 
 ## mizu (development version)
 
+- Native
+  [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
+  character-template results are validated and flattened per worker
+  batch; a type or length mismatch now fails fast with its element
+  index. Spec maps retain submitter-side validation.
+- [`mizu_cancel()`](https://shikokuchuo.net/mizu/dev/reference/mizu_cancel.md)
+  on a collected map handle no longer disrupts a later run of the same
+  prepared map.
 - New
   [`mizu_recv_batch_async()`](https://shikokuchuo.net/mizu/dev/reference/mizu_recv_async.md):
   the promise counterpart of
