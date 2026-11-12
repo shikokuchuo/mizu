@@ -328,10 +328,13 @@ test_that("the view collect's dim gate declines an unrepresentable geometry", {
 
 test_that("character templates assemble through the generic path", {
   p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- setNames(1:4, letters[1:4])
+  f <- function(i) if (i == 2L) NA_character_ else letters[i]
   st <- mizu:::map_stage(
     p[["ctrl"]],
-    1:4,
-    function(i) letters[i],
+    x,
+    f,
     list(),
     template = character(1)
   )
@@ -340,11 +343,21 @@ test_that("character templates assemble through the generic path", {
   while (pool_step(p) == 1L) {
     NULL
   }
+  expect_identical(collect30(p[["ctrl"]], st), vapply(x, f, character(1)))
+  g <- function(i) c(letters[i], LETTERS[i])
+  template <- c(lo = "", hi = "")
   expect_identical(
-    collect30(p[["ctrl"]], st),
-    vapply(1:4, function(i) letters[i], character(1))
+    run_map(p, x, g, template = template),
+    vapply(x, g, template)
   )
-  pool_end(p)
+  expect_snapshot(
+    error = TRUE,
+    run_map(p, 1:4, function(i) i, template = character(1))
+  )
+  expect_snapshot(
+    error = TRUE,
+    run_map(p, 1:4, function(i) letters[1:2], template = character(1))
+  )
 })
 
 test_that("a view x rides the descriptor by reference and reads off the shared pages", {

@@ -646,6 +646,18 @@ with_pool(4L, function(p) {
     },
     "us/elt"
   )
+  fc <- function(v) "x"
+  note_us(
+    "map trivial f",
+    "mizu_map character template",
+    k * n,
+    function() {
+      for (j in seq_len(k)) {
+        mizu_collect(mizu_map(p, x, fc, .template = character(1)))
+      }
+    },
+    "us/elt"
+  )
   # per-element L'Ecuyer-CMRG streams: the price of reproducibility
   note_us(
     "map trivial f",

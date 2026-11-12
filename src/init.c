@@ -165,6 +165,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_map_gather",             (DL_FUNC) &mizu_map_gather,                1},
   {"mizu_map_gather_view",        (DL_FUNC) &mizu_map_gather_view,           3},
   {"mizu_map_dim_call",           (DL_FUNC) &mizu_map_dim_call,              2},
+  {"mizu_map_char_assemble",      (DL_FUNC) &mizu_map_char_assemble,         2},
   {"mizu_map_splice",             (DL_FUNC) &mizu_map_splice,                3},
   {"mizu_map_vsplice",            (DL_FUNC) &mizu_map_vsplice,               3},
   {"mizu_map_splice_ix",          (DL_FUNC) &mizu_map_splice_ix,             3},

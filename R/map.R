@@ -1961,8 +1961,9 @@ map_collect <- function(
 # The shared assembly tail of map_collect and the streaming loop: the
 # generic path's named list, or the template paths' one gather memcpy from
 # the output area — or, for a character template (generic chunk results),
-# vapply's own checks. A "view" collect instead wraps the output area as
-# an ALTREP view (no gather copy), its names / dim applied in C — the R
+# the C assembler's type/length checks. A "view" collect instead wraps the
+# output area as an ALTREP view (no gather copy), its names / dim applied in
+# C — the R
 # setters would duplicate the view and the default ALTREP duplicate
 # materializes. The view pins the region, so the state is marked consumed
 # and a prepared re-run restages rather than overwriting it
@@ -1993,7 +1994,7 @@ map_assemble <- function(st, out, collect = "copy") {
       .Call(mizu_map_gather, st[["wrap"]])
     }
   } else {
-    vapply(out, identity, st[["template"]], USE.NAMES = FALSE)
+    .Call(mizu_map_char_assemble, out, st[["template"]])
   }
   m <- length(st[["template"]])
   if (m > 1L) {

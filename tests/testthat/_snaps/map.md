@@ -14,6 +14,22 @@
       Error in `dim_of()`:
       ! mizu: map output dimensions (2 x 8589934592) exceed what R's dim attribute represents (max 2147483647 per dimension)
 
+# character templates assemble through the generic path
+
+    Code
+      run_map(p, 1:4, function(i) i, template = character(1))
+    Condition
+      Error in `map_assemble()`:
+      ! mizu: map values must be type 'character' and length 1
+
+---
+
+    Code
+      run_map(p, 1:4, function(i) letters[1:2], template = character(1))
+    Condition
+      Error in `map_assemble()`:
+      ! mizu: map values must be type 'character' and length 1
+
 # .collect validates against the template
 
     Code

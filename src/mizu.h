@@ -878,6 +878,7 @@ SEXP mizu_map_write(SEXP, SEXP, SEXP);
 SEXP mizu_map_gather(SEXP);
 SEXP mizu_map_gather_view(SEXP, SEXP, SEXP);
 SEXP mizu_map_dim_call(SEXP, SEXP);
+SEXP mizu_map_char_assemble(SEXP, SEXP);
 SEXP mizu_map_splice(SEXP, SEXP, SEXP);
 SEXP mizu_map_vsplice(SEXP, SEXP, SEXP);
 SEXP mizu_map_splice_ix(SEXP, SEXP, SEXP);

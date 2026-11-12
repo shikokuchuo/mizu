@@ -77,6 +77,7 @@ static const char *map_type_name(int type) {
   case REALSXP: return "double";
   case CPLXSXP: return "complex";
   case RAWSXP:  return "raw";
+  case STRSXP:  return "character";
   case MIZU_TYPE_INT64: return "integer64";
   }
   return "?";
@@ -656,6 +657,31 @@ SEXP mizu_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
   }
   UNPROTECT(2);
   return view;
+}
+
+/* Character-template assembly: one allocation and one CHARSXP pointer copy
+   per result element, replacing vapply's per-element R identity call. Every
+   collected value is checked before it lands, with the direct output area's
+   type/length error wording. Fresh result UNPROTECTED at return. */
+SEXP mizu_map_char_assemble(SEXP out, SEXP template) {
+  if (TYPEOF(out) != VECSXP || TYPEOF(template) != STRSXP)
+    Rf_error("mizu: invalid map assembly arguments");
+  const R_xlen_t n = XLENGTH(out), m = XLENGTH(template);
+  if (m < 1)
+    Rf_error("mizu: invalid map assembly arguments");
+  if (n > R_XLEN_T_MAX / m)
+    Rf_error("mizu: map output is too large");
+  SEXP res = PROTECT(Rf_allocVector(STRSXP, n * m));
+  for (R_xlen_t i = 0; i < n; i++) {
+    SEXP value = VECTOR_ELT(out, i);
+    if (TYPEOF(value) != STRSXP || XLENGTH(value) != m)
+      Rf_error("mizu: map values must be type 'character' and length %llu",
+               (unsigned long long) m);
+    for (R_xlen_t j = 0; j < m; j++)
+      SET_STRING_ELT(res, i * m + j, STRING_ELT(value, j));
+  }
+  UNPROTECT(1);
+  return res;
 }
 
 /* Generic-path assembly: one pass splices every collected runner

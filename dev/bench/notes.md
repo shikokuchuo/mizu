@@ -2094,3 +2094,18 @@ delta at report-row scale.
 Status: full suite green (6018 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs); rchk clean. Best-known table
 untouched.
+
+## 2026-11-12 — character-template C assembly (step 1a)
+
+Replaced the submitter's per-element `vapply()` / `identity` calls with one C
+`STRSXP` allocation and direct `CHARSXP` copies for character-template maps.
+The isolated probe uses 200,000 length-one results and excludes worker
+execution and transport; the end-to-end probe includes both on four workers.
+
+| measurement (ms) | Phase 0 (`3de1902`) | step 1a working tree |
+|---|---:|---:|
+| isolated assembly | 30, 32, 32, 31, 31 | 1, 1, 1, 1, 2 |
+| end-to-end map | 90, 100, 96 | 43, 42, 42 |
+
+Status: full suite green (6101 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs). Best-known table untouched.
