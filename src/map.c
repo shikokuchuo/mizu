@@ -1050,8 +1050,9 @@ SEXP mizu_map_cancel_set(SEXP xp) {
 }
 
 /* Explicit, idempotent region teardown — a streaming spec map's per-chunk
-   regions unlink at their own turns, keeping submitter residency at the
-   window; every other map region unlinks at GC. Runs the wrap's chained
+   regions unlink at their own turns, and a one-shot non-view region at its
+   clean collect; prepared and view regions keep their existing ownership.
+   Runs the wrap's chained
    finalizers by hand (each clears its extptr, so the GC pass is a no-op —
    wrap.c's discipline), then frees the handle and clears the map extptr.
    A consumer-side (worker) context closes too: its wrap carries no host

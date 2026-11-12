@@ -685,6 +685,49 @@ with_pool(4L, function(p) {
     },
     "us/elt"
   )
+  # clean-collect overhead: tiny prepared re-runs and many-chunk spec streams
+  pm32 <- mizu_map_prepare(p, seq_len(32L), f)
+  invisible(mizu_collect(mizu_map_run(pm32)))
+  note(
+    "map clean collect",
+    "mizu_map_run prepared32",
+    mark_ms(function() invisible(mizu_collect(mizu_map_run(pm32)))),
+    "ms wall"
+  )
+  spec_x <- seq_len(2048L)
+  spec_stream <- function() {
+    invisible(mizu_collect(mizu_map(
+      p,
+      spec_x,
+      mizu_call("base::abs"),
+      .stream = TRUE,
+      .n_chunks = 256L
+    )))
+  }
+  spec_stream()
+  note(
+    "map clean collect",
+    "mizu_map spec stream 256",
+    mark_ms(spec_stream),
+    "ms wall"
+  )
+  spec_template <- function() {
+    invisible(mizu_collect(mizu_map(
+      p,
+      spec_x,
+      mizu_call("base::abs"),
+      .template = numeric(1),
+      .stream = TRUE,
+      .n_chunks = 256L
+    )))
+  }
+  spec_template()
+  note(
+    "map clean collect",
+    "mizu_map spec stream 256 template",
+    mark_ms(spec_template),
+    "ms wall"
+  )
 })
 
 # compute regime: scenario 4's task work as a single map call —

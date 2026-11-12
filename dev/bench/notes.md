@@ -2127,3 +2127,25 @@ template` row read 0.1 us/element, its initial best-known entry.
 
 Status: full suite green (6129 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs); rchk zero package findings.
+
+## 2026-11-12 — clean map collection (step 2)
+
+A = `6a7b192`; B = A without clean-collection cancellation; C = B plus gated
+close for non-prepared maps. Four workers; `bench::mark` medians (0.5 s/row).
+
+| measurement (ms/call) | A | B | C |
+|---|---:|---:|---:|
+| prepared, 32 elements | 0.1209 | 0.1184 | 0.1278 |
+| spec stream, 256 chunks | 9.0799 | 8.3868 | 7.9995 |
+
+Prepared differences are host drift. C's new spec-stream template row: 8.3656
+ms/call. New prepared and generic/template spec-stream rows are report-only in
+`mizu-bench.R`; the best-known table is unchanged.
+
+Retaining 16 non-prepared handles (1M double x + 1M double output per map) grew
+RSS 83.8 → 362.7 MiB before close. With clean close, RSS was 118.1 MiB after 4
+maps and 118.2 MiB after 8/12/16 (start 83.5 MiB). Sync/async close,
+prepared-stage retention, timeout cancellation and delayed-runner
+open-after-unlink coverage passed.
+
+Status: 6155 pass, 0 fail, 7 skips (cross-language legs included).
