@@ -2149,3 +2149,23 @@ prepared-stage retention, timeout cancellation and delayed-runner
 open-after-unlink coverage passed.
 
 Status: 6155 pass, 0 fail, 7 skips (cross-language legs included).
+
+## 2026-11-12 — spec-stream copy elimination (step 3)
+
+Raw-x chunks now stage straight from the original vector, template chunks
+gather into the final accumulator at its flat offset, and R-worker generic
+histories splice at their global output base. A = `ff162ea`; B = the phase-3
+working tree. Four workers; A/B/A/B with `bench::mark` medians (0.5 s/row).
+
+| measurement (ms/call) | A1 | B1 | A2 | B2 |
+|---|---:|---:|---:|---:|
+| spec stream, 256 generic chunks | 7.8750 | 7.7376 | 7.8833 | 7.8952 |
+| spec stream, 256 template chunks | 7.6939 | 7.7998 | 7.8894 | 7.9210 |
+| spec stream, 256 raw-x chunks | 7.7874 | 7.8324 | 7.9234 | 8.0358 |
+
+The differences are within host drift: this is an allocation/copy removal, not
+a claimed end-to-end speedup at 8-element chunks. The raw-x row joins the
+report-only benchmark; the best-known table is unchanged.
+
+Status: full suite green (6174 pass, 0 fail, 7 skips; cross-language legs
+included); rchk zero package findings.

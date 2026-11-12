@@ -1419,15 +1419,26 @@ map_stream_refill <- function(pool, st, deadline) {
           st[["lang"]]
         )
       }
-      sr <- .Call(
-        mizu_map_stage,
-        desc,
-        if (st[["xraw"]]) .Call(mizu_map_xslice, st[["x"]], lo, hi),
-        NULL,
-        n_k,
-        if (st[["direct"]]) st[["template"]],
-        n_k
-      )
+      sr <- if (st[["xraw"]]) {
+        .Call(
+          mizu_map_stage_range,
+          desc,
+          st[["x"]],
+          lo,
+          hi,
+          if (st[["direct"]]) st[["template"]]
+        )
+      } else {
+        .Call(
+          mizu_map_stage,
+          desc,
+          NULL,
+          NULL,
+          n_k,
+          if (st[["direct"]]) st[["template"]],
+          n_k
+        )
+      }
       st[["wraps"]][[next_k]] <- sr[[2L]]
       sp <- st[["seed_pair"]]
       .Call(
@@ -1611,28 +1622,21 @@ map_stream_turn <- function(pool, st, deadline) {
     wrap <- st[["wraps"]][[k]]
     st[["wraps"]][k] <- list(NULL)
     if (st[["direct"]]) {
-      # rows [lo, hi] of the flat n x m accumulator, one memcpy splice —
-      # an R-level `[<-` allocates the seq.int index and dispatches per chunk
-      .Call(
-        mizu_map_asplice,
-        st[["out"]],
-        (lo - 1) * st[["m"]] + 1,
-        .Call(mizu_map_gather, wrap)
-      )
+      # rows [lo, hi] gather straight into the flat n x m accumulator
+      .Call(mizu_map_gather_into, wrap, st[["out"]], (lo - 1) * st[["m"]])
     } else if (st[["pymap"]]) {
       .Call(mizu_map_splice_ix, st[["out"]], list(v[["value"]]), lo - 1)
     } else {
-      local <- vector("list", hi - lo + 1)
+      # R workers' chunk-local morsel pairs splice at the global output base
       .Call(
         mizu_map_splice,
-        local,
+        st[["out"]],
         list(v[["value"]]),
         hi - lo + 1,
-        0,
+        lo - 1,
         hi - lo + 1,
         1
       )
-      .Call(mizu_map_vsplice, st[["out"]], lo, local, 1)
     }
     .Call(mizu_map_close, wrap)
   } else if (!st[["direct"]]) {

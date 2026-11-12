@@ -36,6 +36,82 @@ test_that("staging validates geometry before creating anything", {
   )
 })
 
+test_that("range staging copies only the requested raw x section", {
+  desc <- list(identity, list())
+  x <- c(1.5, 2.5, 3.5, 4.5)
+  st <- .Call(mizu:::mizu_map_stage_range, desc, x, 2, 4, NULL)
+  h <- st[[2L]]
+  expect_identical(.Call(mizu:::mizu_map_info, h)[["n"]], 3)
+  expect_identical(.Call(mizu:::mizu_map_slice, h, 1, 3), x[2:4])
+  .Call(mizu:::mizu_map_close, h)
+
+  i64 <- structure(c(1, 2, 3, 4), class = "integer64")
+  si <- .Call(mizu:::mizu_map_stage_range, desc, i64, 2, 3, NULL)
+  expect_identical(
+    .Call(mizu:::mizu_map_slice, si[[2L]], 1, 2),
+    structure(c(2, 3), class = "integer64")
+  )
+  .Call(mizu:::mizu_map_close, si[[2L]])
+
+  expect_error(
+    .Call(mizu:::mizu_map_stage_range, desc, x, 0, 2, NULL),
+    "invalid stream slice range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_stage_range, desc, x, 3, 5, NULL),
+    "invalid stream slice range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_stage_range, desc, x, 1.5, 3, NULL),
+    "invalid stream slice range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_stage_range, desc, letters, 1, 2, NULL),
+    "not eligible for the map raw section"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_stage_range, desc, 1:10, 1, 2, NULL),
+    "not eligible for the map raw section"
+  )
+})
+
+test_that("gather_into writes at a flat offset and guards its destination", {
+  desc <- list(identity, list())
+  st <- .Call(mizu:::mizu_map_stage, desc, NULL, NULL, 2, numeric(2), 2)
+  h <- st[[2L]]
+  .Call(mizu:::mizu_map_write, h, 1, c(1, 2))
+  .Call(mizu:::mizu_map_write, h, 2, c(3, 4))
+  out <- double(10)
+  expect_null(.Call(mizu:::mizu_map_gather_into, h, out, 4))
+  expect_identical(out, c(0, 0, 0, 0, 1, 2, 3, 4, 0, 0))
+  expect_error(
+    .Call(mizu:::mizu_map_gather_into, h, out, 7),
+    "invalid map gather range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_gather_into, h, out, 1.5),
+    "invalid map gather range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_gather_into, h, integer(10), 0),
+    "invalid map gather arguments"
+  )
+  .Call(mizu:::mizu_map_close, h)
+  expect_error(
+    .Call(mizu:::mizu_map_gather_into, h, out, 0),
+    "map handle is closed"
+  )
+
+  i64 <- structure(0, class = "integer64")
+  si <- .Call(mizu:::mizu_map_stage, desc, NULL, NULL, 2, i64, 2)
+  .Call(mizu:::mizu_map_write, si[[2L]], 1, structure(11, class = "integer64"))
+  .Call(mizu:::mizu_map_write, si[[2L]], 2, structure(12, class = "integer64"))
+  out64 <- double(4)
+  .Call(mizu:::mizu_map_gather_into, si[[2L]], out64, 1)
+  expect_identical(out64, c(0, 11, 12, 0))
+  .Call(mizu:::mizu_map_close, si[[2L]])
+})
+
 test_that("mizu_map_close unlinks explicitly and idempotently", {
   st <- .Call(
     mizu:::mizu_map_stage,
@@ -107,8 +183,13 @@ test_that("slice, write, gather and swap guard their preconditions", {
   expect_identical(.Call(mizu:::mizu_map_slice, h, 2, 3), c(2.5, 3.5))
   expect_error(.Call(mizu:::mizu_map_slice, h, 0, 2), "slice out of range")
   expect_error(.Call(mizu:::mizu_map_slice, h, 2, 5), "slice out of range")
+  expect_error(.Call(mizu:::mizu_map_slice, h, 1.5, 2), "slice out of range")
   expect_error(.Call(mizu:::mizu_map_write, h, 1, 1.0), "no output area")
   expect_error(.Call(mizu:::mizu_map_gather, h), "no output area")
+  expect_error(
+    .Call(mizu:::mizu_map_gather_into, h, double(4), 0),
+    "no output area"
+  )
   expect_error(
     .Call(mizu:::mizu_map_swap_x, h, c(1, 2)),
     "must match the staged type and length"

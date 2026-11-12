@@ -141,17 +141,17 @@ static uint32_t map_ordinal(mizu_map_h *mh, SEXP r_sexp) {
    bounded pass), or NULL to count here — so the descriptor costs one count
    pass and one write pass total, never two counts. The write re-verifies
    the count: mizu_view_serialize_into checks no bounds, and a mismatch here
-   means heap corruption, not a recoverable condition. morsel_size fixes
-   the region's morsel geometry (the R side derives it; prepared re-runs
-   inherit it). Returns list(name, map handle pinning the producer wrap);
-   the caller pins the handle for the map's duration. */
-SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
-                   SEXP template_sexp, SEXP morsel_sexp) {
-  double nd = Rf_asReal(n_sexp);
+   means heap corruption, not a recoverable condition. msd fixes the
+   region's morsel geometry (the R side derives it; prepared re-runs
+   inherit it). A ranged stage copies n elements from x0 instead of requiring
+   x itself to have exactly n elements. Returns list(name, map handle pinning
+   the producer wrap); the caller pins the handle for the map's duration. */
+static SEXP map_stage_impl(SEXP desc, SEXP x, SEXP desc_len_sexp, double nd,
+                           SEXP template_sexp, double msd, R_xlen_t x0,
+                           int ranged) {
   if (!(nd >= 1) || nd > MIZU_DBL_SAFE_INT)
     Rf_error("mizu: invalid map length");
   uint64_t n = (uint64_t) nd;
-  double msd = Rf_asReal(morsel_sexp);
   if (!(msd >= 1) || msd > nd)
     Rf_error("mizu: invalid map morsel size");
   uint64_t morsel_size = (uint64_t) msd;
@@ -166,16 +166,24 @@ SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
 
   uint32_t x_type = 0, out_type = 0;
   uint64_t x_len = 0, out_m = 0;
+  size_t x_elt = 0;
+  void *x_ptr = NULL;
   if (x != R_NilValue) {
     /* class-only integer64 rides the x section as bare int64 bytes — the
        wire tag carries the class; slices re-apply it (mizu_wire_alloc) */
     int wtype = mizu_view_is_int64(x) ? MIZU_TYPE_INT64 : (int) TYPEOF(x);
-    size_t elt = mizu_view_sizeof_elt(wtype);
-    if (elt == 0 || mizu_vec_ptr(x) == NULL ||
-        (uint64_t) XLENGTH(x) != n)
+    x_elt = mizu_view_sizeof_elt(wtype);
+    uint64_t xn = (uint64_t) XLENGTH(x);
+    /* the pointer request stays last: the ALTREP/S4 rejections must
+       short-circuit ahead of a writable accessor's materialization */
+    if (x_elt == 0 || ALTREP(x) || Rf_isS4(x) ||
+        (!ranged && xn != n) ||
+        (ranged && (x0 < 0 || (uint64_t) x0 > xn ||
+                    n > xn - (uint64_t) x0)) ||
+        (x_ptr = mizu_vec_ptr(x)) == NULL)
       Rf_error("mizu: x is not eligible for the map raw section");
     x_type = (uint32_t) wtype;
-    x_len = n * elt;
+    x_len = n * x_elt;
   }
   if (template_sexp != R_NilValue) {
     /* an integer64 template stamps the output area int64 — the wire tag
@@ -220,12 +228,40 @@ SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
     Rf_error("mizu: map descriptor size changed between count and write");
   }
   if (x != R_NilValue)
-    memcpy(b + h.x_off, mizu_vec_ptr(x), (size_t) h.x_len);
+    memcpy(b + h.x_off,
+           (const unsigned char *) x_ptr + (size_t) x0 * x_elt,
+           (size_t) h.x_len);
   SEXP out = PROTECT(Rf_allocVector(VECSXP, 2));
   SET_VECTOR_ELT(out, 0, Rf_mkString(shm->name));
   SET_VECTOR_ELT(out, 1, map_h_make(shm, &h, wrap));
   UNPROTECT(2);
   return out;
+}
+
+SEXP mizu_map_stage(SEXP desc, SEXP x, SEXP desc_len_sexp, SEXP n_sexp,
+                   SEXP template_sexp, SEXP morsel_sexp) {
+  return map_stage_impl(desc, x, desc_len_sexp, Rf_asReal(n_sexp),
+                        template_sexp, Rf_asReal(morsel_sexp), 0, 0);
+}
+
+/* A spec stream's raw-x chunk: stage [lo, hi] straight from the original
+   vector, without the owning slice the general xslice helper would allocate.
+   ALTREP inputs stay on the descriptor path selected by mizu_map_eligible. */
+SEXP mizu_map_stage_range(SEXP desc, SEXP x, SEXP lo_sexp, SEXP hi_sexp,
+                          SEXP template_sexp) {
+  switch (TYPEOF(x)) {
+  case LGLSXP: case INTSXP: case REALSXP: case CPLXSXP: case RAWSXP:
+    break;
+  default:
+    Rf_error("mizu: x is not eligible for the map raw section");
+  }
+  double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
+  if (!(lo >= 1) || !(hi >= lo) || lo != floor(lo) || hi != floor(hi) ||
+      hi > (double) XLENGTH(x))
+    Rf_error("mizu: invalid stream slice range");
+  double n = hi - lo + 1;
+  return map_stage_impl(desc, x, R_NilValue, n, template_sexp, n,
+                        (R_xlen_t) lo - 1, 1);
 }
 
 // Worker-side context -----------------------------------------------------------
@@ -297,7 +333,8 @@ SEXP mizu_map_slice(SEXP xp, SEXP lo_sexp, SEXP hi_sexp) {
   if (mh->h.x_kind != MIZU_MORSEL_X_RAW)
     Rf_error("mizu: map region has no x section");
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
-  if (!(lo >= 1) || !(hi >= lo) || hi > (double) mh->h.n)
+  if (!(lo >= 1) || !(hi >= lo) || lo != floor(lo) || hi != floor(hi) ||
+      hi > (double) mh->h.n)
     Rf_error("mizu: map slice out of range");
   return map_slice_copy(mh, (uint64_t) lo, (uint64_t) hi);
 }
@@ -327,7 +364,8 @@ SEXP mizu_map_xslice(SEXP x, SEXP lo_sexp, SEXP hi_sexp) {
   default:
     Rf_error("mizu: unsupported stream slice type");
   }
-  if (!(lo >= 1) || !(hi >= lo) || hi > (double) XLENGTH(x))
+  if (!(lo >= 1) || !(hi >= lo) || lo != floor(lo) || hi != floor(hi) ||
+      hi > (double) XLENGTH(x))
     Rf_error("mizu: invalid stream slice range");
   const R_xlen_t l0 = (R_xlen_t) lo - 1;
   const R_xlen_t len = (R_xlen_t) (hi - lo + 1);
@@ -601,6 +639,23 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
   return out;
 }
 
+/* The output area's gather storage type: an int64 area reads as unclassed
+   double storage — the wire alloc or the stream's assembly re-applies the
+   class. */
+static SEXPTYPE map_gather_dt(const mizu_map_h *mh) {
+  return mh->h.out_type == MIZU_TYPE_INT64 ?
+    REALSXP : (SEXPTYPE) mh->h.out_type;
+}
+
+/* The gather's one memcpy: the whole output area into dst at flat element
+   offset off, its geometry validated by the caller. */
+static void map_gather_memcpy(const mizu_map_h *mh, unsigned char *dst,
+                              R_xlen_t off) {
+  memcpy(dst + (size_t) off * mh->h.out_elt,
+         (const unsigned char *) mh->shm->addr + mh->h.out_off,
+         (size_t) mh->h.n * mh->h.out_m * mh->h.out_elt);
+}
+
 /* Submitter-side assembly: n × m results move cross-process exactly once,
    unserialized — one mizu_wire_alloc + one memcpy (an int64 area arrives
    classed). Names and dim are the R side's. */
@@ -608,11 +663,33 @@ SEXP mizu_map_gather(SEXP xp) {
   mizu_map_h *mh = map_h_get(xp);
   if (mh->h.out_type == 0)
     Rf_error("mizu: map region has no output area");
-  R_xlen_t len = (R_xlen_t) (mh->h.n * mh->h.out_m);
-  SEXP out = mizu_wire_alloc((int) mh->h.out_type, len);
-  memcpy(mizu_vec_ptr(out), (unsigned char *) mh->shm->addr + mh->h.out_off,
-         (size_t) len * mh->h.out_elt);
+  SEXP out = mizu_wire_alloc((int) mh->h.out_type,
+                             (R_xlen_t) (mh->h.n * mh->h.out_m));
+  map_gather_memcpy(mh, mizu_vec_ptr(out), 0);
   return out;
+}
+
+/* A spec stream's chunk gather: copy its whole output area into the final
+   accumulator at a zero-based flat element offset, without a temporary
+   gathered vector and splice. The accumulator is unclassed integer64 storage
+   until map_assemble re-applies the template's class. (pymizu's
+   _map_gather_into takes the same offset in bytes, not elements.) */
+SEXP mizu_map_gather_into(SEXP xp, SEXP out, SEXP offset_sexp) {
+  mizu_map_h *mh = map_h_get(xp);
+  if (mh->h.out_type == 0)
+    Rf_error("mizu: map region has no output area");
+  unsigned char *dst = TYPEOF(out) == map_gather_dt(mh) ?
+    (unsigned char *) mizu_vec_ptr(out) : NULL;
+  if (dst == NULL)
+    Rf_error("mizu: invalid map gather arguments");
+  R_xlen_t len = (R_xlen_t) (mh->h.n * mh->h.out_m);
+  double offset = Rf_asReal(offset_sexp);
+  if (!(offset >= 0) || offset != floor(offset) ||
+      offset > (double) XLENGTH(out) ||
+      (double) len > (double) XLENGTH(out) - offset)
+    Rf_error("mizu: invalid map gather range");
+  map_gather_memcpy(mh, dst, (R_xlen_t) offset);
+  return R_NilValue;
 }
 
 /* The view collect's matrix dim: R's dim<- coerces every entry to integer
@@ -848,27 +925,6 @@ SEXP mizu_map_splice_ix(SEXP out, SEXP runs, SEXP base_sexp) {
       }
     }
   }
-  return R_NilValue;
-}
-
-/* Streaming spec map's template assembly: one chunk's gather memcpy'd
-   into the flat n × m accumulator at its flat offset — the atomic analog
-   of mizu_map_vsplice (an R-level `[<-` allocates the seq.int index and
-   dispatches per chunk). Types must match exactly: the gather comes off
-   an output area stamped from the same template, so no coercion applies. */
-SEXP mizu_map_asplice(SEXP out, SEXP at_sexp, SEXP src) {
-  const SEXPTYPE t = TYPEOF(out);
-  const size_t elt = mizu_view_sizeof_elt((int) t);
-  if (elt == 0 || TYPEOF(src) != t)
-    Rf_error("mizu: invalid map splice arguments");
-  double at = Rf_asReal(at_sexp);
-  if (!(at >= 1) || at + (double) XLENGTH(src) - 1 > (double) XLENGTH(out))
-    Rf_error("mizu: invalid map splice range");
-  unsigned char *dst = (unsigned char *) mizu_vec_ptr(out);
-  const unsigned char *sp = (const unsigned char *) mizu_vec_ptr(src);
-  if (dst == NULL || sp == NULL)
-    Rf_error("mizu: invalid map splice arguments");
-  memcpy(dst + (size_t) (at - 1) * elt, sp, (size_t) XLENGTH(src) * elt);
   return R_NilValue;
 }
 

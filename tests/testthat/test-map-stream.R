@@ -85,24 +85,28 @@ test_that("a spec .f streams over R workers (the same-language shape)", {
     mizu_call("base::abs"),
     list()
   )
+  expect_false(st[["xraw"]]) # a compact sequence stays descriptor-carried
   expect_identical(run_stream(p, st), as.list(abs(1:20)))
-  # a bare atomic x slices through the per-chunk raw x sections
+  # a bare atomic x stages each chunk straight from the original vector
+  x <- setNames(as.double(1:20), paste0("e", 1:20))
   st2 <- mizu:::map_stage_stream(
     p[["ctrl"]],
-    as.double(1:20),
+    x,
     mizu_call("base::abs"),
     list()
   )
-  expect_identical(run_stream(p, st2), as.list(abs(as.double(1:20))))
-  # the template path accumulates each chunk's gather
+  expect_true(st2[["xraw"]])
+  expect_identical(run_stream(p, st2), as.list(abs(x)))
+  # the template path gathers each chunk at its flat output offset
   st3 <- mizu:::map_stage_stream(
     p[["ctrl"]],
-    1:20,
+    x,
     mizu_call("base::abs"),
     list(),
-    template = numeric(1)
+    template = numeric(1),
+    chunks = 5
   )
-  expect_identical(run_stream(p, st3), as.double(abs(1:20)))
+  expect_identical(run_stream(p, st3), abs(x))
   st4 <- mizu:::map_stage_stream(
     p[["ctrl"]],
     1:20,
@@ -112,6 +116,17 @@ test_that("a spec .f streams over R workers (the same-language shape)", {
   )
   expect_false(st4[["char_flat"]])
   expect_identical(run_stream(p, st4), letters[1:20])
+  st5 <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    x,
+    mizu_call(.source = "c(x, x * 2)"),
+    list(),
+    template = c(value = 0, doubled = 0),
+    chunks = 5
+  )
+  want <- rbind(value = as.double(1:20), doubled = as.double(1:20) * 2)
+  colnames(want) <- names(x)
+  expect_identical(run_stream(p, st5), want)
   pool_end(p)
 })
 
@@ -249,6 +264,7 @@ test_that("mizu_map_xslice slices every supported shape, names dropped", {
   expect_error(.Call(mizu:::mizu_map_xslice, 1:10, 0, 2), "slice range")
   expect_error(.Call(mizu:::mizu_map_xslice, 1:10, 2, 11), "slice range")
   expect_error(.Call(mizu:::mizu_map_xslice, 1:10, 5, 4), "slice range")
+  expect_error(.Call(mizu:::mizu_map_xslice, 1:10, 1.5, 4), "slice range")
   expect_error(
     .Call(mizu:::mizu_map_xslice, quote(x), 1, 1),
     "unsupported stream slice type"
