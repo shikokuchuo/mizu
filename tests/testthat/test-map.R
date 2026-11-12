@@ -1168,6 +1168,53 @@ test_that("mizu_collect on a map handle validates its timeout", {
   pool_end(p)
 })
 
+test_that("cancel is a no-op on collected one-shot and empty map handles", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, identity)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list(1:4))
+  expect_false(mizu_cancel(m))
+  expect_false(m[["cancelled"]])
+  empty <- mizu_map(p[["ctrl"]], integer(), identity)
+  expect_identical(mizu_collect(empty), list())
+  expect_false(mizu_cancel(empty))
+  expect_false(empty[["cancelled"]])
+})
+
+test_that("cancel is a no-op after map collection errors and timeouts", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, identity)
+  expect_s3_class(mizu_collect(m, timeout = 0.01), "mizu_timeout")
+  expect_false(mizu_cancel(m))
+  expect_false(m[["cancelled"]])
+  m2 <- mizu_map(p[["ctrl"]], 1:4, function(i) stop("boom"))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_error(mizu_collect(m2), "boom")
+  expect_false(mizu_cancel(m2))
+  expect_false(m2[["cancelled"]])
+})
+
+test_that("cancel remains active while map collection is in progress", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, identity)
+  local_mocked_bindings(map_collect = function(...) {
+    expect_true(m[["done"]])
+    expect_false(m[["settled"]])
+    expect_true(mizu_cancel(m))
+    stop(mizu:::map_cond_cancelled())
+  })
+  expect_error(mizu_collect(m), class = "mizu_error_cancelled")
+  expect_true(m[["settled"]])
+  expect_false(mizu_cancel(m))
+})
+
 test_that("an external cancel before any claim raises cancelled at collect", {
   p <- pool_pair()
   m <- mizu_map(p[["ctrl"]], runif(100000), identity) # region path

@@ -54,6 +54,23 @@ test_that("a blob-sized prepared map resubmits its staged blob", {
   pool_end(p)
 })
 
+test_that("cancelling a collected run does not cancel the next prepared run", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  pm <- mizu_map_prepare(p[["ctrl"]], 1:4, function(i) i * 2L)
+  m <- mizu_map_run(pm)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list((1:4) * 2L))
+  m2 <- mizu_map_run(pm)
+  expect_false(mizu_cancel(m))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m2), as.list((1:4) * 2L))
+})
+
 test_that("an empty prepared map runs without a pool round-trip", {
   p <- pool_pair()
   pm <- mizu_map_prepare(p[["ctrl"]], list(), sqrt)

@@ -637,9 +637,11 @@ mizu_collect_all <- function(tasks, timeout = Inf) {
 #' @param task a task handle from `mizu_submit()`, or a map handle from
 #'   [mizu_map()] / [mizu_map_run()].
 #'
-#' @return Invisibly, `TRUE` if this call cancelled the task. `FALSE` if
-#'   the call was too late: the task completed, was already cancelled, or
-#'   its pool is gone.
+#' @return Invisibly, `TRUE` if this call cancelled the task or map. `FALSE` if
+#'   the call was too late: the task completed, was already cancelled, or its
+#'   pool is gone; or the map was already cancelled or its collection had
+#'   finished. Cancelling a collected map handle is a no-op and never affects a
+#'   later run of the same prepared map.
 #'
 #' @examples
 #' p <- mizu_pool()
@@ -650,6 +652,11 @@ mizu_collect_all <- function(tasks, timeout = Inf) {
 #' @export
 mizu_cancel <- function(task) {
   if (inherits(task, "mizu_map")) {
+    # A collected handle owns nothing; a prepared map's state belongs to its
+    # next run. done cannot gate this: a cancel during collect must still act.
+    if (isTRUE(task[["cancelled"]]) || isTRUE(task[["settled"]])) {
+      return(invisible(FALSE))
+    }
     task[["cancelled"]] <- TRUE
     map_cancel(task[["st"]])
     return(invisible(TRUE))

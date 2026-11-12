@@ -1,5 +1,6 @@
 # mizu (development version)
 
+* `mizu_cancel()` on a collected map handle no longer disrupts a later run of the same prepared map.
 * New `mizu_recv_batch_async()`: the promise counterpart of `mizu_recv_batch()` — one promise resolves with a list of up to `n` messages, the high-throughput async receive.
 * Fixed pool shutdown often waiting an extra 50 ms after its workers had exited cleanly.
 * Fixes `mizu_send()` of an Arrow table failing with "attempt to apply non-function" once a `mizu_map()` result had been collected in the session (#19).

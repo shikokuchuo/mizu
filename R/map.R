@@ -360,6 +360,7 @@ map_empty_handle <- function(pool, x, template, collect) {
   m[["collect"]] <- collect
   m[["pm"]] <- NULL
   m[["done"]] <- FALSE
+  m[["settled"]] <- FALSE
   m[["promised"]] <- FALSE
   m[["cancelled"]] <- FALSE
   class(m) <- "mizu_map"
@@ -397,6 +398,7 @@ map_submit_handle <- function(pool, st, timeout, collect = "copy") {
   m[["collect"]] <- collect
   m[["pm"]] <- NULL
   m[["done"]] <- FALSE
+  m[["settled"]] <- FALSE
   m[["promised"]] <- FALSE
   m[["cancelled"]] <- FALSE
   class(m) <- "mizu_map"
@@ -449,12 +451,15 @@ map_collect_handle <- function(m, timeout) {
     stop(map_cond_cancelled())
   }
   m[["done"]] <- TRUE
+  # done admits one collector; settled closes the cancellation window only
+  # when that collector exits, so a re-entrant cancel still stops the run.
+  on.exit(m[["settled"]] <- TRUE, add = TRUE)
   st <- m[["st"]]
   if (isTRUE(st[["empty"]])) {
     return(map_empty_result(st))
   }
   deadline <- if (is.finite(timeout)) mono_time() + timeout else Inf
-  on.exit(map_cancel(st))
+  on.exit(map_cancel(st), add = TRUE)
   r <- if (isTRUE(st[["stream"]])) {
     map_collect_stream(st, deadline, m[["collect"]])
   } else {
