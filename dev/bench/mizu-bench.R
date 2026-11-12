@@ -728,6 +728,24 @@ with_pool(4L, function(p) {
     mark_ms(spec_template),
     "ms wall"
   )
+  # raw-x range staging: no compact-sequence descriptor fallback
+  spec_raw <- as.double(spec_x)
+  spec_raw_stream <- function() {
+    invisible(mizu_collect(mizu_map(
+      p,
+      spec_raw,
+      mizu_call("base::abs"),
+      .stream = TRUE,
+      .n_chunks = 256L
+    )))
+  }
+  spec_raw_stream()
+  note(
+    "map clean collect",
+    "mizu_map spec stream 256 raw",
+    mark_ms(spec_raw_stream),
+    "ms wall"
+  )
 })
 
 # compute regime: scenario 4's task work as a single map call —

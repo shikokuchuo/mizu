@@ -869,6 +869,7 @@ void mizu_r_notify_refuse(mizu_r_handle *h, const mizu_task *ts, size_t n);
 /* map.c */
 SEXP mizu_map_eligible(SEXP);
 SEXP mizu_map_stage(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_map_stage_range(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_open(SEXP, SEXP);
 SEXP mizu_map_desc(SEXP);
 SEXP mizu_map_is_template(SEXP);
@@ -876,13 +877,13 @@ SEXP mizu_map_slice(SEXP, SEXP, SEXP);
 SEXP mizu_map_xslice(SEXP, SEXP, SEXP);
 SEXP mizu_map_write(SEXP, SEXP, SEXP);
 SEXP mizu_map_gather(SEXP);
+SEXP mizu_map_gather_into(SEXP, SEXP, SEXP);
 SEXP mizu_map_gather_view(SEXP, SEXP, SEXP);
 SEXP mizu_map_dim_call(SEXP, SEXP);
 SEXP mizu_map_char_assemble(SEXP, SEXP);
 SEXP mizu_map_splice(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_vsplice(SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_splice_ix(SEXP, SEXP, SEXP);
-SEXP mizu_map_asplice(SEXP, SEXP, SEXP);
 SEXP mizu_map_lost(SEXP, SEXP);
 SEXP mizu_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,

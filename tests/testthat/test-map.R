@@ -2165,6 +2165,9 @@ test_that("mizu_map_splice validates and assembles batch results", {
   res <- list(list(c(0, 1), c(1, 1), list(list("a"), list("b"))))
   .Call(mizu:::mizu_map_splice, out, res, 1, 0, 4, 1)
   expect_identical(out[1:2], list("a", "b"))
+  shifted <- vector("list", 4)
+  .Call(mizu:::mizu_map_splice, shifted, res, 1, 2, 2, 1)
+  expect_identical(shifted, list(NULL, NULL, "a", "b"))
   bad <- list(list(c(0), c(2), list(list("a"))))
   expect_error(
     .Call(mizu:::mizu_map_splice, out, bad, 1, 0, 4, 1),
@@ -2216,20 +2219,6 @@ test_that("mizu_map_splice_ix validates and assembles foreign results", {
       0
     ),
     "length mismatch"
-  )
-})
-
-test_that("mizu_map_asplice validates and writes in place", {
-  out <- double(6)
-  .Call(mizu:::mizu_map_asplice, out, 3, c(1, 2))
-  expect_identical(out, c(0, 0, 1, 2, 0, 0))
-  expect_error(
-    .Call(mizu:::mizu_map_asplice, out, 1, "x"),
-    "invalid map splice"
-  )
-  expect_error(
-    .Call(mizu:::mizu_map_asplice, out, 6, c(1, 2)),
-    "invalid map splice range"
   )
 })
 
