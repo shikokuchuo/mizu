@@ -129,8 +129,8 @@ sentinel.
 Between runs, the region's shared scheduling state resets in O(1). The
 cursor and cancel word clear, and the run generation embedded in every
 claim word advances, so a leftover task from a previous run can never
-interfere with the new run. After an unclean run (a `.timeout` expiry,
-an error in `.f`, a worker death) the handle is marked stale, and the
+interfere with the new run. After a run ends with a `.timeout` expiry,
+an error in `.f`, or a worker death, the handle is marked stale, and the
 next `mizu_map_run()` restages into a fresh region automatically (the
 old one is deleted at garbage collection, once any leftover tasks are
 done with it). A run collected with `.collect = "view"` restages

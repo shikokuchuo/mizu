@@ -228,9 +228,13 @@ during submit or collect, the outstanding work is cancelled and the
 observe cancellation within about one batch (one element where `.f` is
 expensive), independent of `length(.x)`. The slot of a published but
 uncollected result is released only when the dropped handle's finalizer
-runs at the next garbage collection, and the map's staging region is
-deleted then too. A later map absorbs these temporarily occupied slots
-by using fewer runners.
+runs at the next garbage collection. For a non-prepared map, successful
+collection with `.collect = "copy"` releases its shared memory
+immediately. After an error or timeout, or when an uncollected handle is
+dropped, this memory is released at the next garbage collection. With
+`.collect = "view"`, the returned view takes ownership of the shared
+memory. A later map absorbs temporarily occupied slots by using fewer
+runners.
 
 ## Reproducible RNG
 
