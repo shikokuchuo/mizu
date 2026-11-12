@@ -80,13 +80,30 @@ test_that("multiple runners issue disjoint batches off one cursor", {
   expect_identical(claim(h, 1L)[["state"]], "running")
 })
 
-test_that("a batch carries its x slice from the RAWVEC section", {
+test_that("a batch reads the RAWVEC section without an owning x slice", {
   x <- as.double(1:20) * 1.5
   h <- stage_h(20, 4, x = x)
   b <- nxt(h, k = 2)
-  expect_identical(b[[5L]], x[b[[3L]]:b[[4L]]])
+  expect_null(b[[5L]])
+  expect_identical(
+    .Call(
+      mizu:::mizu_map_batch,
+      h,
+      identity,
+      list(),
+      NULL,
+      b[[3L]] - 1,
+      b[[3L]],
+      b[[4L]],
+      0,
+      NULL,
+      numeric(1L),
+      environment()
+    ),
+    as.list(x[b[[3L]]:b[[4L]]])
+  )
   b <- nxt(h, k = 64)
-  expect_identical(b[[5L]], x[b[[3L]]:b[[4L]]])
+  expect_null(b[[5L]])
   # descriptor-carried x: no slice rides the return
   h2 <- stage_h(5, 1)
   expect_null(nxt(h2)[[5L]])
