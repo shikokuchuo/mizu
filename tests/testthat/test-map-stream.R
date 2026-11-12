@@ -266,6 +266,10 @@ test_that("mizu_map_vsplice validates its arguments and writes in place", {
     "invalid map splice arguments"
   )
   expect_error(
+    .Call(mizu:::mizu_map_vsplice, out, 1, list(1), 1.5),
+    "invalid map splice arguments"
+  )
+  expect_error(
     .Call(mizu:::mizu_map_vsplice, out, 0, list(1), 1),
     "invalid map splice range"
   )

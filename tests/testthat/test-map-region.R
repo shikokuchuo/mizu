@@ -242,6 +242,23 @@ test_that("the map batch entry validates its arguments", {
       0,
       1,
       5,
+      1.5,
+      NULL,
+      eic,
+      env
+    ),
+    "invalid character template length"
+  )
+  expect_error(
+    .Call(
+      mizu:::mizu_map_batch,
+      NULL,
+      identity,
+      NULL,
+      1:10,
+      0,
+      1,
+      5,
       0,
       1L,
       eic,

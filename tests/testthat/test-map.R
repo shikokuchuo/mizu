@@ -363,6 +363,23 @@ test_that("native character templates flatten through the generic path", {
   expect_snapshot(error = TRUE, run_map(p, 1:4, fl, template = character(1)))
 })
 
+test_that("mizu_map_char_assemble validates its inputs", {
+  expect_error(
+    .Call(mizu:::mizu_map_char_assemble, list(), 1),
+    "invalid map assembly arguments"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_char_assemble, list(), character()),
+    "invalid map assembly arguments"
+  )
+  # deferred string conversion keeps this huge template lazy
+  template <- as.character(seq_len(2^51 + 1))
+  expect_error(
+    .Call(mizu:::mizu_map_char_assemble, list(NULL, NULL), template),
+    "map output is too large"
+  )
+})
+
 test_that("a view x rides the descriptor by reference and reads off the shared pages", {
   skip_on_cran() # 1e5 element evaluations in one step: minutes under valgrind
   p <- pool_pair()
@@ -2055,6 +2072,10 @@ test_that("mizu_map_splice validates and assembles batch results", {
   expect_error(
     .Call(mizu:::mizu_map_splice, out, list(), 0, 0, 4, 1),
     "invalid morsel size"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_splice, out, list(), 1, 1, 4, 1),
+    "invalid map splice range"
   )
   expect_error(
     .Call(mizu:::mizu_map_splice, out, list(42), 1, 0, 4, 1),
