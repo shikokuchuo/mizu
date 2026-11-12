@@ -824,10 +824,14 @@ test_that("a clean native stream collect closes its region", {
     .Call(mizu:::mizu_map_info, st[["wrap"]]),
     "map handle is closed"
   )
-  expect_error(
-    .Call(mizu:::mizu_map_open, st[["name"]], TRUE),
-    "cannot open map region"
-  )
+  # POSIX unlinks the name at close; a Win32 file mapping's name lives on
+  # while any handle (a worker's cached context) is open
+  if (.Platform[["OS.type"]] != "windows") {
+    expect_error(
+      .Call(mizu:::mizu_map_open, st[["name"]], TRUE),
+      "cannot open map region"
+    )
+  }
 })
 
 test_that("mizu_map(.stream) needs no pool round-trip for empty x", {

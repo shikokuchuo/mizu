@@ -1352,10 +1352,14 @@ test_that("a clean map promise leaves the cancel word clear and closes one-shot 
     .Call(mizu:::mizu_map_info, st2[["wrap"]]),
     "map handle is closed"
   )
-  expect_error(
-    .Call(mizu:::mizu_map_open, st2[["name"]], TRUE),
-    "cannot open map region"
-  )
+  # POSIX unlinks the name at close; a Win32 file mapping's name lives on
+  # while any handle (a worker's cached context) is open
+  if (.Platform[["OS.type"]] != "windows") {
+    expect_error(
+      .Call(mizu:::mizu_map_open, st2[["name"]], TRUE),
+      "cannot open map region"
+    )
+  }
 })
 
 test_that("a rejected map promise makes later cancellation a no-op", {
