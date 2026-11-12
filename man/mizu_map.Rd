@@ -137,9 +137,11 @@ shared output area and gathered in one copy, so no result is serialized. With
 \code{.collect = "view"}, the gather copy is skipped as well, and the result is a
 copy-on-write view over the shared output area itself, for pipelines that
 reduce it immediately. A template of length \code{m > 1} gathers an \code{m * length(.x)} matrix with the names of the template as row names, as \code{vapply()}
-does. Character templates are assembled through the generic result path
-instead, so their type checks surface at assembly rather than per element on
-the workers. Large results of a consistent shape belong on the template path.
+does. Character templates use the generic result path. On native, non-spec
+maps, workers validate each result and flatten each batch before publishing
+it, so a type or length mismatch fails fast with its element index. Spec maps
+retain list-shaped results and validate them at assembly on the submitter.
+Large results of a consistent shape belong on the template path.
 A runner's generic results accumulate on the worker and publish once, so
 \code{.template} both caps worker memory and moves the values across processes
 without serialization. For readers of \code{\link[=mizu_pool_stats]{mizu_pool_stats()}}: a map with large

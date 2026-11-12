@@ -124,9 +124,11 @@ mono_time <- function() .Call(mizu_now_call)
 #' copy-on-write view over the shared output area itself, for pipelines that
 #' reduce it immediately. A template of length `m > 1` gathers an `m *
 #' length(.x)` matrix with the names of the template as row names, as `vapply()`
-#' does. Character templates are assembled through the generic result path
-#' instead, so their type checks surface at assembly rather than per element on
-#' the workers. Large results of a consistent shape belong on the template path.
+#' does. Character templates use the generic result path. On native, non-spec
+#' maps, workers validate each result and flatten each batch before publishing
+#' it, so a type or length mismatch fails fast with its element index. Spec maps
+#' retain list-shaped results and validate them at assembly on the submitter.
+#' Large results of a consistent shape belong on the template path.
 #' A runner's generic results accumulate on the worker and publish once, so
 #' `.template` both caps worker memory and moves the values across processes
 #' without serialization. For readers of [mizu_pool_stats()]: a map with large
@@ -1071,6 +1073,7 @@ map_stage <- function(
   st[["template"]] <- template
   st[["direct"]] <- direct
   st[["spec"]] <- spec
+  st[["char_flat"]] <- !spec && typeof(template) == "character"
   # a spec map on foreign workers collects the workers' own runner shape
   # (pymizu's element-range histories), not this binding's morsel pairs
   st[["pymap"]] <- FALSE
@@ -1175,7 +1178,15 @@ map_stage <- function(
         st[["ms"]]
       )
     } else {
-      desc <- if (st[["xraw"]]) list(f, dots) else list(f, dots, x)
+      desc <- if (st[["char_flat"]]) {
+        # fixed private layout: x stays slot 3 (NULL with a raw section),
+        # the character template's m rides slot 4
+        list(f, dots, if (st[["xraw"]]) NULL else x, length(template))
+      } else if (st[["xraw"]]) {
+        list(f, dots)
+      } else {
+        list(f, dots, x)
+      }
       sr <- .Call(
         mizu_map_stage,
         desc,
@@ -1262,6 +1273,7 @@ map_stage_stream <- function(
   st[["x"]] <- x
   st[["template"]] <- template
   st[["direct"]] <- direct
+  st[["char_flat"]] <- !spec && typeof(template) == "character"
   st[["m"]] <- if (direct) length(template)
 
   caps <- map_caps(pool)
@@ -1311,7 +1323,11 @@ map_stage_stream <- function(
 
   sr <- .Call(
     mizu_map_stage,
-    list(f, dots),
+    if (st[["char_flat"]]) {
+      list(f, dots, NULL, length(template))
+    } else {
+      list(f, dots)
+    },
     NULL,
     NULL,
     n,
@@ -1436,6 +1452,8 @@ map_stream_prime <- function(pool, st, deadline) {
     if (isTRUE(st[["spec"]])) {
       vector(typeof(st[["template"]]), st[["n"]] * st[["m"]])
     }
+  } else if (isTRUE(st[["char_flat"]])) {
+    vector("character", st[["n"]] * length(st[["template"]]))
   } else {
     vector("list", st[["n"]])
   }
@@ -1586,14 +1604,28 @@ map_stream_turn <- function(pool, st, deadline) {
       .Call(mizu_map_splice_ix, st[["out"]], list(v[["value"]]), lo - 1)
     } else {
       local <- vector("list", hi - lo + 1)
-      .Call(mizu_map_splice, local, list(v[["value"]]), hi - lo + 1)
-      .Call(mizu_map_vsplice, st[["out"]], lo, local)
+      .Call(
+        mizu_map_splice,
+        local,
+        list(v[["value"]]),
+        hi - lo + 1,
+        0,
+        hi - lo + 1,
+        1
+      )
+      .Call(mizu_map_vsplice, st[["out"]], lo, local, 1)
     }
     .Call(mizu_map_close, wrap)
   } else if (!st[["direct"]]) {
     # the splice is one C pass (the region path's assembly discipline): an
     # R-level `[<-` would dispatch per element, per chunk
-    .Call(mizu_map_vsplice, st[["out"]], st[["lo"]][[k]], v[["value"]])
+    .Call(
+      mizu_map_vsplice,
+      st[["out"]],
+      st[["lo"]][[k]],
+      v[["value"]],
+      if (st[["char_flat"]]) length(st[["template"]]) else 1
+    )
   }
   map_stream_refill(pool, st, deadline)
   invisible()
@@ -1752,7 +1784,13 @@ map_collect <- function(
   collect = "copy",
   doomed0 = FALSE
 ) {
-  out <- if (!st[["direct"]]) vector("list", st[["n"]])
+  out <- if (!st[["direct"]]) {
+    if (isTRUE(st[["char_flat"]])) {
+      vector("character", st[["n"]] * length(st[["template"]]))
+    } else {
+      vector("list", st[["n"]])
+    }
+  }
   if (!is.null(st[["blob"]])) {
     for (k in seq_len(st[["C"]])) {
       # terminal outcomes come back mizu_caught-boxed (only C boxes, so an
@@ -1777,7 +1815,7 @@ map_collect <- function(
       st[["handles"]][k] <- list(NULL)
       # the splice is one C pass, as the streaming path's (an R-level
       # `[<-` would dispatch per element, per chunk)
-      .Call(mizu_map_vsplice, out, st[["lo"]][[k]], v)
+      .Call(mizu_map_vsplice, out, st[["lo"]][[k]], v, 1)
     }
   } else {
     # Region path: collect the R runner handles under the exhausted-runner
@@ -1949,9 +1987,17 @@ map_collect <- function(
         # the same C pass over the other history shape
         .Call(mizu_map_splice_ix, out, runs, 0)
       } else {
-        # one C pass splices every runner's batch value lists into out by
-        # element position
-        .Call(mizu_map_splice, out, runs, st[["ms"]])
+        # one C pass splices every runner's batch values into out by element
+        # position (one flat character vector per batch on char_flat maps)
+        .Call(
+          mizu_map_splice,
+          out,
+          runs,
+          st[["ms"]],
+          0,
+          st[["n"]],
+          if (isTRUE(st[["char_flat"]])) length(st[["template"]]) else 1
+        )
       }
     }
   }
@@ -1993,6 +2039,8 @@ map_assemble <- function(st, out, collect = "copy") {
     } else {
       .Call(mizu_map_gather, st[["wrap"]])
     }
+  } else if (isTRUE(st[["char_flat"]])) {
+    out
   } else {
     .Call(mizu_map_char_assemble, out, st[["template"]])
   }
@@ -2073,6 +2121,7 @@ map_chunk <- function(r, b, s = NULL) {
       lo - 1,
       lo,
       hi,
+      0, # character templates never take the blob path
       sr,
       eic,
       environment()
@@ -2119,6 +2168,7 @@ map_stream_chunk <- function(n, r, x, s = NULL) {
       0,
       lo,
       hi,
+      ctx[["char_m"]],
       sr,
       eic,
       environment()
@@ -2218,6 +2268,7 @@ map_runner <- function(n, a, s = NULL) {
           base,
           lo,
           hi,
+          ctx[["char_m"]],
           sr,
           eic,
           environment()
@@ -2293,7 +2344,8 @@ map_ctx <- function(pool, name) {
         dots = dots,
         x = d[[3L]],
         xp = xp,
-        tmpl = .Call(mizu_map_is_template, xp)
+        tmpl = .Call(mizu_map_is_template, xp),
+        char_m = 0
       )
     } else {
       ctx <- list(
@@ -2301,7 +2353,8 @@ map_ctx <- function(pool, name) {
         dots = d[[2L]],
         x = if (length(d) >= 3L) d[[3L]],
         xp = xp,
-        tmpl = .Call(mizu_map_is_template, xp)
+        tmpl = .Call(mizu_map_is_template, xp),
+        char_m = if (length(d) >= 4L) d[[4L]] else 0
       )
     }
     assign(name, ctx, envir = cache)
