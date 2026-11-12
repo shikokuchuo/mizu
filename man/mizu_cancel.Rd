@@ -11,9 +11,11 @@ mizu_cancel(task)
 \code{\link[=mizu_map]{mizu_map()}} / \code{\link[=mizu_map_run]{mizu_map_run()}}.}
 }
 \value{
-Invisibly, \code{TRUE} if this call cancelled the task. \code{FALSE} if
-the call was too late: the task completed, was already cancelled, or
-its pool is gone.
+Invisibly, \code{TRUE} if this call cancelled the task or map. \code{FALSE} if
+the call was too late: the task completed, was already cancelled, or its
+pool is gone; or the map was already cancelled or its collection had
+finished. Cancelling a collected map handle is a no-op and never affects a
+later run of the same prepared map.
 }
 \description{
 Cancellation is advisory: it never interrupts running code. The

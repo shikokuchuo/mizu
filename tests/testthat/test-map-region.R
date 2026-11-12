@@ -174,6 +174,7 @@ test_that("the map batch entry validates its arguments", {
       0,
       0,
       5,
+      0,
       NULL,
       eic,
       env
@@ -190,6 +191,7 @@ test_that("the map batch entry validates its arguments", {
       0,
       1,
       5,
+      0,
       NULL,
       eic,
       env
@@ -206,6 +208,7 @@ test_that("the map batch entry validates its arguments", {
       0,
       1,
       5,
+      0,
       NULL,
       "x",
       env
@@ -222,6 +225,7 @@ test_that("the map batch entry validates its arguments", {
       0,
       1,
       5,
+      0,
       NULL,
       eic,
       NULL
@@ -238,6 +242,24 @@ test_that("the map batch entry validates its arguments", {
       0,
       1,
       5,
+      1.5,
+      NULL,
+      eic,
+      env
+    ),
+    "invalid character template length"
+  )
+  expect_error(
+    .Call(
+      mizu:::mizu_map_batch,
+      NULL,
+      identity,
+      NULL,
+      1:10,
+      0,
+      1,
+      5,
+      0,
       1L,
       eic,
       env
@@ -273,18 +295,26 @@ test_that("splice places batch values by element position", {
     list(c(0, 2), c(1, 1), list(list("a", "b"), list("c", "d"))),
     list(1, 1, list(list("x", "y")))
   )
-  .Call(mizu:::mizu_map_splice, out, results, 2)
+  .Call(mizu:::mizu_map_splice, out, results, 2, 0, 10, 1)
   expect_identical(
     out,
     c(list("a", "b", "x", "y", "c", "d"), rep(list(NULL), 4L))
   )
   # a batch range or length that disagrees with the geometry is corruption
   expect_error(
-    .Call(mizu:::mizu_map_splice, out, list(list(0, 2, list(list("a")))), 2),
+    .Call(
+      mizu:::mizu_map_splice,
+      out,
+      list(list(0, 2, list(list("a")))),
+      2,
+      0,
+      10,
+      1
+    ),
     "map batch result length mismatch"
   )
   expect_error(
-    .Call(mizu:::mizu_map_splice, out, list(list("a")), 2),
+    .Call(mizu:::mizu_map_splice, out, list(list("a")), 2, 0, 10, 1),
     "invalid map runner result"
   )
 })

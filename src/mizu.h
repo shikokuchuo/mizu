@@ -878,14 +878,15 @@ SEXP mizu_map_write(SEXP, SEXP, SEXP);
 SEXP mizu_map_gather(SEXP);
 SEXP mizu_map_gather_view(SEXP, SEXP, SEXP);
 SEXP mizu_map_dim_call(SEXP, SEXP);
-SEXP mizu_map_splice(SEXP, SEXP, SEXP);
-SEXP mizu_map_vsplice(SEXP, SEXP, SEXP);
+SEXP mizu_map_char_assemble(SEXP, SEXP);
+SEXP mizu_map_splice(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+SEXP mizu_map_vsplice(SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_splice_ix(SEXP, SEXP, SEXP);
 SEXP mizu_map_asplice(SEXP, SEXP, SEXP);
 SEXP mizu_map_lost(SEXP, SEXP);
 SEXP mizu_map_next(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
-                    SEXP);
+                    SEXP, SEXP);
 SEXP mizu_map_abandon(SEXP, SEXP);
 SEXP mizu_map_cancel_set(SEXP);
 SEXP mizu_map_close(SEXP);

@@ -103,6 +103,15 @@ test_that("a spec .f streams over R workers (the same-language shape)", {
     template = numeric(1)
   )
   expect_identical(run_stream(p, st3), as.double(abs(1:20)))
+  st4 <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:20,
+    mizu_call(.source = "letters[x]"),
+    list(),
+    template = character(1)
+  )
+  expect_false(st4[["char_flat"]])
+  expect_identical(run_stream(p, st4), letters[1:20])
   pool_end(p)
 })
 
@@ -249,23 +258,30 @@ test_that("mizu_map_xslice slices every supported shape, names dropped", {
 test_that("mizu_map_vsplice validates its arguments and writes in place", {
   out <- vector("list", 4L)
   expect_error(
-    .Call(mizu:::mizu_map_vsplice, out, 1, "x"),
+    .Call(mizu:::mizu_map_vsplice, out, 1, "x", 1),
     "invalid map splice arguments"
   )
   expect_error(
-    .Call(mizu:::mizu_map_vsplice, "x", 1, list(1)),
+    .Call(mizu:::mizu_map_vsplice, "x", 1, list(1), 1),
     "invalid map splice arguments"
   )
   expect_error(
-    .Call(mizu:::mizu_map_vsplice, out, 0, list(1)),
+    .Call(mizu:::mizu_map_vsplice, out, 1, list(1), 1.5),
+    "invalid map splice arguments"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_vsplice, out, 0, list(1), 1),
     "invalid map splice range"
   )
   expect_error(
-    .Call(mizu:::mizu_map_vsplice, out, 4, list(1, 2)),
+    .Call(mizu:::mizu_map_vsplice, out, 4, list(1, 2), 1),
     "invalid map splice range"
   )
-  .Call(mizu:::mizu_map_vsplice, out, 2, list("a", "b"))
+  .Call(mizu:::mizu_map_vsplice, out, 2, list("a", "b"), 1)
   expect_identical(out, list(NULL, "a", "b", NULL))
+  cout <- character(8)
+  .Call(mizu:::mizu_map_vsplice, cout, 2, c("a", "b", "c", "d"), 2)
+  expect_identical(cout, c("", "", "a", "b", "c", "d", "", ""))
 })
 
 test_that("mizu_map_xslice re-classes class-only integer64", {
@@ -345,7 +361,7 @@ test_that("template results land in the output area; value and view collect", {
   pool_end(p)
 })
 
-test_that("m > 1 templates gather a matrix and character templates assemble", {
+test_that("m > 1 templates gather a matrix", {
   p <- pool_pair()
   st <- mizu:::map_stage_stream(
     p[["ctrl"]],
@@ -363,16 +379,48 @@ test_that("m > 1 templates gather a matrix and character templates assemble", {
       dimnames = list(c("a", "b"), NULL)
     )
   )
-  st2 <- mizu:::map_stage_stream(
+  pool_end(p)
+})
+
+test_that("native streaming character templates flatten and validate", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- setNames(1:5, letters[1:5])
+  f <- function(i) if (i == 2L) NA_character_ else paste0("v", i)
+  st <- mizu:::map_stage_stream(
     p[["ctrl"]],
-    1:5,
-    function(i) paste0("v", i),
+    x,
+    f,
     list(),
     template = character(1)
   )
-  expect_false(st2[["direct"]])
-  expect_identical(run_stream(p, st2), paste0("v", 1:5))
-  pool_end(p)
+  expect_false(st[["direct"]])
+  expect_true(st[["char_flat"]])
+  expect_identical(run_stream(p, st), vapply(x, f, character(1)))
+  g <- function(i) c(letters[i], LETTERS[i])
+  template <- c(lo = "", hi = "")
+  st2 <- mizu:::map_stage_stream(p[["ctrl"]], x, g, list(), template = template)
+  expect_identical(run_stream(p, st2), vapply(x, g, template))
+  ft <- function(i) if (i == 2L) i else letters[i]
+  st3 <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:5,
+    ft,
+    list(),
+    template = character(1)
+  )
+  et <- tryCatch(run_stream(p, st3), error = identity)
+  expect_identical(et[["mizu_map_index"]], 2)
+  fl <- function(i) if (i == 3L) letters[1:2] else letters[i]
+  st4 <- mizu:::map_stage_stream(
+    p[["ctrl"]],
+    1:5,
+    fl,
+    list(),
+    template = character(1)
+  )
+  el <- tryCatch(run_stream(p, st4), error = identity)
+  expect_identical(el[["mizu_map_index"]], 3)
 })
 
 test_that("seed invariance holds across chunk counts and window sizes", {
@@ -781,7 +829,9 @@ test_that("worker death fails a streaming map with the chunk's exact range", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
+      pend <- d[["tasks"]][
+        d[["tasks"]][["status"]] %in% c("pending", "running"),
+      ]
       hit <- any(d[["tasks"]][["status"]] == "ok") &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L
@@ -845,7 +895,9 @@ test_that("a drained worker death wins over the observed error", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
+      pend <- d[["tasks"]][
+        d[["tasks"]][["status"]] %in% c("pending", "running"),
+      ]
       hit <- any(d[["tasks"]][["status"]] == "err") &&
         nrow(pend) == 1L &&
         pend[["worker"]] >= 0L
@@ -894,7 +946,9 @@ test_that("deaths on both workers accumulate every lost range", {
   expect_true(wait_until(
     {
       d <- mizu_pool_dump(p)
-      pend <- d[["tasks"]][d[["tasks"]][["status"]] %in% c("pending", "running"), ]
+      pend <- d[["tasks"]][
+        d[["tasks"]][["status"]] %in% c("pending", "running"),
+      ]
       hit <- nrow(pend) == 2L && all(pend[["worker"]] >= 0L)
       if (hit) {
         victims <- d[["workers"]][["pid"]][pend[["worker"]] + 1L]
@@ -1137,7 +1191,9 @@ test_that("a worker death in a streaming spec map fails with its range", {
     {
       d <- mizu_pool_dump(p)
       pend <- d[["tasks"]][
-        d[["tasks"]][["status"]] %in% c("pending", "running") & d[["tasks"]][["worker"]] >= 0L,
+        d[["tasks"]][["status"]] %in%
+          c("pending", "running") &
+          d[["tasks"]][["worker"]] >= 0L,
       ]
       hit <- any(d[["tasks"]][["status"]] == "ok") && nrow(pend) >= 1L
       if (hit) {
@@ -1183,7 +1239,9 @@ test_that("a death drained beside an error takes the death verdict", {
     {
       d <- mizu_pool_dump(p)
       pend <- d[["tasks"]][
-        d[["tasks"]][["status"]] %in% c("pending", "running") & d[["tasks"]][["worker"]] >= 0L,
+        d[["tasks"]][["status"]] %in%
+          c("pending", "running") &
+          d[["tasks"]][["worker"]] >= 0L,
       ]
       hit <- any(d[["tasks"]][["status"]] == "err") && nrow(pend) >= 1L
       if (hit) {

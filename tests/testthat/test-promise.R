@@ -1326,17 +1326,33 @@ test_that("a map promise resolves with the gather and refuses a blocking collect
   expect_identical(v, (1:4) + 1L)
 })
 
+test_that("a rejected map promise makes later cancellation a no-op", {
+  skip_if_no_promises()
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, function(i) stop("boom"))
+  o <- observe(promises::as.promise(m))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_true(pump_until(function() settled(o)))
+  expect_match(conditionMessage(o$error), "boom")
+  expect_false(mizu_cancel(m))
+  expect_false(m[["cancelled"]])
+})
+
 test_that("mizu_cancel on a map handle: a promise rejects, a blocking collect raises", {
   skip_if_no_promises()
   p <- pool_pair()
   on.exit(pool_end(p))
   m <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L)
   o <- observe(promises::as.promise(m))
-  mizu_cancel(m)
+  expect_true(mizu_cancel(m))
   expect_true(pump_until(function() settled(o)))
   expect_s3_class(o$error, "mizu_error_cancelled")
+  expect_false(mizu_cancel(m))
   m2 <- mizu_map(p[["ctrl"]], 1:4, function(i) i * 2L)
-  mizu_cancel(m2)
+  expect_true(mizu_cancel(m2))
   expect_error(mizu_collect(m2), class = "mizu_error_cancelled")
 })
 
@@ -1369,6 +1385,7 @@ test_that("an empty map is a handle whose collect and promise resolve empty", {
   o <- observe(promises::as.promise(m2))
   expect_true(pump_until(function() settled(o)))
   expect_identical(o$value, integer(0))
+  expect_false(mizu_cancel(m2))
 })
 
 test_that("a map promise is cached; collected and streaming handles refuse one", {
@@ -1410,6 +1427,7 @@ test_that("a prepared map's clean promise collect hands the state back for re-ar
   expect_identical(o$value, as.list((1:4) * 3L))
   expect_false(is.null(pm[["st"]])) # clean: the state is back for re-arm
   m2 <- mizu_map_run(pm)
+  expect_false(mizu_cancel(m))
   while (pool_step(p) == 1L) {
     NULL
   }

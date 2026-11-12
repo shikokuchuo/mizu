@@ -58,6 +58,7 @@ probes and A/B isolations stay in the log.
 | streaming, channel batch | 42.0M msg/s | 2026-10-01 |
 | map trivial f | 0.1 us/elt | 2026-09-26 |
 | map trivial f, template | 0.1 us/elt | 2026-09-26 |
+| map trivial f, character template | 0.1 us/elt | 2026-11-12 |
 | map trivial f, .seed | 0.1 us/elt | 2026-09-26 |
 | map trivial f, prepared | 0.1 us/elt | 2026-10-01 |
 | map ~10us tasks x 2000 | 5.2 ms wall | 2026-10-22 |
@@ -2094,3 +2095,35 @@ delta at report-row scale.
 Status: full suite green (6018 pass, 0 fail, 7 skips; the pymizu venv on
 PATH ran the cross-language legs); rchk clean. Best-known table
 untouched.
+
+## 2026-11-12 — character-template C assembly (step 1a)
+
+Replaced the submitter's per-element `vapply()` / `identity` calls with one C
+`STRSXP` allocation and direct `CHARSXP` copies for character-template maps.
+The isolated probe uses 200,000 length-one results and excludes worker
+execution and transport; the end-to-end probe includes both on four workers.
+
+| measurement (ms) | Phase 0 (`3de1902`) | step 1a working tree |
+|---|---:|---:|
+| isolated assembly | 30, 32, 32, 31, 31 | 1, 1, 1, 1, 2 |
+| end-to-end map | 90, 100, 96 | 43, 42, 42 |
+
+Status: full suite green (6101 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs). Best-known table untouched.
+
+## 2026-11-12 — native character batch flattening (step 1b)
+
+Native, non-spec character maps now validate each result in the worker batch
+loop and publish one flat `STRSXP` per batch; spec maps retain list-shaped
+results and submitter assembly. The private descriptor carries the template
+length, with no interchange or morsel-protocol change.
+
+The required serializer gate held through mizu's own codec (200,000 results in
+256-element batches): the list shape took 11/11/11/11/11 ms to unserialize and
+4,507,718 bytes, versus 7/7/7/7/7 ms and 2,907,718 bytes flattened. End-to-end
+on four workers, the step 1a build (`d4b3273`) took 43/42/42 ms and the step 1b
+working tree took 11/10/10/11/11 ms. The canonical `mizu_map character
+template` row read 0.1 us/element, its initial best-known entry.
+
+Status: full suite green (6129 pass, 0 fail, 7 skips; the pymizu venv on
+PATH ran the cross-language legs); rchk zero package findings.

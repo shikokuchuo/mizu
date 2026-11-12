@@ -77,6 +77,55 @@ test_that("template and view collect work across languages", {
   )
 })
 
+test_that("character templates on Python-worker spec maps retain list assembly", {
+  py <- skip_if_no_pymizu()
+  launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)
+  p <- mizu_pool(2L, launcher = launcher)
+  on.exit(mizu_pool_stop(p))
+  st <- mizu:::map_stage(
+    p,
+    1:4,
+    mizu_call(.source = "str(x)"),
+    list(),
+    template = character(1)
+  )
+  expect_true(st[["pymap"]])
+  expect_false(st[["char_flat"]])
+  mizu:::map_submit(p, st)
+  expect_identical(
+    mizu:::map_collect(st, mizu:::mono_time() + 30),
+    as.character(1:4)
+  )
+  stm <- mizu:::map_stage(
+    p,
+    1:4,
+    mizu_call(.source = "[str(x), str(-x)]"),
+    list(),
+    template = c(lo = "", hi = "")
+  )
+  mizu:::map_submit(p, stm)
+  expect_identical(
+    mizu:::map_collect(stm, mizu:::mono_time() + 30),
+    vapply(
+      1:4,
+      function(i) c(as.character(i), as.character(-i)),
+      c(lo = "", hi = "")
+    )
+  )
+  e <- tryCatch(
+    mizu_collect(mizu_map(
+      p,
+      1:4,
+      mizu_call("builtins.int"),
+      .template = character(1)
+    )),
+    error = identity
+  )
+  expect_match(conditionMessage(e), "must be type 'character'")
+  expect_null(e[["mizu_map_index"]])
+  expect_null(e[["index"]])
+})
+
 test_that("a per-element error crosses with its element index", {
   py <- skip_if_no_pymizu()
   launcher <- mizu_py_launcher(py, stdout = FALSE, stderr = FALSE)

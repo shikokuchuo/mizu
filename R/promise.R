@@ -641,14 +641,15 @@ settle_waiter <- function(w) {
     m <- w[["map"]]
     st <- m[["st"]]
     m[["done"]] <- TRUE
-    v <- if (isTRUE(m[["cancelled"]])) {
-      map_cond_cancelled()
-    } else {
-      tryCatch(
-        map_collect(st, Inf, m[["collect"]], doomed0 = w[["doomed"]]),
-        error = identity
-      )
-    }
+    v <- tryCatch(
+      if (isTRUE(m[["cancelled"]])) {
+        map_cond_cancelled()
+      } else {
+        map_collect(st, Inf, m[["collect"]], doomed0 = w[["doomed"]])
+      },
+      error = identity,
+      finally = m[["settled"]] <- TRUE
+    )
     if (!inherits(v, "error")) {
       pm <- m[["pm"]]
       if (!is.null(pm) && !isTRUE(st[["consumed"]])) {
@@ -903,6 +904,7 @@ as.promise.mizu_map <- function(x) {
   if (isTRUE(st[["empty"]])) {
     # no enrollment: nothing runs, nothing publishes — resolve at once
     x[["done"]] <- TRUE
+    x[["settled"]] <- TRUE
     x[["promised"]] <- TRUE
     promise <- promises::promise(function(resolve, reject) {
       resolve(map_empty_result(st))

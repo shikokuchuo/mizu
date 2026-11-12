@@ -77,6 +77,7 @@ static const char *map_type_name(int type) {
   case REALSXP: return "double";
   case CPLXSXP: return "complex";
   case RAWSXP:  return "raw";
+  case STRSXP:  return "character";
   case MIZU_TYPE_INT64: return "integer64";
   }
   return "?";
@@ -437,11 +438,13 @@ SEXP mizu_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
    tryCatch per batch annotates an escaping error with the failing
    element — the "first by element index" contract. x is the batch's
    source vector (the RAWVEC slice, or the descriptor x) and base its
-   0-based offset of element lo. Returns the batch's value list, or NULL
-   on the template path. */
+   0-based offset of element lo. char_m is zero for ordinary generic results,
+   or the template length for one flattened character vector per batch.
+   Returns the batch's value list or character vector, or NULL on the direct
+   template path. */
 SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
-                   SEXP lo_sexp, SEXP hi_sexp, SEXP sr, SEXP ei_sexp,
-                   SEXP rho) {
+                   SEXP lo_sexp, SEXP hi_sexp, SEXP char_m_sexp, SEXP sr,
+                   SEXP ei_sexp, SEXP rho) {
   mizu_map_h *mh = xp == R_NilValue ? NULL : map_h_get(xp);
   int tmpl = mh != NULL && mh->h.out_type != 0;
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
@@ -459,6 +462,12 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
   double *ei = REAL(ei_sexp);
   R_xlen_t len = (R_xlen_t) (hi - lo + 1);
   R_xlen_t base0 = (R_xlen_t) base;
+  double cm = Rf_asReal(char_m_sexp);
+  if (!(cm >= 0) || cm != floor(cm) || cm > (double) R_XLEN_T_MAX ||
+      (tmpl && cm != 0) ||
+      (cm > 0 && len > R_XLEN_T_MAX / (R_xlen_t) cm))
+    Rf_error("mizu: invalid character template length");
+  const R_xlen_t char_m = (R_xlen_t) cm;
 
   int state[6];
   int seeded = sr != R_NilValue;
@@ -501,7 +510,8 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
   SEXP out = R_NilValue;
   int np = 3;
   if (!tmpl) {
-    out = PROTECT(Rf_allocVector(VECSXP, len));
+    out = PROTECT(Rf_allocVector(char_m > 0 ? STRSXP : VECSXP,
+                                 char_m > 0 ? len * char_m : len));
     np++;
   }
   const int xt = TYPEOF(x);
@@ -574,8 +584,17 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
       Rf_classgets(elt, mizu_view_int64_class);
     }
     SEXP v = PROTECT(Rf_eval(call, rho));
-    if (tmpl) map_write_value(mh, e, v);
-    else SET_VECTOR_ELT(out, i, v);
+    if (tmpl) {
+      map_write_value(mh, e, v);
+    } else if (char_m > 0) {
+      if (TYPEOF(v) != STRSXP || XLENGTH(v) != char_m)
+        Rf_error("mizu: map values must be type 'character' and length %llu",
+                 (unsigned long long) char_m);
+      for (R_xlen_t j = 0; j < char_m; j++)
+        SET_STRING_ELT(out, i * char_m + j, STRING_ELT(v, j));
+    } else {
+      SET_VECTOR_ELT(out, i, v);
+    }
     UNPROTECT(1);
   }
   UNPROTECT(np);
@@ -658,21 +677,52 @@ SEXP mizu_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
   return view;
 }
 
-/* Generic-path assembly: one pass splices every collected runner
-   result's batch value lists into out by element position — the R side
-   per batch allocated a seq.int index as long as the batch and paid the
-   subassignment dispatch; here the batch ranges recompute from the
-   morsel geometry exactly as mizu_map_next issued them (the final grant
-   clamps to n) and only the pointer copies remain. A range or length
-   mismatch against a published batch means protocol corruption, not a
-   recoverable condition. */
-SEXP mizu_map_splice(SEXP out, SEXP results, SEXP ms_sexp) {
-  if (TYPEOF(out) != VECSXP || TYPEOF(results) != VECSXP)
+/* Character-template assembly: one allocation and one CHARSXP pointer copy
+   per result element, replacing vapply's per-element R identity call. Every
+   collected value is checked before it lands, with the direct output area's
+   type/length error wording. Fresh result UNPROTECTED at return. */
+SEXP mizu_map_char_assemble(SEXP out, SEXP template) {
+  if (TYPEOF(out) != VECSXP || TYPEOF(template) != STRSXP)
+    Rf_error("mizu: invalid map assembly arguments");
+  const R_xlen_t n = XLENGTH(out), m = XLENGTH(template);
+  if (m < 1)
+    Rf_error("mizu: invalid map assembly arguments");
+  if (n > R_XLEN_T_MAX / m)
+    Rf_error("mizu: map output is too large");
+  SEXP res = PROTECT(Rf_allocVector(STRSXP, n * m));
+  for (R_xlen_t i = 0; i < n; i++) {
+    SEXP value = VECTOR_ELT(out, i);
+    if (TYPEOF(value) != STRSXP || XLENGTH(value) != m)
+      Rf_error("mizu: map values must be type 'character' and length %llu",
+               (unsigned long long) m);
+    for (R_xlen_t j = 0; j < m; j++)
+      SET_STRING_ELT(res, i * m + j, STRING_ELT(value, j));
+  }
+  UNPROTECT(1);
+  return res;
+}
+
+/* Collected-runner assembly: one pass splices batch values into out by
+   element position. Histories and ms are chunk-local; base shifts the output
+   element offset and n bounds the chunk independently of the full output.
+   Generic lists have mult = 1; flattened character results carry mult CHARSXPs
+   per element. A range or length mismatch is protocol corruption. */
+SEXP mizu_map_splice(SEXP out, SEXP results, SEXP ms_sexp, SEXP base_sexp,
+                     SEXP n_sexp, SEXP mult_sexp) {
+  SEXPTYPE type = TYPEOF(out);
+  if ((type != VECSXP && type != STRSXP) || TYPEOF(results) != VECSXP)
     Rf_error("mizu: invalid map splice arguments");
   double ms = Rf_asReal(ms_sexp);
   if (!(ms >= 1))
     Rf_error("mizu: invalid morsel size");
-  R_xlen_t n = XLENGTH(out);
+  double base = Rf_asReal(base_sexp), n = Rf_asReal(n_sexp),
+         mult = Rf_asReal(mult_sexp);
+  if (!(base >= 0) || !(n >= 0) || !(mult >= 1) ||
+      base != floor(base) || n != floor(n) || mult != floor(mult) ||
+      mult > (double) R_XLEN_T_MAX ||
+      base + n > (double) XLENGTH(out) / mult)
+    Rf_error("mizu: invalid map splice range");
+  const R_xlen_t mult0 = (R_xlen_t) mult, base0 = (R_xlen_t) base;
   for (R_xlen_t r = 0; r < XLENGTH(results); r++) {
     SEXP res = VECTOR_ELT(results, r);
     if (TYPEOF(res) != VECSXP || XLENGTH(res) < 3)
@@ -683,38 +733,55 @@ SEXP mizu_map_splice(SEXP out, SEXP results, SEXP ms_sexp) {
         TYPEOF(vals) != VECSXP || XLENGTH(hk) != XLENGTH(hm) ||
         XLENGTH(vals) != XLENGTH(hm))
       Rf_error("mizu: invalid map runner result");
-    const double *m = REAL(hm), *k = REAL(hk);
+    const double *mh = REAL(hm), *kh = REAL(hk);
     for (R_xlen_t b = 0; b < XLENGTH(hm); b++) {
-      if (!(m[b] >= 0) || !(k[b] >= 1))
+      if (!(mh[b] >= 0) || !(kh[b] >= 1))
         Rf_error("mizu: invalid map batch range");
-      double lo_d = m[b] * ms + 1, hi_d = (m[b] + k[b]) * ms;
-      if (hi_d > (double) n) hi_d = (double) n;
-      if (!(lo_d >= 1) || lo_d > (double) n || hi_d < lo_d)
+      double lo_d = mh[b] * ms + 1, hi_d = (mh[b] + kh[b]) * ms;
+      if (hi_d > n) hi_d = n;
+      if (!(lo_d >= 1) || lo_d > n || hi_d < lo_d)
         Rf_error("mizu: invalid map batch range");
-      R_xlen_t lo = (R_xlen_t) lo_d, hi = (R_xlen_t) hi_d;
+      R_xlen_t lo = (R_xlen_t) lo_d;
+      R_xlen_t len = (R_xlen_t) (hi_d - lo_d + 1) * mult0;
       SEXP bv = VECTOR_ELT(vals, b);
-      if (TYPEOF(bv) != VECSXP || XLENGTH(bv) != hi - lo + 1)
+      if (TYPEOF(bv) != type || XLENGTH(bv) != len)
         Rf_error("mizu: map batch result length mismatch");
-      for (R_xlen_t i = 0; i <= hi - lo; i++)
-        SET_VECTOR_ELT(out, lo - 1 + i, VECTOR_ELT(bv, i));
+      R_xlen_t at = (base0 + lo - 1) * mult0;
+      for (R_xlen_t i = 0; i < len; i++) {
+        if (type == VECSXP)
+          SET_VECTOR_ELT(out, at + i, VECTOR_ELT(bv, i));
+        else
+          SET_STRING_ELT(out, at + i, STRING_ELT(bv, i));
+      }
     }
   }
   return R_NilValue;
 }
 
-/* Streaming-path assembly: one chunk's batch value list into out at its
-   element offset — the pointer-copy half of the region path's
-   mizu_map_splice, per chunk rather than per runner (an R-level `[<-`
-   would dispatch per element). */
-SEXP mizu_map_vsplice(SEXP out, SEXP lo_sexp, SEXP vals) {
-  if (TYPEOF(out) != VECSXP || TYPEOF(vals) != VECSXP)
+/* Streaming-path assembly: one chunk's generic list or flattened character
+   vector into out at its logical element offset. */
+SEXP mizu_map_vsplice(SEXP out, SEXP lo_sexp, SEXP vals, SEXP mult_sexp) {
+  SEXPTYPE type = TYPEOF(out);
+  if ((type != VECSXP && type != STRSXP) || TYPEOF(vals) != type)
     Rf_error("mizu: invalid map splice arguments");
+  double mult = Rf_asReal(mult_sexp);
+  if (!(mult >= 1) || mult != floor(mult) ||
+      mult > (double) R_XLEN_T_MAX)
+    Rf_error("mizu: invalid map splice arguments");
+  const R_xlen_t mult0 = (R_xlen_t) mult;
   double lo = Rf_asReal(lo_sexp);
-  if (!(lo >= 1) || lo + (double) XLENGTH(vals) - 1 > (double) XLENGTH(out))
+  if (!(lo >= 1) || lo != floor(lo) || XLENGTH(vals) % mult0 != 0)
     Rf_error("mizu: invalid map splice range");
-  R_xlen_t base = (R_xlen_t) lo - 1;
-  for (R_xlen_t i = 0; i < XLENGTH(vals); i++)
-    SET_VECTOR_ELT(out, base + i, VECTOR_ELT(vals, i));
+  R_xlen_t len = XLENGTH(vals) / mult0;
+  if (lo - 1 + (double) len > (double) XLENGTH(out) / mult0)
+    Rf_error("mizu: invalid map splice range");
+  R_xlen_t base = ((R_xlen_t) lo - 1) * mult0;
+  for (R_xlen_t i = 0; i < XLENGTH(vals); i++) {
+    if (type == VECSXP)
+      SET_VECTOR_ELT(out, base + i, VECTOR_ELT(vals, i));
+    else
+      SET_STRING_ELT(out, base + i, STRING_ELT(vals, i));
+  }
   return R_NilValue;
 }
 
@@ -763,11 +830,22 @@ SEXP mizu_map_splice_ix(SEXP out, SEXP runs, SEXP base_sexp) {
         Rf_error("mizu: invalid map batch range");
       SEXP bv = VECTOR_ELT(vals, j);
       R_xlen_t len = (R_xlen_t) (rhi - rlo);
-      if (TYPEOF(bv) != VECSXP || XLENGTH(bv) != len)
+      if ((TYPEOF(bv) != VECSXP && TYPEOF(bv) != STRSXP) ||
+          XLENGTH(bv) != len)
         Rf_error("mizu: map batch result length mismatch");
       R_xlen_t at = (R_xlen_t) (rlo + base);
-      for (R_xlen_t i = 0; i < len; i++)
-        SET_VECTOR_ELT(out, at + i, VECTOR_ELT(bv, i));
+      if (TYPEOF(bv) == STRSXP) {
+        /* pymizu's scalar-string batches arrive as one STRSXP; spec assembly
+           still consumes a list of length-one character values */
+        for (R_xlen_t i = 0; i < len; i++) {
+          SEXP elt = PROTECT(Rf_ScalarString(STRING_ELT(bv, i)));
+          SET_VECTOR_ELT(out, at + i, elt);
+          UNPROTECT(1);
+        }
+      } else {
+        for (R_xlen_t i = 0; i < len; i++)
+          SET_VECTOR_ELT(out, at + i, VECTOR_ELT(bv, i));
+      }
     }
   }
   return R_NilValue;

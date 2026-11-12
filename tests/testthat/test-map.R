@@ -123,6 +123,7 @@ test_that("a compact sequence stays compact through a batch (R-11)", {
     0,
     1,
     2,
+    0,
     NULL,
     numeric(1),
     environment()
@@ -326,25 +327,57 @@ test_that("the view collect's dim gate declines an unrepresentable geometry", {
   expect_error(dim_of(2, NA), "invalid map dimensions")
 })
 
-test_that("character templates assemble through the generic path", {
+test_that("native character templates flatten through the generic path", {
   p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- setNames(1:4, letters[1:4])
+  f <- function(i) if (i == 2L) NA_character_ else letters[i]
   st <- mizu:::map_stage(
     p[["ctrl"]],
-    1:4,
-    function(i) letters[i],
+    x,
+    f,
     list(),
     template = character(1)
   )
-  expect_false(st[["direct"]]) # no output area: chunks return lists
+  expect_false(st[["direct"]]) # no output area: batches return characters
+  expect_true(st[["char_flat"]])
+  expect_identical(.Call(mizu:::mizu_map_desc, st[["wrap"]])[[4L]], 1L)
   mizu:::map_submit(p[["ctrl"]], st)
   while (pool_step(p) == 1L) {
     NULL
   }
+  expect_identical(collect30(p[["ctrl"]], st), vapply(x, f, character(1)))
+  g <- function(i) c(letters[i], LETTERS[i])
+  template <- c(lo = "", hi = "")
   expect_identical(
-    collect30(p[["ctrl"]], st),
-    vapply(1:4, function(i) letters[i], character(1))
+    run_map(p, x, g, template = template),
+    vapply(x, g, template)
   )
-  pool_end(p)
+  ft <- function(i) if (i == 2L) i else letters[i]
+  et <- tryCatch(run_map(p, 1:4, ft, template = character(1)), error = identity)
+  expect_identical(et[["mizu_map_index"]], 2)
+  expect_snapshot(error = TRUE, run_map(p, 1:4, ft, template = character(1)))
+  fl <- function(i) if (i == 3L) letters[1:2] else letters[i]
+  el <- tryCatch(run_map(p, 1:4, fl, template = character(1)), error = identity)
+  expect_identical(el[["mizu_map_index"]], 3)
+  expect_snapshot(error = TRUE, run_map(p, 1:4, fl, template = character(1)))
+})
+
+test_that("mizu_map_char_assemble validates its inputs", {
+  expect_error(
+    .Call(mizu:::mizu_map_char_assemble, list(), 1),
+    "invalid map assembly arguments"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_char_assemble, list(), character()),
+    "invalid map assembly arguments"
+  )
+  # deferred string conversion keeps this huge template lazy
+  template <- as.character(seq_len(2^51 + 1))
+  expect_error(
+    .Call(mizu:::mizu_map_char_assemble, list(NULL, NULL), template),
+    "map output is too large"
+  )
 })
 
 test_that("a view x rides the descriptor by reference and reads off the shared pages", {
@@ -1168,6 +1201,53 @@ test_that("mizu_collect on a map handle validates its timeout", {
   pool_end(p)
 })
 
+test_that("cancel is a no-op on collected one-shot and empty map handles", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, identity)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect(m), as.list(1:4))
+  expect_false(mizu_cancel(m))
+  expect_false(m[["cancelled"]])
+  empty <- mizu_map(p[["ctrl"]], integer(), identity)
+  expect_identical(mizu_collect(empty), list())
+  expect_false(mizu_cancel(empty))
+  expect_false(empty[["cancelled"]])
+})
+
+test_that("cancel is a no-op after map collection errors and timeouts", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, identity)
+  expect_s3_class(mizu_collect(m, timeout = 0.01), "mizu_timeout")
+  expect_false(mizu_cancel(m))
+  expect_false(m[["cancelled"]])
+  m2 <- mizu_map(p[["ctrl"]], 1:4, function(i) stop("boom"))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_error(mizu_collect(m2), "boom")
+  expect_false(mizu_cancel(m2))
+  expect_false(m2[["cancelled"]])
+})
+
+test_that("cancel remains active while map collection is in progress", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  m <- mizu_map(p[["ctrl"]], 1:4, identity)
+  local_mocked_bindings(map_collect = function(...) {
+    expect_true(m[["done"]])
+    expect_false(m[["settled"]])
+    expect_true(mizu_cancel(m))
+    stop(mizu:::map_cond_cancelled())
+  })
+  expect_error(mizu_collect(m), class = "mizu_error_cancelled")
+  expect_true(m[["settled"]])
+  expect_false(mizu_cancel(m))
+})
+
 test_that("an external cancel before any claim raises cancelled at collect", {
   p <- pool_pair()
   m <- mizu_map(p[["ctrl"]], runif(100000), identity) # region path
@@ -1636,7 +1716,9 @@ test_that("a template type mismatch names the template's type", {
 
 test_that("the splice helpers reject malformed runner results", {
   out <- vector("list", 4L)
-  sp <- function(res, ms = 1) .Call(mizu:::mizu_map_splice, out, res, ms)
+  sp <- function(res, ms = 1) {
+    .Call(mizu:::mizu_map_splice, out, res, ms, 0, length(out), 1)
+  }
   expect_error(sp(list(list(0, "x", list()))), "invalid map runner result")
   expect_error(sp(list(list(0, 0, list(list())))), "invalid map batch range")
 
@@ -1649,6 +1731,56 @@ test_that("the splice helpers reject malformed runner results", {
     spx(list(list(list("x"), list(list(1))))),
     "invalid map batch range"
   )
+})
+
+test_that("character templates on R-worker spec maps retain list assembly", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:4,
+    mizu_call(.source = "letters[x]"),
+    list(),
+    template = character(1)
+  )
+  expect_true(st[["spec"]])
+  expect_false(st[["pymap"]])
+  expect_false(st[["char_flat"]])
+  expect_s3_class(.Call(mizu:::mizu_map_desc, st[["wrap"]]), "mizu_map_ix")
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(collect30(p[["ctrl"]], st), letters[1:4])
+  stm <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:4,
+    mizu_call(.source = "c(letters[x], LETTERS[x])"),
+    list(),
+    template = c(lo = "", hi = "")
+  )
+  mizu:::map_submit(p[["ctrl"]], stm)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(
+    collect30(p[["ctrl"]], stm),
+    vapply(1:4, function(i) c(letters[i], LETTERS[i]), c(lo = "", hi = ""))
+  )
+  st2 <- mizu:::map_stage(
+    p[["ctrl"]],
+    1:4,
+    mizu_call("base::identity"),
+    list(),
+    template = character(1)
+  )
+  mizu:::map_submit(p[["ctrl"]], st2)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  e <- tryCatch(collect30(p[["ctrl"]], st2), error = identity)
+  expect_match(conditionMessage(e), "must be type 'character'")
+  expect_null(e[["mizu_map_index"]])
 })
 
 test_that("a name-kind spec map takes the region path and returns in order", {
@@ -1934,29 +2066,45 @@ test_that("mizu_map_stage validates its inputs", {
 test_that("mizu_map_splice validates and assembles batch results", {
   out <- vector("list", 4)
   expect_error(
-    .Call(mizu:::mizu_map_splice, 1:3, list(), 1),
+    .Call(mizu:::mizu_map_splice, 1:3, list(), 1, 0, 3, 1),
     "invalid map splice"
   )
   expect_error(
-    .Call(mizu:::mizu_map_splice, out, list(), 0),
+    .Call(mizu:::mizu_map_splice, out, list(), 0, 0, 4, 1),
     "invalid morsel size"
   )
   expect_error(
-    .Call(mizu:::mizu_map_splice, out, list(42), 1),
+    .Call(mizu:::mizu_map_splice, out, list(), 1, 1, 4, 1),
+    "invalid map splice range"
+  )
+  expect_error(
+    .Call(mizu:::mizu_map_splice, out, list(42), 1, 0, 4, 1),
     "invalid map runner result"
   )
   expect_error(
-    .Call(mizu:::mizu_map_splice, out, list(list(5, 1, list(list("x")))), 1),
+    .Call(
+      mizu:::mizu_map_splice,
+      out,
+      list(list(5, 1, list(list("x")))),
+      1,
+      0,
+      4,
+      1
+    ),
     "invalid map batch range"
   )
   res <- list(list(c(0, 1), c(1, 1), list(list("a"), list("b"))))
-  .Call(mizu:::mizu_map_splice, out, res, 1)
+  .Call(mizu:::mizu_map_splice, out, res, 1, 0, 4, 1)
   expect_identical(out[1:2], list("a", "b"))
   bad <- list(list(c(0), c(2), list(list("a"))))
   expect_error(
-    .Call(mizu:::mizu_map_splice, out, bad, 1),
+    .Call(mizu:::mizu_map_splice, out, bad, 1, 0, 4, 1),
     "length mismatch"
   )
+  cout <- character(8)
+  cres <- list(list(c(0, 1), c(1, 1), list(c("a", "b"), c("c", "d"))))
+  .Call(mizu:::mizu_map_splice, cout, cres, 1, 2, 2, 2)
+  expect_identical(cout[5:8], c("a", "b", "c", "d"))
 })
 
 test_that("mizu_map_splice_ix validates and assembles foreign results", {
@@ -1967,6 +2115,9 @@ test_that("mizu_map_splice_ix validates and assembles foreign results", {
   )
   .Call(mizu:::mizu_map_splice_ix, out, runs, 0)
   expect_identical(out, list("a", "b", "c", "d"))
+  crun <- list(list(list(c(0, 2)), list(c("x", "y"))))
+  .Call(mizu:::mizu_map_splice_ix, out, crun, 0)
+  expect_identical(out[1:2], list("x", "y"))
   .Call(mizu:::mizu_map_splice_ix, out, list(list(NULL, NULL)), 0)
   runs2 <- list(list(list(c(0L, 1L)), list(list("z"))))
   .Call(mizu:::mizu_map_splice_ix, out, runs2, 0)
