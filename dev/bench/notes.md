@@ -2238,17 +2238,24 @@ three alternating process pairs:
 | spec stream, 256 template chunks | 8.1765 | 7.7684 | 7.8051 | 7.7671 | 7.9716 | 7.9996 |
 | spec stream, 256 raw-x chunks | 8.7073 | 9.0783 | 9.0223 | 9.7939 | 8.9234 | 9.6703 |
 
-The prepared and generic/template rows are neutral within drift. Because the
-initial raw-x row was not, it was isolated in four longer alternating pairs:
+The prepared and generic/template rows are neutral within drift. Close-path
+isolation used five balanced rotations comparing the baseline, the full fix,
+a no-op close, no runner exit handler, and no private exit handlers. Component
+differences below are medians in ms per 256-chunk call:
 
-| raw-x follow-up (ms/call) | A1 | B1 | A2 | B2 | A3 | B3 | A4 | B4 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| spec stream, 256 chunks | 8.1788 | 7.9592 | 7.6310 | 7.9180 | 7.4206 | 7.9212 | 7.7506 | 8.1945 |
+| isolated component | median difference |
+|---|---:|
+| actual close: current - noclose | -0.041 |
+| runner handler: noclose - norunner | +0.078 |
+| context backstop: norunner - noexit | -0.035 |
+| other private work: noexit - baseline | -0.265 |
+| total: current - baseline | -0.059 |
 
-The raw-x row is therefore not claimed as timing-neutral: B was slower in six
-of seven pairs, by up to 0.77 ms (about 1-3 us per chunk). The deterministic
-close is retained for the residency fix. The prepared single-morsel row joins
-the report-only benchmark; the best-known table is unchanged.
+The component deltas had mixed signs across rounds, demonstrating no
+systematic close or handler cost. The exact original A/B setup favored B in
+all four fresh pairs: -0.0246, -0.0859, -0.0567, -0.1075 ms. The prepared
+single-morsel row joins the report-only benchmark; the best-known table is
+unchanged.
 
 Status: full suite green (6201 pass, 0 fail, 7 skips; cross-language legs
 included), plus 23 pymizu-to-R-worker map tests. rchk did not run because the
