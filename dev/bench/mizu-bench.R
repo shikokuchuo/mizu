@@ -37,7 +37,8 @@
 #
 # Timings are bench::mark medians over its auto-calibrated iteration
 # counts, after warm-up, with GC time kept in (filter_gc = FALSE) — the
-# streaming row's iterations double as a receive-path stress run.
+# streaming row's iterations double as a receive-path stress run. The
+# sequential pool row alone times from a settled heap (mark_gc_ms).
 #
 # Run:  Rscript dev/bench/mizu-bench.R
 
@@ -77,12 +78,38 @@ mark_ms <- function(f) {
   as.numeric(bm[["median"]]) * 1000
 }
 
+# the settled-heap variant: a full gc() ahead of each of `reps` timed reps,
+# the median in ms. For a row whose loop leaves one finalizable object per
+# operation (a pool task handle): R's cost of that garbage climbs rep over
+# rep and resets only at a full collection, so bench::mark's median reads
+# anywhere from 0.8 to 1.7 us on the sequential pool row depending on where
+# its window lands. Collecting first times every rep from the same heap
+# state — the reclaim itself falls outside the clock, which is also what
+# pymizu's row measures (CPython frees the handle by refcount)
+mark_gc_ms <- function(f, reps = 15L) {
+  t <- numeric(reps)
+  for (k in seq_len(reps)) {
+    gc(FALSE)
+    t0 <- bench::hires_time()
+    f()
+    t[k] <- bench::hires_time() - t0
+  }
+  stats::median(t) * 1000
+}
+
 # the two reporting shapes: f() is one rep of `ops` operations, reported
 # per operation or as a rate. Keep the measured loop inline in f — one
 # closure call is 0.04 us, not nothing against a 1 us row, so there is
 # deliberately no helper for it
-note_us <- function(scenario, framework, ops, f, unit = "us/task") {
-  note(scenario, framework, mark_ms(f) * 1000 / ops, unit)
+note_us <- function(
+  scenario,
+  framework,
+  ops,
+  f,
+  unit = "us/task",
+  mark = mark_ms
+) {
+  note(scenario, framework, mark(f) * 1000 / ops, unit)
 }
 
 note_rate <- function(scenario, framework, ops, f, unit = "tasks/s") {
@@ -120,11 +147,15 @@ with_channel <- function(expr, f, ...) {
   f(ch)
 }
 
-# the canonical echo peer: the raw-transport counterpart of a 1L task
+# the canonical echo peer: the raw-transport counterpart of a 1L task. The
+# sentinel test sits behind the primitive is.object(): inherits() is an R
+# closure costing ~0.25 us a call, which the per-message rows would
+# otherwise carry as transport cost (a pool worker's loop is C). A
+# classless payload never reaches it; a classed one (the frame rows) does
 echo_expr <- quote(
   repeat {
     x <- mizu_recv(ch, timeout = 30)
-    if (inherits(x, "mizu_sentinel")) {
+    if (is.object(x) && inherits(x, "mizu_sentinel")) {
       break
     }
     mizu_send(ch, x)
@@ -171,11 +202,17 @@ np <- 20000L # pool rt is as µs-scale as the channel's: same whole-ms tick,
 # same remedy
 with_pool(1L, function(p) {
   warmup(function() mizu_collect(mizu_submit(p, 1L), timeout = 30))
-  note_us("sequential rt", "mizu pool", np, function() {
-    for (i in seq_len(np)) {
-      mizu_collect(mizu_submit(p, 1L), timeout = 30)
-    }
-  })
+  note_us(
+    "sequential rt",
+    "mizu pool",
+    np,
+    function() {
+      for (i in seq_len(np)) {
+        mizu_collect(mizu_submit(p, 1L), timeout = 30)
+      }
+    },
+    mark = mark_gc_ms
+  )
 })
 
 # 2. pipelined throughput ------------------------------------------------------

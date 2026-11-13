@@ -305,3 +305,29 @@ test_that("mizu_pool_dump snapshots registries, deques, and result slots", {
   expect_identical(nrow(mizu_pool_dump(p[["ctrl"]])[["tasks"]]), 0L)
   pool_end(p)
 })
+
+test_that("a worker's nested batch attaches accepted handles to a mid-batch raise", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  n <- 0L
+  mizu_pool_trace(p[["wk"]], function(event, id) {
+    n <<- n + 1L
+    if (n == 2L) stop("trace boom")
+  })
+  err <- expect_error(
+    mizu_submit_batch(p[["wk"]], list(quote(1 + 1), quote(2 + 2))),
+    "trace boom"
+  )
+  mizu_pool_trace(p[["wk"]])
+  expect_s3_class(err, "simpleError")
+  expect_length(err$accepted, 1L)
+  expect_s3_class(err$accepted[[1L]], "mizu_task")
+  # the accepted task sits on the worker's own deque: no wake is owed to
+  # anyone, and the worker's help-mode collect runs it
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]], 1)
+  expect_identical(mizu_collect(err$accepted[[1L]], timeout = 0), 2)
+  expect_identical(mizu_pool_info(p[["ctrl"]])[["deque"]], 0)
+  # the worker's handle still batches after the raise
+  ts <- mizu_submit_batch(p[["wk"]], list(quote(3 + 3), quote(4 + 4)))
+  expect_identical(mizu_collect_all(ts, timeout = 0), list(6, 8))
+})

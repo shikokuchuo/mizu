@@ -2960,3 +2960,25 @@ test_that("an S4 data-part wrapper stages as a zero-copy view", {
   expect_s4_class(y, "zcS4Num")
   expect_identical(as.numeric(y), as.numeric(x))
 })
+
+test_that("a read-only mapping of a multi-megabyte view region reads its data", {
+  # past the 2 MiB huge-page extent: the passive consumer open takes the
+  # large-region path, and reads the layout the view was built over
+  x <- seq_len(300000) + 0.5
+  p <- channel_pair(arena_size = 0)
+  on.exit(channel_end(p))
+  mizu_send(p[["host"]], x)
+  y <- mizu_recv(p[["peer"]], 5)
+  expect_true(is_view(y))
+  peek <- view_peek(y)
+  hdr <- peek(0, 64)
+  expect_identical(readBin(hdr[1:4], "integer", endian = "little"), 0x4D495A48L)
+  expect_identical(i64v(hdr[9:16]), as.numeric(length(x)))
+  rd <- function(i, n) {
+    readBin(peek(64 + 8 * (i - 1), 8 * n), "double", n, endian = "little")
+  }
+  expect_identical(rd(1, 3), x[1:3])
+  # the far end of the region, 2.4 MB in
+  expect_identical(rd(length(x) - 2, 3), tail(x, 3))
+  expect_identical(y, x)
+})
