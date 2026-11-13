@@ -136,16 +136,39 @@ the INLINE / arena / SHM_RAW tiers, aux keeperless — no convert back, no
 serialize pass, the same-language read paths dispatching the 0x49 first
 byte to the interop reader (`mizu_stream_read`, as they always did the
 foreign form). Declines convert the held batches to a value and re-enter
-through the caller’s own stage hook. The hook passes the caps word as a
-parameter — the channel `rh->peer_caps`, the pool this build’s
-`MIZU_R_CAPS` (pymizu’s precedent: a task frame is same-language by
-construction) — and the pulled state rides an extptr finalizer on both
-paths (the bails’ R calls run while batches are C-owned, so the
-finalizer is the longjmp backstop; the core borrows the ArrowArray
-structs and the batch-pointer array until close, so no `R_alloc`
-accumulates in the worker’s lifetime `.Call`). The R-side namespace and
-helper lookups are cached on first use (`arrow_ns()`). A nested
-ArrowTabular (a list element, a task argument, the spliced task
+through the caller’s own stage hook. Between the open and a region stage
+sits the provenance pass (`arrow_prov_match`, top-level sends only,
+peers with `MIZU_CAP_MIZL_REF`, outside churn; the top-level open is the
+core’s lazy one — `mizu_arrow_open_lazy`, then the pass wherever the
+O(1) `mizu_arrow_size_floor` already clears the gate, then
+`mizu_arrow_validate` — so a matched string column skips its O(rows)
+offsets walk, and a frame under the floor matches after the exact size):
+every live
+[`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md)
+export with a depth-1, non-S4, blob-free MIZL leaf column (the u64
+marker excepted) sits in a process-global registry of the export holders
+themselves (capped at 256, an `atomic_flag` spinlock since the holder’s
+last release runs on any thread, unregistered ahead of the unmap, reset
+in a `pthread_atfork` child handler), and an outgoing column whose
+batches tile one record — the recorded buffer pointers, validity
+included, offsets contiguous from 0, lengths summing to the recorded
+length; format-keyed, a dictionary excluded, a region-range prefilter
+ahead of any compare — registers with the core’s `mizu_arrow_remote` and
+crosses as a remote leaf (a recorded uint64 column additionally needs
+`MIZU_CAP_MIZL_U64V`). A frame with any remote leaf is no longer
+self-contained: the stage keeps the pulled batches (they own the matched
+buffers, hence the export’s loan) and pins the pulled-state extptr
+through `mizu_r_pin` until the consumer is done. The nested frame leaf
+never matches (`mizu_arrow_stage_held` is called without the pass). The
+hook passes the caps word as a parameter — the channel `rh->peer_caps`,
+the pool this build’s `MIZU_R_CAPS` (pymizu’s precedent: a task frame is
+same-language by construction) — and the pulled state rides an extptr
+finalizer on both paths (the bails’ R calls run while batches are
+C-owned, so the finalizer is the longjmp backstop; the core borrows the
+ArrowArray structs and the batch-pointer array until close, so no
+`R_alloc` accumulates in the worker’s lifetime `.Call`). The R-side
+namespace and helper lookups are cached on first use (`arrow_ns()`). A
+nested ArrowTabular (a list element, a task argument, the spliced task
 expression) instead rides the codec’s frame leaf (below). Conversion
 warnings fire after the write half; at a pool publish they fire on the
 worker and are invisible to the submitter (a documented limit). The

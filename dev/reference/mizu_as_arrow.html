@@ -106,6 +106,14 @@ copying. Everything else (factors, Date, POSIXct and difftime columns,
 logical and raw vectors, and materialized or never-shared columns) converts
 per column through <code><a href="https://arrow.apache.org/nanoarrow/latest/r/reference/as_nanoarrow_array.html" class="external-link">nanoarrow::as_nanoarrow_array()</a></code>. The shared region stays
 mapped until the stream and every array produced from it are released.</p>
+<p>The zero-copy columns also travel back by reference. When the Arrow data is
+sent on (over a channel, or returned as a pool result) with such a column
+unchanged, the send references the original shared region for that column
+and writes only the columns that are new or modified. Dropping, reordering
+and renaming columns, and re-batching rows, keep a column unchanged; slicing,
+filtering and converting it do not. This applies to columns that arrived as
+the direct elements of a received data frame or list, not to a received bare
+vector placed in a data frame, which is copied as before.</p>
     </div>
 
     <div class="section level2">

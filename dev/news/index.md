@@ -2,6 +2,9 @@
 
 ## mizu (development version)
 
+- Faster re-sending of Arrow data obtained from
+  [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md):
+  columns left unchanged are no longer copied.
 - [`mizu_submit_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_submit_batch.md)
   failing mid-batch now attaches the handles of the tasks already
   submitted to the raised condition as `accepted`; they run and stay
