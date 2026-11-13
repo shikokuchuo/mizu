@@ -108,6 +108,11 @@ typedef struct mizu_map_h_s {
   struct mizu_map_h_s *prev, *next;
   void *owner;
   SEXP self;
+  /* The Arrow export's memo: 1 once a sentinel scan of the view-collected
+     output area found no NA. The area is immutable from the view collect
+     on (the state is consumed, a re-run restages), so a repeat export
+     skips the scan. */
+  int out_clean;
 } mizu_map_h;
 
 static mizu_map_h *map_tracked;
@@ -792,6 +797,34 @@ SEXP mizu_map_gather_view(SEXP xp, SEXP nms, SEXP tn) {
   }
   UNPROTECT(2);
   return view;
+}
+
+/* The Arrow export's locate for a `.collect = "view"` output view: when
+   keeper (the view's first chain hop) is a live map handle with an output
+   area, fills the region name, the area's offset and wire type, its
+   element count, its address in this process and the handle's NA-free
+   memo (valid while keeper is), and returns 1. Total — a foreign keeper,
+   a closed handle or a template-less region returns 0 and the column
+   takes the copy path. */
+int mizu_map_view_locate(SEXP keeper, char *name, size_t name_cap,
+                         int64_t *off, int *type, int64_t *length,
+                         const void **data, int **clean) {
+  if (TYPEOF(keeper) != EXTPTRSXP ||
+      R_ExternalPtrTag(keeper) != mizu_map_tag)
+    return 0;
+  mizu_map_h *mh = (mizu_map_h *) R_ExternalPtrAddr(keeper);
+  if (mh == NULL || mh->shm == NULL || mh->shm->addr == NULL ||
+      mh->h.out_type == 0)
+    return 0;
+  const size_t len = strlen(mh->shm->name);
+  if (len == 0 || len >= name_cap) return 0;
+  memcpy(name, mh->shm->name, len + 1);
+  *off = (int64_t) mh->h.out_off;
+  *type = (int) mh->h.out_type;
+  *length = (int64_t) (mh->h.n * mh->h.out_m);
+  *data = (const unsigned char *) mh->shm->addr + mh->h.out_off;
+  *clean = &mh->out_clean;
+  return 1;
 }
 
 /* Character-template assembly: one allocation and one CHARSXP pointer copy

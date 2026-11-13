@@ -265,6 +265,10 @@ int mizu_view_attrs_match(SEXP x, SEXP id);
    identifier are the same truth, so addr/size match the parsed
    identifier's region. */
 mizu_shm *mizu_view_chain_shm(SEXP x);
+/* The keeper a vector or string view's data1 pins — the first hop of its
+   chain, whatever it is (a region wrap, a parent view's record, an
+   embedder's own handle). Borrowed; R_NilValue when x is not a view. */
+SEXP mizu_view_keeper(SEXP x);
 /* The terminal directory entry of a path over an open region, and the MIZL
    base containing it: every hop re-validated (a VEC entry with attrs_size 0,
    each span bounding the next read — a tag-33 hop fails the VEC check, so a

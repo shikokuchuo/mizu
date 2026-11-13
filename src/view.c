@@ -2359,6 +2359,11 @@ mizu_shm *mizu_view_chain_shm(SEXP x) {
   return shm;
 }
 
+SEXP mizu_view_keeper(SEXP x) {
+  if (!mizu_view_check(x)) return R_NilValue;
+  return R_ExternalPtrProtected(R_altrep_data1(x));
+}
+
 SEXP mizu_view_shm_name(SEXP x) {
   if (!ALTREP(x)) return R_NilValue;
   SEXP d1 = R_altrep_data1(x);

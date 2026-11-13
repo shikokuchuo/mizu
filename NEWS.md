@@ -1,5 +1,8 @@
 # mizu (development version)
 
+* `mizu_as_arrow()` now also accepts an atomic vector, exported as a single Arrow array; a matrix exports flat, in column-major order.
+* `mizu_as_arrow()` exports the output of a `mizu_map()` collected with `.collect = "view"` without copying, and likewise received raw vectors.
+* `mizu_as_arrow()` now gives the same Arrow data whether or not a column is still backed by shared memory: `NaN` in a copied double column stays a value (it became a null), and a copied character column is a `large_string` (it was a `string`).
 * Faster re-sending of Arrow data obtained from `mizu_as_arrow()`: columns left unchanged are no longer copied.
 * `mizu_submit_batch()` failing mid-batch now attaches the handles of the tasks already submitted to the raised condition as `accepted`; they run and stay collectible.
 * Faster `mizu_map()` collection and lower shared-memory use for a (non-prepared) map collected by value.

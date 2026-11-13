@@ -195,7 +195,7 @@ static const R_CallMethodDef CallEntries[] = {
   {"mizu_zc_armed_bytes",         (DL_FUNC) &mizu_zc_armed_bytes_call,       0},
   {"mizu_zc_gc_boundary_set",     (DL_FUNC) &mizu_zc_gc_boundary_set_call,   1},
   {"mizu_pool_zc_info",           (DL_FUNC) &mizu_pool_zc_info,              1},
-  {"mizu_arrow_export",           (DL_FUNC) &mizu_arrow_export_call,         2},
+  {"mizu_arrow_export",           (DL_FUNC) &mizu_arrow_export_call,         3},
   {NULL, NULL, 0}
 };
 

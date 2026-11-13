@@ -85,16 +85,22 @@ int mizu_arrow_stage_held(SEXP xp, mizu_handle *h, unsigned char *name,
    reclaimed by the next send's rollback. */
 void mizu_arrow_warn_raise(const mizu_arrow_warn *warn);
 
-/* The receive side (mizu_as_arrow): one fused decide-and-fill call —
-   every column locates uniformly through its own view identifier (a bare
-   root by magic, a path through mizu_view_path_entry), returning the
-   per-column borrow kinds (0 copy / 1 double / 2 int32 / 3 int64 /
-   4 string / 5 uint64) and filling every borrowed column's pre-allocated
-   ArrowArray
-   in place, one counted loan per distinct region. An export with a column
-   that is a depth-1 leaf of an MIZL root joins the provenance registry
+/* The receive side (mizu_as_arrow): one fused decide-and-fill call over
+   the column list (a data frame, or list(vector) with bare TRUE — the
+   bare form's gate admits names / dim / dimnames, which the export
+   drops; mizu_as_arrow() gates the attribute names, the call the class). Every region-backed column locates uniformly through its own
+   view identifier (a bare root by magic, a path through
+   mizu_view_path_entry); a `.collect = "view"` map output locates through
+   its keeper, the map handle, and borrows through an uncounted mapping of
+   the map region. Returns the per-column kinds (0 the nanoarrow copy /
+   borrows: 1 double / 2 int32 / 3 int64 / 4 string / 5 uint64 / 6 raw /
+   7 the holder-owned double copy, which keeps NaN a value) and fills
+   every nonzero column's pre-allocated ArrowArray in place, one counted
+   loan per distinct layout region. An export with a column that is a
+   depth-1 leaf of an MIZL root joins the provenance registry
    (process-global, capped, unregistered at the holder's last release) for
-   the send side's remote-leaf match. */
-SEXP mizu_arrow_export_call(SEXP x, SEXP arrays);
+   the send side's remote-leaf match; a map output area and a copy never
+   match. */
+SEXP mizu_arrow_export_call(SEXP x, SEXP arrays, SEXP bare);
 
 #endif /* MIZU_ARROW_H */

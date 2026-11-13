@@ -22,13 +22,39 @@ is_view <- function(x) .Call(mizu:::mizu_zc_view_check, x)
 
 # The fused decide-and-fill export, driven directly: x's pre-allocated
 # schema-less arrays filled in place off the located regions, the per-column
-# borrow kinds returned (0 = the nanoarrow copy path).
-arrow_export <- function(x) {
+# kinds returned (0 = the nanoarrow copy path, 7 = the double copy). `bare`
+# takes list(vector) under the bare form's relaxed attribute gate.
+arrow_export <- function(x, bare = FALSE) {
   arrays <- lapply(
     seq_along(x),
     function(i) nanoarrow::nanoarrow_allocate_array()
   )
-  list(kinds = .Call(mizu:::mizu_arrow_export, x, arrays), arrays = arrays)
+  list(
+    kinds = .Call(mizu:::mizu_arrow_export, x, arrays, bare),
+    arrays = arrays
+  )
+}
+
+# A `.collect = "view"` map result off the in-process pool harness.
+map_view <- function(p, x, f, template) {
+  st <- mizu:::map_stage(p[["ctrl"]], x, f, list(), template)
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  mizu:::map_collect(st, mizu:::mono_time() + 30, "view")
+}
+
+# The first array of an export stream, read back with its schema format.
+arrow_read <- function(stream) {
+  format <- stream$get_schema()$format
+  array <- stream$get_next()
+  list(
+    format = format,
+    length = array$length,
+    nulls = array$null_count,
+    value = nanoarrow::convert_array(array)
+  )
 }
 
 # A one-column frame stream assembled from independently sliced batches.

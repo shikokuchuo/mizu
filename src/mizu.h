@@ -903,6 +903,9 @@ SEXP mizu_map_claim_state(SEXP, SEXP);
 int mizu_map_runners_done(SEXP wrap, mizu_pool *p, const uint64_t *words,
                           uint32_t n);
 SEXP mizu_map_timeout_call(void);
+int mizu_map_view_locate(SEXP keeper, char *name, size_t name_cap,
+                         int64_t *off, int *type, int64_t *length,
+                         const void **data, int **clean);
 /* rng.c */
 SEXP mizu_map_rng_base(SEXP);
 SEXP mizu_map_rng_seek(SEXP, SEXP);
