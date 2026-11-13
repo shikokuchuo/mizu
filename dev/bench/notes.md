@@ -2169,3 +2169,27 @@ report-only benchmark; the best-known table is unchanged.
 
 Status: full suite green (6174 pass, 0 fail, 7 skips; cross-language legs
 included); rchk zero package findings.
+
+## 2026-11-12 — direct raw-x batch reads (step 4)
+
+Worker batches now read the raw x section straight from the live mapping;
+`mizu_map_next()` no longer allocates and copies an owning slice. Explicit
+slices, streaming, prepared swaps, and descriptor-carried x are unchanged.
+A = `b670f12`; B = the phase-4 working tree. The probe drains 8M doubles,
+excluding staging; each value is a `bench::mark` median of 15 iterations in
+one of three alternating A/B process pairs.
+
+| transition drain (ms) | A1 | B1 | A2 | B2 | A3 | B3 |
+|---|---:|---:|---:|---:|---:|---:|
+| one raw-x batch | 0.965 | 0.001 | 0.954 | 0.001 | 0.966 | 0.001 |
+| one no-x batch | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 | 0.001 |
+| raw x, 4,096-element batches | 1.415 | 0.317 | 1.418 | 0.326 | 1.325 | 0.321 |
+| no x, 4,096-element batches | 0.311 | 0.346 | 0.303 | 0.294 | 0.308 | 0.305 |
+
+The raw transition now matches the no-x path, as intended. This is an
+isolated allocation/copy diagnostic, not an end-to-end speedup claim; the
+report rows and best-known table are unchanged.
+
+Status: full suite green (6182 pass, 0 fail, 7 skips; cross-language legs
+included), plus 23 pymizu-to-R-worker map tests. rchk did not run: the local
+Docker daemon returned an API 500 before the container started.

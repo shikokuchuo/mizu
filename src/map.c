@@ -2,8 +2,8 @@
    call, holding a 128-byte header, ONE serialized descriptor stream
    (list(f, dots, x), or list(f, dots) when x rides the RAWVEC section), an
    optional RAWVEC x section (bare bytes of a names-tolerant raw-eligible x,
-   sliced per chunk on the workers so x is never deserialized and never
-   fully materialized per worker), and an optional output area for the
+   read from the live mapping per element so x is never deserialized and
+   never fully materialized per worker), and an optional output area for the
    template path (vapply semantics: n × m results written at disjoint
    element offsets by the chunk loops — the result-slot OK publish ordered
    before the collector's read is the happens-before — then gathered
@@ -35,7 +35,7 @@ void mizu_map_init(void) {
    words, the claim CAS, the proportional batch sizing, reset/trim, and the
    lost-set scan — is the core's morsel module (vendor/libmizu/morsel.c,
    mizu_morsel_*): the struct is the layout. This file keeps the language-
-   coupled half: the descriptor stream, the x-section slices, the batch
+   coupled half: the descriptor stream, the x-section access, the batch
    eval loop, and the result assembly. */
 
 /* The map-local RAWVEC gate, deliberately looser than mizu_raw_type: no
@@ -59,11 +59,11 @@ SEXP mizu_map_eligible(SEXP x) {
                        (double) mizu_view_sizeof_elt(TYPEOF(x)));
 }
 
-/* The batch element class test: a REALSXP chunk whose class is exactly
-   "integer64" (a raw-section slice, a codec blob slice, or a resolved view)
-   hands f classed integer64 scalars. The interned CHARSXP compare is exact;
-   class-only is not required — per-element scalars drop other attributes
-   either way. */
+/* The batch element class test for SEXP-backed x: a REALSXP chunk whose
+   class is exactly "integer64" (a codec blob slice or a resolved view)
+   hands f classed integer64 scalars. A raw section uses its wire type
+   instead. The interned CHARSXP compare is exact; class-only is not
+   required — per-element scalars drop other attributes either way. */
 static int map_is_int64_classed(SEXP x) {
   SEXP cls = Rf_getAttrib(x, R_ClassSymbol);
   return TYPEOF(cls) == STRSXP && XLENGTH(cls) == 1 &&
@@ -314,9 +314,8 @@ SEXP mizu_map_is_template(SEXP xp) {
   return Rf_ScalarLogical(map_h_get(xp)->h.out_type != 0);
 }
 
-/* RAWVEC x slice [lo, hi]: one allocVector + memcpy straight from the
-   mapping — per chunk, not per map, so a worker never holds more than a
-   chunk of a huge x. */
+/* Explicit RAWVEC x slice [lo, hi] for mizu_map_slice: one allocVector +
+   memcpy straight from the mapping. */
 static SEXP map_slice_copy(mizu_map_h *mh, uint64_t lo, uint64_t hi) {
   size_t elt = mizu_view_sizeof_elt((int) mh->h.x_type);
   R_xlen_t len = (R_xlen_t) (hi - lo + 1);
@@ -474,9 +473,9 @@ SEXP mizu_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
    ei_sexp is an R-allocated REALSXP(1) cell the loop stamps with the
    in-flight element index before each eval, so the R side's one
    tryCatch per batch annotates an escaping error with the failing
-   element — the "first by element index" contract. x is the batch's
-   source vector (the RAWVEC slice, or the descriptor x) and base its
-   0-based offset of element lo. char_m is zero for ordinary generic results,
+   element — the "first by element index" contract. x is the descriptor or
+   stream source vector, or NULL to read xp's RAWVEC section directly; base
+   is the 0-based offset of element lo. char_m is zero for generic results,
    or the template length for one flattened character vector per batch.
    Returns the batch's value list or character vector, or NULL on the direct
    template path. */
@@ -485,10 +484,13 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
                    SEXP ei_sexp, SEXP rho) {
   mizu_map_h *mh = xp == R_NilValue ? NULL : map_h_get(xp);
   int tmpl = mh != NULL && mh->h.out_type != 0;
+  const int raw_x = mh != NULL && x == R_NilValue &&
+    mh->h.x_kind == MIZU_MORSEL_X_RAW;
   double lo = Rf_asReal(lo_sexp), hi = Rf_asReal(hi_sexp);
   double base = Rf_asReal(base_sexp);
   if (!(lo >= 1) || !(hi >= lo) || !(base >= 0) ||
-      base + (hi - lo + 1) > (double) XLENGTH(x) ||
+      base + (hi - lo + 1) >
+        (raw_x ? (double) mh->h.n : (double) XLENGTH(x)) ||
       (tmpl && hi > (double) mh->h.n))
     Rf_error("mizu: invalid map batch range");
   if (dots != R_NilValue && TYPEOF(dots) != VECSXP)
@@ -552,21 +554,28 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
                                  char_m > 0 ? len * char_m : len));
     np++;
   }
-  const int xt = TYPEOF(x);
-  /* An int64 chunk (raw-section slice, codec blob slice, or resolved int64
-     view) hands f classed integer64 scalars — a bare double element would
-     reinterpret the bit pattern, not convert it */
-  const int xi64 = xt == REALSXP && map_is_int64_classed(x);
-  /* Atomic element reads go through one hoisted data pointer: for a
-     non-ALTREP x its own block; for an ALTREP with data behind it (a
-     mizu view, a foreign shared vector, a materialized one) the shared
-     pages — the per-element writable accessors would COW-materialize the
-     whole vector per worker. NULL when an ALTREP has no data block (a
-     compact 1:n), where the element accessors stand (never DATAPTR: a
-     writable request would expand the whole sequence per chunk task). */
+  const int xt = raw_x ?
+    (mh->h.x_type == MIZU_TYPE_INT64 ? REALSXP : (int) mh->h.x_type) :
+    TYPEOF(x);
+  /* A raw section's wire type identifies integer64 without an SEXP class;
+     other int64 sources (a codec blob slice or resolved view) carry it on x.
+     Class each scalar — a bare double would reinterpret the bit pattern. */
+  const int xi64 = raw_x ? mh->h.x_type == MIZU_TYPE_INT64 :
+    xt == REALSXP && map_is_int64_classed(x);
+  /* A raw section reads the live mapping directly. Other atomic element
+     reads hoist one data pointer: for a non-ALTREP x its own block; for an
+     ALTREP with data behind it (a mizu view, a foreign shared vector, a
+     materialized one) the shared pages — the per-element writable accessors
+     would COW-materialize the whole vector per worker. NULL when an ALTREP
+     has no data block (a compact 1:n), where the element accessors stand
+     (never DATAPTR: a writable request would expand the whole sequence per
+     chunk task). */
   const void *xd = NULL;
-  if (mizu_view_sizeof_elt(xt) != 0)
+  if (raw_x) {
+    xd = (unsigned char *) mh->shm->addr + mh->h.x_off;
+  } else if (mizu_view_sizeof_elt(xt) != 0) {
     xd = ALTREP(x) ? DATAPTR_OR_NULL(x) : mizu_vec_ptr(x);
+  }
   for (R_xlen_t i = 0; i < len; i++) {
     if ((i & 63) == 0) R_CheckUserInterrupt();
     double e = lo + (double) i;
@@ -998,13 +1007,13 @@ SEXP mizu_map_lost(SEXP xp, SEXP runs) {
 // Morsel protocol ---------------------------------------------------------------
 
 /* One whole batch transition — generation-fenced lane claim, cancel and
-   pool-signal checks, sized cursor issue, x slice — in a single .Call
-   against the cached-header handle. NULL means stop: the lane was lost to
-   the trim or a reset re-armed it (before any issue), the cancel word
-   fired, the pool is stopping, the owner died, or the cursor is
-   exhausted. Otherwise list(m, k, lo, hi, x slice | NULL, help flag): m
-   the 0-based first morsel of the batch, k its morsel count after the
-   final partial grant, [lo, hi] its 1-based element range.
+   pool-signal checks, sized cursor issue — in a single .Call against the
+   cached-header handle. NULL means stop: the lane was lost to the trim or a
+   reset re-armed it (before any issue), the cancel word fired, the pool is
+   stopping, the owner died, or the cursor is exhausted. Otherwise
+   list(m, k, lo, hi, NULL, help flag): m the 0-based first morsel of the
+   batch, k its morsel count after the final partial grant, [lo, hi] its
+   1-based element range.
 
    sig is the opaque address trio from mizu_pool_signals (NULL skips the
    loads — the in-process protocol tests). pin bypasses the sizing policy
@@ -1038,8 +1047,6 @@ SEXP mizu_map_next(SEXP xp, SEXP r_sexp, SEXP gen_sexp, SEXP sig,
   SET_VECTOR_ELT(out, 1, Rf_ScalarReal((double) k));
   SET_VECTOR_ELT(out, 2, Rf_ScalarReal((double) lo));
   SET_VECTOR_ELT(out, 3, Rf_ScalarReal((double) hi));
-  if (mh->h.x_kind == MIZU_MORSEL_X_RAW)
-    SET_VECTOR_ELT(out, 4, map_slice_copy(mh, lo, hi));
   SET_VECTOR_ELT(out, 5, Rf_ScalarLogical(help));
   UNPROTECT(1);
   return out;
@@ -1172,8 +1179,8 @@ SEXP mizu_map_info(SEXP xp) {
 
 /* Prepared-map in-place x swap: memcpy a RAWVEC-eligible replacement of
    identical type and length over the region's x section (the producer
-   mapping is writable). Safe because a RAWVEC x is sliced from the
-   mapping per batch and never cached worker-side. Errors on any
+   mapping is writable). Safe because a RAWVEC x is read from the live
+   mapping per element and never cached worker-side. Errors on any
    mismatch — the R side restages instead of swapping. */
 SEXP mizu_map_swap_x(SEXP xp, SEXP x) {
   mizu_map_h *mh = map_h_get(xp);

@@ -676,7 +676,7 @@ mizu_map_run <- function(
 
 # The integer64 gates: the bare form — the class is the entire attribute
 # set — is the stage-side rule (the wire tag carries the class, consumed
-# at stage and re-applied per slice); the class form the assemble-side one
+# at stage and re-applied per element); the class form the assemble-side one
 # (a gathered vector keeps no attributes but its class, and typeof shared
 # with double means typeof alone cannot gate).
 map_is_int64_bare <- function(x) {
@@ -689,8 +689,8 @@ map_is_int64_class <- function(x) {
 
 # lapply's coercion rule, so [[ on the workers sees what lapply's would.
 # The exception is class-only integer64: it stays a vector and rides the
-# raw x section, its class re-applied to each slice (and to each element
-# at batch time) — list-coercing it would forfeit the bare-bytes section
+# raw x section, its class re-applied to each element at batch time —
+# list-coercing it would forfeit the bare-bytes section
 map_coerce_x <- function(x) {
   if ((!is.vector(x) || is.object(x)) && !map_is_int64_bare(x)) {
     x <- as.list(x)
@@ -700,7 +700,7 @@ map_coerce_x <- function(x) {
 
 # The x-section attribute gate, mirroring the C raw gate: bare, names-only
 # (names stay submitter-side for assembly), or class-only integer64 (the
-# wire tag carries the class — consumed at stage, re-applied per slice).
+# wire tag carries the class — consumed at stage, re-applied per element).
 map_x_attrs_ok <- function(x) {
   attrs <- attributes(x)
   is.null(attrs) || identical(names(attrs), "names") || map_is_int64_bare(x)
@@ -714,8 +714,8 @@ map_wire_type <- function(x) {
 
 # Replace a prepared map's x: an in-place memcpy over the region's x
 # section when the staged and replacement x are both bare-byte eligible
-# with identical wire type and length (a RAWVEC x is sliced from the
-# mapping per batch, never cached worker-side, so the swap is invisible to
+# with identical wire type and length (a RAWVEC x is read from the live
+# mapping per element, never cached worker-side, so the swap is invisible to
 # the workers) — anything else drops the staged state, and the next run
 # restages with the new x (descriptor-carried x IS cached worker-side,
 # so shape or type changes must re-key the region).
@@ -2213,8 +2213,9 @@ map_stream_chunk <- function(n, r, x, s = NULL) {
 # call (NULL when the trim won, or when a prepared reset re-armed the
 # word — the runner exits without issuing), then per transition checks
 # the cancel word and the pool signals, sizes and issues the next batch
-# off the shared cursor, and returns its element range, x slice and help
-# flag. Each completed batch is appended to a local history only after
+# off the shared cursor, and returns its element range and help flag. A raw
+# x stays in the region for the batch loop to read per element. Each
+# completed batch is appended to a local history only after
 # evaluation — a batch interrupted by an error is never recorded
 # (correctly lost), one completed just before a cancel-triggered NULL is
 # (never falsely lost) — and the history rides the runner's single
@@ -2231,6 +2232,7 @@ map_runner <- function(n, a, s = NULL) {
   xp <- ctx[["xp"]]
   f <- ctx[["f"]]
   dots <- ctx[["dots"]]
+  x <- ctx[["x"]]
   sig <- .Call(mizu_pool_signals, pool)
   hm <- numeric(8)
   hk <- numeric(8)
@@ -2262,13 +2264,6 @@ map_runner <- function(n, a, s = NULL) {
       }
       lo <- nx[[3L]]
       hi <- nx[[4L]]
-      xs <- nx[[5L]]
-      base <- if (is.null(xs)) {
-        xs <- ctx[["x"]]
-        lo - 1
-      } else {
-        0
-      }
       # per-element streams stay per-element: one O(log lo) seek per
       # batch, one jump per element inside the batch loop — results
       # invariant across morsel size, batch sizing, runner count, and
@@ -2287,8 +2282,8 @@ map_runner <- function(n, a, s = NULL) {
           xp,
           f,
           dots,
-          xs,
-          base,
+          x,
+          lo - 1,
           lo,
           hi,
           ctx[["char_m"]],

@@ -225,6 +225,19 @@ test_that("every atomic x type maps, RAWVEC or descriptor as gated", {
   pool_end(p)
 })
 
+test_that("raw worker contexts read x from the region without a cached slice", {
+  p <- pool_pair()
+  x <- as.double(1:200) * 1.5 # past the inline budget, and not ALTREP
+  st <- mizu:::map_stage(p[["ctrl"]], x, identity, list())
+  expect_type(st[["name"]], "character")
+  mizu:::map_submit(p[["ctrl"]], st)
+  expect_identical(pool_step(p), 1L)
+  expect_identical(collect30(p[["ctrl"]], st), as.list(x))
+  cache <- .Call(mizu:::mizu_pool_map_cache, p[["wk"]])
+  expect_null(get(st[["name"]], envir = cache)[["x"]])
+  pool_end(p)
+})
+
 test_that("an attribute-shaped atomic x coerces off the raw section", {
   p <- pool_pair()
   x <- matrix(seq_len(2000L), nrow = 40L) # dim: ineligible for bare bytes
