@@ -314,6 +314,12 @@ SEXP mizu_map_is_template(SEXP xp) {
   return Rf_ScalarLogical(map_h_get(xp)->h.out_type != 0);
 }
 
+/* Runner misses use the geometry to distinguish private single-morsel
+   contexts from reusable multi-morsel contexts. */
+SEXP mizu_map_n_morsels(SEXP xp) {
+  return Rf_ScalarReal((double) map_h_get(xp)->h.n_morsels);
+}
+
 /* Explicit RAWVEC x slice [lo, hi] for mizu_map_slice: one allocVector +
    memcpy straight from the mapping. */
 static SEXP map_slice_copy(mizu_map_h *mh, uint64_t lo, uint64_t hi) {

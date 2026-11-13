@@ -1315,6 +1315,96 @@ test_that("a late runner after a clean close leaves the pool healthy", {
   expect_identical(mizu_collect(mizu_map(p, 1:4, identity)), as.list(1:4))
 })
 
+test_that("a nested stale single-morsel runner resolves its context once", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  marker <- tempfile()
+  on.exit(unlink(marker), add = TRUE)
+  seen <- new.env(parent = emptyenv())
+  seen$calls <- 0L
+  seen$misses <- 0L
+  seen$contexts <- list()
+  original <- mizu:::map_ctx
+  local_mocked_bindings(map_ctx = function(pool, name, ...) {
+    seen$calls <- seen$calls + 1L
+    cache <- .Call(mizu:::mizu_pool_map_cache, pool)
+    seen$misses <- seen$misses + !exists(name, envir = cache, inherits = FALSE)
+    ctx <- original(pool, name, ...)
+    seen$contexts[[length(seen$contexts) + 1L]] <- ctx
+    ctx
+  })
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    3L,
+    mizu_call(
+      .source = paste(
+        "out <- mizu:::map_runner_ix(readLines(marker), 1, NULL)",
+        "list(length(out[[1L]]), x * 2L)",
+        sep = "\n"
+      ),
+      marker = marker
+    ),
+    list(),
+    chunks = 1L
+  )
+  writeLines(st[["name"]], marker)
+  mizu:::map_submit(p[["ctrl"]], st)
+  expect_identical(pool_step(p), 1L)
+  expect_identical(collect30(p[["ctrl"]], st), list(list(0L, 6L)))
+  expect_identical(seen$calls, 2L)
+  expect_identical(seen$misses, 2L)
+  expect_length(ls(.Call(mizu:::mizu_pool_map_cache, p[["wk"]])), 0L)
+  closed <- vapply(
+    seen$contexts,
+    function(ctx) {
+      tryCatch(
+        {
+          .Call(mizu:::mizu_map_info, ctx[["xp"]])
+          ""
+        },
+        error = conditionMessage
+      )
+    },
+    character(1)
+  )
+  expect_all_equal(closed, "mizu: map handle is closed")
+})
+
+test_that("a single-morsel runner error cancels before its context closes", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  original <- mizu:::map_ctx
+  seen <- NULL
+  local_mocked_bindings(map_ctx = function(pool, name, ...) {
+    seen <<- original(pool, name, ...)
+    seen
+  })
+  st <- mizu:::map_stage(
+    p[["ctrl"]],
+    1L,
+    function(i) stop("now"),
+    list(),
+    chunks = 1L
+  )
+  mizu:::map_submit(p[["ctrl"]], st)
+  expect_identical(pool_step(p), 1L)
+  expect_all_true(.Call(mizu:::mizu_map_cancel_get, st[["wrap"]]))
+  expect_length(ls(.Call(mizu:::mizu_pool_map_cache, p[["wk"]])), 0L)
+  expect_identical(
+    tryCatch(
+      {
+        .Call(mizu:::mizu_map_info, seen[["xp"]])
+        ""
+      },
+      error = conditionMessage
+    ),
+    "mizu: map handle is closed"
+  )
+  e <- tryCatch(collect30(p[["ctrl"]], st), error = identity)
+  expect_identical(conditionMessage(e), "now")
+  expect_identical(e[["mizu_map_index"]], 1)
+})
+
 test_that("cancel remains active while map collection is in progress", {
   p <- pool_pair()
   on.exit(pool_end(p))

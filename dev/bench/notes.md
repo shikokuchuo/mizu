@@ -2193,3 +2193,63 @@ report rows and best-known table are unchanged.
 Status: full suite green (6182 pass, 0 fail, 7 skips; cross-language legs
 included), plus 23 pymizu-to-R-worker map tests. rchk did not run: the local
 Docker daemon returned an API 500 before the container started.
+
+## 2026-11-13 — single-morsel runner contexts (step 5)
+
+Runner misses on one-morsel regions now stay private and close at runner exit
+instead of entering the worker context cache; `map_runner_ix()` resolves its
+context once and passes it through. Multi-morsel caching and native-stream
+context reuse are unchanged. A = `593ce8b`; B = the phase-5 working tree.
+
+The residency probe used one worker and nine spec-stream chunks, each carrying
+8 MiB of raw x plus 8 MiB of template output. The A measurements are the
+pre-change probe; B reran the same markers with no worker `gc()`.
+
+| snapshot | A completed mappings | A resident bytes | B completed mappings | B resident bytes |
+|---|---:|---:|---:|---:|
+| chunk 8 | 7 | 119.1 MiB | 0 | 0 |
+| chunk 9 | 8 | 136.1 MiB | 0 | 0 |
+| after idle | 9 | 153.1 MiB | 0 | 0 |
+
+B had only the active 16 MiB mapping at each marker (0.03 MiB resident at the
+pause), no cached contexts, and no large chunk mapping after idle. A retained
+all nine completed mappings after the idle cache clear until an explicit
+worker `gc()` released them.
+
+The earlier instrumented setup probe covered 1,792 chunk contexts per case
+(256 chunks x 7 maps). Context and parse figures are medians; wall times are
+from a separate uninstrumented run.
+
+| spec | context miss | R parse per chunk | 256-chunk wall median |
+|---|---:|---:|---:|
+| `base::sqrt` name | 11.21 us | — | 8.035 ms |
+| source `x` | 10.04 us | 1.47 us | 7.755 ms |
+| two-expression source | 11.13 us | 2.65 us | 8.257 ms |
+
+The wall rows show no meaningful R source-spec penalty, so source memoization
+was rejected. The prepared single-morsel shape and all three existing
+256-chunk spec-stream rows were then A/B-tested with `bench::mark` medians in
+three alternating process pairs:
+
+| measurement (ms/call) | A1 | B1 | A2 | B2 | A3 | B3 |
+|---|---:|---:|---:|---:|---:|---:|
+| prepared, 32 elements, n_chunks = 1 | 0.0643 | 0.0559 | 0.0590 | 0.0594 | 0.0568 | 0.0578 |
+| spec stream, 256 generic chunks | 7.6324 | 7.9125 | 7.4742 | 7.5825 | 7.7811 | 7.6646 |
+| spec stream, 256 template chunks | 8.1765 | 7.7684 | 7.8051 | 7.7671 | 7.9716 | 7.9996 |
+| spec stream, 256 raw-x chunks | 8.7073 | 9.0783 | 9.0223 | 9.7939 | 8.9234 | 9.6703 |
+
+The prepared and generic/template rows are neutral within drift. Because the
+initial raw-x row was not, it was isolated in four longer alternating pairs:
+
+| raw-x follow-up (ms/call) | A1 | B1 | A2 | B2 | A3 | B3 | A4 | B4 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| spec stream, 256 chunks | 8.1788 | 7.9592 | 7.6310 | 7.9180 | 7.4206 | 7.9212 | 7.7506 | 8.1945 |
+
+The raw-x row is therefore not claimed as timing-neutral: B was slower in six
+of seven pairs, by up to 0.77 ms (about 1-3 us per chunk). The deterministic
+close is retained for the residency fix. The prepared single-morsel row joins
+the report-only benchmark; the best-known table is unchanged.
+
+Status: full suite green (6201 pass, 0 fail, 7 skips; cross-language legs
+included), plus 23 pymizu-to-R-worker map tests. rchk did not run because the
+local Docker daemon is unavailable.

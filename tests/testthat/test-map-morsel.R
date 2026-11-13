@@ -37,6 +37,7 @@ test_that("stage lays out morsel geometry and a zeroed state section", {
   expect_identical(i[["n"]], 100)
   expect_identical(i[["morsel_size"]], 8)
   expect_identical(i[["n_morsels"]], 13) # ceiling(100 / 8)
+  expect_identical(.Call(mizu:::mizu_map_n_morsels, h), 13)
   expect_identical(i[["claim_n"]], 64L)
   expect_identical(i[["generation"]], 0)
   expect_identical(i[["cursor"]], 0)

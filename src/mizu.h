@@ -873,6 +873,7 @@ SEXP mizu_map_stage_range(SEXP, SEXP, SEXP, SEXP, SEXP);
 SEXP mizu_map_open(SEXP, SEXP);
 SEXP mizu_map_desc(SEXP);
 SEXP mizu_map_is_template(SEXP);
+SEXP mizu_map_n_morsels(SEXP);
 SEXP mizu_map_slice(SEXP, SEXP, SEXP);
 SEXP mizu_map_xslice(SEXP, SEXP, SEXP);
 SEXP mizu_map_write(SEXP, SEXP, SEXP);
