@@ -2394,3 +2394,38 @@ us, 6.0 vs 5.0 ms) and their speedups with them.
 Results (other rows, run 1 / run 2): channel rt 0.7 / 0.8 us; pipelined
 channel 1.56M / 1.54M rt/s; pool batch 3.85M / 4.00M tasks/s; fan-out
 400k / 400k tasks/s; streaming 40.0M / 39.2M msg/s.
+
+## 2026-11-13 — Arrow round-trip provenance (per-column remote leaves)
+
+A/B isolation, log only: `36d32f9` against the provenance registry
+build, two runs each. A 5M-row frame (double / int32 / string, about
+125 MB) received as views, through
+`arrow::as_arrow_table(mizu_as_arrow(out))`, and sent back. Round trip
+per send, median of 40:
+
+| send | base run 1 / run 2 | new run 1 / run 2 |
+|---|---|---|
+| fresh table (control) | 8.74 / 8.53 ms | 8.48 / 8.50 ms |
+| unchanged round trip | 8.52 / 8.51 ms | 1.29 / 1.31 ms |
+| one computed double column | 10.29 / 10.35 ms | 3.23 / 3.22 ms |
+
+The control is unmoved: a miss costs nothing measurable. Bench traps:
+the source region's producer must be alive at the export, and
+`arrow_table(as.data.frame(tab))` hands the same buffers back, so it is
+not a fresh control.
+
+## 2026-11-13 — Arrow provenance: lazy open (string walk skipped)
+
+A/B isolation, log only: the provenance build above against the lazy
+open (`mizu_arrow_open_lazy` / `_validate` / `_size_floor`, libmizu
+`c10d0a3`). Unchanged round trip of a 5M-row frame over
+an in-process channel pair, every column a remote leaf, median of 40:
+
+| frame | eager open | lazy open |
+|---|---|---|
+| double / int32 | 0.077 ms | 0.078 ms |
+| + string, no NA | 1.25 ms | 0.077 ms |
+| + string, 1/3 NA | 2.88 ms | 0.076 ms |
+
+The eager open walked every offset of a string column that then crossed
+by reference. What remains is Arrow's own stream export (about 0.06 ms).

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="5919329898ddc3a4945f0d6ded985886e92521d7"  # libmizu: Refresh best-known benchmark figures (#13)
+PIN="c10d0a35404ebe0b707c3c3478f910a7e6047ae5"  # libmizu: Add a lazy Arrow open that defers the string walks (#14)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

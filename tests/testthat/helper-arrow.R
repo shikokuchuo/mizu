@@ -127,3 +127,50 @@ grab_warnings <- function(expr) {
   )
   ws
 }
+
+view_name <- function(x) .Call(mizu:::mizu_zc_view_name, x)
+
+# The region behind each column of a received frame: a remote leaf names
+# the region it references, a local leaf the frame's own ("" off a view).
+col_regions <- function(df) {
+  one <- function(col) {
+    id <- view_name(col)
+    if (length(id)) sub("\\[.*$", "", id) else ""
+  }
+  vapply(df, one, "", USE.NAMES = FALSE)
+}
+
+# The provenance fixtures: a frame past the region floor (i doubles as
+# valid 0-based dictionary indices), its receive as views over a channel
+# pair, and the return leg of an Arrow consumer's hand-back.
+prov_frame <- function(n = 6000L) {
+  df <- data.frame(
+    x = runif(n),
+    i = rep(0:2, length.out = n),
+    s = rep(c("alpha", "beta", NA), length.out = n)
+  )
+  df$x[2L] <- NA
+  df
+}
+
+prov_recv <- function(p, x) {
+  mizu_send(p[["host"]], x)
+  mizu_recv(p[["peer"]], 5)
+}
+
+prov_back <- function(p, x) {
+  mizu_send(p[["peer"]], x)
+  mizu_recv(p[["host"]], 5)
+}
+
+# The data address of every buffer of every column of a struct array.
+buffer_addrs <- function(array) {
+  info <- getFromNamespace("nanoarrow_buffer_info", "nanoarrow")
+  lapply(array$children, function(child) {
+    vapply(
+      child$buffers,
+      function(b) nanoarrow::nanoarrow_pointer_addr_chr(info(b)$data),
+      ""
+    )
+  })
+}

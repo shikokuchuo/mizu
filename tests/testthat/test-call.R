@@ -187,7 +187,6 @@ test_that("foreign-submitter tasks: results, err streams, the result gate", {
 })
 
 test_that("a by-reference spec argument needs the worker's ref capability", {
-  skip_on_os("linux") # a held view trips the churn fallback there
   ch <- channel_pair(arena_size = 0)
   x <- runif(100000)
   mizu_send(ch[["host"]], x)

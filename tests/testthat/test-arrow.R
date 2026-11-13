@@ -708,7 +708,6 @@ test_that("a latin1 string column takes the copy path", {
 
 test_that("a relayed frame borrows remote and local columns uniformly", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -738,7 +737,6 @@ test_that("a relayed frame borrows remote and local columns uniformly", {
 
 test_that("relayed root views borrow through the rc-0 arms", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -861,7 +859,6 @@ test_that("a depth-2 remote borrow flattens to the final region", {
 
 test_that("a mixed-region frame borrows each view column off its region", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -964,7 +961,6 @@ test_that("a materialized remote column copies", {
 
 test_that("a dead referenced region degrades only its own columns", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p1 <- channel_pair()
   x <- runif(50000)
@@ -1021,6 +1017,336 @@ test_that("an orphaned referenced region still borrows", {
     expected
   )
   expect_true(mizu_close(ch, 10))
+})
+
+test_that("an Arrow consumer hands back the exported buffers", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  out <- prov_recv(p, arrow::arrow_table(prov_frame()))
+  arr <- mizu_as_arrow(out)$get_next()
+  back <- nanoarrow::as_nanoarrow_array(arrow::as_record_batch(arr))
+  expect_identical(buffer_addrs(back), buffer_addrs(arr))
+  fmt <- vapply(
+    nanoarrow::infer_nanoarrow_schema(back)$children,
+    function(s) s$format,
+    ""
+  )
+  expect_identical(unname(fmt), c("g", "i", "U"))
+})
+
+test_that("an unchanged Arrow round trip re-sends its columns by reference", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- prov_frame()
+  out <- prov_recv(p, arrow::arrow_table(df))
+  src <- view_name(out)
+  v <- out$x
+  base <- rc_of(v)[1L]
+  tab <- arrow::as_arrow_table(mizu_as_arrow(out))
+  mizu_send(p$peer, tab)
+  # the staged frame pins the pulled batches: the source loan outlives
+  # the frame, the consumer and the stream
+  rm(out, tab)
+  gc()
+  gc()
+  gc()
+  expect_identical(rc_of(v)[1L], base + 1L)
+  back <- mizu_recv(p$host, 5)
+  expect_identical(col_regions(back), rep(src, 3L))
+  expect_false(identical(view_name(back), src))
+  expect_identical(rc_of(v)[2L], 1L) # REFHELD
+  expect_identical(back, df)
+  rm(back)
+  # the consumer is done: the pin drops at the producer's next reaps
+  for (k in 1:2) {
+    mizu_send(p$peer, k)
+    mizu_recv(p$host, 5)
+  }
+  gc()
+  gc()
+  gc()
+  expect_identical(rc_of(v)[1L], 1L) # v's own: the export's loan is back
+})
+
+test_that("a matched column crosses by reference in any position", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- prov_frame()
+  out <- prov_recv(p, arrow::arrow_table(df))
+  src <- view_name(out)
+  tab <- arrow::as_arrow_table(mizu_as_arrow(out))
+  y <- df$x * 2
+  # dropped, reordered, renamed, and a computed column inserted in front
+  t2 <- tab$SelectColumns(c(2L, 0L))$RenameColumns(c("s2", "x2"))
+  t2 <- t2$AddColumn(
+    0L,
+    arrow::field("y", arrow::float64()),
+    arrow::chunked_array(y)
+  )
+  back <- prov_back(p, t2)
+  regions <- col_regions(back)
+  expect_identical(regions[2:3], c(src, src))
+  expect_identical(regions[1L], view_name(back))
+  expect_identical(back, data.frame(y = y, s2 = df$s, x2 = df$x))
+})
+
+test_that("a re-batched column matches only as a contiguous whole", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- prov_frame()
+  out <- prov_recv(p, arrow::arrow_table(df))
+  src <- view_name(out)
+  rb <- arrow::as_record_batch(mizu_as_arrow(out)$get_next())
+  batches <- function(...) {
+    sl <- list(...)
+    do.call(
+      arrow::RecordBatchReader$create,
+      lapply(sl, function(s) rb$Slice(s[1L], s[2L]))
+    )
+  }
+  rows <- function(i) {
+    d <- df[i, ]
+    rownames(d) <- NULL
+    d
+  }
+  back <- prov_back(p, batches(c(0, 2500), c(2500, 1000), c(3500, 2500)))
+  expect_identical(col_regions(back), rep(src, 3L))
+  expect_identical(back, df)
+  back <- prov_back(p, batches(c(0, 3000))) # a partial slice
+  expect_false(src %in% col_regions(back))
+  expect_identical(back, rows(1:3000))
+  back <- prov_back(p, batches(c(3000, 3000), c(0, 3000))) # out of order
+  expect_false(src %in% col_regions(back))
+  expect_identical(back, rows(c(3001:6000, 1:3000)))
+  back <- prov_back(p, batches(c(0, 2500), c(3000, 3000))) # gapped
+  expect_false(src %in% col_regions(back))
+  expect_identical(back, rows(c(1:2500, 3001:6000)))
+})
+
+test_that("a re-typed or re-masked borrowed buffer copies", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- prov_frame()
+  out <- prov_recv(p, arrow::arrow_table(df))
+  src <- view_name(out)
+  arr <- mizu_as_arrow(out)$get_next()
+  tab <- arrow::as_arrow_table(arrow::as_record_batch(arr))
+  # the same buffers under another type: only the untouched column matches
+  back <- prov_back(
+    p,
+    arrow::arrow_table(x = tab$x$View(arrow::int64()), i = tab$i)
+  )
+  expect_identical(col_regions(back) == src, c(FALSE, TRUE))
+  expect_s3_class(back$x, "integer64")
+  # a dictionary over the borrowed index buffer
+  f <- arrow::DictionaryArray$create(tab$i$chunk(0L), c("a", "b", "c"))
+  back <- prov_back(p, arrow::arrow_table(f = f, x = tab$x))
+  expect_identical(col_regions(back) == src, c(FALSE, TRUE))
+  expect_identical(back$f, factor(c("a", "b", "c")[df$i + 1L]))
+  # the borrowed data buffer under a fresh validity bitmap
+  ch <- arr$children$i
+  masked <- nanoarrow::nanoarrow_array_modify(
+    ch,
+    list(
+      buffers = list(as.raw(rep(c(0xFE, 0xFF), c(1, 749))), ch$buffers[[2L]]),
+      null_count = 1L
+    ),
+    validate = FALSE
+  )
+  back <- prov_back(
+    p,
+    arrow_one_col_batches(nanoarrow::na_int32(), list(masked), "i")
+  )
+  expect_false(src %in% col_regions(back))
+  expect_identical(back$i, replace(df$i, 1L, NA))
+})
+
+test_that("only a depth-1 non-S4 leaf carries provenance", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  a <- runif(40000)
+  ya <- prov_recv(p, list(asS4(a), list(a), a))
+  yv <- prov_recv(p, a)
+  # an S4 leaf, a depth-2 leaf, a bare root and a never-shared column all
+  # borrow at the export but re-stage locally; the plain leaf crosses
+  d <- data.frame(
+    s4 = ya[[1L]],
+    deep = ya[[2L]][[1L]],
+    root = yv,
+    ok = ya[[3L]]
+  )
+  d$f <- factor(rep(c("u", "v"), 20000))
+  expect_identical(arrow_export(d)$kinds, c(1L, 1L, 1L, 1L, 0L))
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(d)))
+  own <- view_name(back)
+  expect_identical(col_regions(back), c(own, own, own, view_name(ya), own))
+  expect_identical(back$ok, a)
+  expect_identical(back$deep, a)
+  expect_identical(back$f, d$f)
+})
+
+test_that("mixed source regions cross as remote leaves of one frame", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  a <- runif(20000)
+  b <- seq_len(20000) + 0L
+  ya <- prov_recv(p, list(a))
+  yb <- prov_recv(p, list(b))
+  d <- data.frame(a = ya[[1L]], b = yb[[1L]])
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(d)))
+  expect_identical(col_regions(back), c(view_name(ya), view_name(yb)))
+  expect_identical(back, data.frame(a = a, b = b))
+})
+
+test_that("few rows of long strings match past the exact span", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(
+    s = strrep(letters[rep(1:5, 100L)], 400L),
+    x = as.double(1:500)
+  )
+  out <- prov_recv(p, arrow::arrow_table(df))
+  src <- view_name(out)
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(out)))
+  expect_identical(col_regions(back), rep(src, 2L))
+  expect_identical(back, df)
+})
+
+test_that("int64 and uint64 columns re-send by reference", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  l <- bit64::as.integer64(1:6000)
+  tab <- arrow::arrow_table(
+    l = arrow::Array$create(l, type = arrow::int64()),
+    u = arrow::Array$create(l, type = arrow::uint64())
+  )
+  out <- prov_recv(p, tab)
+  src <- view_name(out)
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(out)))
+  expect_identical(col_regions(back), rep(src, 2L))
+  expect_identical(back$l, l)
+  expect_equal(as.numeric(back$u), as.numeric(l))
+})
+
+test_that("the remote-leaf capability gates the provenance match", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  q <- channel_pair()
+  on.exit(channel_end(q))
+  u <- arrow::Array$create(bit64::as.integer64(1:6000), type = arrow::uint64())
+  x <- runif(6000)
+  out <- prov_recv(q, arrow::arrow_table(u = u, x = x))
+  src <- view_name(out)
+  tab <- arrow::as_arrow_table(mizu_as_arrow(out))
+  remote <- function(caps) {
+    p <- foreign_pair(caps = caps)
+    on.exit(channel_end(p))
+    back <- prov_recv(p, tab)
+    expect_identical(back$x, x)
+    expect_equal(as.numeric(back$u), as.numeric(1:6000))
+    col_regions(back) == src
+  }
+  expect_identical(remote(7L), c(FALSE, FALSE)) # MIZS + ATTRS + MIZL
+  expect_identical(remote(23L), c(FALSE, TRUE)) # + MIZL_REF: u converts
+  expect_identical(remote(87L), c(TRUE, TRUE)) # + MIZL_U64V
+})
+
+test_that("the provenance registry caps admission and unregisters", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  out <- prov_recv(p, arrow::arrow_table(prov_frame()))
+  src <- view_name(out)
+  held <- lapply(1:256, function(i) mizu_as_arrow(out))
+  # past the cap an export carries no provenance: its columns copy
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(out)))
+  expect_false(src %in% col_regions(back))
+  back <- prov_back(p, arrow::as_arrow_table(held[[1L]]))
+  expect_identical(col_regions(back), rep(src, 3L))
+  rm(held, back)
+  gc()
+  gc()
+  gc()
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(out)))
+  expect_identical(col_regions(back), rep(src, 3L))
+})
+
+test_that("a forked child starts with an empty provenance registry", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_on_os("windows") # no fork
+  skip_if_no_fork() # Positron/RStudio sessions block mcfork
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- prov_frame()
+  out <- prov_recv(p, arrow::arrow_table(df))
+  src <- view_name(out)
+  v <- out$x
+  tab <- arrow::as_arrow_table(mizu_as_arrow(out))
+  base <- rc_of(v)
+  res <- parallel::mcparallel(
+    {
+      # the inherited export is unknown here: its columns re-stage locally
+      q <- channel_pair()
+      back <- prov_recv(q, tab)
+      hit <- src %in% col_regions(back)
+      same <- identical(back, df)
+      rm(tab, back)
+      invisible(gc()) # the inherited holder's release: no unref, no unlink
+      c(hit, same)
+    },
+    silent = TRUE
+  )
+  expect_identical(parallel::mccollect(res)[[1L]], c(FALSE, TRUE))
+  expect_identical(rc_of(v), base)
+  back <- prov_back(p, tab)
+  expect_identical(col_regions(back), rep(src, 3L))
+})
+
+test_that("a pool result re-sends borrowed columns by reference", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  df <- prov_frame()
+  t <- mizu_submit(
+    p$ctrl,
+    arrow::as_arrow_table(mizu_as_arrow(d))$AddColumn(
+      0L,
+      arrow::field("n", arrow::int32()),
+      arrow::chunked_array(seq_len(nrow(d)))
+    ),
+    d = arrow::arrow_table(df)
+  )
+  pool_step(p)
+  gc() # the worker's frame, consumer and stream are gone before the collect
+  out <- mizu_collect(t, 5)
+  regions <- col_regions(out)
+  # n is the result frame's own leaf, the rest the submitted frame leaf's
+  expect_identical(regions[1L], view_name(out))
+  expect_identical(length(unique(regions[-1L])), 1L)
+  expect_false(regions[2L] == regions[1L])
+  expect_identical(out, cbind(n = seq_len(nrow(df)), df))
 })
 
 test_that("a pool result past the gate stages as one frame region", {
@@ -1085,7 +1411,6 @@ test_that("a non-struct nanoarrow payload re-enters the pool tiers", {
 
 test_that("a table spliced as the task expression round-trips by reference", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1101,7 +1426,6 @@ test_that("a table spliced as the task expression round-trips by reference", {
 
 test_that("a nested table arg crosses as a frame leaf; a second is pre-encoded", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair(slot_size = 1024L)
   on.exit(pool_end(p))
@@ -1129,7 +1453,6 @@ test_that("a nested table arg crosses as a frame leaf; a second is pre-encoded",
 
 test_that("a converting table's lazy list-column elements cross by value", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1154,7 +1477,6 @@ test_that("a converting table's lazy list-column elements cross by value", {
 
 test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))

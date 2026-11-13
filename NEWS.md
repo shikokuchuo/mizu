@@ -1,5 +1,6 @@
 # mizu (development version)
 
+* Faster re-sending of Arrow data obtained from `mizu_as_arrow()`: columns left unchanged are no longer copied.
 * `mizu_submit_batch()` failing mid-batch now attaches the handles of the tasks already submitted to the raised condition as `accepted`; they run and stay collectible.
 * Faster `mizu_map()` collection and lower shared-memory use for a (non-prepared) map collected by value.
 * Faster `mizu_map()` on small and medium inputs.
