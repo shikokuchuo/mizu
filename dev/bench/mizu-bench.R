@@ -694,6 +694,20 @@ with_pool(4L, function(p) {
     mark_ms(function() invisible(mizu_collect(mizu_map_run(pm32)))),
     "ms wall"
   )
+  pm_single <- mizu_map_prepare(
+    p,
+    seq_len(32L) + 0,
+    f,
+    .template = numeric(1),
+    .n_chunks = 1L
+  )
+  invisible(mizu_collect(mizu_map_run(pm_single)))
+  note(
+    "map context lifetime",
+    "mizu_map_run prepared single-morsel",
+    mark_ms(function() invisible(mizu_collect(mizu_map_run(pm_single)))),
+    "ms wall"
+  )
   spec_x <- seq_len(2048L)
   spec_stream <- function() {
     invisible(mizu_collect(mizu_map(

@@ -37,6 +37,25 @@ test_that("a prepared map re-runs on one region under a bumped generation", {
   pool_end(p)
 })
 
+test_that("single-morsel prepared runs use private worker contexts", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  pm <- mizu_map_prepare(
+    p[["ctrl"]],
+    1:4 + 0,
+    function(i) i * 2,
+    .template = numeric(1),
+    .n_chunks = 1L
+  )
+  cache <- .Call(mizu:::mizu_pool_map_cache, p[["wk"]])
+  for (run in 1:2) {
+    m <- mizu_map_run(pm)
+    expect_identical(pool_step(p), 1L)
+    expect_identical(mizu_collect(m), (1:4 + 0) * 2)
+    expect_length(ls(cache), 0L)
+  }
+})
+
 test_that("a blob-sized prepared map resubmits its staged blob", {
   p <- pool_pair()
   f <- function(i) i + 1L

@@ -4,12 +4,13 @@
 # task per live worker: runners self-schedule element ranges off a shared
 # cursor in the map region (morsel-driven scheduling), one adaptive-sized
 # batch per mizu_map_next transition, and publish their batch histories as
-# their single ordinary result. Workers materialize the map context at
-# most once each (cached on the worker handle, prot[5]); a RAWVEC-eligible
-# x is sliced per batch straight from the mapping, never deserialized; the
-# template path writes results into a shared output area so n results move
-# cross-process unserialized. The region-less blob path keeps fixed
-# chunks: the morsel state needs the region, and at those sizes chunk
+# their single ordinary result. Multi-morsel contexts are cached on the
+# worker handle (prot[5]); single-morsel runner contexts are private and
+# close at runner exit. A RAWVEC-eligible x is read straight from the
+# mapping, never deserialized; the template path writes results into a
+# shared output area so n results move cross-process unserialized. The
+# region-less blob path keeps fixed chunks: the morsel state needs the
+# region, and at those sizes chunk
 # overhead is already negligible. The stages below are composable so the
 # deterministic harness can interleave pool_step() between submit and
 # collect — mizu_map merely composes them.
@@ -2220,16 +2221,23 @@ map_stream_chunk <- function(n, r, x, s = NULL) {
 # (correctly lost), one completed just before a cancel-triggered NULL is
 # (never falsely lost) — and the history rides the runner's single
 # ordinary result publish: list(batch starts, batch sizes, per-batch
-# value lists | NULL on the template path). Template histories merge
+# value lists | NULL on the template path). A single-morsel miss is private
+# to this runner and closes on exit; other contexts stay cache-owned.
+# Template histories merge
 # contiguous batches (no values to keep aligned), so they usually
 # collapse to one range and stay inside any slot's inline budget.
-map_runner <- function(n, a, s = NULL) {
+map_runner <- function(n, a, s = NULL, ctx = NULL) {
   pool <- mizu_current_pool()
   r <- a[[1L]]
   g <- a[[2L]]
   tmpl <- length(a) > 2L
-  ctx <- map_ctx(pool, n)
+  if (is.null(ctx)) {
+    ctx <- map_ctx(pool, n, private_single = TRUE)
+  }
   xp <- ctx[["xp"]]
+  if (isTRUE(ctx[["private"]])) {
+    on.exit(.Call(mizu_map_close, xp), add = TRUE)
+  }
   f <- ctx[["f"]]
   dots <- ctx[["dots"]]
   x <- ctx[["x"]]
@@ -2240,7 +2248,7 @@ map_runner <- function(n, a, s = NULL) {
   nb <- 0L
   if (!is.null(s)) {
     restore_rng <- rng_save()
-    on.exit(restore_rng())
+    on.exit(restore_rng(), add = TRUE)
   }
   tryCatch(
     repeat {
@@ -2337,16 +2345,24 @@ map_runner <- function(n, a, s = NULL) {
 # handful of maps interleaving on one worker is pathological and costs one
 # re-attach. A miss attaches the region — writable always: every runner
 # CASes the shared morsel state, not just the template path's output area
-# — no-populate, validates the header, and unserializes the one
-# descriptor stream: at most once per worker per map.
-map_ctx <- function(pool, name) {
+# — no-populate, validates the header, and unserializes the descriptor.
+# Runner misses on one-morsel regions instead return private contexts:
+# spec-stream chunk names never repeat, so caching them only retains dead
+# mappings. The runner closes these on exit. Native stream chunks keep the
+# cache, which serves the same region's next chunk.
+map_ctx <- function(pool, name, private_single = FALSE) {
   cache <- .Call(mizu_pool_map_cache, pool)
   ctx <- get0(name, envir = cache, inherits = FALSE)
   if (is.null(ctx)) {
-    if (length(ls(cache)) >= 8L) {
+    xp <- .Call(mizu_map_open, name, TRUE)
+    private <- private_single && .Call(mizu_map_n_morsels, xp) == 1
+    if (private) {
+      ok <- FALSE
+      on.exit(if (!ok) .Call(mizu_map_close, xp), add = TRUE)
+    }
+    if (!private && length(ls(cache)) >= 8L) {
       rm(list = ls(cache), envir = cache)
     }
-    xp <- .Call(mizu_map_open, name, TRUE)
     d <- .Call(mizu_map_desc, xp)
     if (inherits(d, "mizu_map_ix")) {
       # the cross-language form (Phase 5): the f spec decoded once per
@@ -2375,7 +2391,12 @@ map_ctx <- function(pool, name) {
         char_m = if (length(d) >= 4L) d[[4L]] else 0
       )
     }
-    assign(name, ctx, envir = cache)
+    if (private) {
+      ctx[["private"]] <- TRUE
+      ok <- TRUE
+    } else {
+      assign(name, ctx, envir = cache)
+    }
   }
   ctx
 }
@@ -2388,6 +2409,6 @@ map_ctx <- function(pool, name) {
 # this language's own seed state from the neutral pair.
 map_runner_ix <- function(n, g, sd) {
   s <- if (!is.null(sd)) map_seed_state(sd)
-  ctx <- map_ctx(mizu_current_pool(), n)
-  map_runner(n, c(g %/% 2^32, g %% 2^32, if (ctx[["tmpl"]]) 1), s)
+  ctx <- map_ctx(mizu_current_pool(), n, private_single = TRUE)
+  map_runner(n, c(g %/% 2^32, g %% 2^32, if (ctx[["tmpl"]]) 1), s, ctx)
 }
