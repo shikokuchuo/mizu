@@ -2,6 +2,10 @@
 
 ## mizu (development version)
 
+- [`mizu_submit_batch()`](https://shikokuchuo.net/mizu/dev/reference/mizu_submit_batch.md)
+  failing mid-batch now attaches the handles of the tasks already
+  submitted to the raised condition as `accepted`; they run and stay
+  collectible.
 - Faster
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   collection and lower shared-memory use for a (non-prepared) map

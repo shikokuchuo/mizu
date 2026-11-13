@@ -67,9 +67,16 @@ Submission behaves per task as in
 [`mizu_submit()`](https://shikokuchuo.net/mizu/dev/reference/mizu_submit.md),
 with one difference: if the injection ring fills past `.timeout`
 mid-batch, the call returns the handles accepted so far instead of
-raising `mizu_error_submit_timeout`. Fatal outcomes (pool stopped,
-result slots exhausted) still raise, and tasks already submitted stay
-valid and collectible.
+raising `mizu_error_submit_timeout`.
+
+An error mid-batch still raises: a fatal outcome (pool stopped, result
+slots exhausted), or an error raised while a task is being submitted (a
+[`mizu_pool_trace()`](https://shikokuchuo.net/mizu/dev/reference/mizu_pool_trace.md)
+hook's error, a failure to encode a task). The condition then carries an
+`accepted` field, the list of handles of the tasks already submitted,
+which run and stay collectible. The field is absent when no task was
+submitted. An interrupt abandons the batch instead, and the tasks
+already submitted are cancelled.
 
 ## Examples
 
