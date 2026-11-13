@@ -176,6 +176,15 @@ arrow_batches_to_value <- function(schema, batches) {
 #' per column through `nanoarrow::as_nanoarrow_array()`. The shared region stays
 #' mapped until the stream and every array produced from it are released.
 #'
+#' The zero-copy columns also travel back by reference. When the Arrow data is
+#' sent on (over a channel, or returned as a pool result) with such a column
+#' unchanged, the send references the original shared region for that column
+#' and writes only the columns that are new or modified. Dropping, reordering
+#' and renaming columns, and re-batching rows, keep a column unchanged; slicing,
+#' filtering and converting it do not. This applies to columns that arrived as
+#' the direct elements of a received data frame or list, not to a received bare
+#' vector placed in a data frame, which is copied as before.
+#'
 #' @param x a data frame.
 #'
 #' @return A struct-typed `nanoarrow_array_stream`.

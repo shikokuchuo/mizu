@@ -6,17 +6,23 @@
    by construction). The R helpers eval inside the transactional
    guarantee — they complete before any shared-state mutation; the core
    stage's capability conjunction is the only caps home, and the size
-   pre-gate (the region-span proxy) the binding's one tier choice. No pin:
-   the frame region is self-contained (every byte copied off the Arrow
-   buffers; no remote leaves from R). Receive (mizu_as_arrow): one fused
-   decide-and-fill .Call — every column locates uniformly through its own
-   view identifier (a bare root by magic, a path through
-   mizu_view_path_entry), and one counted loan per distinct region holds
-   the pages the exported arrays point into. */
+   pre-gate (the region-span proxy) the binding's one tier choice. A frame
+   is self-contained (every byte copied off the Arrow buffers, no pin)
+   unless a column matched the export provenance registry: a column
+   mizu_as_arrow() lent out and an Arrow consumer handed back unchanged
+   crosses as a remote leaf (the core's mizu_arrow_remote), and the pulled
+   batches then stay pinned until the consumer is done. Receive
+   (mizu_as_arrow): one fused decide-and-fill .Call — every column locates
+   uniformly through its own view identifier (a bare root by magic, a path
+   through mizu_view_path_entry), and one counted loan per distinct region
+   holds the pages the exported arrays point into. */
 
 #include "arrow.h"
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 
 /* The attributes, if any: the (name, value) pairs, class last through
    Rf_classgets — the object bit follows the class as R's own setAttrib
@@ -144,8 +150,9 @@ typedef struct {
 } mizu_arrow_held;
 
 /* The pulled structs released (idempotent): every batch through its own
-   release, the schema likewise. A successful stage reclaims them early —
-   the frame is self-contained off the Arrow buffers; the bail's ABI move
+   release, the schema likewise. A successful self-contained stage reclaims
+   them early; one carrying remote leaves leaves them to the finalizer (the
+   pin holds the extptr until the consumer is done); the bail's ABI move
    marks its structs with a NULL release; the finalizer takes the rest. */
 static void arrow_release_pulled(mizu_arrow_held *hd) {
   for (size_t i = 0; i < hd->nbatches; i++)
@@ -389,17 +396,20 @@ SEXP mizu_arrow_ix_value(SEXP xp, mizu_arrow_warn *warn) {
   return out;
 }
 
-/* The stage over a held handle: 0 staged, the core handle and pulled structs
-   released (the frame is self-contained off the Arrow buffers), the
+/* The stage over a held handle: 0 staged, the core handle closed and the
    (hdr, payload) stamp left in the struct's scratch; -1 declined (the gate or
-   the reservation), both kept for the caller's direct by-value write. */
+   the reservation), handle and pull kept for the caller's direct by-value
+   write. A self-contained frame releases the pulled structs here; keep != 0
+   (the frame carries remote leaves into the batches' source regions) leaves
+   them held for the caller's pin. */
 static int arrow_stage_held(mizu_arrow_held *hd, mizu_handle *h,
                             unsigned char *name, uint32_t *name_len,
-                            mizu_arrow_warn *warn) {
+                            mizu_arrow_warn *warn, int keep) {
   const int staged =
     mizu_arrow_stage(h, hd->a, &hd->hdr, hd->name, warn) == MIZU_OK;
   if (!staged) return -1;
-  arrow_finish_held(hd);
+  arrow_close_core(hd);
+  if (!keep) arrow_release_pulled(hd);
   if (name != NULL) memcpy(name, hd->name, hd->hdr.len);
   if (name_len != NULL) *name_len = (uint32_t) hd->hdr.len;
   return 0;
@@ -408,7 +418,7 @@ static int arrow_stage_held(mizu_arrow_held *hd, mizu_handle *h,
 int mizu_arrow_stage_held(SEXP xp, mizu_handle *h, unsigned char *name,
                           uint32_t *name_len, mizu_arrow_warn *warn) {
   return arrow_stage_held(
-    (mizu_arrow_held *) R_ExternalPtrAddr(xp), h, name, name_len, warn
+    (mizu_arrow_held *) R_ExternalPtrAddr(xp), h, name, name_len, warn, 0
   );
 }
 
@@ -452,6 +462,8 @@ static void arrow_stage_ix(mizu_arrow_held *hd, mizu_slot_hdr *hdr,
   arrow_finish_held(hd);
 }
 
+static int arrow_prov_match(mizu_arrow_held *hd, uint32_t caps);
+
 void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, mizu_handle *h, void *ctx,
                         uint32_t caps, mizu_stage_fn reenter) {
@@ -475,9 +487,21 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
   const int orc = arrow_open_into(hd, caps, &fsize);
   if (orc != 0) arrow_open_raise(orc);
   mizu_arrow_warn warn = { 0, 0, 0 };
-  if (fsize > gate && arrow_stage_held(hd, h, NULL, NULL, &warn) == 0) {
+  /* the provenance match runs only where a region stage is on the table
+     (the local span past the gate, no churn) and the peer reads remote
+     leaves; an override shrinks the span, which no longer gates */
+  int nremote = 0;
+  if (fsize > gate && (caps & MIZU_CAP_MIZL_REF) != 0 &&
+      !mizu_handle_churn(h))
+    nremote = arrow_prov_match(hd, caps);
+  if (fsize > gate &&
+      arrow_stage_held(hd, h, NULL, NULL, &warn, nremote != 0) == 0) {
     *hdr = hd->hdr;
     memcpy(payload, hd->name, hd->hdr.len);
+    /* the remote leaves point into regions the pulled batches keep on
+       loan: the pin holds them until the consumer has resolved (the drop
+       hook at consumer-done / rollback / teardown, then the finalizer) */
+    if (nremote != 0) mizu_r_pin(h, ctx, xp);
   } else {
     /* below the region gate, or declined by its caps/churn/reservation:
        one complete 'I' stream over the shared copy-tier ladder */
@@ -543,6 +567,8 @@ typedef struct {
   int64_t voff, vcount;    /* the flattened validity pair (fixed width) */
   const void *valid;       /* resolved at the pre-fill */
   int64_t nulls;
+  int32_t ref_leaf;        /* the provenance target: the 0-based depth-1
+                              leaf of an MIZL root, -1 when ineligible */
 } arrow_col_plan;
 
 /* The candidate borrow kind off the live view alone: TYPEOF, the attr
@@ -584,11 +610,16 @@ static int32_t arrow_kind_tag(int kind) {
    directory entry through mizu_view_path_entry, the offsets flattened to
    region-relative by the leaf-base delta (data_offset, and valid[0] when
    nonzero). The tag cross-checks against the kind; strings run the
-   encoding gate on the located block. 0 on any rejection. */
+   encoding gate on the located block. 0 on any rejection. ref_leaf is
+   the provenance eligibility: a depth-1 leaf whose entry is exactly what
+   the Arrow export says of it — no S4 bit and no attribute blob (the u64
+   marker excepted, which the kind itself stands for), neither of which an
+   Arrow array carries back. */
 static int arrow_locate(const unsigned char *base, size_t size, int rc,
                         const int32_t *path, int plen, int kind,
                         arrow_col_plan *pl) {
   const int32_t want = arrow_kind_tag(kind);
+  pl->ref_leaf = -1;
   if (rc == 0) {
     if (size < MIZU_HEADER_SIZE) return 0;
     uint32_t magic;
@@ -635,6 +666,9 @@ static int arrow_locate(const unsigned char *base, size_t size, int rc,
   pl->length = e.length;
   pl->voff = e.valid[0] != 0 ? delta + e.valid[0] : 0;
   pl->vcount = e.valid[1];
+  if (plen == 1 && (e.sexptype & (int32_t) MIZU_MIZL_S4) == 0 &&
+      (e.attrs_size == 0 || kind == ARROW_BORROW_UINT64))
+    pl->ref_leaf = path[0];
   return 1;
 }
 
@@ -651,14 +685,194 @@ typedef struct mizu_arrow_owned_s {
   struct mizu_arrow_owned_s *next;
 } mizu_arrow_owned;
 
+/* One borrowed column's provenance record, beside its 3 buffer pointers
+   in the holder's bufs. */
 typedef struct {
+  int kind;                  /* ARROW_BORROW_* */
+  int32_t ref_leaf;          /* -1: never matched */
+  int64_t length;
+  mizu_shm *region;          /* borrowed: one of the holder's */
+} arrow_prov_col;
+
+typedef struct mizu_arrow_holder_s {
   mizu_shm **regions;        /* open_view mappings + counted loans */
   size_t nregions;
   long pid;
   _Atomic size_t refs;
   mizu_arrow_owned *owned;   /* sentinel-derived validity bitmaps */
   const void **bufs;         /* 3 pointers per borrowed column */
+  int ncols;                 /* borrowed columns: the bufs / prov extent */
+  arrow_prov_col *prov;      /* NULL: no provenance (never registered) */
+  struct mizu_arrow_holder_s *next;   /* the registry link */
 } mizu_arrow_holder;
+
+// The export provenance registry ------------------------------------------------
+
+/* Every live export with at least one eligible column, so a send can tell
+   a column an Arrow consumer handed back unchanged from one it computed:
+   the match is buffer identity against the exact arrays lent out. A
+   process-global list of the holders themselves, capped (a dropped record
+   costs one layout write, never data). The holder's last release runs in
+   pure C on any thread, so the list takes a spinlock; it is held for the
+   bounded scan and never across a region reservation or a payload write.
+   An unregister precedes its holder's unmap and free, so every recorded
+   pointer read under the lock is live. */
+#define ARROW_PROV_MAX 256
+
+static mizu_arrow_holder *arrow_prov_head;
+static int arrow_prov_count;
+static atomic_flag arrow_prov_flag = ATOMIC_FLAG_INIT;
+
+static inline void arrow_prov_lock(void) {
+  while (atomic_flag_test_and_set_explicit(&arrow_prov_flag,
+                                           memory_order_acquire)) { }
+}
+
+static inline void arrow_prov_unlock(void) {
+  atomic_flag_clear_explicit(&arrow_prov_flag, memory_order_release);
+}
+
+#ifndef _WIN32
+/* A forked child starts with an empty registry: it is single-threaded
+   here, so the reset cannot race, and a lock another thread held at the
+   fork is dropped with the list it guarded. The inherited holders stay
+   with their arrays; their releases find nothing to unlink. */
+static void arrow_prov_atfork_child(void) {
+  arrow_prov_head = NULL;
+  arrow_prov_count = 0;
+  atomic_flag_clear(&arrow_prov_flag);
+}
+#endif
+
+/* Best-effort: past the cap the export simply carries no provenance. */
+static void arrow_prov_register(mizu_arrow_holder *hd) {
+#ifndef _WIN32
+  static int installed;       /* registration is main-thread only */
+  if (!installed) {
+    installed = 1;
+    (void) pthread_atfork(NULL, NULL, arrow_prov_atfork_child);
+  }
+#endif
+  arrow_prov_lock();
+  if (arrow_prov_count < ARROW_PROV_MAX) {
+    hd->next = arrow_prov_head;
+    arrow_prov_head = hd;
+    arrow_prov_count++;
+  }
+  arrow_prov_unlock();
+}
+
+/* Unlink by search: a holder past the cap, one a forked child's reset
+   dropped, and one never registered all miss harmlessly. */
+static void arrow_prov_unregister(mizu_arrow_holder *hd) {
+  arrow_prov_lock();
+  for (mizu_arrow_holder **pp = &arrow_prov_head; *pp != NULL;
+       pp = &(*pp)->next)
+    if (*pp == hd) {
+      *pp = hd->next;
+      arrow_prov_count--;
+      break;
+    }
+  arrow_prov_unlock();
+}
+
+/* The borrow kind an outgoing column's format can only have come from. */
+static int arrow_prov_kind(const ArrowSchema *sch) {
+  const char *f = sch->format;
+  if (f == NULL || f[0] == '\0' || f[1] != '\0' || sch->dictionary != NULL)
+    return 0;
+  switch (f[0]) {
+  case 'g': return ARROW_BORROW_REAL;
+  case 'i': return ARROW_BORROW_INT;
+  case 'l': return ARROW_BORROW_INT64;
+  case 'U': return ARROW_BORROW_STR;
+  case 'L': return ARROW_BORROW_UINT64;
+  }
+  return 0;
+}
+
+/* The record an outgoing column tiles, or NULL: every batch carries the
+   recorded buffer pointers (the validity pointer included — a kernel may
+   keep the data buffer and swap the bitmap), the offsets run contiguously
+   from 0 in batch order, and the lengths sum to the recorded length. So a
+   whole column matches in any position and under any re-batching; a
+   partial slice, a gapped or reordered tiling and a converted or fresh
+   column all miss. The null count is no key (it differs per slice and may
+   be unknown; identical buffers, offset and length imply it). Called
+   under the lock. */
+static const arrow_prov_col *arrow_prov_find(const mizu_arrow_held *hd,
+                                             int64_t col, int kind,
+                                             const mizu_arrow_holder *ex) {
+  const int nbuf = kind == ARROW_BORROW_STR ? 3 : 2;
+  const ArrowArray *c0 = hd->batches[0].children[col];
+  if (c0->n_buffers != nbuf) return NULL;
+  /* the region-range prefilter: a fresh buffer never reaches a compare */
+  const unsigned char *data = (const unsigned char *) c0->buffers[1];
+  size_t k = 0;
+  for (; k < ex->nregions; k++) {
+    const unsigned char *base =
+      (const unsigned char *) mizu_shm_addr(ex->regions[k]);
+    if (data >= base && data < base + mizu_shm_size(ex->regions[k])) break;
+  }
+  if (k == ex->nregions) return NULL;
+  for (int j = 0; j < ex->ncols; j++) {
+    const arrow_prov_col *pc = &ex->prov[j];
+    if (pc->ref_leaf < 0 || pc->kind != kind) continue;
+    const void **bufs = ex->bufs + 3 * j;
+    if (bufs[1] != (const void *) data) continue;
+    int64_t run = 0;
+    size_t b = 0;
+    for (; b < hd->nbatches; b++) {
+      const ArrowArray *c = hd->batches[b].children[col];
+      if (c->n_buffers != nbuf || c->offset != run) break;
+      int same = 1;
+      for (int q = 0; q < nbuf; q++)
+        if (c->buffers[q] != bufs[q]) same = 0;
+      if (!same) break;
+      run += c->length;
+    }
+    if (b == hd->nbatches && run == pc->length) return pc;
+  }
+  return NULL;
+}
+
+/* The provenance pass over an open candidate: every column that is a
+   whole recorded export, unchanged, registers as a remote leaf with the
+   core. Returns the count registered. The caller has checked the peer
+   reads remote leaves; a recorded uint64 column additionally needs the
+   verbatim-lane bit, without which it stays on the converting local
+   writer. The core's override validates geometry and row count only, so
+   the format and eligibility checks here are load-bearing. A hit's
+   export outlives the unlock: the pulled batches own the very buffers
+   that matched, which keeps their holder — record, mapping and loan —
+   alive for the write and, once pinned, until the consumer is done. */
+static int arrow_prov_match(mizu_arrow_held *hd, uint32_t caps) {
+  if (hd->nbatches == 0) return 0;
+  int nremote = 0;
+  arrow_prov_lock();
+  if (arrow_prov_head != NULL) {
+    for (int64_t col = 0; col < hd->schema.n_children; col++) {
+      const int kind = arrow_prov_kind(hd->schema.children[col]);
+      if (kind == 0 ||
+          (kind == ARROW_BORROW_UINT64 && (caps & MIZU_CAP_MIZL_U64V) == 0))
+        continue;
+      for (const mizu_arrow_holder *ex = arrow_prov_head; ex != NULL;
+           ex = ex->next) {
+        const arrow_prov_col *pc = arrow_prov_find(hd, col, kind, ex);
+        if (pc == NULL) continue;
+        const char *name = mizu_shm_name(pc->region);
+        /* a torn referenced tree declines: the column stays local */
+        if (mizu_arrow_remote(hd->a, col, name, strlen(name),
+                              mizu_shm_addr(pc->region),
+                              mizu_shm_size(pc->region), pc->ref_leaf) == 0)
+          nremote++;
+        break;
+      }
+    }
+  }
+  arrow_prov_unlock();
+  return nremote;
+}
 
 /* The region named `name`, acquired once per holder: a scan of the
    acquired set, else a fresh open_view (the counted loan). NULL when the
@@ -675,6 +889,9 @@ static mizu_shm *holder_acquire(mizu_arrow_holder *hd, const char *name) {
 }
 
 static void mizu_arrow_holder_free(mizu_arrow_holder *hd) {
+  /* ahead of any unmap or free: a match in flight reads the record and
+     the mappings under the registry lock */
+  if (hd->prov != NULL) arrow_prov_unregister(hd);
   for (size_t k = 0; k < hd->nregions; k++) {
     if (hd->pid == mizu_self_pid())
       mizu_zc_unref(hd->regions[k]); /* a forked child's sub would corrupt it */
@@ -686,6 +903,7 @@ static void mizu_arrow_holder_free(mizu_arrow_holder *hd) {
     free(hd->owned);
     hd->owned = nx;
   }
+  free(hd->prov);
   free(hd->bufs);
   free(hd->regions);
   free(hd);
@@ -774,11 +992,14 @@ SEXP mizu_arrow_export_call(SEXP x, SEXP arrays) {
   }
   atomic_init(&hd->refs, 0);
   hd->pid = mizu_self_pid();
+  hd->ncols = nb;
+  int eligible = 0;
   for (int j = 0; j < nb; j++) {
     if (plans[j].kind == 0) continue;
     mizu_shm *reg = holder_acquire(hd, plans[j].name);
     if (reg != NULL) {
       plans[j].region = reg;
+      if (plans[j].ref_leaf >= 0) eligible = 1;
       continue;
     }
     for (int k = j; k < nb; k++)
@@ -886,6 +1107,20 @@ SEXP mizu_arrow_export_call(SEXP x, SEXP arrays) {
     a->private_data = hd;
     a->release = mizu_arrow_array_release;
     atomic_fetch_add_explicit(&hd->refs, 1, memory_order_relaxed);
+  }
+  /* the provenance record, beside the pointers just filled: best-effort
+     (an allocation failure or a full registry only loses the match), and
+     registered before any array can leave this call */
+  if (eligible &&
+      (hd->prov = (arrow_prov_col *)
+         calloc((size_t) nb, sizeof(arrow_prov_col))) != NULL) {
+    for (int j = 0; j < nb; j++) {
+      hd->prov[j].kind = plans[j].kind;
+      hd->prov[j].ref_leaf = plans[j].kind != 0 ? plans[j].ref_leaf : -1;
+      hd->prov[j].length = plans[j].length;
+      hd->prov[j].region = plans[j].region;
+    }
+    arrow_prov_register(hd);
   }
   /* every acquire failed: no array references the holder, so no release
      callback ever frees it — free it here */

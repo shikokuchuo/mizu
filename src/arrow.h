@@ -24,7 +24,13 @@ int mizu_arrow_check(SEXP x);
    declines raise mizu_error_not_portable. caps is the capability word the core's
    conjunction gates on: the channel passes the peer's (rh->peer_caps),
    the pool this build's (MIZU_R_CAPS — a task frame is same-language by
-   construction). */
+   construction). Ahead of a region stage the provenance pass runs (peers
+   with MIZU_CAP_MIZL_REF, outside churn): a column that is a whole
+   mizu_as_arrow() export handed back unchanged — buffer identity against
+   the export's record, in any position and any batching — crosses as a
+   remote leaf into its source region instead of a copy, and the pulled
+   batches are then pinned through ctx until the consumer is done. The
+   nested frame leaf (mizu_arrow_stage_held) stays self-contained. */
 void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
                         uint32_t inline_max, mizu_handle *h, void *ctx,
                         uint32_t caps, mizu_stage_fn reenter);
@@ -84,7 +90,10 @@ void mizu_arrow_warn_raise(const mizu_arrow_warn *warn);
    per-column borrow kinds (0 copy / 1 double / 2 int32 / 3 int64 /
    4 string / 5 uint64) and filling every borrowed column's pre-allocated
    ArrowArray
-   in place, one counted loan per distinct region. */
+   in place, one counted loan per distinct region. An export with a column
+   that is a depth-1 leaf of an MIZL root joins the provenance registry
+   (process-global, capped, unregistered at the holder's last release) for
+   the send side's remote-leaf match. */
 SEXP mizu_arrow_export_call(SEXP x, SEXP arrays);
 
 #endif /* MIZU_ARROW_H */
