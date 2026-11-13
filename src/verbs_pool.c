@@ -1339,6 +1339,13 @@ SEXP mizu_pool_map_cache(SEXP xp) {
   return cache;
 }
 
+/* Track a cached context's map handle on the worker handle, so the idle
+   sweep closes its mapping along with the cache (mizu_r_sweep). */
+SEXP mizu_pool_map_track(SEXP xp, SEXP map) {
+  mizu_map_track(map, (void *) pool_get_worker(xp));
+  return R_NilValue;
+}
+
 /* Test / debug surface: c(free-list entries, lent-ledger entries). */
 SEXP mizu_pool_zc_info(SEXP xp) {
   mizu_pool *p = pool_core(xp);
