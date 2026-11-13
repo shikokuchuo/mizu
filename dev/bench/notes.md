@@ -45,9 +45,9 @@ probes and A/B isolations stay in the log.
 
 | row | best | measured |
 |---|---|---|
-| sequential rt, channel | 0.9 us/rt | 2026-11-13 |
-| sequential rt, pool | 1.3 us/task | 2026-11-13 |
-| pipelined, channel | 1.03M rt/s | 2026-11-13 |
+| sequential rt, channel | 0.7 us/rt | 2026-11-13 |
+| sequential rt, pool | 0.8 us/task | 2026-11-13 |
+| pipelined, channel | 1.69M rt/s | 2026-11-13 |
 | pipelined, channel batch | 20.4M rt/s | 2026-10-03 |
 | pipelined, pool | 765k tasks/s | 2026-11-13 |
 | pipelined, pool batch | 4.07M tasks/s | 2026-10-01 |
@@ -2316,3 +2316,81 @@ rt pool 1.4 -> 1.3, pipelined channel 981k -> 1.03M, pipelined pool 680k
 Status: full suite 0 failures against the installed build (1172 results,
 7 skips; five mocked map tests need pkgload), `devtools::test()` map
 files 213 pass.
+
+## 2026-11-13 — sequential pool rt timed from a settled heap (row definition change)
+
+The sequential pool row read anywhere from 0.8 to 1.7 us/task run to run,
+and the driver was R's collector, not the pool: every `mizu_submit()`
+returns a task handle carrying a finalizer, and R's cost of that garbage
+climbs rep over rep and resets only at a full collection (a sawtooth:
+0.85 rising to 1.7-1.9, back to 0.84 after a level-2 GC; time inside the
+collector itself a median 0.15 us/task). A mizu-free loop making one
+short-lived environment per iteration is flat at 0.28-0.41 us without
+`reg.finalizer()` and saws 0.65 -> 2.0-2.5 -> 0.74 with it. The channel
+row makes no handles and never drifted. `mizu-bench.R` now times this
+row with `mark_gc_ms`: a full `gc()` ahead of each of 15 reps, the
+median — every rep from the same heap state, the handle reclaim outside
+the clock, which is what pymizu's row measures (CPython frees the handle
+by refcount). The earlier values of this row (1.5 / 1.4 / 1.3) are the
+old definition; the other submit-and-collect rows keep bench::mark.
+
+Results (section 1, five runs): pool 0.8 / 0.8 / 0.9 / 0.8 / 0.8 us/task
+(old definition, same build, three runs: 1.3 / 1.4 / 1.3); per-rep
+spread under the new timing 0.76-0.89. Channel 0.9-1.1 us/rt, unchanged
+definition. Table row swapped to 0.8 as the new definition's first
+record.
+
+## 2026-11-13 — echo peer's sentinel test behind is.object() (channel row definition change)
+
+With the pool row settled at 0.8 us/task the sequential channel row read
+above it (0.9 us/rt), and the difference was the bench peer, not the
+transport: `echo_expr` ran `inherits(x, "mizu_sentinel")` per message,
+an R closure at ~0.25 us a call in-process, where a pool worker's loop
+is C. The peer now tests `is.object(x) && inherits(...)`: a classless
+payload stops at the primitive, a classed one (the frame rows) still
+takes the full test. This redefines every per-message `echo_expr` row;
+the batch and streaming peers test once per burst and are unchanged.
+Isolation (settled-heap timing, 15 reps of 20,000 rt): bench peer 0.90
+us/rt (0.85-1.23), primitive-check peer 0.70 (0.67-0.88), pool 0.88
+(0.77-1.02).
+
+Results (full suite, two runs, the second on a busier host — its pool
+payload rows read 3.2 / 477.1 us against the first's 2.5 / 388.4):
+
+| row | old definition (best) | run 1 | run 2 |
+|---|---|---|---|
+| sequential rt, channel | 0.9 us/rt | 0.7 | 0.7 |
+| pipelined, channel | 1.03M rt/s | 1.69M | 1.64M |
+| event-driven, channel armed | — | 1.68M rt/s | 1.63M |
+| 10k strings | — | 74.5 us/rt | 76.1 |
+| small named char | — | 1.2 us/rt | 1.2 |
+| 100k frame, factor / character column | — | 236.9 / 701.7 us/rt | 243.1 / 723.8 |
+
+Sequential pool rt (the settled-heap row) 0.8 then 1.0 us/task across
+the two runs. Table rows swapped as the new definition's first records:
+sequential rt channel 0.7, pipelined channel 1.69M. No other row beat
+its best.
+
+## 2026-11-13 — mizu-mirai-bench.R aligned; README table refreshed
+
+`mizu-mirai-bench.R` takes the same two definition changes as
+`mizu-bench.R` (previous two entries): the sequential pool row runs a
+full `gc()` ahead of each of its best-of-3 reps (`best_gc_ms`), and the
+echo peer tests `is.object()` ahead of `inherits()`. Two runs; the
+README table takes each framework's best of the two per cell, mizu and
+mirai alike (mirai's dispatcher column; mirai 2.7.4, nanonext 1.10.4),
+the speedup computed from that pair — so a row's two cells can come
+from different runs. This bench times with a ms-granular clock over
+short reps, so the 8 MB and map rows move in coarse steps (333 vs 367
+us, 6.0 vs 5.0 ms) and their speedups with them.
+
+| README row | run 1 | run 2 | README (best per cell) |
+|---|---|---|---|
+| trivial task rt, mizu / mirai | 0.8 / 102.5 us | 0.9 / 99.5 us | 0.8 / 99.5 us, 124x |
+| pipelined, 1 worker | 833k / 9.8k tasks/s | 909k / 10.3k | 909k / 10.3k, 88x |
+| 8 MB vector rt | 333 us / 17.7 ms | 367 us / 17.4 ms | 333 us / 17.4 ms, 52x |
+| map 2,000 ~10 us tasks | 6.0 / 205 ms | 5.0 / 198 ms | 5.0 / 198 ms, 40x |
+
+Results (other rows, run 1 / run 2): channel rt 0.7 / 0.8 us; pipelined
+channel 1.56M / 1.54M rt/s; pool batch 3.85M / 4.00M tasks/s; fan-out
+400k / 400k tasks/s; streaming 40.0M / 39.2M msg/s.

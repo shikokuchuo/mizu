@@ -76,12 +76,35 @@ timed <- function(expr) {
 
 best_ms <- function(f) min(vapply(seq_len(REPS), function(i) f(), 0))
 
+# the settled-heap variant: a full gc() ahead of each rep, outside the
+# clock. For the sequential pool row, whose loop leaves one finalizable
+# task handle per operation: R's cost of that garbage climbs rep over rep
+# and resets only at a full collection, so an unsettled rep reads anywhere
+# from 0.8 to 1.7 us (mizu-bench.R's mark_gc_ms, same reason)
+best_gc_ms <- function(f) {
+  min(vapply(
+    seq_len(REPS),
+    function(i) {
+      gc(FALSE)
+      f()
+    },
+    0
+  ))
+}
+
 # the two reporting shapes: f() is one rep of `ops` operations, timed
 # best-of-REPS, reported per operation or as a rate. Keep the measured loop
 # inline in f — one closure call is 0.04 us, not nothing against a 1 us row,
 # so there is deliberately no helper for it
-note_us <- function(scenario, framework, ops, f, unit = "us/task") {
-  note(scenario, framework, best_ms(function() timed(f())) * 1000 / ops, unit)
+note_us <- function(
+  scenario,
+  framework,
+  ops,
+  f,
+  unit = "us/task",
+  best = best_ms
+) {
+  note(scenario, framework, best(function() timed(f())) * 1000 / ops, unit)
 }
 
 note_rate <- function(scenario, framework, ops, f, unit = "tasks/s") {
@@ -119,11 +142,14 @@ with_channel <- function(expr, f, ...) {
   f(ch)
 }
 
-# the canonical echo peer: the raw-transport counterpart of a 1L task
+# the canonical echo peer: the raw-transport counterpart of a 1L task. The
+# sentinel test sits behind the primitive is.object(): inherits() is an R
+# closure costing ~0.25 us a call, which the per-message rows would
+# otherwise carry as transport cost (a pool worker's loop is C)
 echo_expr <- quote(
   repeat {
     x <- mizu_recv(ch, timeout = 30)
-    if (inherits(x, "mizu_sentinel")) {
+    if (is.object(x) && inherits(x, "mizu_sentinel")) {
       break
     }
     mizu_send(ch, x)
@@ -241,11 +267,17 @@ np <- 20000L # pool rt is as µs-scale as the channel's: same whole-ms tick,
 # same remedy
 with_pool(1L, function(p) {
   warmup(function() mizu_collect(mizu_submit(p, 1L), timeout = 30))
-  note_us("sequential rt", "mizu pool", np, function() {
-    for (i in seq_len(np)) {
-      mizu_collect(mizu_submit(p, 1L), timeout = 30)
-    }
-  })
+  note_us(
+    "sequential rt",
+    "mizu pool",
+    np,
+    function() {
+      for (i in seq_len(np)) {
+        mizu_collect(mizu_submit(p, 1L), timeout = 30)
+      }
+    },
+    best = best_gc_ms
+  )
 })
 
 each_daemons(1L, "mirai", function(fw) {
