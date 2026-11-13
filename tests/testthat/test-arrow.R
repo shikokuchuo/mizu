@@ -2096,6 +2096,22 @@ test_that("the string borrow gates on the wire encodings", {
   expect_identical(arrow_export(data.frame(s = v2))$kinds[[1L]], 0L)
 })
 
+test_that("a view nested past the path cap takes the copy path", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- c(runif(40000), NaN)
+  mizu_send(p$host, Reduce(function(v, i) list(v), 1:65, x))
+  v <- Reduce(function(v, i) v[[1L]], 1:65, mizu_recv(p$peer, 5))
+  expect_true(is_view(v))
+  expect_identical(arrow_export(list(v), bare = TRUE)$kinds, 7L)
+  expect_identical(
+    arrow_read(mizu_as_arrow(v))[c("nulls", "value")],
+    list(nulls = 0L, value = x)
+  )
+})
+
 test_that("a list-view column takes the copy path", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
