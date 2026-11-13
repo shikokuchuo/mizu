@@ -278,14 +278,18 @@ with a spec `.f`. Constants and elements must be portable values (the
 interchange subset documented in
 [`mizu_send()`](https://shikokuchuo.net/mizu/dev/reference/mizu_send.md)),
 and a non-portable one raises `mizu_error_not_portable` at stage time.
-`.template` and `.collect` work unchanged, with the results gathered (or
-view-wrapped) by the submitter's own language, and a per-element error
-crosses with its element index. `.seed` crosses as the language-neutral
-`(seed, offset)` pair and each worker language derives its own
-per-element streams. Batching and steal-order invariance holds within a
-worker language, but the draws are not identical across languages. A
-spec map runs on a same-language pool too, subject to the same
-portability rules.
+
+`.template` and `.collect` work as they do for an R function. The
+workers check each result against the template by the rules of their own
+language. A Python worker, for example, accepts an `int` for an
+`integer64` template. The submitter then gathers the results, or wraps
+them as a view. A per-element error crosses with its element index.
+
+`.seed` crosses as the language-neutral `(seed, offset)` pair and each
+worker language derives its own per-element streams. Batching and
+steal-order invariance holds within a worker language, but the draws are
+not identical across languages. A spec map runs on a same-language pool
+too, subject to the same portability rules.
 
 ## Streaming maps
 
