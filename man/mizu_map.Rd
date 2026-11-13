@@ -213,10 +213,15 @@ spec's first positional argument (name kind) or binds as \code{x} (source kind),
 and the spec's own constant arguments travel with it, so \code{...} must be empty
 with a spec \code{.f}. Constants and elements must be portable values (the
 interchange subset documented in \code{\link[=mizu_send]{mizu_send()}}), and a non-portable one
-raises \code{mizu_error_not_portable} at stage time. \code{.template} and \code{.collect}
-work unchanged, with the results gathered (or view-wrapped) by the
-submitter's own language, and a per-element error crosses with its element
-index. \code{.seed} crosses as the language-neutral \verb{(seed, offset)} pair and each
+raises \code{mizu_error_not_portable} at stage time.
+
+\code{.template} and \code{.collect} work as they do for an R function. The workers
+check each result against the template by the rules of their own language.
+A Python worker, for example, accepts an \code{int} for an \code{integer64} template.
+The submitter then gathers the results, or wraps them as a view. A
+per-element error crosses with its element index.
+
+\code{.seed} crosses as the language-neutral \verb{(seed, offset)} pair and each
 worker language derives its own per-element streams. Batching and steal-order
 invariance holds within a worker language, but the draws are not identical
 across languages. A spec map runs on a same-language pool too, subject to the
