@@ -490,9 +490,15 @@ defer <- function(expr, envir) {
 #'
 #' Submission behaves per task as in [mizu_submit()], with one difference: if
 #' the injection ring fills past `.timeout` mid-batch, the call returns the
-#' handles accepted so far instead of raising `mizu_error_submit_timeout`. Fatal
-#' outcomes (pool stopped, result slots exhausted) still raise, and tasks
-#' already submitted stay valid and collectible.
+#' handles accepted so far instead of raising `mizu_error_submit_timeout`.
+#'
+#' An error mid-batch still raises: a fatal outcome (pool stopped, result
+#' slots exhausted), or an error raised while a task is being submitted (a
+#' [mizu_pool_trace()] hook's error, a failure to encode a task). The
+#' condition then carries an `accepted` field, the list of handles of the
+#' tasks already submitted, which run and stay collectible. The field is
+#' absent when no task was submitted. An interrupt abandons the batch
+#' instead, and the tasks already submitted are cancelled.
 #'
 #' @inheritParams mizu_submit
 #' @param .exprs a list of expressions, one per task. Quote them
@@ -903,7 +909,9 @@ mizu_pool_stats <- function(pool) {
 #' functions have no event sites. An error raised by the hook propagates
 #' as an internal failure at its site. On a worker, it takes the worker
 #' down. This differs from a task's own error, which is published as the
-#' error result of that task.
+#' error result of that task. Raised mid-batch in [mizu_submit_batch()], it
+#' carries the handles of the tasks already submitted as its `accepted`
+#' field.
 #'
 #' @inheritParams mizu_pool_stop
 #' @param fn a `function(event, id)`, or `NULL` to remove a registered

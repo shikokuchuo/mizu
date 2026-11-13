@@ -636,9 +636,11 @@ SEXP mizu_pool_submit_map_runner(SEXP xp, SEXP spec, SEXP deadline) {
    pair would anchor only the last task's expr: a swapped-out expr's
    by-reference views could finalize and sub their regions before the
    worker resolves them. The burst's pairs ride one PROTECTED container.
-   Ring-full past timeout returns the handles accepted so far; fatal
-   outcomes raise, the tasks already submitted staying valid and
-   collectible. */
+   Ring-full past timeout returns the handles accepted so far. An error
+   after partial acceptance — a fatal core outcome, or a raise mid-burst —
+   carries the accepted handles on the condition's `accepted` field, the
+   tasks staying valid and collectible; an undecorated unwind (an
+   interrupt) releases the prefix instead. */
 typedef struct mizu_batch_supply_s {
   SEXP exprs;
   SEXP args;
@@ -659,6 +661,7 @@ static void *mizu_batch_supply_next(void *ctx, size_t i) {
    exprs throughout — the cleanup voiding it on the raise path too. */
 typedef struct {
   mizu_pool *p;
+  SEXP xp;
   mizu_batch_supply *supply;
   size_t n;
   mizu_task *ts;
@@ -666,6 +669,7 @@ typedef struct {
   int timeout_ms;
   mizu_status st;
   int finished;
+  int wrapped;
 } pool_batch_s;
 
 static SEXP pool_batch_run(void *d) {
@@ -676,14 +680,52 @@ static SEXP pool_batch_run(void *d) {
   return R_NilValue;
 }
 
-/* The unwind: a stage raise mid-burst (the codec's ALTREP rejection, an
-   allocation failure) leaves the accepted prefix published and executing
-   with no handle to return. The core reports the accepted count per task,
-   so the prefix is released here — a pending task cancels, a completed
-   slot frees — ahead of the batch scope's own cleanup. */
+/* The shared raise of both failure paths: the accepted prefix leaves as
+   task handles on the condition's `accepted` field (non-empty prefix, list
+   condition), `wrapped` recording that ownership passed to them. On the
+   unwind path the longjmp skipped the core's closing wake, so the kept
+   prefix is owed it here. */
+NORET static void pool_batch_raise(pool_batch_s *b, SEXP cond) {
+  PROTECT(cond);
+  if (b->done == 0 || TYPEOF(cond) != VECSXP) {
+    mizu_cond_signal(cond);        /* no return */
+    UNPROTECT(1);                  /* unreachable: mizu_cond_signal is NORET */
+  }
+  SEXP accepted = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) b->done));
+  for (size_t i = 0; i < b->done; i++)
+    SET_VECTOR_ELT(accepted, (R_xlen_t) i, mizu_task_wrap(b->xp, &b->ts[i]));
+  cond = PROTECT(mizu_cond_set_field(cond, "accepted", accepted));
+  b->wrapped = 1;
+  if (!b->finished) mizu_pool_submit_wake(b->p, b->done);
+  mizu_cond_signal(cond);          /* no return */
+  UNPROTECT(3);                    /* unreachable: mizu_cond_signal is NORET */
+}
+
+/* The calling handler: it runs while the error is being signalled, ahead
+   of the unwind, so ts and the prefix are still live. R pops it for the
+   call, so the decorated signal propagates outward. Returning continues
+   the original error. */
+static SEXP pool_batch_error(SEXP cond, void *d) {
+  pool_batch_s *b = (pool_batch_s *) d;
+  if (b->done > 0 && TYPEOF(cond) == VECSXP)
+    pool_batch_raise(b, cond);     /* no return */
+  return R_NilValue;
+}
+
+static SEXP pool_batch_run_handled(void *d) {
+  return R_withCallingErrorHandler(pool_batch_run, d, pool_batch_error, d);
+}
+
+/* The unwind: a raise mid-burst (a trace hook's error, a stage raise, an
+   allocation failure) leaves the accepted prefix published and executing.
+   The core reports the accepted count per task; the calling handler hands
+   the prefix out on the condition, and what escapes undecorated (an
+   interrupt, a non-list condition, a failure while decorating) is released
+   here — a pending task cancels, a completed slot frees — ahead of the
+   batch scope's own cleanup. */
 static void pool_batch_cleanup(void *d) {
   pool_batch_s *b = (pool_batch_s *) d;
-  if (!b->finished)
+  if (!b->finished && !b->wrapped)
     for (size_t i = 0; i < b->done; i++)
       (void) mizu_pool_task_release(b->p, &b->ts[i]);
   mizu_stage_batch_clean(NULL);
@@ -702,13 +744,19 @@ SEXP mizu_pool_submit_batch_call(SEXP xp, SEXP exprs, SEXP args, SEXP timeout,
   supply.args = args;
   supply.pairs = PROTECT(Rf_allocVector(VECSXP, n));
   mizu_task *ts = (mizu_task *) R_alloc(n, sizeof(mizu_task));
-  pool_batch_s b = { p, &supply, (size_t) n, ts, 0,
+  pool_batch_s b = { p, xp, &supply, (size_t) n, ts, 0,
                      mizu_timeout_ms(mizu_r_timeout_arg(timeout)), MIZU_OK,
-                     0 };
+                     0, 0 };
   mizu_stage_batch_begin();
-  R_ExecWithCleanup(pool_batch_run, &b, pool_batch_cleanup, &b);
+  /* under two tasks a raise leaves no accepted prefix: no handler */
+  R_ExecWithCleanup(n < 2 ? pool_batch_run : pool_batch_run_handled, &b,
+                    pool_batch_cleanup, &b);
   UNPROTECT(1);
-  if (b.st == MIZU_ERR) pool_raise(p);
+  if (b.st == MIZU_ERR) {
+    SEXP cond = PROTECT(pool_cond(p));
+    pool_batch_raise(&b, cond);    /* no return */
+    UNPROTECT(1);                  /* unreachable: pool_batch_raise is NORET */
+  }
   SEXP out = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t) b.done));
   for (size_t i = 0; i < b.done; i++)
     SET_VECTOR_ELT(out, (R_xlen_t) i, mizu_task_wrap(xp, &ts[i]));

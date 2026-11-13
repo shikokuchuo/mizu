@@ -359,11 +359,49 @@ test_that("batch submit on a stopped pool raises stopped", {
 test_that("batch submit fails mid-batch when result slots exhaust", {
   p <- pool_pair(result_slots = 8L)
   on.exit(pool_end(p))
-  expect_error(
+  err <- expect_error(
     mizu_submit_batch(p[["ctrl"]], list(quote(1 + 1), quote(2 + 2))),
     "result slots exhausted"
   )
+  expect_s3_class(err, "mizu_error_slots_exhausted")
+  expect_length(err$accepted, 1L)
+  expect_s3_class(err$accepted[[1L]], "mizu_task")
   expect_identical(pool_step(p), 1L)
+  expect_identical(mizu_collect(err$accepted[[1L]], 5), 2)
+  t <- mizu_submit(p[["ctrl"]], 3L)
+  expect_identical(pool_step(p), 1L)
+  expect_identical(mizu_collect(t, 5), 3L)
+})
+
+test_that("batch submit attaches accepted handles to a mid-batch raise", {
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  n <- 0L
+  mizu_pool_trace(p[["ctrl"]], function(event, id) {
+    n <<- n + 1L
+    if (n == 2L) stop("trace boom")
+  })
+  err <- expect_error(
+    mizu_submit_batch(p[["ctrl"]], list(quote(1 + 1), quote(2 + 2))),
+    "trace boom"
+  )
+  expect_s3_class(err, "simpleError")
+  expect_length(err$accepted, 1L)
+  expect_s3_class(err$accepted[[1L]], "mizu_task")
+  expect_identical(pool_step(p), 1L)
+  expect_identical(mizu_collect(err$accepted[[1L]], 5), 2)
+  n <- 1L
+  err <- expect_error(
+    mizu_submit_batch(p[["ctrl"]], list(quote(1 + 1), quote(2 + 2))),
+    "trace boom"
+  )
+  expect_null(err$accepted)
+  mizu_pool_trace(p[["ctrl"]])
+  ts <- mizu_submit_batch(p[["ctrl"]], list(quote(1 + 1), quote(2 + 2)))
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  expect_identical(mizu_collect_all(ts, timeout = 5), list(2, 4))
 })
 
 test_that("a reused result slot releases a kept zero-copy task payload", {

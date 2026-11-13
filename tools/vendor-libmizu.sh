@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="59f654d3be87a34842133d8c369c312c7fa6153b"  # libmizu: Fix clean-leave pool stop wake
+PIN="5919329898ddc3a4945f0d6ded985886e92521d7"  # libmizu: Refresh best-known benchmark figures (#13)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

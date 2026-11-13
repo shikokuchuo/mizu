@@ -47,7 +47,9 @@ disabled hook costs one pointer check per event site, and the channel
 functions have no event sites. An error raised by the hook propagates
 as an internal failure at its site. On a worker, it takes the worker
 down. This differs from a task's own error, which is published as the
-error result of that task.
+error result of that task. Raised mid-batch in \code{\link[=mizu_submit_batch]{mizu_submit_batch()}}, it
+carries the handles of the tasks already submitted as its \code{accepted}
+field.
 }
 \examples{
 p <- mizu_pool()
