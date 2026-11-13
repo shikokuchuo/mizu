@@ -309,7 +309,6 @@ test_that("a data.frame relays through the received Frame's own export", {
 })
 
 test_that("a mutated frame relays hop-by-hop: unmodified columns as remote leaves", {
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   py <- skip_if_no_pymizu()
   testthat::skip_if_not(
     system2(
@@ -354,7 +353,6 @@ ch.send(df)
 })
 
 test_that("a frame with a view column crosses to Python as a remote leaf (F2.5)", {
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     py_echo,
@@ -794,7 +792,6 @@ ch.recv(30)
 })
 
 test_that("mizu_as_arrow borrows pymizu's matched remote columns", {
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   py <- skip_if_no_pymizu()
   skip_if_no_pyarrow(py)
   skip_if_not_installed("arrow")
@@ -858,7 +855,6 @@ while True:
 })
 
 test_that("a remote leaf of a Python known-NA-free region claims -1", {
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   py <- skip_if_no_pymizu()
   ch <- mizu_channel(
     "

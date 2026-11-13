@@ -708,7 +708,6 @@ test_that("a latin1 string column takes the copy path", {
 
 test_that("a relayed frame borrows remote and local columns uniformly", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -738,7 +737,6 @@ test_that("a relayed frame borrows remote and local columns uniformly", {
 
 test_that("relayed root views borrow through the rc-0 arms", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("nanoarrow")
   skip_if_not_installed("bit64")
   p <- channel_pair()
@@ -861,7 +859,6 @@ test_that("a depth-2 remote borrow flattens to the final region", {
 
 test_that("a mixed-region frame borrows each view column off its region", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("nanoarrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -964,7 +961,6 @@ test_that("a materialized remote column copies", {
 
 test_that("a dead referenced region degrades only its own columns", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p1 <- channel_pair()
   x <- runif(50000)
@@ -1042,7 +1038,6 @@ test_that("an Arrow consumer hands back the exported buffers", {
 
 test_that("an unchanged Arrow round trip re-sends its columns by reference", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1079,7 +1074,6 @@ test_that("an unchanged Arrow round trip re-sends its columns by reference", {
 
 test_that("a matched column crosses by reference in any position", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1104,7 +1098,6 @@ test_that("a matched column crosses by reference in any position", {
 
 test_that("a re-batched column matches only as a contiguous whole", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1140,7 +1133,6 @@ test_that("a re-batched column matches only as a contiguous whole", {
 
 test_that("a re-typed or re-masked borrowed buffer copies", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1181,7 +1173,6 @@ test_that("a re-typed or re-masked borrowed buffer copies", {
 
 test_that("only a depth-1 non-S4 leaf carries provenance", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1208,7 +1199,6 @@ test_that("only a depth-1 non-S4 leaf carries provenance", {
 
 test_that("mixed source regions cross as remote leaves of one frame", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1224,7 +1214,6 @@ test_that("mixed source regions cross as remote leaves of one frame", {
 
 test_that("few rows of long strings match past the exact span", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1239,9 +1228,27 @@ test_that("few rows of long strings match past the exact span", {
   expect_identical(back, df)
 })
 
+test_that("int64 and uint64 columns re-send by reference", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  skip_if_not_installed("bit64")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  l <- bit64::as.integer64(1:6000)
+  tab <- arrow::arrow_table(
+    l = arrow::Array$create(l, type = arrow::int64()),
+    u = arrow::Array$create(l, type = arrow::uint64())
+  )
+  out <- prov_recv(p, tab)
+  src <- view_name(out)
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(out)))
+  expect_identical(col_regions(back), rep(src, 2L))
+  expect_identical(back$l, l)
+  expect_equal(as.numeric(back$u), as.numeric(l))
+})
+
 test_that("the remote-leaf capability gates the provenance match", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   q <- channel_pair()
   on.exit(channel_end(q))
@@ -1265,7 +1272,6 @@ test_that("the remote-leaf capability gates the provenance match", {
 
 test_that("the provenance registry caps admission and unregisters", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- channel_pair()
   on.exit(channel_end(p))
@@ -1287,7 +1293,7 @@ test_that("the provenance registry caps admission and unregisters", {
 
 test_that("a forked child starts with an empty provenance registry", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os(c("windows", "linux")) # no fork; the churn fallback
+  skip_on_os("windows") # no fork
   skip_if_no_fork() # Positron/RStudio sessions block mcfork
   skip_if_not_installed("arrow")
   p <- channel_pair()
@@ -1319,7 +1325,6 @@ test_that("a forked child starts with an empty provenance registry", {
 
 test_that("a pool result re-sends borrowed columns by reference", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1406,7 +1411,6 @@ test_that("a non-struct nanoarrow payload re-enters the pool tiers", {
 
 test_that("a table spliced as the task expression round-trips by reference", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1422,7 +1426,6 @@ test_that("a table spliced as the task expression round-trips by reference", {
 
 test_that("a nested table arg crosses as a frame leaf; a second is pre-encoded", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair(slot_size = 1024L)
   on.exit(pool_end(p))
@@ -1450,7 +1453,6 @@ test_that("a nested table arg crosses as a frame leaf; a second is pre-encoded",
 
 test_that("a converting table's lazy list-column elements cross by value", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
@@ -1475,7 +1477,6 @@ test_that("a converting table's lazy list-column elements cross by value", {
 
 test_that("a RecordBatchReader nested as an arg crosses as a frame leaf", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
-  skip_on_os("linux") # multiple live views trip the churn fallback there
   skip_if_not_installed("arrow")
   p <- pool_pair()
   on.exit(pool_end(p))
