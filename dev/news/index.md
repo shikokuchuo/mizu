@@ -6,6 +6,10 @@
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   collection and lower shared-memory use for a (non-prepared) map
   collected by value.
+- Faster
+  [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
+  on small and medium inputs.
+- Idle workers now release the shared memory of finished maps promptly.
 - Streaming
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   with a
