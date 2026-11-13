@@ -25,7 +25,8 @@ int mizu_arrow_check(SEXP x);
    conjunction gates on: the channel passes the peer's (rh->peer_caps),
    the pool this build's (MIZU_R_CAPS — a task frame is same-language by
    construction). Ahead of a region stage the provenance pass runs (peers
-   with MIZU_CAP_MIZL_REF, outside churn): a column that is a whole
+   with MIZU_CAP_MIZL_REF, outside churn; ahead of the string walks too
+   wherever the core's size floor clears the gate — the open is lazy): a column that is a whole
    mizu_as_arrow() export handed back unchanged — buffer identity against
    the export's record, in any position and any batching — crosses as a
    remote leaf into its source region instead of a copy, and the pulled

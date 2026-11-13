@@ -2413,3 +2413,19 @@ The control is unmoved: a miss costs nothing measurable. Bench traps:
 the source region's producer must be alive at the export, and
 `arrow_table(as.data.frame(tab))` hands the same buffers back, so it is
 not a fresh control.
+
+## 2026-11-13 — Arrow provenance: lazy open (string walk skipped)
+
+A/B isolation, log only: the provenance build above against the lazy
+open (`mizu_arrow_open_lazy` / `_validate` / `_size_floor`, libmizu
+`c10d0a3`). Unchanged round trip of a 5M-row frame over
+an in-process channel pair, every column a remote leaf, median of 40:
+
+| frame | eager open | lazy open |
+|---|---|---|
+| double / int32 | 0.077 ms | 0.078 ms |
+| + string, no NA | 1.25 ms | 0.077 ms |
+| + string, 1/3 NA | 2.88 ms | 0.076 ms |
+
+The eager open walked every offset of a string column that then crossed
+by reference. What remains is Arrow's own stream export (about 0.06 ms).

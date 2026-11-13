@@ -1222,6 +1222,23 @@ test_that("mixed source regions cross as remote leaves of one frame", {
   expect_identical(back, data.frame(a = a, b = b))
 })
 
+test_that("few rows of long strings match past the exact span", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_on_os("linux") # multiple live views trip the churn fallback there
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  df <- data.frame(
+    s = strrep(letters[rep(1:5, 100L)], 400L),
+    x = as.double(1:500)
+  )
+  out <- prov_recv(p, arrow::arrow_table(df))
+  src <- view_name(out)
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(out)))
+  expect_identical(col_regions(back), rep(src, 2L))
+  expect_identical(back, df)
+})
+
 test_that("the remote-leaf capability gates the provenance match", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_on_os("linux") # multiple live views trip the churn fallback there

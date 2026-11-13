@@ -347,7 +347,8 @@ SEXP mizu_arrow_value(SEXP xp) {
 /* The open: the core borrows the schema, the batch structs, and the
    pointer array — all owned by the held struct, outliving the handle.
    0 opened, -1 the core's decline, -2 the allocation failure — the caller
-   raises. */
+   raises. fsize NULL is the lazy open: the string walks and the size pass
+   wait for the caller's mizu_arrow_validate, past its remote overrides. */
 static int arrow_open_into(mizu_arrow_held *hd, uint32_t caps,
                            size_t *fsize) {
   const size_t nb = hd->nbatches;
@@ -356,12 +357,15 @@ static int arrow_open_into(mizu_arrow_held *hd, uint32_t caps,
     malloc((nb > 0 ? nb : 1) * sizeof(ArrowArray *));
   if (hd->bp == NULL) return -2;
   for (size_t i = 0; i < nb; i++) hd->bp[i] = &hd->batches[i];
-  if (mizu_arrow_open(&hd->a, &hd->schema, hd->bp, nb, caps) != MIZU_OK) {
+  const mizu_status st = fsize != NULL
+    ? mizu_arrow_open(&hd->a, &hd->schema, hd->bp, nb, caps)
+    : mizu_arrow_open_lazy(&hd->a, &hd->schema, hd->bp, nb, caps);
+  if (st != MIZU_OK) {
     free(hd->bp);
     hd->bp = NULL;
     return -1;
   }
-  *fsize = mizu_arrow_size(hd->a);
+  if (fsize != NULL) *fsize = mizu_arrow_size(hd->a);
   return 0;
 }
 
@@ -483,19 +487,26 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
   const size_t gate = mizu_zc_gate(inline_max);
   /* the pulled structs ride the extptr: the finalizer is the longjmp
      backstop for every R allocation and transport raise */
-  size_t fsize;
-  const int orc = arrow_open_into(hd, caps, &fsize);
+  const int orc = arrow_open_into(hd, caps, NULL);
   if (orc != 0) arrow_open_raise(orc);
   mizu_arrow_warn warn = { 0, 0, 0 };
   /* the provenance match runs only where a region stage is on the table
      (the local span past the gate, no churn) and the peer reads remote
-     leaves; an override shrinks the span, which no longer gates */
-  int nremote = 0;
-  if (fsize > gate && (caps & MIZU_CAP_MIZL_REF) != 0 &&
-      !mizu_handle_churn(h))
-    nremote = arrow_prov_match(hd, caps);
-  if (fsize > gate &&
-      arrow_stage_held(hd, h, NULL, NULL, &warn, nremote != 0) == 0) {
+     leaves. The open was lazy so that the match comes first wherever the
+     O(1) floor already proves the gate: a matched string column then
+     skips its O(rows) offsets walk. Under the floor the walk is small,
+     and the match waits for the exact span. An override shrinks the span,
+     which no longer gates. */
+  const int prov = (caps & MIZU_CAP_MIZL_REF) != 0 && !mizu_handle_churn(h);
+  const int early = prov && mizu_arrow_size_floor(hd->a) > gate;
+  int nremote = 0, staged = 0;
+  if (early) nremote = arrow_prov_match(hd, caps);
+  if (mizu_arrow_validate(hd->a) != MIZU_OK) arrow_open_raise(-1);
+  if (early || mizu_arrow_size(hd->a) > gate) {
+    if (prov && !early) nremote = arrow_prov_match(hd, caps);
+    staged = arrow_stage_held(hd, h, NULL, NULL, &warn, nremote != 0) == 0;
+  }
+  if (staged) {
     *hdr = hd->hdr;
     memcpy(payload, hd->name, hd->hdr.len);
     /* the remote leaves point into regions the pulled batches keep on
@@ -504,7 +515,9 @@ void mizu_arrow_stage_r(SEXP x, mizu_slot_hdr *hdr, unsigned char *payload,
     if (nremote != 0) mizu_r_pin(h, ctx, xp);
   } else {
     /* below the region gate, or declined by its caps/churn/reservation:
-       one complete 'I' stream over the shared copy-tier ladder */
+       one complete 'I' stream over the shared copy-tier ladder (by value
+       off the batches whatever matched; an unwalked matched string column
+       reads per element, each record checked) */
     arrow_stage_ix(hd, hdr, payload, inline_max, h, &warn);
   }
   UNPROTECT(1);
@@ -824,11 +837,9 @@ static const arrow_prov_col *arrow_prov_find(const mizu_arrow_held *hd,
     size_t b = 0;
     for (; b < hd->nbatches; b++) {
       const ArrowArray *c = hd->batches[b].children[col];
-      if (c->n_buffers != nbuf || c->offset != run) break;
-      int same = 1;
-      for (int q = 0; q < nbuf; q++)
-        if (c->buffers[q] != bufs[q]) same = 0;
-      if (!same) break;
+      if (c->n_buffers != nbuf || c->offset != run ||
+          memcmp(c->buffers, bufs, (size_t) nbuf * sizeof(void *)) != 0)
+        break;
       run += c->length;
     }
     if (b == hd->nbatches && run == pc->length) return pc;
