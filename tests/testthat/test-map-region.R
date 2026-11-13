@@ -242,6 +242,30 @@ test_that("an armed trim reads a flipped claim as abandoned thereafter", {
   )
 })
 
+test_that("the map batch entry zeroes the element-index cell", {
+  # the runner reuses one cell across batches: a failure before the first
+  # element must not read as the previous batch's last index
+  eic <- c(7)
+  expect_error(
+    .Call(
+      mizu:::mizu_map_batch,
+      NULL,
+      identity,
+      NULL,
+      1:10,
+      0,
+      0,
+      5,
+      0,
+      NULL,
+      eic,
+      new.env()
+    ),
+    "invalid map batch range"
+  )
+  expect_identical(eic, 0)
+})
+
 test_that("the map batch entry validates its arguments", {
   eic <- numeric(1)
   env <- new.env()

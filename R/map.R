@@ -2246,6 +2246,12 @@ map_runner <- function(n, a, s = NULL, ctx = NULL) {
   hk <- numeric(8)
   vals <- if (!tmpl) vector("list", 8L)
   nb <- 0L
+  # one handler for the whole runner, not one per batch: a tryCatch costs
+  # about 2 us, which the batch ramp pays several times per runner on a
+  # small map. eic is the batch loop's in-flight element index cell
+  eic <- numeric(1L)
+  in_batch <- FALSE
+  char_m <- ctx[["char_m"]]
   if (!is.null(s)) {
     restore_rng <- rng_save()
     on.exit(restore_rng(), add = TRUE)
@@ -2280,32 +2286,25 @@ map_runner <- function(n, a, s = NULL, ctx = NULL) {
       # the element loop itself is one .Call per batch: mizu_map_batch
       # builds the f call once and swaps only the element cell per
       # iteration (lapply's discipline), with template writes and RNG
-      # installs inline. eic is the loop's in-flight element index, so
-      # the one tryCatch per batch annotates an escaping error with the
-      # failing element before the outer handler re-signals it
-      eic <- numeric(1L)
-      out <- tryCatch(
-        .Call(
-          mizu_map_batch,
-          xp,
-          f,
-          dots,
-          x,
-          lo - 1,
-          lo,
-          hi,
-          ctx[["char_m"]],
-          sr,
-          eic,
-          environment()
-        ),
-        error = function(e) {
-          if (eic[[1L]] >= 1) {
-            e[["mizu_map_index"]] <- eic[[1L]]
-          }
-          stop(e)
-        }
+      # installs inline. It zeroes eic at entry and stamps the in-flight
+      # element index per element; in_batch scopes that index to the
+      # batch, so the runner's one handler annotates only f's errors
+      in_batch <- TRUE
+      out <- .Call(
+        mizu_map_batch,
+        xp,
+        f,
+        dots,
+        x,
+        lo - 1,
+        lo,
+        hi,
+        char_m,
+        sr,
+        eic,
+        environment()
       )
+      in_batch <- FALSE
       if (tmpl && nb > 0L && hm[[nb]] + hk[[nb]] == nx[[1L]]) {
         hk[[nb]] <- hk[[nb]] + nx[[2L]]
       } else {
@@ -2321,10 +2320,14 @@ map_runner <- function(n, a, s = NULL, ctx = NULL) {
       if (!tmpl) vals[[nb]] <- out
     },
     error = function(e) {
-      # an unannotated error is not f's (a transition or help failure):
-      # leave it so collect treats it as fatal. An annotated one carries
-      # the completed batches, so a death lost-set scan counts only this
-      # runner's uncompleted batch
+      # an error escaping the batch loop past its first element is f's:
+      # annotate it with the failing element. An unannotated error is not
+      # f's (a transition or help failure): leave it so collect treats it
+      # as fatal. An annotated one carries the completed batches, so a
+      # death lost-set scan counts only this runner's uncompleted batch
+      if (in_batch && eic[[1L]] >= 1) {
+        e[["mizu_map_index"]] <- eic[[1L]]
+      }
       if (!is.null(e[["mizu_map_index"]])) {
         e[["mizu_map_hist"]] <- list(hm[seq_len(nb)], hk[seq_len(nb)])
       }
@@ -2343,7 +2346,10 @@ map_runner <- function(n, a, s = NULL, ctx = NULL) {
 # contexts, clear everything — eviction only drops the cache reference (an
 # in-flight runner's own ctx keeps its mapping alive), and more than a
 # handful of maps interleaving on one worker is pathological and costs one
-# re-attach. A miss attaches the region — writable always: every runner
+# re-attach. Every cached context's mapping is tracked on the worker handle
+# and closed by the idle sweep, evicted ones included: an R worker has no
+# reason to collect at idle, so a dropped reference alone would pin the
+# region until some later GC. A miss attaches the region — writable always: every runner
 # CASes the shared morsel state, not just the template path's output area
 # — no-populate, validates the header, and unserializes the descriptor.
 # Runner misses on one-morsel regions instead return private contexts:
@@ -2395,6 +2401,9 @@ map_ctx <- function(pool, name, private_single = FALSE) {
       ctx[["private"]] <- TRUE
       ok <- TRUE
     } else {
+      # cache-owned: the idle sweep closes the mapping itself, not just
+      # the cache reference
+      .Call(mizu_pool_map_track, pool, xp)
       assign(name, ctx, envir = cache)
     }
   }

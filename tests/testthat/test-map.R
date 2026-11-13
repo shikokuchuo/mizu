@@ -1087,8 +1087,16 @@ test_that("the idle sweep evicts the context cache; runners re-attach", {
     ls(.Call(mizu:::mizu_pool_map_cache, p[["wk"]])),
     st[["name"]]
   )
+  ctx <- get(st[["name"]], envir = .Call(mizu:::mizu_pool_map_cache, p[["wk"]]))
+  expect_identical(.Call(mizu:::mizu_map_info, ctx[["xp"]])[["n"]], 4)
   expect_identical(pool_step(p), 0L) # empty: sweep clears the cache
   expect_length(ls(.Call(mizu:::mizu_pool_map_cache, p[["wk"]])), 0L)
+  # and closes the mapping itself: a dropped reference alone would pin
+  # the region until a GC the idle worker has no reason to run
+  expect_error(.Call(mizu:::mizu_map_info, ctx[["xp"]]), "map handle is closed")
+  expect_null(.Call(mizu:::mizu_map_close, ctx[["xp"]])) # idempotent
+  # the submitter's own handle is untracked and stays open
+  expect_identical(.Call(mizu:::mizu_map_info, st[["wrap"]])[["n"]], 4)
   h2 <- .Call(
     mizu:::mizu_pool_submit,
     p[["ctrl"]],
@@ -1106,6 +1114,22 @@ test_that("the idle sweep evicts the context cache; runners re-attach", {
   expect_identical(r1[[3L]], list(list(10L, 20L), list(30L, 40L)))
   r2 <- .Call(mizu:::mizu_pool_collect, h2, 5)
   expect_length(r2[[1L]], 0L)
+  pool_end(p)
+})
+
+test_that("a runner error past the first batch carries its element index", {
+  p <- pool_pair()
+  # one-element morsels: the batch ramp (1, 2, 4, ...) puts element 40 in
+  # a later batch, under the runner's single handler
+  f <- function(i) if (i == 40L) stop("boom") else i
+  e <- tryCatch(run_map(p, 1:100, f, chunks = 100), error = identity)
+  expect_s3_class(e, "error")
+  expect_identical(e[["mizu_map_index"]], 40)
+  e <- tryCatch(
+    run_map(p, 1:100, f, chunks = 100, template = integer(1)),
+    error = identity
+  )
+  expect_identical(e[["mizu_map_index"]], 40)
   pool_end(p)
 })
 

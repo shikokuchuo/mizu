@@ -1,6 +1,8 @@
 # mizu (development version)
 
 * Faster `mizu_map()` collection and lower shared-memory use for a (non-prepared) map collected by value.
+* Faster `mizu_map()` on small and medium inputs.
+* Idle workers now release the shared memory of finished maps promptly.
 * Streaming `mizu_map()` with a `mizu_call()` spec no longer retains completed chunk regions on R workers.
 * Native `mizu_map()` character-template results are validated and flattened per worker batch; a type or length mismatch now fails fast with its element index. Spec maps retain submitter-side validation.
 * `mizu_cancel()` on a collected map handle no longer disrupts a later run of the same prepared map.

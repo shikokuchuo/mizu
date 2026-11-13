@@ -1177,13 +1177,16 @@ void mizu_r_drop(void *ctx, void *pin) {
   ((mizu_r_handle *) ctx)->pins_dead++;
 }
 
-/* The sweep hook: a pool worker going idle or departing drops its map
-   cache (prot[2]) — the per-worker context env, re-created lazily by
-   mizu_pool_map_cache on the next map. It deliberately does not run the
+/* The sweep hook: a pool worker going idle or departing closes its cached
+   map contexts' mappings (mizu_map_sweep — the references alone would pin
+   each region until a later GC) and drops its map cache (prot[2]) — the
+   per-worker context env, re-created lazily by mizu_pool_map_cache on the
+   next map. It deliberately does not run the
    boundary collection: at idle the previous REF result is still retained,
    so a collection would promote it and the task env to Old[0], slipping
    the release to the level-1 cadence (the generation trap — the exec-entry
    collection is the well-timed one). */
 void mizu_r_sweep(void *ctx) {
+  mizu_map_sweep(ctx);
   SET_VECTOR_ELT(((mizu_r_handle *) ctx)->prot, 2, R_NilValue);
 }

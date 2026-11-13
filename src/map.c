@@ -101,10 +101,32 @@ typedef struct mizu_map_h_s {
      aliases it; the cost is a mis-sized batch or a re-ramp on resume —
      harmless. */
   mizu_morsel_sizer sizer;
+  /* The tracked list (worker context cache entries only): owner is the
+     worker handle whose idle sweep closes this mapping, NULL when
+     untracked; self is the handle's own extptr, valid while linked — the
+     finalizer and the explicit close both unlink first. */
+  struct mizu_map_h_s *prev, *next;
+  void *owner;
+  SEXP self;
 } mizu_map_h;
 
+static mizu_map_h *map_tracked;
+
+static void map_h_untrack(mizu_map_h *mh) {
+  if (mh->owner == NULL) return;
+  if (mh->prev != NULL) mh->prev->next = mh->next;
+  else map_tracked = mh->next;
+  if (mh->next != NULL) mh->next->prev = mh->prev;
+  mh->prev = mh->next = NULL;
+  mh->owner = NULL;
+}
+
 static void map_h_finalizer(SEXP xp) {
-  free(R_ExternalPtrAddr(xp));
+  mizu_map_h *mh = (mizu_map_h *) R_ExternalPtrAddr(xp);
+  if (mh != NULL) {
+    map_h_untrack(mh);
+    free(mh);
+  }
   R_ClearExternalPtr(xp);
 }
 
@@ -476,9 +498,9 @@ SEXP mizu_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
    template writes go straight to the output area (xp NULL — the blob
    path — is always generic), and the seeded path installs and jumps the
    CMRG state inline, exactly mizu_map_rng_install's per-element step.
-   ei_sexp is an R-allocated REALSXP(1) cell the loop stamps with the
-   in-flight element index before each eval, so the R side's one
-   tryCatch per batch annotates an escaping error with the failing
+   ei_sexp is an R-allocated REALSXP(1) cell, zeroed at entry, that the
+   loop stamps with the in-flight element index before each eval, so the
+   R side's error handler annotates an escaping error with the failing
    element — the "first by element index" contract. x is the descriptor or
    stream source vector, or NULL to read xp's RAWVEC section directly; base
    is the 0-based offset of element lo. char_m is zero for generic results,
@@ -488,6 +510,12 @@ SEXP mizu_map_write(SEXP xp, SEXP e_sexp, SEXP value) {
 SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
                    SEXP lo_sexp, SEXP hi_sexp, SEXP char_m_sexp, SEXP sr,
                    SEXP ei_sexp, SEXP rho) {
+  /* first, so every error below leaves the cell at zero: the runner
+     reuses one cell across batches and reads it in its error handler */
+  if (TYPEOF(ei_sexp) != REALSXP || XLENGTH(ei_sexp) != 1)
+    Rf_error("mizu: invalid element-index cell");
+  double *ei = REAL(ei_sexp);
+  *ei = 0;
   mizu_map_h *mh = xp == R_NilValue ? NULL : map_h_get(xp);
   int tmpl = mh != NULL && mh->h.out_type != 0;
   const int raw_x = mh != NULL && x == R_NilValue &&
@@ -501,11 +529,8 @@ SEXP mizu_map_batch(SEXP xp, SEXP f, SEXP dots, SEXP x, SEXP base_sexp,
     Rf_error("mizu: invalid map batch range");
   if (dots != R_NilValue && TYPEOF(dots) != VECSXP)
     Rf_error("mizu: invalid map dots");
-  if (TYPEOF(ei_sexp) != REALSXP || XLENGTH(ei_sexp) != 1)
-    Rf_error("mizu: invalid element-index cell");
   if (TYPEOF(rho) != ENVSXP)
     Rf_error("mizu: invalid evaluation environment");
-  double *ei = REAL(ei_sexp);
   R_xlen_t len = (R_xlen_t) (hi - lo + 1);
   R_xlen_t base0 = (R_xlen_t) base;
   double cm = Rf_asReal(char_m_sexp);
@@ -1118,6 +1143,20 @@ SEXP mizu_map_cancel_set(SEXP xp) {
   return R_NilValue;
 }
 
+/* The close proper, shared by the explicit verb and the idle sweep. */
+static void map_h_close(SEXP xp, mizu_map_h *mh) {
+  map_h_untrack(mh);
+  SEXP wrap = R_ExternalPtrProtected(xp);
+  if (wrap != R_NilValue && TYPEOF(wrap) == EXTPTRSXP) {
+    SEXP host = R_ExternalPtrProtected(wrap);
+    mizu_view_shm_finalizer(wrap);   /* this side's mapping */
+    if (host != R_NilValue && TYPEOF(host) == EXTPTRSXP)
+      mizu_view_host_finalizer(host);   /* the name (producer side) */
+  }
+  free(mh);
+  R_ClearExternalPtr(xp);
+}
+
 /* Explicit, idempotent region teardown — a streaming spec map's per-chunk
    regions unlink at their own turns, and a one-shot non-view region at its
    clean collect; prepared and view regions keep their existing ownership.
@@ -1131,16 +1170,39 @@ SEXP mizu_map_close(SEXP xp) {
     Rf_error("mizu: not a map handle");
   mizu_map_h *mh = (mizu_map_h *) R_ExternalPtrAddr(xp);
   if (mh == NULL) return R_NilValue;   /* idempotent */
-  SEXP wrap = R_ExternalPtrProtected(xp);
-  if (wrap != R_NilValue && TYPEOF(wrap) == EXTPTRSXP) {
-    SEXP host = R_ExternalPtrProtected(wrap);
-    mizu_view_shm_finalizer(wrap);   /* this side's mapping */
-    if (host != R_NilValue && TYPEOF(host) == EXTPTRSXP)
-      mizu_view_host_finalizer(host);   /* the name (producer side) */
-  }
-  free(mh);
-  R_ClearExternalPtr(xp);
+  map_h_close(xp, mh);
   return R_NilValue;
+}
+
+/* Hand a worker-cached context's mapping to its worker handle's idle
+   sweep. Idempotent; a closed handle no-ops. */
+void mizu_map_track(SEXP xp, void *owner) {
+  if (TYPEOF(xp) != EXTPTRSXP || R_ExternalPtrTag(xp) != mizu_map_tag)
+    Rf_error("mizu: not a map handle");
+  mizu_map_h *mh = (mizu_map_h *) R_ExternalPtrAddr(xp);
+  if (mh == NULL || mh->owner != NULL) return;
+  mh->owner = owner;
+  mh->self = xp;
+  mh->prev = NULL;
+  mh->next = map_tracked;
+  if (map_tracked != NULL) map_tracked->prev = mh;
+  map_tracked = mh;
+}
+
+/* The idle sweep's half: close every mapping tracked for this worker
+   handle. Dropping the cache reference releases nothing in R — the
+   mapping would unmap in the extptr finalizer, at a GC an idle worker
+   does not run. No R allocation (frees and extptr clears only), so it is
+   safe from the core's sweep hook. The sweep fires only from the worker's
+   top-level step loop and its departure paths, never under a runner (a
+   help beat executes its task directly), so no context is in use here. */
+void mizu_map_sweep(void *owner) {
+  mizu_map_h *mh = map_tracked;
+  while (mh != NULL) {
+    mizu_map_h *next = mh->next;
+    if (mh->owner == owner) map_h_close(mh->self, mh);
+    mh = next;
+  }
 }
 
 SEXP mizu_map_cancel_get(SEXP xp) {

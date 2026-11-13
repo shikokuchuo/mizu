@@ -848,6 +848,7 @@ SEXP mizu_pool_info_call(SEXP);
 SEXP mizu_pool_stats_call(SEXP);
 SEXP mizu_pool_map_caps_call(SEXP);
 SEXP mizu_pool_map_cache(SEXP);
+SEXP mizu_pool_map_track(SEXP, SEXP);
 SEXP mizu_pool_signals_call(SEXP);
 SEXP mizu_pool_help_once_call(SEXP);
 SEXP mizu_pool_zc_info(SEXP);
@@ -892,6 +893,8 @@ SEXP mizu_map_batch(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
 SEXP mizu_map_abandon(SEXP, SEXP);
 SEXP mizu_map_cancel_set(SEXP);
 SEXP mizu_map_close(SEXP);
+void mizu_map_track(SEXP, void *);
+void mizu_map_sweep(void *);
 SEXP mizu_map_cancel_get(SEXP);
 SEXP mizu_map_reset(SEXP);
 SEXP mizu_map_swap_x(SEXP, SEXP);

@@ -2260,3 +2260,29 @@ unchanged.
 Status: full suite green (6201 pass, 0 fail, 7 skips; cross-language legs
 included), plus 23 pymizu-to-R-worker map tests. rchk did not run because the
 local Docker daemon is unavailable.
+
+## 2026-11-13 — one handler per runner; the idle sweep closes mappings (step 6)
+
+A = `9c8350b`; B = the step-6 working tree. Spawned workers load mizu from the
+default library, so a scratch-library A/B must set `R_LIBS`.
+
+Worker-side `map_runner()` time, one worker, trivial `f`, numeric template,
+prepared runs, median of 1,500 (us). The saving is about 2 us per batch, paid
+over the batch ramp, so it is flat in n:
+
+| n | A | B |
+|---|---:|---:|
+| 100 | 49.9 | 34.8 |
+| 1,000 | 157.6 | 137.9 |
+| 4,000 | 488.6 | 465.0 |
+| 30,000 | 3554.3 | 3464.3 |
+
+Idle shared memory per worker (`vmmap -summary`), four workers, 2 s after six
+one-shot maps of 64 MiB raw x + 64 MiB template output: A 188.2 MiB mapped
+(about 113 MiB resident) until a worker `gc()`; B 5.2 MiB, the baseline.
+
+Not implemented, prepared-context retention: 1,999 of 2,000 tight-loop
+prepared runs miss the worker cache. A no-op sweep improved prepared template
+rows 14% (n = 100), 13% (n = 1,000), 6% (n = 4,000).
+
+Status: full suite green (6210 pass, 0 fail, 7 skips). rchk not run.
