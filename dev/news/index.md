@@ -6,6 +6,11 @@
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   collection and lower shared-memory use for a (non-prepared) map
   collected by value.
+- Streaming
+  [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
+  with a
+  [`mizu_call()`](https://shikokuchuo.net/mizu/dev/reference/mizu_call.md)
+  spec no longer retains completed chunk regions on R workers.
 - Native
   [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
   character-template results are validated and flattened per worker
