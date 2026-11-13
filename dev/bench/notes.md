@@ -45,13 +45,13 @@ probes and A/B isolations stay in the log.
 
 | row | best | measured |
 |---|---|---|
-| sequential rt, channel | 1.0 us/rt | 2026-10-01 |
-| sequential rt, pool | 1.4 us/task | 2026-10-03 |
-| pipelined, channel | 981k rt/s | 2026-09-26 |
+| sequential rt, channel | 0.9 us/rt | 2026-11-13 |
+| sequential rt, pool | 1.3 us/task | 2026-11-13 |
+| pipelined, channel | 1.03M rt/s | 2026-11-13 |
 | pipelined, channel batch | 20.4M rt/s | 2026-10-03 |
-| pipelined, pool | 680k tasks/s | 2026-10-03 |
+| pipelined, pool | 765k tasks/s | 2026-11-13 |
 | pipelined, pool batch | 4.07M tasks/s | 2026-10-01 |
-| payload 8,000 B | 2.7 us/task | 2026-10-22 |
+| payload 8,000 B | 2.4 us/task | 2026-11-13 |
 | payload 800,000 B | 47.3 us/task | 2026-10-22 |
 | payload 8,000,000 B | 262.8 us/task | 2026-10-22 |
 | fan-out x 2000, 4 workers | 383k tasks/s | 2026-10-22 |
@@ -74,7 +74,7 @@ probes and A/B isolations stay in the log.
 | crosslang frame relay, one computed col | 0.47 ms/rt | 2026-10-01 |
 | crosslang channel rt, small (<= 8 KB) | 0.9-2.5 us/rt | 2026-10-04 |
 | crosslang channel rt, 8 MB (REF relay) | 390.7 us/rt | 2026-10-04 |
-| submit plan k = 0 (W2 row) | 37.2 us/task | 2026-10-22 |
+| submit plan k = 0 (W2 row) | 36.8 us/task | 2026-11-13 |
 | submit plan k = 1 (W2 row) | 39.5 us/task | 2026-10-22 |
 | submit plan k = 4 (W2 row) | 43.7 us/task | 2026-10-22 |
 | submit plan k = 16 (W2 row) | 61.0 us/task | 2026-10-22 |
@@ -2286,3 +2286,33 @@ prepared runs miss the worker cache. A no-op sweep improved prepared template
 rows 14% (n = 100), 13% (n = 1,000), 6% (n = 4,000).
 
 Status: full suite green (6210 pass, 0 fail, 7 skips). rchk not run.
+
+## 2026-11-13 — accepted handles on a mid-batch submit error; libmizu batch wake (libmizu 5919329)
+
+`mizu_submit_batch()` installs a calling error handler for batches of two
+or more tasks, and the vendored core moves to libmizu main, where a batch
+submit wakes at most one idle worker per task. One run of the canonical
+suite on the branch; the cross-language benches were not run. The suite
+has no short-batch row on an idle pool, which is where the wake change
+shows (pymizu's notes carry that probe, same date).
+
+Handler cost (alternating A/B, three pairs, minimum of 7 x 5000 calls;
+A is the same build without the handler): `mizu_submit_batch()` of 2 tasks
+1.00-1.31 us vs 1.08-1.19 us; of 100 tasks 20.6-23.3 us vs 23.5-23.7 us,
+medians overlapping at 30-36 us.
+
+Results: pipelined pool batch 2.69M tasks/s (the one table row through the
+batch submit; below its 4.07M best, as the same-shape pymizu row is on
+this host for both cores); channel batch 19.3M rt/s; payload 800,000 B /
+8,000,000 B 49.9 / 386.0 us/task; fan-out 382k tasks/s; streaming 41.3M
+msg/s; map ~10us 5.2 ms, skewed 11.3 ms; serialize-tier 4.0, codec-tier
+2.9 us/task; plan k = 1 / 4 / 16 41.1 / 46.7 / 62.6 us/task.
+
+Best-known swaps (6 rows, none through the batch submit — host-state
+bests, not this change's): sequential rt channel 1.0 -> 0.9, sequential
+rt pool 1.4 -> 1.3, pipelined channel 981k -> 1.03M, pipelined pool 680k
+-> 765k, payload 8,000 B 2.7 -> 2.4, plan k = 0 37.2 -> 36.8.
+
+Status: full suite 0 failures against the installed build (1172 results,
+7 skips; five mocked map tests need pkgload), `devtools::test()` map
+files 213 pass.
