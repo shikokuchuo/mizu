@@ -1316,6 +1316,7 @@ test_that("a forked child starts with an empty provenance registry", {
       same <- identical(back, df)
       rm(tab, back)
       invisible(gc()) # the inherited holder's release: no unref, no unlink
+      channel_end(q) # the child exits without finalizers
       c(hit, same)
     },
     silent = TRUE
