@@ -456,7 +456,7 @@ ok = (
     t.num_rows == 3
     and t.column_names == ['i', 's']
     and t.column('i').type == pa.int32()
-    and t.column('s').type == pa.string()
+    and t.column('s').type == pa.large_string()
     and t.column('i').to_pylist() == [1, None, 3]
     and t.column('s').to_pylist() == ['x', 'y', None]
 )

@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-PIN="c10d0a35404ebe0b707c3c3478f910a7e6047ae5"  # libmizu: Add a lazy Arrow open that defers the string walks (#14)
+PIN="09669c0e6239a8eee3f2a5577672318888baab6d"  # libmizu: Concatenate large_utf8 columns in mizu_arrow_col_utf8 (#15)
 REF="${1:-$PIN}"
 REPO="${LIBMIZU_REPO:-https://github.com/shikokuchuo/libmizu}"
 DEST="$(cd "$(dirname "$0")/.." && pwd)/src/vendor/libmizu"

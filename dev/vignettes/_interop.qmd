@@ -161,7 +161,8 @@ Any Arrow producer is staged directly from its buffers: an `arrow` Table or Reco
 Staging is a single write into the shared region, not a conversion to R values first.
 
 `mizu_as_arrow()` converts a received frame back to Arrow.
-Columns without attributes (double, integer, `integer64`, character) convert without copying:
+Columns without attributes (double, integer, `integer64`, raw, character) convert without copying.
+It also takes a bare vector, which is how a `mizu_map()` output collected with `.collect = "view"` reaches Arrow without a copy:
 
 ```{r arrow-data}
 #| eval: !expr has_arrow

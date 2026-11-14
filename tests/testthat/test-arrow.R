@@ -680,7 +680,10 @@ test_that("mizu_as_arrow falls back for a plain data frame", {
 test_that("mizu_as_arrow declines are informative", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("arrow")
-  expect_error(mizu_as_arrow(1:5), "expected a data frame")
+  expect_error(
+    mizu_as_arrow(list(1:5)),
+    "expected a data frame or an atomic vector"
+  )
   p <- channel_pair()
   on.exit(channel_end(p))
   df <- data.frame(z = complex(6000, 1, 2), x = runif(6000))
@@ -765,7 +768,7 @@ test_that("relayed root views borrow through the rc-0 arms", {
   mizu_send(p$peer, data.frame(l = iv, b = b))
   out <- mizu_recv(p$host, 5)
   ex <- arrow_export(out)
-  expect_identical(ex$kinds, c(3L, 0L))
+  expect_identical(ex$kinds, c(3L, 7L))
   back <- array_value(ex$arrays[[1L]], nanoarrow::na_int64())
   expect_identical(sum(is.na(back)), 1L) # the sentinel scan's owned bitmap
   expect_identical(bit64::as.integer64(back), i64)
@@ -871,7 +874,7 @@ test_that("a mixed-region frame borrows each view column off its region", {
   r1 <- rc_of(f1$x)[1L]
   r2 <- rc_of(f2$y)[1L]
   ex <- arrow_export(data.frame(a = f1$x, b = f2$y, c = y))
-  expect_identical(ex$kinds, c(1L, 1L, 0L))
+  expect_identical(ex$kinds, c(1L, 1L, 7L))
   expect_identical(rc_of(f1$x)[1L], r1 + 1L) # one loan per region
   expect_identical(rc_of(f2$y)[1L], r2 + 1L)
   expect_identical(array_value(ex$arrays[[1L]], nanoarrow::na_double()), x)
@@ -955,7 +958,7 @@ test_that("a materialized remote column copies", {
   col[1L] <- -col[1L] # COW: no longer the SHM-backed view
   x[1L] <- -x[1L]
   ex <- arrow_export(list(col))
-  expect_identical(ex$kinds, 0L)
+  expect_identical(ex$kinds, 7L)
   expect_identical(col, x)
 })
 
@@ -1313,6 +1316,7 @@ test_that("a forked child starts with an empty provenance registry", {
       same <- identical(back, df)
       rm(tab, back)
       invisible(gc()) # the inherited holder's release: no unref, no unlink
+      channel_end(q) # the child exits without finalizers
       c(hit, same)
     },
     silent = TRUE
@@ -1745,16 +1749,278 @@ test_that("a released stream raises the pull failure", {
   expect_error(mizu_send(p$host, st), "the Arrow stream failed")
 })
 
+test_that("a map output view exports zero-copy", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- as.double(1:200)
+  vd <- map_view(p, x, function(i) i / 4, numeric(1))
+  vi <- map_view(p, x, function(i) if (i == 2) NA else as.integer(i), 1L)
+  vl <- map_view(
+    p,
+    x,
+    function(i) bit64::as.integer64(i),
+    bit64::integer64(1)
+  )
+  vr <- map_view(p, x, function(i) as.raw(i), raw(1))
+  views <- list(vd, vi, vl, vr)
+  kinds <- c(1L, 2L, 3L, 6L)
+  for (k in 1:4) {
+    expect_identical(arrow_export(views[k], bare = TRUE)$kinds, kinds[k])
+    expect_identical(arrow_export(data.frame(v = views[[k]]))$kinds, kinds[k])
+  }
+  expect_identical(
+    arrow_read(mizu_as_arrow(vd)),
+    list(format = "g", length = 200L, nulls = 0L, value = x / 4)
+  )
+  want <- 1:200
+  want[2L] <- NA
+  got <- arrow_read(mizu_as_arrow(vi))
+  expect_identical(got[c("format", "nulls")], list(format = "i", nulls = 1L))
+  expect_identical(got$value, want)
+  expect_identical(
+    arrow_read(mizu_as_arrow(vl))[c("format", "value")],
+    list(format = "l", value = x)
+  )
+  st <- mizu_as_arrow(vr)
+  expect_identical(st$get_schema()$format, "C")
+  arr <- st$get_next()
+  expect_identical(arr$null_count, 0L)
+  expect_identical(buffer_addrs(list(children = list(arr)))[[1L]][[1L]], "0")
+  expect_identical(nanoarrow::convert_array(arr), 1:200)
+  expect_identical(
+    nanoarrow::convert_array_stream(mizu_as_arrow(data.frame(v = vd))),
+    data.frame(v = x / 4)
+  )
+})
+
+test_that("a named or matrix map output borrows in the bare form, flat", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  skip_if_not_installed("bit64")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  x <- c(a = 1, b = 2, c = 3)
+  vn <- map_view(p, x, function(i) i * 2, numeric(1))
+  vl <- map_view(
+    p,
+    x,
+    function(i) bit64::as.integer64(i),
+    bit64::integer64(1)
+  )
+  expect_named(vn, names(x))
+  expect_identical(arrow_export(list(vn), bare = TRUE)$kinds, 1L)
+  expect_identical(arrow_export(list(vl), bare = TRUE)$kinds, 3L)
+  expect_identical(arrow_read(mizu_as_arrow(vn))$value, c(2, 4, 6))
+  expect_identical(arrow_read(mizu_as_arrow(vl))$value, c(1, 2, 3))
+  # as a column the names move to the row names and R wraps the view
+  expect_identical(arrow_export(data.frame(v = vn))$kinds, 7L)
+  # a length-m template: n * m elements in column-major order
+  vm <- map_view(p, x, function(i) c(i, -i), numeric(2))
+  vi <- map_view(p, x, function(i) c(NA, as.integer(i)), integer(2))
+  expect_identical(dim(vm), c(2L, 3L))
+  expect_identical(arrow_export(list(vm), bare = TRUE)$kinds, 1L)
+  expect_identical(arrow_export(list(vi), bare = TRUE)$kinds, 2L)
+  flat <- list(
+    format = "g",
+    length = 6L,
+    nulls = 0L,
+    value = c(1, -1, 2, -2, 3, -3)
+  )
+  expect_identical(arrow_read(mizu_as_arrow(vm)), flat)
+  # the same plain matrix: one schema whatever the materialization history
+  pm <- matrix(flat$value, 2L, dimnames = list(NULL, names(x)))
+  expect_identical(arrow_export(list(pm), bare = TRUE)$kinds, 7L)
+  expect_identical(arrow_read(mizu_as_arrow(pm)), flat)
+  flat <- list(
+    format = "i",
+    length = 6L,
+    nulls = 3L,
+    value = c(NA, 1L, NA, 2L, NA, 3L)
+  )
+  expect_identical(arrow_read(mizu_as_arrow(vi)), flat)
+  expect_identical(arrow_read(mizu_as_arrow(matrix(flat$value, 2L))), flat)
+})
+
+test_that("the copy-path map output types convert or decline", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  vb <- map_view(p, 1:6, function(i) if (i == 3L) NA else i > 4L, NA)
+  expect_identical(arrow_export(list(vb), bare = TRUE)$kinds, 0L)
+  expect_identical(
+    arrow_read(mizu_as_arrow(vb)),
+    list(
+      format = "b",
+      length = 6L,
+      nulls = 1L,
+      value = c(FALSE, FALSE, NA, FALSE, TRUE, TRUE)
+    )
+  )
+  vc <- map_view(p, 1:6, function(i) complex(1, i, 1), complex(1))
+  expect_error(mizu_as_arrow(vc), "the vector has no Arrow conversion")
+  f <- factor(c("lo", "hi", "lo"), levels = c("lo", "hi"), ordered = TRUE)
+  sch <- mizu_as_arrow(f)$get_schema()
+  expect_identical(bitwAnd(sch$flags, 1L), 1L)
+  expect_identical(sch$dictionary$format, "u")
+  # outside the bare form's attribute gate: the nanoarrow conversion
+  expect_identical(
+    mizu_as_arrow(as.Date("2024-01-01"))$get_schema()$format,
+    "tdD"
+  )
+  expect_identical(
+    arrow_read(mizu_as_arrow(structure(NaN, unit = "m")))$nulls,
+    1L
+  )
+})
+
+test_that("a double keeps NaN as a value on the borrow and the copy", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  f <- function(i) {
+    if (i == 2) {
+      NaN
+    } else if (i == 3) {
+      NA_real_
+    } else {
+      i
+    }
+  }
+  v <- map_view(p, as.double(1:5), f, numeric(1))
+  want <- list(
+    format = "g",
+    length = 5L,
+    nulls = 1L,
+    value = c(1, NaN, NA, 4, 5)
+  )
+  expect_identical(arrow_read(mizu_as_arrow(v)), want)
+  expect_identical(arrow_read(mizu_as_arrow(v)), want) # no stale clean memo
+  expect_identical(arrow_read(mizu_as_arrow(want$value)), want)
+  back <- nanoarrow::convert_array_stream(
+    mizu_as_arrow(data.frame(v = want$value))
+  )
+  expect_identical(back$v, want$value)
+  expect_identical(
+    arrow_read(mizu_as_arrow(numeric()))[c("format", "length")],
+    list(format = "g", length = 0L)
+  )
+})
+
+test_that("an export outlives its map view and a prepared re-run", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  p <- pool_pair()
+  on.exit(pool_end(p))
+  pm <- mizu_map_prepare(
+    p[["ctrl"]],
+    1:100,
+    function(i) i * 2.5,
+    .template = numeric(1)
+  )
+  st <- pm[["st"]]
+  mizu:::map_rearm(p[["ctrl"]], st, NULL)
+  pm[["st"]] <- NULL
+  mizu:::map_submit(p[["ctrl"]], st)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  v <- mizu:::map_collect(st, mizu:::mono_time() + 30, "view")
+  out <- mizu_as_arrow(v)
+  st2 <- mizu:::map_stage(
+    p[["ctrl"]],
+    pm[["x"]],
+    function(i) i * 100,
+    pm[["dots"]],
+    pm[["template"]],
+    pm[["chunks"]]
+  )
+  mizu:::map_submit(p[["ctrl"]], st2)
+  while (pool_step(p) == 1L) {
+    NULL
+  }
+  v2 <- mizu:::map_collect(st2, mizu:::mono_time() + 30, "view")
+  rm(v, st, pm)
+  invisible(gc())
+  invisible(gc())
+  expect_identical(arrow_read(out)$value, 1:100 * 2.5)
+  expect_identical(as.numeric(v2), 1:100 * 100)
+})
+
+test_that("a received bare vector view borrows in the bare form", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- runif(40000)
+  x[7L] <- NA
+  v <- prov_recv(p, x)
+  expect_identical(arrow_export(list(v), bare = TRUE)$kinds, 1L)
+  got <- arrow_read(mizu_as_arrow(v))
+  expect_identical(got$nulls, 1L)
+  expect_identical(got$value, x)
+  r <- as.raw(rep(0:255, 2000L))
+  rv <- prov_recv(p, r)
+  expect_identical(arrow_export(data.frame(r = rv))$kinds, 6L)
+  expect_identical(
+    arrow_read(mizu_as_arrow(rv))[c("format", "nulls", "value")],
+    list(format = "C", nulls = 0L, value = as.integer(r))
+  )
+  # the same raw vector off the copy path: one schema
+  expect_identical(arrow_export(list(r), bare = TRUE)$kinds, 0L)
+  expect_identical(mizu_as_arrow(r)$get_schema()$format, "C")
+})
+
+test_that("a character vector exports as large_string on every path", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  s <- rep(c("alpha", NA, "héllo"), 20000L)
+  v <- prov_recv(p, s)
+  expect_identical(arrow_export(list(v), bare = TRUE)$kinds, 4L)
+  for (col in list(v, s)) {
+    got <- arrow_read(mizu_as_arrow(col))
+    expect_identical(got$format, "U")
+    expect_identical(got$value, s)
+    sch <- mizu_as_arrow(data.frame(s = col))$get_schema()
+    expect_identical(sch$children$s$format, "U")
+  }
+  sch <- mizu_as_arrow(data.frame(f = factor(s)))$get_schema()
+  expect_identical(sch$children$f$dictionary$format, "u")
+})
+
+test_that("a map view column re-sends by value beside a remote leaf", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("arrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  q <- pool_pair()
+  on.exit(pool_end(q), add = TRUE)
+  a <- runif(20000)
+  ya <- prov_recv(p, list(a))
+  m <- map_view(q, a, function(i) i + 1, numeric(1))
+  d <- data.frame(a = ya[[1L]], m = m)
+  expect_identical(arrow_export(d)$kinds, c(1L, 1L))
+  back <- prov_back(p, arrow::as_arrow_table(mizu_as_arrow(d)))
+  expect_identical(col_regions(back), c(view_name(ya), view_name(back)))
+  expect_identical(back, data.frame(a = a, m = a + 1))
+})
+
 test_that("the export call validates its arguments", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
   arr <- nanoarrow::nanoarrow_allocate_array()
   expect_error(
-    .Call(mizu:::mizu_arrow_export, 1:3, list(arr)),
+    .Call(mizu:::mizu_arrow_export, 1:3, list(arr), FALSE),
     "corrupt arrow export call"
   )
   expect_error(
-    .Call(mizu:::mizu_arrow_export, data.frame(a = 1), list(arr, arr)),
+    .Call(mizu:::mizu_arrow_export, data.frame(a = 1), list(arr, arr), FALSE),
     "corrupt arrow export call"
   )
 })
@@ -1768,7 +2034,7 @@ test_that("a cleared array extptr fails the export pre-fill", {
   v <- mizu_recv(p$peer, 5)
   dud <- unserialize(serialize(nanoarrow::nanoarrow_allocate_array(), NULL))
   expect_error(
-    .Call(mizu:::mizu_arrow_export, data.frame(x = v), list(dud)),
+    .Call(mizu:::mizu_arrow_export, data.frame(x = v), list(dud), FALSE),
     "corrupt arrow export call"
   )
 })
@@ -1831,6 +2097,22 @@ test_that("the string borrow gates on the wire encodings", {
   expect_identical(arrow_export(data.frame(s = v2))$kinds[[1L]], 0L)
 })
 
+test_that("a view nested past the path cap takes the copy path", {
+  skip_on_cran() # the Arrow stack lags per CRAN flavor
+  skip_if_not_installed("nanoarrow")
+  p <- channel_pair()
+  on.exit(channel_end(p))
+  x <- c(runif(40000), NaN)
+  mizu_send(p$host, Reduce(function(v, i) list(v), 1:65, x))
+  v <- Reduce(function(v, i) v[[1L]], 1:65, mizu_recv(p$peer, 5))
+  expect_true(is_view(v))
+  expect_identical(arrow_export(list(v), bare = TRUE)$kinds, 7L)
+  expect_identical(
+    arrow_read(mizu_as_arrow(v))[c("nulls", "value")],
+    list(nulls = 0L, value = x)
+  )
+})
+
 test_that("a list-view column takes the copy path", {
   skip_on_cran() # the Arrow stack lags per CRAN flavor
   skip_if_not_installed("nanoarrow")
@@ -1878,7 +2160,7 @@ test_that("a dead producer degrades only its own columns to the copy path", {
   ))
   df <- data.frame(a = v1, b = v2)
   ex <- arrow_export(df)
-  expect_identical(ex$kinds, c(0L, 0L))
+  expect_identical(ex$kinds, c(7L, 7L))
   # the values still read off the surviving consumer mappings
   set.seed(42)
   expect_identical(df$a[], runif(40000))
@@ -2383,7 +2665,7 @@ test_that("the export degrades a column whose root header changed", {
   )
   df <- data.frame(a = v)
   ex <- arrow_export(df)
-  expect_identical(ex$kinds, 0L)
+  expect_identical(ex$kinds, 7L)
   rm(df, ex)
   channel_end(p)
   p <- channel_pair()
@@ -2394,7 +2676,7 @@ test_that("the export degrades a column whose root header changed", {
   .Call(mizu:::mizu_poke, rw, 0L, as.raw(0L)) # unknown magic
   df <- data.frame(a = v)
   ex <- arrow_export(df)
-  expect_identical(ex$kinds, 0L)
+  expect_identical(ex$kinds, 7L)
   expect_identical(df$a[], x) # the values still read off the consumer mapping
 })
 
@@ -2414,7 +2696,7 @@ test_that("the export degrades a remote column whose path has no entry", {
   # the referenced region's directory no longer reaches the column's leaf
   .Call(mizu:::mizu_poke, rw, 4L, raw(4L))
   ex <- arrow_export(list(col))
-  expect_identical(ex$kinds, 0L)
+  expect_identical(ex$kinds, 7L)
   expect_identical(col[], x) # the extraction's own mapping still reads
 })
 

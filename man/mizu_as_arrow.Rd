@@ -2,19 +2,20 @@
 % Please edit documentation in R/arrow.R
 \name{mizu_as_arrow}
 \alias{mizu_as_arrow}
-\title{Convert a Received Frame to an Arrow Stream}
+\title{Convert a Received Frame or Vector to an Arrow Stream}
 \usage{
 mizu_as_arrow(x)
 }
 \arguments{
-\item{x}{a data frame.}
+\item{x}{a data frame or an atomic vector.}
 }
 \value{
-A struct-typed \code{nanoarrow_array_stream}.
+A \code{nanoarrow_array_stream}: struct-typed with one batch for a data
+frame, and of the vector's own Arrow type with one array for a vector.
 }
 \description{
-\code{mizu_as_arrow()} converts a data frame, typically one received over a
-channel or collected from a pool, into a struct-typed
+\code{mizu_as_arrow()} converts a data frame or an atomic vector, typically one
+received over a channel or collected from a pool or a map, into a
 \code{nanoarrow_array_stream}, ready for \code{nanoarrow::convert_array_stream()},
 \code{arrow::as_arrow_table()}, or any other Arrow C Data Interface consumer.
 }
@@ -31,15 +32,27 @@ them.
 
 Columns still backed by their received shared-memory pages export zero-copy:
 the stream's buffers point directly into the shared region for attribute-free
-double, integer, \code{integer64}, and character views (character as
-\code{large_string}). This covers any column backed by a shared region (the
-frame's own columns, columns referencing another region, and received views
-assembled into a data frame), with one reference held per region. A region
-whose producer has exited affects only its own columns, which fall back to
-copying. Everything else (factors, Date, POSIXct and difftime columns,
-logical and raw vectors, and materialized or never-shared columns) converts
-per column through \code{nanoarrow::as_nanoarrow_array()}. The shared region stays
-mapped until the stream and every array produced from it are released.
+double, integer, \code{integer64}, raw, and character views (raw as \code{uint8},
+character as \code{large_string}). This covers any column backed by a shared
+region (the frame's own columns, columns referencing another region, received
+views assembled into a data frame, and the output of a \code{\link[=mizu_map]{mizu_map()}} collected
+with \code{.collect = "view"}), with one reference held per region. A region whose
+producer has exited affects only its own columns, which fall back to copying.
+Everything else (factors, Date, POSIXct and difftime columns, logical
+vectors, and materialized or never-shared columns) is copied, per column
+through \code{nanoarrow::as_nanoarrow_array()}. The copy gives the same Arrow type
+and values as the zero-copy export of the same data: a character column is
+always a \code{large_string}, and in a double column \code{NA} is a null while \code{NaN}
+stays a value. The shared region stays mapped until the stream and every
+array produced from it are released.
+
+An atomic vector exports as a single array, under the same rules as a
+column. Arrow arrays carry no attributes, so names, \code{dim} and \code{dimnames} are
+dropped: a matrix or array exports flat, in column-major order. For a map
+output with a length-\code{m} template that is \code{m} consecutive values per element
+of \code{.x}. Use this form for a named or matrix map output, which is not
+zero-copy as a data frame column (a matrix column there is copied as a
+fixed-size list with one entry per row, and its \code{NaN} values become nulls).
 
 The zero-copy columns also travel back by reference. When the Arrow data is
 sent on (over a channel, or returned as a pool result) with such a column
@@ -58,5 +71,8 @@ df <- mizu_recv(ch, timeout = 30)
 stream <- mizu_as_arrow(df)
 arrow::as_arrow_table(stream)
 mizu_close(ch)
+
+# a bare vector exports as a single array
+mizu_as_arrow(c(1.5, NA, NaN))$get_next()
 \dontshow{\}) # examplesIf}
 }

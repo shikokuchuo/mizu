@@ -147,10 +147,10 @@ arrow_batches_to_value <- function(schema, batches) {
   out
 }
 
-#' Convert a Received Frame to an Arrow Stream
+#' Convert a Received Frame or Vector to an Arrow Stream
 #'
-#' `mizu_as_arrow()` converts a data frame, typically one received over a
-#' channel or collected from a pool, into a struct-typed
+#' `mizu_as_arrow()` converts a data frame or an atomic vector, typically one
+#' received over a channel or collected from a pool or a map, into a
 #' `nanoarrow_array_stream`, ready for `nanoarrow::convert_array_stream()`,
 #' `arrow::as_arrow_table()`, or any other Arrow C Data Interface consumer.
 #'
@@ -166,15 +166,27 @@ arrow_batches_to_value <- function(schema, batches) {
 #'
 #' Columns still backed by their received shared-memory pages export zero-copy:
 #' the stream's buffers point directly into the shared region for attribute-free
-#' double, integer, `integer64`, and character views (character as
-#' `large_string`). This covers any column backed by a shared region (the
-#' frame's own columns, columns referencing another region, and received views
-#' assembled into a data frame), with one reference held per region. A region
-#' whose producer has exited affects only its own columns, which fall back to
-#' copying. Everything else (factors, Date, POSIXct and difftime columns,
-#' logical and raw vectors, and materialized or never-shared columns) converts
-#' per column through `nanoarrow::as_nanoarrow_array()`. The shared region stays
-#' mapped until the stream and every array produced from it are released.
+#' double, integer, `integer64`, raw, and character views (raw as `uint8`,
+#' character as `large_string`). This covers any column backed by a shared
+#' region (the frame's own columns, columns referencing another region, received
+#' views assembled into a data frame, and the output of a [mizu_map()] collected
+#' with `.collect = "view"`), with one reference held per region. A region whose
+#' producer has exited affects only its own columns, which fall back to copying.
+#' Everything else (factors, Date, POSIXct and difftime columns, logical
+#' vectors, and materialized or never-shared columns) is copied, per column
+#' through `nanoarrow::as_nanoarrow_array()`. The copy gives the same Arrow type
+#' and values as the zero-copy export of the same data: a character column is
+#' always a `large_string`, and in a double column `NA` is a null while `NaN`
+#' stays a value. The shared region stays mapped until the stream and every
+#' array produced from it are released.
+#'
+#' An atomic vector exports as a single array, under the same rules as a
+#' column. Arrow arrays carry no attributes, so names, `dim` and `dimnames` are
+#' dropped: a matrix or array exports flat, in column-major order. For a map
+#' output with a length-`m` template that is `m` consecutive values per element
+#' of `.x`. Use this form for a named or matrix map output, which is not
+#' zero-copy as a data frame column (a matrix column there is copied as a
+#' fixed-size list with one entry per row, and its `NaN` values become nulls).
 #'
 #' The zero-copy columns also travel back by reference. When the Arrow data is
 #' sent on (over a channel, or returned as a pool result) with such a column
@@ -185,9 +197,10 @@ arrow_batches_to_value <- function(schema, batches) {
 #' the direct elements of a received data frame or list, not to a received bare
 #' vector placed in a data frame, which is copied as before.
 #'
-#' @param x a data frame.
+#' @param x a data frame or an atomic vector.
 #'
-#' @return A struct-typed `nanoarrow_array_stream`.
+#' @return A `nanoarrow_array_stream`: struct-typed with one batch for a data
+#'   frame, and of the vector's own Arrow type with one array for a vector.
 #'
 #' @examplesIf requireNamespace("nanoarrow", quietly = TRUE) && requireNamespace("arrow", quietly = TRUE)
 #' ch <- mizu_channel(quote(mizu_send(ch, mizu_recv(ch))))
@@ -197,60 +210,66 @@ arrow_batches_to_value <- function(schema, batches) {
 #' arrow::as_arrow_table(stream)
 #' mizu_close(ch)
 #'
+#' # a bare vector exports as a single array
+#' mizu_as_arrow(c(1.5, NA, NaN))$get_next()
+#'
 #' @export
 mizu_as_arrow <- function(x) {
-  if (!is.data.frame(x)) {
-    stop("mizu: expected a data frame", call. = FALSE)
+  bare <- !is.data.frame(x)
+  if (bare && (is.null(x) || !is.atomic(x))) {
+    stop("mizu: expected a data frame or an atomic vector", call. = FALSE)
   }
   ns <- arrow_ns()
-  n <- length(x)
+  cols <- if (bare) list(x) else x
+  n <- length(cols)
   arrays <- vector("list", n)
   for (i in seq_len(n)) {
     arrays[[i]] <- ns$nanoarrow_allocate_array()
   }
-  # one fused call: the per-column borrow decision and the zero-copy fill;
-  # kinds[i] == 0L marks every column taking the nanoarrow copy path
-  kinds <- .Call(mizu_arrow_export, x, arrays)
+  # one fused call: the per-column decision and the fill of every column
+  # mizu builds itself (the zero-copy borrows and the double copy);
+  # kinds[i] == 0L marks a column taking the nanoarrow copy path. The bare
+  # form's attribute gate is split: the names here (an Arrow array carries
+  # none of the admitted ones), the class in C
+  kinds <- if (bare && !all(names(attributes(x)) %in% arrow_bare_attrs)) {
+    0L
+  } else {
+    .Call(mizu_arrow_export, cols, arrays, bare)
+  }
   schemas <- vector("list", n)
-  borrowed <- which(kinds != 0L)
-  for (i in borrowed) {
+  filled <- which(kinds != 0L)
+  for (i in filled) {
     schemas[[i]] <- switch(
       kinds[i],
       ns$na_double(),
       ns$na_int32(),
       ns$na_int64(),
       ns$na_large_string(),
-      ns$na_uint64()
+      ns$na_uint64(),
+      ns$na_uint8(),
+      ns$na_double()
     )
     ns$nanoarrow_array_set_schema(arrays[[i]], schemas[[i]])
   }
-  for (i in setdiff(seq_len(n), borrowed)) {
-    col <- x[[i]]
-    ord <- is.ordered(col)
-    if (ord) {
-      # nanoarrow 0.9.0 cannot export an ordered factor (its validation
-      # rejects ARROW_FLAG_DICTIONARY_ORDERED): export the plain factor
-      # and stamp the bit on the schema by hand — validate = FALSE at the
-      # stream build keeps the flagged schema out of the validator
-      col <- factor(col, ordered = FALSE)
+  for (i in setdiff(seq_len(n), filled)) {
+    col <- cols[[i]]
+    if (bare && !is.null(dim(col))) {
+      # the bare form is flat: left on, dim gives nanoarrow's row-wise
+      # fixed-size-list form where a view of the same matrix borrows flat
+      dim(col) <- NULL
     }
-    arrays[[i]] <- tryCatch(
-      ns$as_nanoarrow_array(col),
-      error = function(e) {
-        stop(
-          sprintf(
-            "mizu: column '%s' has no Arrow conversion: %s",
-            names(x)[i],
-            conditionMessage(e)
-          ),
-          call. = FALSE
-        )
-      }
-    )
-    schemas[[i]] <- ns$infer_nanoarrow_schema(col)
-    if (ord) {
-      schemas[[i]]$flags <- bitwOr(schemas[[i]]$flags, 1L)
-    }
+    conv <- arrow_copy(ns, col, if (!bare) names(x)[i])
+    arrays[[i]] <- conv$array
+    schemas[[i]] <- conv$schema
+  }
+  if (bare) {
+    array <- arrays[[1L]]
+    ns$nanoarrow_array_set_schema(array, schemas[[1L]], validate = FALSE)
+    return(ns$basic_array_stream(
+      list(array),
+      schema = schemas[[1L]],
+      validate = FALSE
+    ))
   }
   names(schemas) <- names(x)
   struct_sch <- ns$na_struct(schemas)
@@ -265,4 +284,48 @@ mizu_as_arrow <- function(x) {
   # parent re-converts (a copy, and a broken one for borrowed columns)
   ns$nanoarrow_array_set_schema(parent, struct_sch, validate = FALSE)
   ns$basic_array_stream(list(parent), schema = struct_sch, validate = FALSE)
+}
+
+arrow_bare_attrs <- c("names", "dim", "dimnames", "class")
+
+# The nanoarrow copy conversion, shared by the column loop and the bare
+# form (`name` NULL): list(array, schema). An unclassed character vector
+# converts as large_string, the type a string view borrows as, so the
+# schema does not depend on whether the column is still a view.
+arrow_copy <- function(ns, col, name) {
+  ord <- is.ordered(col)
+  if (ord) {
+    # nanoarrow 0.9.0 cannot export an ordered factor (its validation
+    # rejects ARROW_FLAG_DICTIONARY_ORDERED): export the plain factor
+    # and stamp the bit on the schema by hand — validate = FALSE at the
+    # stream build keeps the flagged schema out of the validator
+    col <- factor(col, ordered = FALSE)
+  }
+  large <- is.character(col) && !is.object(col) && is.null(dim(col))
+  array <- tryCatch(
+    if (large) {
+      ns$as_nanoarrow_array(col, schema = ns$na_large_string())
+    } else {
+      ns$as_nanoarrow_array(col)
+    },
+    error = function(e) {
+      stop(
+        sprintf(
+          "mizu: %s has no Arrow conversion: %s",
+          if (is.null(name)) "the vector" else sprintf("column '%s'", name),
+          conditionMessage(e)
+        ),
+        call. = FALSE
+      )
+    }
+  )
+  schema <- if (large) {
+    ns$na_large_string()
+  } else {
+    ns$infer_nanoarrow_schema(col)
+  }
+  if (ord) {
+    schema$flags <- bitwOr(schema$flags, 1L)
+  }
+  list(array = array, schema = schema)
 }
