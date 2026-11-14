@@ -162,7 +162,10 @@ into the shared region, not a conversion to R values first.
 
 [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md)
 converts a received frame back to Arrow. Columns without attributes
-(double, integer, `integer64`, character) convert without copying:
+(double, integer, `integer64`, raw, character) convert without copying.
+It also takes a bare vector, which is how a
+[`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
+output collected with `.collect = "view"` reaches Arrow without a copy:
 
 ``` r
 

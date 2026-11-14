@@ -86,7 +86,7 @@
 ## Cross-language interop
 
 - [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md)
-  : Convert a Received Frame to an Arrow Stream
+  : Convert a Received Frame or Vector to an Arrow Stream
 - [`mizu_call()`](https://shikokuchuo.net/mizu/dev/reference/mizu_call.md)
   [`mizu_submit_call()`](https://shikokuchuo.net/mizu/dev/reference/mizu_call.md)
   : Call a Function in Another Language

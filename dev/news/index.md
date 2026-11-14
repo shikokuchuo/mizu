@@ -2,6 +2,19 @@
 
 ## mizu (development version)
 
+- [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md)
+  now also accepts an atomic vector, exported as a single Arrow array; a
+  matrix exports flat, in column-major order.
+- [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md)
+  exports the output of a
+  [`mizu_map()`](https://shikokuchuo.net/mizu/dev/reference/mizu_map.md)
+  collected with `.collect = "view"` without copying, and likewise
+  received raw vectors.
+- [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md)
+  now gives the same Arrow data whether or not a column is still backed
+  by shared memory: `NaN` in a copied double column stays a value (it
+  became a null), and a copied character column is a `large_string` (it
+  was a `string`).
 - Faster re-sending of Arrow data obtained from
   [`mizu_as_arrow()`](https://shikokuchuo.net/mizu/dev/reference/mizu_as_arrow.md):
   columns left unchanged are no longer copied.
